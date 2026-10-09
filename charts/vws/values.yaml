@@ -4,7 +4,6 @@
 # Absence of state makes a Deployment with at least two replicas.
 global:
   registry: ghcr.io/popododo0720/vws
-  domain: vws.invalid
   storageClass: ""
 
 services:

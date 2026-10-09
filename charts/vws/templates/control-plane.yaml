@@ -13,7 +13,8 @@ Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 {{- $cpu := $spec.cpu | default "100m" }}
 {{- $memory := $spec.memory | default "256Mi" }}
 {{- $startup := int ($spec.startupSeconds | default 60) }}
-{{- $threshold := div (add $startup 4) 5 }}
+{{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
+{{- $threshold := add (div (add $startup 4) 5) 1 }}
 {{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
 {{- $ctx := dict "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
@@ -33,10 +34,6 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
-  {{- if $external }}
-  annotations:
-    vws/external-host: {{ printf "%s.%s" $name $.Values.global.domain | quote }}
-  {{- end }}
 spec:
   type: {{ ternary "LoadBalancer" "ClusterIP" $external }}
   selector:
@@ -89,9 +86,7 @@ spec:
     - metadata:
         name: state
         labels:
-          {{- include "vws.labels" $ctx | nindent 10 }}
-        annotations:
-          helm.sh/resource-policy: keep
+          {{- include "vws.selector" $ctx | nindent 10 }}
       spec:
         accessModes: ["ReadWriteOnce"]
         resources:
@@ -131,6 +126,8 @@ metadata:
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
 spec:
+  # One replica cannot refuse eviction. This budget lets the node drain;
+  # the retained claim is what survives the restart.
   maxUnavailable: 1
   unhealthyPodEvictionPolicy: AlwaysAllow
   selector:

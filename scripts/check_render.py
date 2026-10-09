@@ -35,6 +35,9 @@ def check(docs: list[dict], values: dict) -> list[str]:
         if kind not in ALLOWED_KINDS:
             errors.append(f"R3: kind {kind} is not a control-plane object")
             continue
+        if name in by_kind.get(kind, {}):
+            errors.append(f"R5: duplicate {kind} {name}")
+            continue
         by_kind.setdefault(kind, {})[name] = doc
         pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
         if pod.get("hostNetwork") or pod.get("hostPID") or pod.get("hostIPC"):
@@ -72,6 +75,13 @@ def check(docs: list[dict], values: dict) -> list[str]:
             http = (container.get(probe) or {}).get("httpGet") or {}
             if http.get("path") != path or http.get("port") != "http":
                 errors.append(f"R4: {name} {probe} must request {path} on port http")
+        startup_seconds = int(spec.get("startupSeconds") or 60)
+        want_threshold = (startup_seconds + 4) // 5 + 1
+        got_threshold = (container.get("startupProbe") or {}).get("failureThreshold")
+        if got_threshold != want_threshold:
+            errors.append(
+                f"R4: {name} startup budget is {got_threshold}, want {want_threshold}"
+            )
         pdb = by_kind.get("PodDisruptionBudget", {}).get(name)
         if pdb is None:
             errors.append(f"R4: missing PodDisruptionBudget {name}")
@@ -103,6 +113,12 @@ def check(docs: list[dict], values: dict) -> list[str]:
                     errors.append(f"R4: StatefulSet {name} volume size does not match values")
                 if claims[0]["spec"].get("accessModes") != ["ReadWriteOnce"]:
                     errors.append(f"R4: StatefulSet {name} volume must be ReadWriteOnce")
+                labels = claims[0].get("metadata", {}).get("labels") or {}
+                moving = [key for key in labels if key in ("app.kubernetes.io/version", "helm.sh/chart")]
+                if moving:
+                    errors.append(
+                        f"R4: {name} volume claim labels {moving} change on every release"
+                    )
             mounts = [
                 mount
                 for mount in container.get("volumeMounts") or []
@@ -124,11 +140,11 @@ def check(docs: list[dict], values: dict) -> list[str]:
     return errors
 
 
-def _first(docs: list[dict], kind: str) -> dict:
+def _first(docs: list[dict], kind: str) -> dict | None:
     for doc in docs:
         if doc.get("kind") == kind:
             return doc
-    raise AssertionError(f"no {kind}")
+    return None
 
 
 def self_test(docs: list[dict], values: dict) -> list[str]:
@@ -136,44 +152,76 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
     if base:
         return ["R4: rendered chart failed before mutations"] + base
 
-    broken = copy.deepcopy(docs)
-    _first(broken, "Deployment")["spec"]["template"]["spec"]["containers"][0].pop(
-        "livenessProbe", None
-    )
-    if not check(broken, values):
-        return ["R4: removing livenessProbe did not fail"]
+    deployment = _first(docs, "Deployment")
+    if deployment is not None:
+        broken = copy.deepcopy(docs)
+        _first(broken, "Deployment")["spec"]["template"]["spec"]["containers"][0].pop(
+            "livenessProbe", None
+        )
+        if not check(broken, values):
+            return ["R4: removing livenessProbe did not fail"]
+        broken = copy.deepcopy(docs)
+        _first(broken, "Deployment")["spec"]["template"]["spec"]["restartPolicy"] = "Never"
+        if not check(broken, values):
+            return ["R4: restartPolicy Never did not fail"]
+        broken = copy.deepcopy(docs)
+        _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
+        if not check(broken, values):
+            return ["R3: hostNetwork did not fail"]
 
-    broken = copy.deepcopy(docs)
-    _first(broken, "StatefulSet")["spec"].pop("volumeClaimTemplates", None)
-    if not check(broken, values):
-        return ["R4: removing the state volume did not fail"]
-
-    broken = copy.deepcopy(docs)
-    _first(broken, "Deployment")["spec"]["template"]["spec"]["restartPolicy"] = "Never"
-    if not check(broken, values):
-        return ["R4: restartPolicy Never did not fail"]
+    stateful_doc = _first(docs, "StatefulSet")
+    if stateful_doc is not None:
+        broken = copy.deepcopy(docs)
+        _first(broken, "StatefulSet")["spec"].pop("volumeClaimTemplates", None)
+        if not check(broken, values):
+            return ["R4: removing the state volume did not fail"]
 
     stateless = next(
-        name for name, spec in values["services"].items() if "state" not in (spec or {})
+        (name for name, spec in values["services"].items() if "state" not in (spec or {})),
+        None,
     )
-    broken = [
-        doc
-        for doc in copy.deepcopy(docs)
-        if not (doc.get("kind") == "PodDisruptionBudget" and doc["metadata"]["name"] == stateless)
-    ]
-    if not check(broken, values):
-        return ["R4: removing a PodDisruptionBudget did not fail"]
+    if stateless is not None:
+        broken = [
+            doc
+            for doc in copy.deepcopy(docs)
+            if not (
+                doc.get("kind") == "PodDisruptionBudget" and doc["metadata"]["name"] == stateless
+            )
+        ]
+        if not check(broken, values):
+            return ["R4: removing a PodDisruptionBudget did not fail"]
 
-    broken = copy.deepcopy(docs)
-    _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
-    if not check(broken, values):
-        return ["R3: hostNetwork did not fail"]
+    stateful = next(
+        (name for name, spec in values["services"].items() if "state" in (spec or {})),
+        None,
+    )
+    if stateful is not None:
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][stateful]["state"] = None
+        if not check(docs, broken_values):
+            return ["R4: null state did not fail"]
 
-    broken_values = copy.deepcopy(values)
-    stateful = next(name for name, spec in values["services"].items() if "state" in (spec or {}))
-    broken_values["services"][stateful]["state"] = None
-    if not check(docs, broken_values):
-        return ["R4: null state did not fail"]
+    # A catalog with only one kind must still prove the other kind's check.
+    synthetic = check(
+        [
+            {
+                "kind": "Deployment",
+                "metadata": {"name": "probe"},
+                "spec": {
+                    "replicas": 1,
+                    "template": {
+                        "spec": {
+                            "restartPolicy": "Never",
+                            "containers": [{"name": "probe"}],
+                        }
+                    },
+                },
+            }
+        ],
+        {"services": {"probe": {}}},
+    )
+    if not any("restartPolicy" in item or "livenessProbe" in item for item in synthetic):
+        return ["R4: synthetic deployment did not fail the recovery check"]
     return []
 
 

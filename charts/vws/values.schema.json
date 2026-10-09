@@ -7,15 +7,11 @@
     "global": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry", "domain", "storageClass"],
+      "required": ["registry", "storageClass"],
       "properties": {
         "registry": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._:-]*(/[a-z0-9._-]+)+$"
-        },
-        "domain": {
-          "type": "string",
-          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
         },
         "storageClass": {
           "type": "string"
@@ -28,7 +24,7 @@
       "propertyNames": {
         "allOf": [
           { "pattern": "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$" },
-          { "not": { "pattern": "(agent|hypervisor)" } }
+          { "not": { "pattern": "(^|-)agent$|hypervisor|-peers$" } }
         ]
       },
       "additionalProperties": { "$ref": "#/definitions/service" }
