@@ -1,0 +1,7 @@
+# scope  path prefixes. A directory prefix ends with /. A file prefix is exact.
+# This is the only list of commit scopes.
+chart charts/
+host host/
+ci .github/ scripts/ Makefile .githooks/ AGENTS.md
+docs README.md docs/
+repo .gitignore

@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+# Repo checks that helm lint and kubeconform cannot see.
+set -euo pipefail
+export LC_ALL=C
+
+ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+scope_owns() {
+  local scope=$1 path=$2 pref
+  local matched=0
+  while read -r line; do
+    [[ -z $line || $line =~ ^# ]] && continue
+    # shellcheck disable=SC2086
+    set -- $line
+    [[ $1 == "$scope" ]] || continue
+    shift
+    for pref in "$@"; do
+      if [[ $pref == */ ]]; then
+        [[ $path == "$pref"* ]] && matched=1
+      else
+        [[ $path == "$pref" ]] && matched=1
+      fi
+    done
+  done < scripts/scopes
+  [[ $matched -eq 1 ]]
+}
+
+scope_regex() {
+  awk 'NF && $1 !~ /^#/ { print $1 }' scripts/scopes | paste -sd'|' -
+}
+
+cmd_layout() {
+  local found images
+  found=$(find charts/vws/templates -type f -printf '%f\n' | sort | paste -sd' ' -)
+  [[ $found == "_helpers.tpl control-plane.yaml" ]] || die "R3: unexpected template files: ${found}"
+  [[ ! -d charts/vws/charts ]] || die "R3: subcharts are a second catalog"
+  if grep -q -E '^(dependencies|icon):' charts/vws/Chart.yaml; then
+    die "R3: Chart.yaml must not declare dependencies or an icon"
+  fi
+  if find charts \( -name '*.service' -o -name '*.target' \) | grep -q .; then
+    die "R3: systemd units do not belong in the chart"
+  fi
+  if grep -R -n -E '^apiVersion:|^kind:' host; then
+    die "R3: host/ must not contain Kubernetes manifests"
+  fi
+  if grep -R -n -E 'DaemonSet|hostPath:|hostNetwork:' charts; then
+    die "R3: chart templates must not schedule onto the host"
+  fi
+  images=0
+  if image_lines=$(grep -R -o 'printf "%s/%s:%s"' charts/vws/templates); then
+    images=$(printf '%s\n' "$image_lines" | wc -l)
+  fi
+  [[ $images -eq 1 ]] || die "R5: derive the image reference in exactly one place"
+  if [[ -f go.mod || -f kustomization.yaml ]]; then
+    die "R3: the Helm chart is the only manifest path"
+  fi
+}
+
+cmd_names() {
+  python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
+text = "\n".join(
+    path.read_text()
+    for path in Path("charts/vws/templates").rglob("*")
+    if path.is_file()
+)
+failed = False
+for name in values["services"]:
+    if re.search(r"""['"]%s['"]""" % re.escape(name), text):
+        print(f"R5: template quotes service name {name}", file=sys.stderr)
+        failed = True
+if failed:
+    sys.exit(1)
+PY
+}
+
+cmd_assets() {
+  python3 - <<'PY'
+import sys
+from pathlib import Path
+
+skip = {".git", "build", ".cache"}
+images = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp"}
+needles = [
+    "all rights " + "reserved",
+    "not " + "affiliated",
+    "trade" + "mark of",
+    "ama" + "zon",
+    chr(0x2122),
+    chr(0x00AE),
+]
+failed = False
+for path in Path(".").rglob("*"):
+    if not path.is_file():
+        continue
+    if any(part in skip for part in path.parts):
+        continue
+    if path.suffix.lower() in images:
+        print(f"R7: image file {path}", file=sys.stderr)
+        failed = True
+        continue
+    if path.name == "LICENSE":
+        continue
+    text = path.read_text(errors="ignore").lower()
+    for needle in needles:
+        if needle.lower() in text:
+            print(f"R7: brand-ownership notice in {path}", file=sys.stderr)
+            failed = True
+            break
+if failed:
+    sys.exit(1)
+PY
+}
+
+cmd_host() {
+  host/install.sh --check
+  host/install.sh --help >/dev/null
+  local rc=0
+  set +e
+  host/install.sh compute-agent >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ $rc -eq 2 ]] || die "R6: install.sh must reject agent-name arguments with exit 2"
+  local plan name
+  plan=$(host/install.sh --dry-run)
+  for dir in host/agents/*/; do
+    name=$(basename "$dir")
+    grep -q "vws-agent@${name}" <<<"$plan" || die "R6: dry-run omitted declared agent ${name}"
+  done
+  local found
+  found=$(find host/systemd -type f -printf '%f\n' | sort | paste -sd' ' -)
+  [[ $found == "vws-agent@.service vws-agents.target" ]] || die "R6: unexpected systemd files: ${found}"
+}
+
+cmd_ci() {
+  if grep -R -n -E 'kubectl[[:space:]]+(apply|create|delete|replace)|helm[[:space:]]+(install|upgrade|uninstall)|kind[[:space:]]+create|k3d[[:space:]]+create' \
+    .github Makefile scripts host charts; then
+    die "R8: this repo must not apply manifests to a cluster"
+  fi
+  grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
+  grep -q 'helm lint' Makefile || die "R8: make check must run helm lint"
+  grep -q 'kubeconform' Makefile || die "R8: make check must run kubeconform"
+}
+
+cmd_schema() {
+  python3 - <<'PY'
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
+services = values["services"]
+stateless = next(name for name, spec in services.items() if "state" not in (spec or {}))
+stateful = next(name for name, spec in services.items() if "state" in (spec or {}))
+cases = [
+    {"services": {stateless: {"replicas": 1}}},
+    {"services": {stateful: {"replicas": 3}}},
+    {"services": {"compute-agent": {}}},
+    {"services": {stateless: {"livenessProbe": {}}}},
+]
+for case in cases:
+    handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+    yaml.safe_dump(case, handle)
+    handle.close()
+    proc = subprocess.run(
+        ["helm", "lint", "charts/vws", "--strict", "-f", handle.name],
+        capture_output=True,
+        text=True,
+    )
+    os.unlink(handle.name)
+    blob = proc.stdout + proc.stderr
+    if proc.returncode == 0:
+        print(f"R5: schema accepted {case}", file=sys.stderr)
+        sys.exit(1)
+    if "values don't meet the specifications" not in blob and "Additional property" not in blob:
+        print(blob, file=sys.stderr)
+        print("R5: helm lint failed for a reason other than the values schema", file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
+cmd_hooks() {
+  local rc=0
+  set +e
+  printf '%s\n' 'refs/heads/topic 111 refs/heads/main 222' | .githooks/pre-push >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || die "R1: pre-push accepted a push to main"
+  set +e
+  printf '%s\n' 'refs/heads/topic 111 refs/heads/master 222' | .githooks/pre-push >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || die "R1: pre-push accepted a push to master"
+  printf '%s\n' 'refs/heads/topic 111 refs/heads/topic 222' | .githooks/pre-push >/dev/null
+  local tmp
+  tmp=$(mktemp)
+  printf '%s\n' 'not a scoped subject' > "$tmp"
+  set +e
+  scripts/guard.sh commit-msg "$tmp" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
+    rm -f "$tmp"
+    die "R2: commit-msg accepted an unscoped subject"
+  fi
+  printf '%s\n' 'chart: add one service key' > "$tmp"
+  scripts/guard.sh commit-msg "$tmp" >/dev/null
+  rm -f "$tmp"
+}
+
+cmd_docs() {
+  python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path("AGENTS.md").read_text()
+for heading in ("## 규칙", "## 브랜치와 원자적 커밋", "## pstack 사용", "## 명령"):
+    if heading not in text:
+        print(f"R2: AGENTS.md is missing {heading}", file=sys.stderr)
+        sys.exit(1)
+for word in ("architect", "interrogate", "correct"):
+    if word not in text:
+        print(f"R2: pstack usage is missing {word}", file=sys.stderr)
+        sys.exit(1)
+
+rows = re.findall(r"^\| (R\d+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$", text, re.M)
+if not rows:
+    print("R2: AGENTS.md has no rule table", file=sys.stderr)
+    sys.exit(1)
+ids = [row[0] for row in rows]
+if len(ids) != len(set(ids)):
+    print("R2: duplicate rule ids", file=sys.stderr)
+    sys.exit(1)
+
+emitted = set()
+for path in (Path("scripts/guard.sh"), Path("scripts/check_render.py"), Path(".githooks/pre-push")):
+    emitted.update(re.findall(r"\bR\d+\b", path.read_text()))
+if set(ids) != emitted:
+    print(f"R2: rule ids {sorted(set(ids))} != checks {sorted(emitted)}", file=sys.stderr)
+    sys.exit(1)
+
+for rule_id, _rule, structure, check in rows:
+    structure = structure.strip()
+    check = check.strip()
+    if structure == "-" and check in {"", "-"}:
+        print(f"R2: {rule_id} has no structure and no check", file=sys.stderr)
+        sys.exit(1)
+    if structure != "-":
+        paths = re.findall(r"`([^`]+)`", structure)
+        if not paths:
+            print(f"R2: {rule_id} structure does not point at a path", file=sys.stderr)
+            sys.exit(1)
+        for rel in paths:
+            if not Path(rel).exists():
+                print(f"R2: {rule_id} structure path {rel} does not exist", file=sys.stderr)
+                sys.exit(1)
+    commands = re.findall(r"`([^`]+)`", check)
+    if not commands:
+        print(f"R2: {rule_id} check does not point at a command", file=sys.stderr)
+        sys.exit(1)
+    for command in commands:
+        program = command.split()[0]
+        if program == "make":
+            target = command.split()[1]
+            makefile = Path("Makefile").read_text()
+            if not re.search(rf"^{re.escape(target)}:", makefile, re.M):
+                print(f"R2: {rule_id} Makefile has no target {target}", file=sys.stderr)
+                sys.exit(1)
+        elif not Path(program).exists():
+            print(f"R2: {rule_id} check program {program} does not exist", file=sys.stderr)
+            sys.exit(1)
+PY
+}
+
+cmd_commit_msg() {
+  local file=$1 subject scopes_re
+  [[ -n $file && -f $file ]] || die "R2: commit-msg needs the message file"
+  subject=$(head -n 1 "$file")
+  scopes_re=$(scope_regex)
+  if [[ ! $subject =~ ^(${scopes_re})(\([a-z0-9-]+\))?:\ .+ ]]; then
+    die "R2: subject must be '<scope>: summary' using scripts/scopes (got: ${subject})"
+  fi
+  case "$subject" in
+    fixup!*|squash!*|WIP*|wip*) die "R2: subject is not a finished commit" ;;
+  esac
+}
+
+cmd_commits() {
+  local base=${1:-origin/main}
+  if ! git rev-parse --verify "$base" >/dev/null 2>&1; then
+    echo "R2: base ${base} is not available, skipping commit scope" >&2
+    return 0
+  fi
+  local scopes_re sha subject scope parents path
+  scopes_re=$(scope_regex)
+  local -a shas files
+  mapfile -t shas < <(git rev-list --reverse "${base}..HEAD")
+  for sha in "${shas[@]}"; do
+    [[ -n $sha ]] || continue
+    parents=$(git rev-list --parents -n 1 "$sha")
+    # shellcheck disable=SC2086
+    set -- $parents
+    [[ $# -le 2 ]] || die "R2: ${sha} is a merge commit"
+    subject=$(git log -1 --format=%s "$sha")
+    if [[ ! $subject =~ ^(${scopes_re})(\([a-z0-9-]+\))?:\ .+ ]]; then
+      die "R2: ${sha} subject is not '<scope>: summary' (${subject})"
+    fi
+    scope=${BASH_REMATCH[1]}
+    mapfile -t files < <(git diff-tree --no-commit-id --name-only -r "$sha")
+    [[ ${#files[@]} -gt 0 ]] || die "R2: ${sha} changes no files"
+    for path in "${files[@]}"; do
+      if ! scope_owns "$scope" "$path"; then
+        die "R2: ${sha} (${scope}) touches ${path}; split the commit"
+      fi
+    done
+  done
+}
+
+cmd_recovery() {
+  [[ -f build/vws.yaml ]] || die "R4: build/vws.yaml is missing; run make render"
+  python3 scripts/check_render.py build/vws.yaml charts/vws/values.yaml
+}
+
+cmd_all() {
+  cmd_layout
+  cmd_names
+  cmd_assets
+  cmd_host
+  cmd_ci
+  cmd_schema
+  cmd_hooks
+  cmd_docs
+  cmd_recovery
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    cmd_commits origin/main
+  fi
+}
+
+usage() {
+  cat <<'EOF' >&2
+usage: guard.sh <layout|names|assets|host|ci|schema|hooks|docs|recovery|commits|commit-msg|all>
+EOF
+}
+
+command_name=${1:-}
+shift || true
+case "$command_name" in
+  layout) cmd_layout ;;
+  names) cmd_names ;;
+  assets) cmd_assets ;;
+  host) cmd_host ;;
+  ci) cmd_ci ;;
+  schema) cmd_schema ;;
+  hooks) cmd_hooks ;;
+  docs) cmd_docs ;;
+  recovery) cmd_recovery ;;
+  commits) cmd_commits "$@" ;;
+  commit-msg) cmd_commit_msg "$@" ;;
+  all) cmd_all ;;
+  *) usage; exit 2 ;;
+esac
