@@ -10,7 +10,12 @@ NAMESPACE := vws
 
 .PHONY: check tools hooks lint render conform guard
 
-check: tools hooks lint conform guard
+check:
+	$(MAKE) tools
+	$(MAKE) hooks
+	$(MAKE) lint
+	$(MAKE) conform
+	$(MAKE) guard
 
 tools:
 	@command -v helm >/dev/null || { echo "helm missing; run scripts/install-tools.sh" >&2; exit 1; }

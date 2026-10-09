@@ -11,9 +11,8 @@ die() {
   exit 1
 }
 
-scope_owns() {
-  local scope=$1 path=$2 pref
-  local matched=0
+scope_owns_file() {
+  local file=$1 scope=$2 path=$3 pref matched=0
   while read -r line; do
     [[ -z $line || $line =~ ^# ]] && continue
     # shellcheck disable=SC2086
@@ -27,8 +26,22 @@ scope_owns() {
         [[ $path == "$pref" ]] && matched=1
       fi
     done
-  done < scripts/scopes
+  done < "$file"
   [[ $matched -eq 1 ]]
+}
+
+scope_owner_file() {
+  local file=$1 path=$2 scope owners=0 found=""
+  while read -r line; do
+    [[ -z $line || $line =~ ^# ]] && continue
+    scope=${line%% *}
+    if scope_owns_file "$file" "$scope" "$path"; then
+      owners=$((owners + 1))
+      found=$scope
+    fi
+  done < "$file"
+  [[ $owners -eq 1 ]] || return 1
+  printf '%s\n' "$found"
 }
 
 scope_regex() {
@@ -78,8 +91,11 @@ text = "\n".join(
 )
 failed = False
 for name in values["services"]:
-    if re.search(r"""['"]%s['"]""" % re.escape(name), text):
-        print(f"R5: template quotes service name {name}", file=sys.stderr)
+    literal = re.escape(name)
+    hardcoded = re.search(rf"(?m)^[^#\n]*name:\s*{literal}\s*$", text)
+    compared = re.search(rf"""eq\s+\S+\s+["']{literal}["']""", text)
+    if hardcoded or compared:
+        print(f"R5: template hardcodes service name {name}", file=sys.stderr)
         failed = True
 if failed:
     sys.exit(1)
@@ -166,14 +182,17 @@ import yaml
 
 values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
 services = values["services"]
-stateless = next(name for name, spec in services.items() if "state" not in (spec or {}))
-stateful = next(name for name, spec in services.items() if "state" in (spec or {}))
+stateless = next((name for name, spec in services.items() if "state" not in (spec or {})), None)
+stateful = next((name for name, spec in services.items() if "state" in (spec or {})), None)
 cases = [
-    {"services": {stateless: {"replicas": 1}}},
-    {"services": {stateful: {"replicas": 3}}},
     {"services": {"compute-agent": {}}},
-    {"services": {stateless: {"livenessProbe": {}}}},
+    {"services": {"compute-peers": {}}},
 ]
+if stateless is not None:
+    cases.append({"services": {stateless: {"replicas": 1}}})
+    cases.append({"services": {stateless: {"livenessProbe": {}}}})
+if stateful is not None:
+    cases.append({"services": {stateful: {"replicas": 3}}})
 for case in cases:
     handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
     yaml.safe_dump(case, handle)
@@ -302,15 +321,26 @@ cmd_commit_msg() {
   esac
 }
 
+scopes_snapshot() {
+  local sha=$1 dest=$2 parent
+  parent=$(git rev-parse "${sha}^")
+  if git cat-file -e "${parent}:scripts/scopes" 2>/dev/null; then
+    git show "${parent}:scripts/scopes" > "$dest"
+  elif git cat-file -e "${sha}:scripts/scopes" 2>/dev/null; then
+    git show "${sha}:scripts/scopes" > "$dest"
+  else
+    cp scripts/scopes "$dest"
+  fi
+}
+
 cmd_commits() {
   local base=${1:-origin/main}
   if ! git rev-parse --verify "$base" >/dev/null 2>&1; then
-    echo "R2: base ${base} is not available, skipping commit scope" >&2
-    return 0
+    die "R2: base ${base} is not available"
   fi
-  local scopes_re sha subject scope parents path
-  scopes_re=$(scope_regex)
+  local sha subject scope parents path owner snapshot
   local -a shas files
+  snapshot=$(mktemp)
   mapfile -t shas < <(git rev-list --reverse "${base}..HEAD")
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
@@ -319,23 +349,36 @@ cmd_commits() {
     set -- $parents
     [[ $# -le 2 ]] || die "R2: ${sha} is a merge commit"
     subject=$(git log -1 --format=%s "$sha")
+    scopes_snapshot "$sha" "$snapshot"
+    local scopes_re
+    scopes_re=$(awk 'NF && $1 !~ /^#/ { print $1 }' "$snapshot" | paste -sd'|' -)
     if [[ ! $subject =~ ^(${scopes_re})(\([a-z0-9-]+\))?:\ .+ ]]; then
+      rm -f "$snapshot"
       die "R2: ${sha} subject is not '<scope>: summary' (${subject})"
     fi
     scope=${BASH_REMATCH[1]}
     mapfile -t files < <(git diff-tree --no-commit-id --name-only -r "$sha")
     [[ ${#files[@]} -gt 0 ]] || die "R2: ${sha} changes no files"
     for path in "${files[@]}"; do
-      if ! scope_owns "$scope" "$path"; then
-        die "R2: ${sha} (${scope}) touches ${path}; split the commit"
+      if ! owner=$(scope_owner_file "$snapshot" "$path"); then
+        rm -f "$snapshot"
+        die "R2: ${path} must belong to exactly one scope"
+      fi
+      if [[ $owner != "$scope" ]]; then
+        rm -f "$snapshot"
+        die "R2: ${sha} (${scope}) touches ${path}, owned by ${owner}; split the commit"
       fi
     done
   done
+  rm -f "$snapshot"
 }
 
 cmd_recovery() {
-  [[ -f build/vws.yaml ]] || die "R4: build/vws.yaml is missing; run make render"
-  python3 scripts/check_render.py build/vws.yaml charts/vws/values.yaml
+  local rendered
+  rendered=$(mktemp)
+  helm template vws charts/vws --namespace vws > "$rendered"
+  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml
+  rm -f "$rendered"
 }
 
 cmd_all() {
@@ -348,7 +391,9 @@ cmd_all() {
   cmd_hooks
   cmd_docs
   cmd_recovery
-  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  if [[ -n ${VWS_BASE_REF:-} ]]; then
+    cmd_commits "origin/${VWS_BASE_REF}"
+  elif git rev-parse --verify origin/main >/dev/null 2>&1; then
     cmd_commits origin/main
   fi
 }

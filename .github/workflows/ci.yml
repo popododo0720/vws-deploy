@@ -15,17 +15,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Fetch base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
 
       - name: Install validators
         run: scripts/install-tools.sh
 
       - name: Check
+        env:
+          VWS_BASE_REF: ${{ github.base_ref }}
         run: make check
-
-      - name: Fetch base branch
-        if: github.event_name == 'pull_request'
-        run: git fetch origin ${{ github.base_ref }}
-
-      - name: Commit scope
-        if: github.event_name == 'pull_request'
-        run: scripts/guard.sh commits "origin/${{ github.base_ref }}"
