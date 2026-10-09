@@ -1,0 +1,27 @@
+# Instance %i is the directory name under host/agents/.
+# Restart, boot, and state policy live only in this unit.
+# Drop-ins may set [Unit] ordering and nothing else.
+[Unit]
+Description=VWS hypervisor agent %i
+After=network-online.target
+Wants=network-online.target
+PartOf=vws-agents.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vws-agent-%i
+Environment=VWS_AGENT=%i
+EnvironmentFile=/etc/vws/agent.env
+EnvironmentFile=-/etc/vws/agents/%i.env
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+# Only the agent process is stopped. Guest processes must not be children of this unit.
+KillMode=process
+StateDirectory=vws/%i
+StateDirectoryMode=0750
+RuntimeDirectory=vws/%i
+
+[Install]
+WantedBy=vws-agents.target
