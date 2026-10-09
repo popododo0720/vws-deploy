@@ -36,3 +36,5 @@ go.work.sum
 /build/
 .cache/
 *.tgz
+__pycache__/
+*.pyc
