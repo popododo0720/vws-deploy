@@ -17,8 +17,8 @@ EnvironmentFile=-/etc/vws/agents/%i.env
 Restart=always
 RestartSec=2s
 TimeoutStopSec=30s
-# Only the agent process is stopped. Guest processes must not be children of this unit.
-KillMode=process
+# Guest workloads belong in their own units. This cgroup stops with the agent.
+KillMode=control-group
 StateDirectory=vws/%i
 StateDirectoryMode=0750
 RuntimeDirectory=vws/%i

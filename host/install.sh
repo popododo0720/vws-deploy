@@ -84,7 +84,7 @@ validate_deps() {
         [[ $section == "Unit" ]] || die "R6: $file key is outside [Unit]"
         key=${line%%=*}
         case "$key" in
-          After|Before|Wants|Requires|BindsTo|Condition*|Assert*) ;;
+          After|Before|Wants) ;;
           *) die "R6: $file key ${key} is not boot ordering" ;;
         esac
         ;;
@@ -92,24 +92,34 @@ validate_deps() {
   done < "$file"
 }
 
-require_line() {
-  local file=$1 needle=$2
-  grep -q -F -x "$needle" "$file" || die "R6: $file is missing ${needle}"
+effective() {
+  local file=$1 section=$2 key=$3
+  awk -v section="$section" -v key="$key" '
+    /^\[/ { current = substr($0, 2, length($0) - 2) }
+    current == section && index($0, key "=") == 1 { value = substr($0, length(key) + 2) }
+    END { print value }
+  ' "$file"
+}
+
+require_effective() {
+  local file=$1 section=$2 key=$3 want=$4 got
+  got=$(effective "$file" "$section" "$key")
+  [[ $got == "$want" ]] || die "R6: ${file} [${section}] ${key} is '${got}', want '${want}'"
 }
 
 unit="$ROOT/systemd/vws-agent@.service"
 target="$ROOT/systemd/vws-agents.target"
 [[ -f $unit && -f $target ]] || die "R6: systemd unit template is missing"
 
-require_line "$unit" "Type=simple"
-require_line "$unit" "Restart=always"
-require_line "$unit" "RestartSec=2s"
-require_line "$unit" "StartLimitIntervalSec=0"
-require_line "$unit" "StateDirectory=vws/%i"
-require_line "$unit" "ExecStart=/usr/local/bin/vws-agent-%i"
-require_line "$unit" "WantedBy=vws-agents.target"
-require_line "$unit" "KillMode=process"
-require_line "$target" "WantedBy=multi-user.target"
+require_effective "$unit" Unit StartLimitIntervalSec 0
+require_effective "$unit" Service Type simple
+require_effective "$unit" Service Restart always
+require_effective "$unit" Service RestartSec 2s
+require_effective "$unit" Service StateDirectory "vws/%i"
+require_effective "$unit" Service ExecStart "/usr/local/bin/vws-agent-%i"
+require_effective "$unit" Service KillMode control-group
+require_effective "$unit" Install WantedBy vws-agents.target
+require_effective "$target" Install WantedBy multi-user.target
 
 if grep -q -E '^(Type=notify|WatchdogSec=|DynamicUser=|ProtectSystem=)' "$unit"; then
   die "R6: $unit must not require sd_notify or hide the host from the agent"
@@ -121,6 +131,19 @@ for name in "${agents[@]}"; do
     die "R6: $name/agent.env cannot carry service settings"
   fi
 done
+
+if [[ -n $control_plane ]]; then
+  case "$control_plane" in
+    *[[:space:]]*|*[[:cntrl:]]*) die "R6: --control-plane must be a single http(s) URL" ;;
+    http://*|https://*) ;;
+    *) die "R6: --control-plane must be an http or https URL" ;;
+  esac
+fi
+if [[ -n $bundle ]]; then
+  for name in "${agents[@]}"; do
+    [[ -f $bundle/vws-agent-${name} ]] || die "R6: bundle is missing vws-agent-${name}"
+  done
+fi
 
 if [[ $check_only -eq 1 ]]; then
   exit 0
@@ -150,27 +173,23 @@ fi
 command -v systemctl >/dev/null || die "R6: systemctl is required"
 
 env_file=/etc/vws/agent.env
-if [[ -n $control_plane ]]; then
-  case "$control_plane" in
-    http://*|https://*) ;;
-    *) die "R6: --control-plane must be an http or https URL" ;;
-  esac
-elif [[ ! -f $env_file ]]; then
+if [[ -z $control_plane && ! -f $env_file ]]; then
   die "R6: --control-plane is required on first install"
 fi
-
-for name in "${agents[@]}"; do
-  if [[ -n $bundle ]]; then
-    [[ -f $bundle/vws-agent-${name} ]] || die "R6: bundle is missing vws-agent-${name}"
-  elif [[ ! -x /usr/local/bin/vws-agent-${name} ]]; then
-    die "R6: install /usr/local/bin/vws-agent-${name} or pass --bundle"
-  fi
-done
+if [[ -z $bundle ]]; then
+  for name in "${agents[@]}"; do
+    [[ -x /usr/local/bin/vws-agent-${name} ]] || die "R6: install /usr/local/bin/vws-agent-${name} or pass --bundle"
+  done
+fi
 
 install_if_changed() {
   local src=$1 dest=$2 mode=$3
   if [[ -f $dest ]] && cmp -s "$src" "$dest"; then
-    return 1
+    local now
+    now=$(stat -c %a "$dest")
+    if [[ $((8#$now)) -eq $((8#$mode)) ]]; then
+      return 1
+    fi
   fi
   mkdir -p "$(dirname "$dest")"
   local tmp
@@ -235,7 +254,14 @@ if [[ $prune -eq 1 ]]; then
   done
 fi
 
+stamp=/var/lib/vws/.install-pending
+force_restart=0
+[[ -f $stamp ]] && force_restart=1
+mkdir -p /var/lib/vws
+touch "$stamp"
+
 need_reload=$unit_changed
+[[ $force_restart -eq 1 ]] && need_reload=1
 for name in "${agents[@]}"; do
   if [[ ${changed[$name]} -eq 1 ]]; then
     need_reload=1
@@ -248,9 +274,16 @@ fi
 systemctl enable vws-agents.target
 for name in "${agents[@]}"; do
   systemctl enable "vws-agent@${name}.service"
-  if [[ $unit_changed -eq 1 || ${changed[$name]} -eq 1 ]]; then
-    systemctl restart "vws-agent@${name}.service"
+done
+failed=0
+for name in "${agents[@]}"; do
+  if [[ $force_restart -eq 1 || $unit_changed -eq 1 || ${changed[$name]} -eq 1 ]]; then
+    systemctl restart "vws-agent@${name}.service" || failed=1
   else
-    systemctl start "vws-agent@${name}.service"
+    systemctl start "vws-agent@${name}.service" || failed=1
   fi
 done
+if [[ $failed -ne 0 ]]; then
+  die "R6: one or more agents did not start; rerun install.sh to retry"
+fi
+rm -f "$stamp"
