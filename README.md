@@ -14,7 +14,7 @@ services:
       size: 10Gi
 ```
 
-`state`가 있으면 복제본 하나의 StatefulSet과 지워지지 않는 볼륨이 생긴다. `state`가 없으면 복제본 둘 이상의 Deployment가 생긴다. startup, liveness, readiness, PodDisruptionBudget, `restartPolicy: Always`는 값으로 끌 수 없다.
+`state`가 있으면 복제본 하나의 StatefulSet과 지워지지 않는 볼륨이 생긴다. `state`가 없으면 복제본 둘 이상의 Deployment가 생긴다. startup, liveness, readiness, PodDisruptionBudget, `restartPolicy: Always`는 값으로 끌 수 없다. 이미지는 UID 65532로 동작하고, 루트 파일시스템은 읽기 전용이며, 쓸 수 있는 경로는 `/tmp`와 상태 볼륨뿐이다. `external: true`는 암호 없는 HTTP LoadBalancer다. 누가 그 주소에 닿는지는 클러스터 네트워크가 제한한다.
 
 ```bash
 scripts/install-tools.sh
