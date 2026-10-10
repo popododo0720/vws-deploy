@@ -1,0 +1,25 @@
+# The services map is the only control-plane roster.
+# Add a service by adding one key. Do not add a template for it.
+# Presence of state makes a StatefulSet with one retained volume.
+# Absence of state makes a Deployment with at least two replicas.
+global:
+  registry: ghcr.io/popododo0720/vws
+  storageClass: ""
+
+services:
+  console:
+    external: true
+  console-api:
+    external: true
+  compute:
+    external: true
+    state:
+      size: 20Gi
+  storage:
+    external: true
+    state:
+      size: 20Gi
+  network:
+    external: true
+    state:
+      size: 20Gi

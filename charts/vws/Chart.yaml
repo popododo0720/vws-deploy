@@ -1,0 +1,7 @@
+apiVersion: v2
+name: vws
+description: Control-plane workloads for the VWS private cloud.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/popododo0720/vws-deploy

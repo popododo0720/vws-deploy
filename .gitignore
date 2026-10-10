@@ -31,3 +31,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Rendered manifests and validator cache
+/build/
+.cache/
+*.tgz
+__pycache__/
+*.pyc

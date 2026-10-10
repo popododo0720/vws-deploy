@@ -1,0 +1,136 @@
+{{/*
+One bundle per key in the services map: ServiceAccount, Service, workload, PDB.
+state present -> StatefulSet, one retained volume, headless peers Service.
+state absent -> Deployment, at least two replicas.
+Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
+*/}}
+{{- range $name := keys .Values.services | sortAlpha }}
+{{- $spec := index $.Values.services $name }}
+{{- $stateful := hasKey $spec "state" }}
+{{- $replicas := $spec.replicas | default (ternary 1 2 $stateful) }}
+{{- $port := int ($spec.port | default 8080) }}
+{{- $external := $spec.external | default false }}
+{{- $cpu := $spec.cpu | default "100m" }}
+{{- $memory := $spec.memory | default "256Mi" }}
+{{- $startup := int ($spec.startupSeconds | default 60) }}
+{{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
+{{- $threshold := add (div (add $startup 4) 5) 1 }}
+{{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
+{{- $ctx := dict "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  type: {{ ternary "LoadBalancer" "ClusterIP" $external }}
+  selector:
+    {{- include "vws.selector" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+{{- if $stateful }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-peers
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  clusterIP: "None"
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "vws.selector" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  serviceName: {{ $name }}-peers
+  replicas: {{ $replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "vws.selector" $ctx | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    {{- include "vws.podTemplate" $ctx | nindent 4 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+        labels:
+          {{- include "vws.selector" $ctx | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ $spec.state.size }}
+        {{- with $.Values.global.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+{{- else }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      {{- include "vws.selector" $ctx | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    {{- include "vws.podTemplate" $ctx | nindent 4 }}
+{{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  # One replica cannot refuse eviction. This budget lets the node drain;
+  # the retained claim is what survives the restart.
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "vws.selector" $ctx | nindent 6 }}
+{{- end }}
