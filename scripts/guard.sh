@@ -463,6 +463,62 @@ cmd_agents() {
   ! grep -q 'push:' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must run on pull requests only, so a pull request has no skipped check"
 }
 
+cmd_config() {
+  local tmp literal
+  tmp=$(mktemp -d)
+  while read -r literal; do
+    [[ -n $literal ]] || continue
+    if grep -R -n -F -e "$literal" charts/vws/templates; then
+      rm -rf "$tmp"
+      die "R14: namespace ${literal} is written in templates; names live only in values namespaces"
+    fi
+  done < <(python3 -c 'import yaml;print(*yaml.safe_load(open("charts/vws/values.yaml"))["namespaces"].values(), sep="\n")')
+
+  helm template vws charts/vws --namespace vws > "$tmp/default.yaml"
+  grep -q -e '- -kube-namespace=vws-vms' "$tmp/default.yaml" || die "R14: storage does not get -kube-namespace from values"
+  ! grep -q -e '-vm-namespace' "$tmp/default.yaml" || die "R14: pendingFlags are rendered while global.pendingFlags is false"
+
+  cat > "$tmp/override.yaml" <<'YAML'
+global:
+  pendingFlags: true
+namespaces:
+  vms: acme-vms
+  images: acme-images
+  nad: acme-nad
+services:
+  network:
+    flags:
+      kubeconfig: /etc/vws/kubeconfig
+      kube-external-subnet: ext
+      kube-nad-namespace: {namespace: nad}
+      kube-snat: true
+YAML
+  helm template acme charts/vws --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
+  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$tmp/override.yaml"
+  local want
+  for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
+    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -namespace=acme -hypervisor=kubevirt; do
+    grep -q -e "- ${want}\$" "$tmp/override.rendered.yaml" || die "R14: rendered args lack ${want}"
+  done
+  ! grep -q -e 'vws-vms\|vws-images\|vws-nad' "$tmp/override.rendered.yaml" || die "R14: a default namespace name survived a values override"
+
+  local bad
+  for bad in \
+    'services: {compute: {rbac: [{namespace: nowhere, apiGroups: [""], resources: [configmaps], verbs: [get]}]}}' \
+    'services: {storage: {flags: {kube-namespace: {namespace: nowhere}}}}' \
+    'services: {network: {flags: {kubeconfig: /k}}}' \
+    'services: {network: {flags: {kubeconfig: /k, kube-external-subnet: ext}}}' \
+    'services: {network: {flags: {kube-snat: true}}}' \
+    'services: {network: {flags: {kube-x: [a]}}}'; do
+    printf '%s\n' "$bad" > "$tmp/bad.yaml"
+    if helm template vws charts/vws --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
+      rm -rf "$tmp"
+      die "R14: chart accepted ${bad}"
+    fi
+  done
+  rm -rf "$tmp"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -470,6 +526,7 @@ cmd_all() {
   cmd_ci
   cmd_cursor
   cmd_agents
+  cmd_config
   cmd_bundle
   cmd_schema
   cmd_hooks
@@ -484,7 +541,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -498,6 +555,7 @@ case "$command_name" in
   cursor) cmd_cursor ;;
   agents) cmd_agents ;;
   bundle) cmd_bundle ;;
+  config) cmd_config ;;
   schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;

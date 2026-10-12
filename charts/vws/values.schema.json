@@ -2,12 +2,19 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["global", "services"],
+  "required": [
+    "global",
+    "namespaces",
+    "services"
+  ],
   "properties": {
     "global": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry", "storageClass"],
+      "required": [
+        "registry",
+        "storageClass"
+      ],
       "properties": {
         "registry": {
           "type": "string",
@@ -15,6 +22,9 @@
         },
         "storageClass": {
           "type": "string"
+        },
+        "pendingFlags": {
+          "type": "boolean"
         }
       }
     },
@@ -23,37 +33,79 @@
       "minProperties": 1,
       "propertyNames": {
         "allOf": [
-          { "pattern": "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$" },
-          { "not": { "pattern": "(^|-)agent$|hypervisor|-peers$" } }
+          {
+            "pattern": "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$"
+          },
+          {
+            "not": {
+              "pattern": "(^|-)agent$|hypervisor|-peers$"
+            }
+          }
         ]
       },
-      "additionalProperties": { "$ref": "#/definitions/service" }
+      "additionalProperties": {
+        "$ref": "#/definitions/service"
+      }
+    },
+    "namespaces": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*$",
+        "not": {
+          "const": "release"
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      }
     }
   },
   "definitions": {
     "rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["apiGroups", "resources", "verbs"],
+      "required": [
+        "apiGroups",
+        "resources",
+        "verbs"
+      ],
       "properties": {
         "apiGroups": {
           "type": "array",
           "minItems": 1,
-          "items": { "type": "string", "pattern": "^[^*]*$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[^*]*$"
+          }
         },
         "resources": {
           "type": "array",
           "minItems": 1,
-          "items": { "type": "string", "pattern": "^[^*]+$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[^*]+$"
+          }
         },
         "verbs": {
           "type": "array",
           "minItems": 1,
-          "items": { "enum": ["get", "list", "watch", "create", "update", "patch", "delete"] }
+          "items": {
+            "enum": [
+              "get",
+              "list",
+              "watch",
+              "create",
+              "update",
+              "patch",
+              "delete"
+            ]
+          }
         },
         "namespace": {
           "type": "string",
-          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+          "pattern": "^[a-z][a-z0-9]*$"
         }
       }
     },
@@ -61,37 +113,123 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-        "replicas": { "type": "integer", "minimum": 1 },
-        "cpu": { "type": "string", "pattern": "^[0-9]+m$" },
-        "memory": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cpu": {
+          "type": "string",
+          "pattern": "^[0-9]+m$"
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(Mi|Gi)$"
+        },
         "state": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["size"],
+          "required": [
+            "size"
+          ],
           "properties": {
-            "size": { "type": "string", "pattern": "^[1-9][0-9]*Gi$" }
+            "size": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*Gi$"
+            }
           }
         },
-        "external": { "type": "boolean" },
+        "external": {
+          "type": "boolean"
+        },
         "rbac": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/definitions/rule" }
+          "items": {
+            "$ref": "#/definitions/rule"
+          }
         },
-        "startupSeconds": { "type": "integer", "minimum": 10, "maximum": 600 }
+        "startupSeconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600
+        },
+        "flags": {
+          "$ref": "#/definitions/flags"
+        },
+        "pendingFlags": {
+          "$ref": "#/definitions/flags"
+        }
       },
       "allOf": [
         {
-          "if": { "required": ["state"] },
+          "if": {
+            "required": [
+              "state"
+            ]
+          },
           "then": {
-            "properties": { "replicas": { "maximum": 1, "minimum": 1 } }
+            "properties": {
+              "replicas": {
+                "maximum": 1,
+                "minimum": 1
+              }
+            }
           },
           "else": {
-            "properties": { "replicas": { "minimum": 2 } }
+            "properties": {
+              "replicas": {
+                "minimum": 2
+              }
+            }
           }
         }
       ]
+    },
+    "flags": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "namespace"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*$"
+              }
+            }
+          }
+        ]
+      },
+      "dependencies": {
+        "kubeconfig": [
+          "kube-external-subnet",
+          "kube-nad-namespace"
+        ],
+        "kube-snat": [
+          "kube-external-subnet"
+        ]
+      }
     }
   }
 }

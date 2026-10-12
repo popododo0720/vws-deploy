@@ -4,13 +4,15 @@ state present -> StatefulSet, one retained volume, headless peers Service.
 state absent -> Deployment, at least two replicas.
 rbac present -> API token, a Lease Role for leader election, and the listed rules:
 a rule with a namespace becomes a Role and RoleBinding in that namespace, a rule without one goes into a ClusterRole.
-Every namespace named by a rule is rendered once and kept on uninstall.
+A rule's namespace is a key of values namespaces ("release" is the release namespace). Every such
+namespace except the release one is rendered once and kept on uninstall.
+flags -> container args, one -name=value each; pendingFlags are added only when global.pendingFlags is true.
 Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 */}}
 {{- $namespaces := dict }}
 {{- range $name := keys .Values.services | sortAlpha }}
   {{- range (index $.Values.services $name).rbac }}
-    {{- if .namespace }}{{ $_ := set $namespaces .namespace true }}{{ end }}
+    {{- if and .namespace (ne .namespace "release") }}{{ $_ := set $namespaces (include "vws.ns" (dict "root" $ "key" .namespace)) true }}{{ end }}
   {{- end }}
 {{- end }}
 {{- range $ns := keys $namespaces | sortAlpha }}
@@ -37,7 +39,8 @@ metadata:
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
 {{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
 {{- $rbac := hasKey $spec "rbac" }}
-{{- $ctx := dict "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $args := include "vws.args" (dict "root" $ "spec" $spec) | fromJsonArray }}
+{{- $ctx := dict "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -159,7 +162,8 @@ spec:
 {{- $byNamespace := dict }}
 {{- range $spec.rbac }}
   {{- if .namespace }}
-    {{- $byNamespace = set $byNamespace .namespace (append (get $byNamespace .namespace | default (list)) (omit . "namespace")) }}
+    {{- $target := include "vws.ns" (dict "root" $ "key" .namespace) }}
+    {{- $byNamespace = set $byNamespace $target (append (get $byNamespace $target | default (list)) (omit . "namespace")) }}
   {{- else }}
     {{- $cluster = append $cluster . }}
   {{- end }}

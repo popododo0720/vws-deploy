@@ -2,16 +2,30 @@
 # Add a service by adding one key. Do not add a template for it.
 # Presence of state makes a StatefulSet with one retained volume.
 # Absence of state makes a Deployment with at least two replicas.
+# namespaces is the only place a namespace name is written. Everything else names a key of it:
+# an rbac rule's namespace, and a flag value {namespace: <key>}. "release" is the release namespace.
+# Every namespace key used by a rule is created by the chart and kept on uninstall
+# (helm.sh/resource-policy: keep, so an uninstall never deletes VM disks; the cost is manual
+# cleanup, see docs/service-config.md).
+# flags are the service's command-line flags, rendered as -name=value args. A flag value is a string,
+# boolean, integer, or {namespace: <key>}. Flags only, no env. docs/service-config.md lists each flag
+# and the service code it comes from.
+# pendingFlags are flags that the service images on main do not accept yet. They are rendered only
+# when global.pendingFlags is true, so the default chart does not crash current images.
 # rbac is the service's Kubernetes API access: a list of rules, no wildcards.
 # A rule with a namespace becomes a Role in that namespace. A rule without one goes
 # into a ClusterRole and may name only cluster-scoped resources (scripts/check_render.py).
-# Each namespace named in a rule is created by the chart and kept on uninstall, and must
-# be the namespace the service is configured with. The rules are the calls the service
-# code makes, see docs/rbac.md.
+# The rules are the calls the service code makes, see docs/rbac.md.
 # A service with rbac also gets a Lease Role named after it for leader election.
 global:
   registry: ghcr.io/popododo0720/vws
   storageClass: ""
+  pendingFlags: false
+
+namespaces:
+  vms: vws-vms
+  images: vws-images
+  nad: vws-nad
 
 services:
   console:
@@ -20,33 +34,49 @@ services:
     external: true
   compute:
     external: true
+    flags:
+      namespace: {namespace: release}
+    pendingFlags:
+      hypervisor: kubevirt
+      vm-namespace: {namespace: vms}
+      image-namespace: {namespace: images}
     rbac:
-    - namespace: vws-vms
+    - namespace: vms
       apiGroups: [kubevirt.io]
       resources: [virtualmachines]
       verbs: [get, list, create, patch, delete]
-    - namespace: vws-vms
+    - namespace: vms
       apiGroups: [kubevirt.io]
       resources: [virtualmachineinstances]
       verbs: [delete]
-    - namespace: vws-images
+    - namespace: images
       apiGroups: [cdi.kubevirt.io]
       resources: [datavolumes, datasources]
       verbs: [get, create, delete]
-    - namespace: vws-images
+    - namespace: images
       apiGroups: [""]
       resources: [persistentvolumeclaims]
       verbs: [get]
+    - namespace: release
+      apiGroups: [""]
+      resources: [configmaps]
+      verbs: [get, list, create, update, delete]
     state:
       size: 20Gi
   storage:
     external: true
+    flags:
+      block-backend: kube
+      kube-namespace: {namespace: vms}
+      kube-class-standard: ceph-block
+      kube-class-ssd: ceph-block
+      kube-snapshot-class: ceph-block
     rbac:
-    - namespace: vws-volumes
+    - namespace: vms
       apiGroups: [""]
       resources: [persistentvolumeclaims]
       verbs: [get, create, update, delete]
-    - namespace: vws-volumes
+    - namespace: vms
       apiGroups: [snapshot.storage.k8s.io]
       resources: [volumesnapshots]
       verbs: [get, create, delete]
@@ -67,7 +97,7 @@ services:
     - apiGroups: [kubeovn.io]
       resources: [vpc-nat-gateways]
       verbs: [get, create, delete]
-    - namespace: vws-nad
+    - namespace: nad
       apiGroups: [k8s.cni.cncf.io]
       resources: [network-attachment-definitions]
       verbs: [create, delete]

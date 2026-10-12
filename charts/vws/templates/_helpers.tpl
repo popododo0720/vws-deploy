@@ -4,6 +4,38 @@ The services map is resolved in control-plane.yaml. These defines do not
 branch on a service name and do not read the raw values map.
 */}}
 
+{{/*
+Resolve a namespace key to a name. Names live only in values namespaces; "release" is the release namespace.
+Call with (dict "root" $ "key" "vms").
+*/}}
+{{- define "vws.ns" -}}
+{{- if eq .key "release" }}{{ .root.Release.Namespace }}
+{{- else }}{{ required (printf "namespaces.%s is not defined" .key) (get .root.Values.namespaces .key) }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Container args of one service: flags, plus pendingFlags when global.pendingFlags is true.
+A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" $spec).
+*/}}
+{{- define "vws.args" -}}
+{{- $flags := deepCopy (.spec.flags | default dict) }}
+{{- if .root.Values.global.pendingFlags }}
+  {{- $flags = mergeOverwrite $flags (deepCopy (.spec.pendingFlags | default dict)) }}
+{{- end }}
+{{- $args := list }}
+{{- range $key := keys $flags | sortAlpha }}
+  {{- $value := index $flags $key }}
+  {{- if kindIs "map" $value }}
+    {{- $value = include "vws.ns" (dict "root" $.root "key" $value.namespace) }}
+  {{- else if kindIs "float64" $value }}
+    {{- $value = int64 $value }}
+  {{- end }}
+  {{- $args = append $args (printf "-%s=%v" $key $value) }}
+{{- end }}
+{{- toJson $args }}
+{{- end -}}
+
 {{- define "vws.selector" -}}
 app.kubernetes.io/name: {{ .name }}
 app.kubernetes.io/instance: {{ .root.Release.Name }}
@@ -70,6 +102,10 @@ spec:
     - name: {{ .name }}
       image: {{ .image }}
       imagePullPolicy: IfNotPresent
+      {{- if .args }}
+      args:
+        {{- toYaml .args | nindent 8 }}
+      {{- end }}
       ports:
         - name: http
           containerPort: {{ .port }}
