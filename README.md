@@ -24,15 +24,16 @@ helm template vws charts/vws --namespace vws
 
 이미지는 `<global.registry>/<서비스>:<Chart.appVersion>`이다. 외부로 열 `external: true`인 서비스는 LoadBalancer가 된다. 상태 있는 워크로드는 기동 순서를 기다리지 않고 같이 올라와서, 전원 복구 때 순번 대기로 멈추지 않는다.
 
-컨트롤러가 쿠버네티스 API를 쓰는 서비스는 `rbac` 규칙 목록을 가진다. 차트는 그 규칙으로 ClusterRole과 바인딩을 만들고, 자기 이름의 Lease만 쓰는 Role을 더해 리더 선출을 허용한다. `rbac`가 없는 서비스는 API 토큰을 마운트하지 않는다. 와일드카드와 `escalate`, `bind` 같은 동사는 스키마가 거절한다.
+컨트롤러가 쿠버네티스 API를 쓰는 서비스는 `rbac` 규칙 목록을 가진다. 차트는 `namespace`가 있는 규칙을 그 네임스페이스의 Role과 바인딩으로, 없는 규칙을 ClusterRole과 바인딩으로 만들고(ClusterRole에는 클러스터 범위 리소스만 둔다), 자기 이름의 Lease만 쓰는 Role을 더해 리더 선출을 허용한다. 규칙의 근거는 `docs/rbac.md`다. `rbac`가 없는 서비스는 API 토큰을 마운트하지 않는다. 와일드카드와 `escalate`, `bind` 같은 동사는 스키마가 거절한다.
 
 ```yaml
 services:
   compute:
     rbac:
-      - apiGroups: [kubevirt.io]
+      - namespace: vws-vms
+        apiGroups: [kubevirt.io]
         resources: [virtualmachines]
-        verbs: [get, list, watch, create, update, patch, delete]
+        verbs: [get, list, create, patch, delete]
 ```
 
 차트는 아이콘을 두지 않는다. `helm lint`가 아이콘을 권장한다고 알려도 로고 파일은 추가하지 않는다.
