@@ -7,6 +7,7 @@ include scripts/versions.env
 CHART := charts/vws
 RELEASE := vws
 NAMESPACE := vws
+export VWS_RELEASE := $(RELEASE)
 
 .PHONY: check tools hooks lint render conform platform guard
 

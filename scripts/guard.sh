@@ -360,8 +360,9 @@ cmd_commits() {
 cmd_recovery() {
   local rendered
   rendered=$(mktemp)
-  helm template vws charts/vws --namespace vws > "$rendered"
-  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml
+  local release=${VWS_RELEASE:-vws}
+  helm template "$release" charts/vws --namespace "$release" > "$rendered"
+  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml "$release"
   rm -f "$rendered"
 }
 
