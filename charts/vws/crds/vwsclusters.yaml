@@ -68,6 +68,25 @@ spec:
                       description: The StorageClass to use when driver is existing.
                       type: string
                       pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                    s3:
+                      type: object
+                      properties:
+                        rgw:
+                          description: RGW object backend of vws-storage (vws-deploy#108). Rendered into services.storage.s3.rgw. The keys stay in the Secret existingSecret in the release namespace.
+                          type: object
+                          properties:
+                            enabled:
+                              type: boolean
+                            endpoint:
+                              type: string
+                              pattern: '^$|^https?://[^\s]+$'
+                            bucketPrefix:
+                              type: string
+                              pattern: '^([a-z0-9][a-z0-9-]{0,17})?$'
+                            existingSecret:
+                              description: Name of the Secret with keys access-key and secret-key. Never a value.
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
                 network:
                   type: object
                   properties:
