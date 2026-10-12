@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # Fake helm for tests/vws. Same rules as the fake kubectl: log every call, answer from
-# $VWS_FAKE_DIR/helm/<verb>.json (or fail with <verb>.err), fail when neither exists.
+# $VWS_FAKE_DIR/helm/<verb>.json or <verb>_<arg>.json (or fail with <verb>.err), fail when neither exists.
 set -euo pipefail
 : "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
-verb='' skip=0
+verb='' sub='' skip=0
 for arg in "$@"; do
   if ((skip)); then skip=0; continue; fi
   case $arg in
     --kube-context | --namespace | -n | -o) skip=1 ;;
     -*) ;;
     *)
-      if [[ -z $verb ]]; then verb=$arg; fi
+      if [[ -z $verb ]]; then verb=$arg; elif [[ -z $sub ]]; then sub=$arg; fi
       ;;
   esac
 done
 printf 'helm\t%s\t%s\n' "$verb" "$*" >>"$VWS_FAKE_LOG"
 file="${VWS_FAKE_DIR}/helm/${verb}.json"
+# <verb>_<first argument>.json wins when it exists (helm get values / get manifest).
+[[ -z $sub || ! -f ${VWS_FAKE_DIR}/helm/${verb}_${sub}.json ]] || file="${VWS_FAKE_DIR}/helm/${verb}_${sub}.json"
 # <verb>.err: the call fails with that text on stderr (forbidden, not found).
 if [[ -f ${file%.json}.err ]]; then
   cat "${file%.json}.err" >&2
