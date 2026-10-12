@@ -48,7 +48,7 @@ metadata:
 spec:
   restartPolicy: Always
   serviceAccountName: {{ .name }}
-  automountServiceAccountToken: false
+  automountServiceAccountToken: {{ .rbac }}
   enableServiceLinks: false
   terminationGracePeriodSeconds: 30
   securityContext:

@@ -2,6 +2,8 @@
 # Add a service by adding one key. Do not add a template for it.
 # Presence of state makes a StatefulSet with one retained volume.
 # Absence of state makes a Deployment with at least two replicas.
+# rbac is the service's Kubernetes API access: a list of rules, no wildcards.
+# A service with rbac also gets a Lease Role named after it for leader election.
 global:
   registry: ghcr.io/popododo0720/vws
   storageClass: ""
@@ -13,13 +15,40 @@ services:
     external: true
   compute:
     external: true
+    rbac:
+    - apiGroups: [kubevirt.io]
+      resources: [virtualmachines, virtualmachineinstances]
+      verbs: [get, list, watch, create, update, patch, delete]
+    - apiGroups: [cdi.kubevirt.io]
+      resources: [datavolumes, datasources]
+      verbs: [get, list, watch, create, update, patch, delete]
+    - apiGroups: [""]
+      resources: [persistentvolumeclaims]
+      verbs: [get, list, watch]
     state:
       size: 20Gi
   storage:
     external: true
+    rbac:
+    - apiGroups: [""]
+      resources: [persistentvolumeclaims]
+      verbs: [get, list, watch, create, update, patch, delete]
+    - apiGroups: [snapshot.storage.k8s.io]
+      resources: [volumesnapshots]
+      verbs: [get, list, watch, create, update, patch, delete]
+    - apiGroups: [storage.k8s.io]
+      resources: [storageclasses]
+      verbs: [get, list, watch]
     state:
       size: 20Gi
   network:
     external: true
+    rbac:
+    - apiGroups: [kubeovn.io]
+      resources: [vpcs, subnets, security-groups, ovn-eips, ovn-fips, ovn-snat-rules, vpc-nat-gateways]
+      verbs: [get, list, watch, create, update, patch, delete]
+    - apiGroups: [k8s.cni.cncf.io]
+      resources: [network-attachment-definitions]
+      verbs: [get, list, watch, create, update, patch, delete]
     state:
       size: 20Gi
