@@ -134,6 +134,6 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 수집하지 않는 것: Secret 전부(어떤 호출도 secrets를 읽지 않는다), ConfigMap data, 환경 변수, 노드 호스트 파일, VM 콘솔/디스크.
 
-마스킹: 묶기 전에 `lib/redact.py`가 모든 파일을 훑어 PEM 개인키 블록, `Bearer` 토큰, `token` 값, `data:`/`binaryData:` 아래 40자 이상 base64 값, 12자리 이상 연속 숫자, 자격 증명 URL(`://user:pass@`)이 있는 줄을 `[REDACTED]`로 바꾼다. 스캐너는 먼저 패턴마다 명백히 가짜인 카나리를 잡는지 스스로 확인한다. 스캐너가 없거나(python3가 PATH에 없음) 카나리를 놓치면 번들을 쓰지 않고 3(실패 시 닫힘). 이미지 digest(16진수)는 `data:` 밖이라 가리지 않는다. 마스킹은 완전하지 않다: 공유 전에 사람이 번들을 훑는다(README에도 적힘).
+마스킹: 키 이름 규칙이 먼저다. 이름이 비밀 모양인 키(대소문자 무시: `passw`, `passphrase`, `token`, `secret`, `credential`, `private`, `apikey`/`api-key`/`api_key`, `dsn`, `auth`, `key`로 끝나는 `-`/`_`/`.` 구분 이름, camelCase `...Key`)의 값은 모양과 상관없이 가린다. 중첩 객체/리스트면 그 아래 전체. JSON 파일(예: `helm get values -a -o json`)은 구조로 읽어 값만 `"[REDACTED]"`로 바꾸고 유효한 JSON으로 다시 쓰고, YAML/텍스트는 줄 단위(들여쓰기 블록 포함). `secretName`, `secretRef`, `secretKeyRef`는 Secret 이름 참조라 남긴다. `keys`, `monkey`, `privileged` 같은 비슷한 이름과 이미지 digest는 가리지 않는다. 이어서 `lib/redact.py`가 모든 파일을 훑어 PEM 개인키 블록, `Bearer` 토큰, `token` 값, `data:`/`binaryData:` 아래 40자 이상 base64 값, 12자리 이상 연속 숫자, 자격 증명 URL(`://user:pass@`)이 있는 줄을 `[REDACTED]`로 바꾼다. 스캐너는 먼저 패턴마다 명백히 가짜인 카나리를 잡는지 스스로 확인한다. 스캐너가 없거나(python3가 PATH에 없음) 카나리를 놓치면 번들을 쓰지 않고 3(실패 시 닫힘). 이미지 digest(16진수)는 `data:` 밖이라 가리지 않는다. 마스킹은 완전하지 않다: 공유 전에 사람이 번들을 훑는다(README에도 적힘).
 
 파일: umask 077로 만들고 0600, 같은 이름이 있으면 덮어쓰지 않고 2. API가 응답하지 않으면 3.
