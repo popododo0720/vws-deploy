@@ -1,0 +1,1 @@
+{"items": [{"metadata": {"name": "node-a", "labels": {"kubevirt.io/schedulable": "true"}}, "status": {"allocatable": {"cpu": "4", "memory": "16302Mi"}, "conditions": [{"type": "Ready", "status": "True"}]}}]}

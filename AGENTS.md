@@ -11,7 +11,7 @@
 | R4 | 제어부 워크로드는 startup, liveness, readiness, PodDisruptionBudget, restartPolicy Always를 갖고, state가 있으면 재시작 뒤에도 남는 볼륨을 갖는다 | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
 | R5 | 제어 서비스를 추가하거나 고치는 곳은 values.yaml의 services 맵 하나다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
 | R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
-| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`뿐이다 | `.github/workflows/ci.yml` | `scripts/guard.sh ci` |
+| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`과, 정확히 `vws_kubectl`, `vws_helm`이라는 이름의 래퍼(`--dry-run` 지원)로 부르는 운영 CLI 호출뿐이다. 다른 접두어나 접미어(`foo_kubectl`, `xhelm`, `my-helm`, `foo_vws_kubectl`, `Vws_helm`)는 직접 호출과 같이 실패한다 | `.github/workflows/ci.yml` `tests/fixtures/r8/` | `scripts/guard.sh ci` (음성 `tests/fixtures/r8/bad/`, 양성 `tests/fixtures/r8/good/`) |
 | R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
 | R10 | 호스트에 우리 유닛을 두지 않는다. 저장소에 `.service`, `.target` 파일과 `host/`가 없고, 차트는 호스트 네임스페이스나 hostPath를 쓰지 않는다 | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
 | R11 | 제어 서비스의 쿠버네티스 API 권한은 values.yaml의 서비스별 `rbac`뿐이다. 와일드카드와 escalate, bind 같은 동사를 쓰지 않는다. 네임스페이스 리소스의 규칙에는 `namespace`를 적어 그 네임스페이스의 Role로만 주고, ClusterRole에는 클러스터 범위 리소스만 둔다. 리더 선출용 Lease는 자기 이름의 것만 쓴다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh recovery` |
@@ -23,6 +23,7 @@
 | R17 | `scripts/vws`의 모든 명령은 `scripts/vws.d/<이름>.sh` 한 파일이고 `# summary:` 줄, `vws_cmd_main`, `tests/vws/<이름>.test.sh`, `docs/vws-cli.md`의 `### vws <이름>` 항목을 가진다. 명령은 kubectl과 helm을 직접 부르지 않고 `vws_kubectl`, `vws_helm`만 쓴다(`--dry-run`이 변경 호출을 막는다). 하네스는 가짜 kubectl과 helm으로 돌고 클러스터에 닿지 않는다 | `scripts/vws` `scripts/vws.d/lib/common.sh` `tests/vws/run.sh` | `scripts/guard.sh vws` |
 | R18 | VWS 전용 CRD는 `VWSCluster` 하나뿐이고(#2 결정의 예외, `docs/vwscluster.md`), API 그룹은 그 CRD의 `spec.group` 한 곳에만 쓴다(예제 CR의 `apiVersion`은 가드가 대조). CR 스키마에 비밀처럼 보이는 필드 이름이 없고 CR은 Secret 이름만 담는다 | `charts/vws/crds/vwsclusters.yaml` `scripts/vws.d/lib/render.py` | `scripts/guard.sh crd` |
 | R19 | 프로필은 `profiles/<이름>.yaml`의 값 파일이고 세 프로필은 같은 키를 갖는다. 프로필마다 lint, template, kubeconform, check_render가 통과하고, 같은 CR의 `vws render`는 같은 바이트다 | `profiles/` `platform/rook-ceph-cluster.single-node.values.yaml` `platform/rook-ceph-cluster.ha.values.yaml` | `scripts/guard.sh profiles` |
+| R20 | 설치용 cluster-admin은 `vws-installer-temp` 바인딩 하나뿐이고 TTL(`INSTALLER_TTL_SECONDS`) 주석, 시한이 TTL인 설치 파드, TTL에 바인딩을 지우는 리퍼 Job을 갖는다. bootstrap의 이미지는 digest이고 권한 상승, privileged, host 네임스페이스, hostPath가 없다. 회수 뒤 남는 권한에는 와일드카드, Secret, RBAC, 클러스터 쓰기가 없다. `vws installer finish`는 auth can-i로 회수를 확인하고 실패하면 1이다 | `bootstrap/bootstrap.yaml` `scripts/bootstrap.sh` `scripts/vws.d/installer.sh` `scripts/vws.d/lib/installer.sh` | `scripts/guard.sh bootstrap` `tests/vws/installer.test.sh` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 

@@ -138,11 +138,24 @@ if failed:
 PY
 }
 
+# r8_scan PATH...: print lines that change a cluster. The only allowed callers are exactly
+# vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
+r8_scan() {
+  grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
+    --exclude-dir=lab "$@"
+}
+
 cmd_ci() {
-  if grep -R -n -E 'kubectl[[:space:]]+(apply|create|delete|replace)|helm[[:space:]]+(install|upgrade|uninstall)|kind[[:space:]]+create|k3d[[:space:]]+create' \
-    .github Makefile scripts charts --exclude-dir=lab; then
+  if r8_scan .github Makefile scripts charts; then
     die "R8: this repo must not apply manifests to a cluster"
   fi
+  local f
+  for f in tests/fixtures/r8/bad/*; do
+    r8_scan "$f" >/dev/null || die "R8: negative test ${f} was accepted"
+  done
+  for f in tests/fixtures/r8/good/*; do
+    ! r8_scan "$f" >/dev/null || die "R8: positive test ${f} was rejected"
+  done
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
   grep -q 'helm lint' Makefile || die "R8: make check must run helm lint"
   grep -q 'kubeconform' Makefile || die "R8: make check must run kubeconform"
@@ -751,6 +764,83 @@ PY
   rm -rf "$tmp"
 }
 
+# bootstrap_check FILE TTL: the rendered bootstrap (scripts/bootstrap.sh) keeps the installer rules (R20).
+bootstrap_check() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+ttl = int(sys.argv[2])
+by = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+
+def fail(msg):
+    sys.exit(f"R20: {msg}")
+
+text = open(sys.argv[1]).read()
+for bad in ("privileged: true", "hostPath:", "hostNetwork: true", "hostPID: true", "hostIPC: true"):
+    if bad in text:
+        fail(f"bootstrap.yaml has {bad}")
+pods = [d["spec"] for d in docs if d["kind"] == "Pod"] + [d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Job"]
+for spec in pods:
+    for c in spec["containers"]:
+        if "@sha256:" not in c["image"]:
+            fail(f"image {c['image']} is not pinned by digest")
+        if (c.get("securityContext") or {}).get("allowPrivilegeEscalation") is not False:
+            fail(f"container {c['name']} allows privilege escalation")
+admin = [d for d in docs if d["kind"] == "ClusterRoleBinding" and d["roleRef"]["name"] == "cluster-admin"]
+if [d["metadata"]["name"] for d in admin] != ["vws-installer-temp"]:
+    fail("cluster-admin is bound only by vws-installer-temp")
+if int((admin[0]["metadata"].get("annotations") or {}).get("vws-installer-ttl-seconds", "0")) != ttl:
+    fail("vws-installer-temp has no vws-installer-ttl-seconds annotation equal to INSTALLER_TTL_SECONDS")
+pod = by.get(("Pod", "vws-installer"))
+if pod is None or pod["spec"].get("activeDeadlineSeconds") != ttl:
+    fail("the installer pod must end at INSTALLER_TTL_SECONDS (activeDeadlineSeconds)")
+reaper = by.get(("Job", "vws-installer-reaper"))
+if reaper is None:
+    fail("the reaper Job that deletes vws-installer-temp at its TTL is missing")
+if reaper["spec"].get("activeDeadlineSeconds", 0) <= ttl:
+    fail("the reaper deadline must be longer than the TTL, or it is killed before its delete")
+if "delete clusterrolebinding vws-installer-temp" not in reaper["spec"]["template"]["spec"]["containers"][0]["args"][0]:
+    fail("the reaper does not delete vws-installer-temp")
+for d in docs:
+    if d["kind"] in ("Role", "ClusterRole"):
+        for rule in d["rules"]:
+            if "*" in rule["verbs"] or "*" in rule["resources"]:
+                fail(f"{d['kind']} {d['metadata']['name']} uses a wildcard")
+            if "secrets" in rule["resources"]:
+                fail(f"{d['kind']} {d['metadata']['name']} keeps access to secrets")
+            if set(rule.get("apiGroups", [])) & {"rbac.authorization.k8s.io"}:
+                fail(f"{d['kind']} {d['metadata']['name']} keeps RBAC rights")
+            if d["kind"] == "ClusterRole" and set(rule["verbs"]) - {"get", "list"}:
+                fail(f"ClusterRole {d['metadata']['name']} writes cluster objects after finish")
+PY
+}
+
+cmd_bootstrap() {
+  local tmp ttl
+  scripts/bootstrap.sh >/dev/null || die "R20: scripts/bootstrap.sh fails"
+  ttl=$(sed -n 's/^INSTALLER_TTL_SECONDS=//p' scripts/versions.env)
+  bootstrap_check build/bootstrap.yaml "$ttl" || die "R20: bootstrap rules"
+  tmp=$(mktemp -d)
+  bad_bootstrap() { # NAME SED
+    sed -e "$2" build/bootstrap.yaml > "$tmp/b.yaml"
+    cmp -s build/bootstrap.yaml "$tmp/b.yaml" && { rm -rf "$tmp"; die "R20: negative test '$1' changed nothing"; }
+    ! bootstrap_check "$tmp/b.yaml" "$ttl" 2>/dev/null || { rm -rf "$tmp"; die "R20: $1 was accepted"; }
+  }
+  bad_bootstrap "a tag instead of a digest" 's#installer@sha256:[0-9a-f]*#installer:latest#'
+  bad_bootstrap "a privileged container" 's#^\( *\)allowPrivilegeEscalation: false#\1allowPrivilegeEscalation: false\n\1privileged: true#'
+  bad_bootstrap "privilege escalation" '0,/allowPrivilegeEscalation: false/s//allowPrivilegeEscalation: true/'
+  bad_bootstrap "a binding without a TTL" '/vws-installer-ttl-seconds: /d'
+  bad_bootstrap "a pod without a deadline" "0,/activeDeadlineSeconds: ${ttl}\$/s///"
+  bad_bootstrap "no reaper" 's/name: vws-installer-reaper/name: something-else/'
+  bad_bootstrap "a reaper deadline equal to the TTL" "s/activeDeadlineSeconds: $((ttl + 600))/activeDeadlineSeconds: ${ttl}/"
+  bad_bootstrap "a second cluster-admin binding" 's/name: vws-operator-read$/name: cluster-admin/'
+  bad_bootstrap "the operating Role reading secrets" 's/resources: \[pods, /resources: [secrets, pods, /'
+  bad_bootstrap "a wildcard rule" 's/resources: \[nodes\]/resources: ["*"]/'
+  rm -rf "$tmp"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -760,6 +850,7 @@ cmd_all() {
   cmd_agents
   cmd_config
   cmd_vws
+  cmd_bootstrap
   cmd_crd
   cmd_bundle
   cmd_profiles
@@ -776,7 +867,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|crd|profiles|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|bootstrap|crd|profiles|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -792,6 +883,7 @@ case "$command_name" in
   bundle) cmd_bundle ;;
   config) cmd_config ;;
   vws) cmd_vws ;;
+  bootstrap) cmd_bootstrap ;;
   crd) cmd_crd ;;
   profiles) cmd_profiles ;;
   schema) cmd_schema ;;

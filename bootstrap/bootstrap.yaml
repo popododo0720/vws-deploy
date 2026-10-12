@@ -1,0 +1,215 @@
+# Template of build/bootstrap.yaml (scripts/bootstrap.sh adds the VWSCluster CRD from the chart and
+# fills INSTALLER_IMAGE and INSTALLER_TTL_SECONDS from scripts/versions.env). vws-deploy#43 decision 8:
+# the installer ServiceAccount holds cluster-admin through vws-installer-temp only during install.
+# vws installer finish deletes that binding and verifies it is gone. The reaper Job deletes it at
+# creationTimestamp + TTL even if nobody runs finish or the installer pod crashed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vws-installer
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+---
+# TEMPORARY. Deleted by vws installer finish or by the reaper at the TTL.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vws-installer-temp
+  labels:
+    app.kubernetes.io/part-of: vws
+  annotations:
+    vws-installer-ttl-seconds: "INSTALLER_TTL_SECONDS"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: vws-installer
+    namespace: vws
+---
+# What the installer keeps after finish: read and write the VWSCluster CR and its status, the
+# operation lock, and read the workloads status shows. No secrets, no RBAC, no cluster writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vws-operator
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+rules:
+  - apiGroups: [VWS_API_GROUP]
+    resources: [vwsclusters]
+    verbs: [get, list, update, patch]
+  - apiGroups: [VWS_API_GROUP]
+    resources: [vwsclusters/status]
+    verbs: [update, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [vws-operator-lock]
+    verbs: [get, update, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create]
+  - apiGroups: ["", apps, policy]
+    resources: [pods, deployments, statefulsets, poddisruptionbudgets, persistentvolumeclaims]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vws-operator
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vws-operator
+subjects:
+  - kind: ServiceAccount
+    name: vws-installer
+    namespace: vws
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vws-operator-read
+  labels:
+    app.kubernetes.io/part-of: vws
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vws-operator-read
+  labels:
+    app.kubernetes.io/part-of: vws
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vws-operator-read
+subjects:
+  - kind: ServiceAccount
+    name: vws-installer
+    namespace: vws
+---
+# The installer pod waits for kubectl exec (vws init, vws apply, vws installer finish) and ends when
+# its temporary rights are gone or at activeDeadlineSeconds, whichever is first.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vws-installer
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+    app.kubernetes.io/name: vws-installer
+spec:
+  serviceAccountName: vws-installer
+  restartPolicy: Never
+  activeDeadlineSeconds: INSTALLER_TTL_SECONDS
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: installer
+      image: INSTALLER_IMAGE
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: VWS_INSTALLER_POD
+          value: "1"
+        - name: VWS_NAMESPACE
+          value: vws
+        - name: HOME
+          value: /tmp
+      command: [/bin/sh, -c]
+      args:
+        - while [ "$(kubectl auth can-i create clusterrolebindings 2>/dev/null)" = yes ]; do sleep 30; done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: "1", memory: 512Mi}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}
+---
+# The reaper deletes vws-installer-temp at its creationTimestamp + TTL. A restarted reaper pod
+# recomputes the deadline from the binding, so a crash cannot extend it. After finish the binding
+# is gone (or unreadable) and the reaper ends at once.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vws-installer-reaper
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+spec:
+  backoffLimit: 20
+  # TTL plus ten minutes, so the deadline never cuts the reaper before its delete.
+  activeDeadlineSeconds: REAPER_DEADLINE_SECONDS
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: vws
+        app.kubernetes.io/name: vws-installer-reaper
+    spec:
+      serviceAccountName: vws-installer
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reaper
+          image: INSTALLER_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -eu
+              created=$(kubectl get clusterrolebinding vws-installer-temp -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null) || exit 0
+              ttl=$(kubectl get clusterrolebinding vws-installer-temp -o jsonpath='{.metadata.annotations.vws-installer-ttl-seconds}')
+              left=$(( $(python3 -c 'import sys, datetime; print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()))' "$created") + ttl - $(date -u +%s) ))
+              [ "$left" -le 0 ] || sleep "$left"
+              kubectl delete clusterrolebinding vws-installer-temp --ignore-not-found
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 128Mi}

@@ -2,22 +2,31 @@
 # Fake kubectl for tests/vws. It never talks to a cluster.
 # Every call is appended to $VWS_FAKE_LOG as: tool<TAB>verb<TAB>all arguments.
 # The answer is the file $VWS_FAKE_DIR/kubectl/<verb>_<resource>.json (a "/" in the resource becomes "_").
+# A more specific file $VWS_FAKE_DIR/kubectl/<verb>_<arg1>_<arg2>_<arg3>.json wins when it exists
+# ("*" becomes "all"), so for example auth can-i can answer per verb and resource.
 # A call without such a file fails loudly, so a test never passes on an unplanned call.
 set -euo pipefail
 : "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
-verb='' resource='' skip=0
+verb='' resource='' skip=0 positional=()
 for arg in "$@"; do
   if ((skip)); then skip=0; continue; fi
   case $arg in
     --context | --namespace | -n | -o) skip=1 ;;
     -*) ;;
     *)
+      positional+=("$arg")
       if [[ -z $verb ]]; then verb=$arg; elif [[ -z $resource ]]; then resource=$arg; fi
       ;;
   esac
 done
 printf 'kubectl\t%s\t%s\n' "$verb" "$*" >>"$VWS_FAKE_LOG"
 file="${VWS_FAKE_DIR}/kubectl/${verb}_${resource//\//_}.json"
+if ((${#positional[@]} >= 4)); then
+  specific=$(IFS=_; echo "${positional[*]:0:4}")
+  specific=${specific//\*/all}
+  specific=${specific//\//_}
+  [[ ! -f ${VWS_FAKE_DIR}/kubectl/${specific}.json ]] || file="${VWS_FAKE_DIR}/kubectl/${specific}.json"
+fi
 if [[ ! -f $file ]]; then
   echo "fake kubectl: no fixture ${file}" >&2
   exit 1
