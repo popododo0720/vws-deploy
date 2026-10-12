@@ -1,0 +1,6 @@
+MASTER_NODES_LABEL: "kube-ovn/role=master"
+OVN_CENTRAL_MODE: cluster
+networking:
+  NET_STACK: ipv4
+  NETWORK_TYPE: geneve
+  TUNNEL_TYPE: geneve
