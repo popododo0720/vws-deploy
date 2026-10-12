@@ -500,6 +500,13 @@ ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-com
          for d in yaml.safe_load_all(open(sys.argv[1])))
 sys.exit(0 if ok else 1)
 PY
+  python3 - "$tmp/default.yaml" <<'PY' || die "R14: compute has no virtualmachineinstances get in the VM namespace (#121, vws-compute#50)"
+import sys, yaml
+ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-compute" and d["metadata"].get("namespace") == "vws-vms"
+         and any("kubevirt.io" in r.get("apiGroups", []) and "virtualmachineinstances" in r.get("resources", []) and "get" in r.get("verbs", []) for r in d.get("rules", []))
+         for d in yaml.safe_load_all(open(sys.argv[1])))
+sys.exit(0 if ok else 1)
+PY
 
   ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
