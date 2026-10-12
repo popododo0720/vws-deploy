@@ -497,7 +497,7 @@ cmd_config() {
   python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws <(printf 'global:\n  probe: grpc\n')
   grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
   ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
-  ! grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: storage gRPC readiness is rendered while global.pendingFlags is false"
+  grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: the default render lacks storage gRPC readiness (#110)"
   helm template vws charts/vws --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/health.yaml" || die "R15: global.pendingFlags=true does not render storage gRPC readiness"
   python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws <(printf 'global:\n  pendingFlags: true\n')
