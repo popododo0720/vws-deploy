@@ -1,8 +1,8 @@
 # scope  path prefixes. A directory prefix ends with /. A file prefix is exact.
 # This is the only list of commit scopes.
-cli scripts/vws scripts/vws.d/ tests/ examples/
+cli scripts/vws scripts/vws.d/ tests/ examples/ bootstrap/
 chart charts/ scripts/check_render.py profiles/
-ci .github/ Makefile .githooks/ AGENTS.md scripts/guard.sh scripts/guard-agents.sh scripts/install-tools.sh scripts/platform.sh scripts/lab/ scripts/scopes scripts/versions.env
+ci .github/ Makefile .githooks/ AGENTS.md scripts/guard.sh scripts/guard-agents.sh scripts/install-tools.sh scripts/platform.sh scripts/bootstrap.sh scripts/lab/ scripts/scopes scripts/versions.env
 docs README.md docs/
 repo .gitignore LICENSE
 platform platform/
