@@ -14,6 +14,7 @@
 | R6 | 호스트 에이전트는 vws-agent@.service로만 띄우고, 프로세스 재시작과 부팅 복구는 그 유닛이 소유한다 | `host/systemd/vws-agent@.service` `host/install.sh` | `scripts/guard.sh host` |
 | R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
 | R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다 | `.github/workflows/ci.yml` | `scripts/guard.sh ci` |
+| R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 
@@ -40,6 +41,14 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 ### correct
 
 같은 실수가 반복되면 문장을 더 쓰지 않는다. 먼저 잘못된 상태를 표현할 수 없게 구조를 바꾸고, 그다음 실패하는 검사를 넣고, 마지막에 이 표를 고친다. 검사는 그 실수가 들어 있는 입력에서 실제로 실패해야 한다. 표만 고친 수정은 규칙 변경이 아니다.
+
+## 작업 방식 (poteto-mode)
+
+- 간결하게 쓰고 코드는 가장 작은 변경으로 푼다. 추상화 계층을 늘리지 않고 지울 수 있으면 지운다.
+- 코드를 쓰기 전에 데이터 모양을 먼저 정한다. 같은 실수가 두 번 나오면 문장 대신 구조나 검사로 막는다.
+- 실제로 돌린 것만 검증했다고 쓴다. 돌리지 못한 것은 "미검증"으로 표시한다. `make check`는 컴파일 증거가 아니라 이 저장소의 T0 검사다.
+- 커밋 메시지와 PR 설명은 짧은 평서문으로 쓴다. 근거 없는 주장과 만들어낸 링크를 넣지 않는다.
+- Cursor 클라우드 에이전트(CloudAgent)를 쓰지 않는다. 사용량이 소진된 상태이고, 작업은 `gh`와 `git`으로 한다. `scripts/guard.sh cursor`가 `.cursor/`와 Cursor 에이전트 호출이 저장소에 들어오는 것을 막는다.
 
 ## 명령
 
