@@ -168,6 +168,7 @@ cases = [
     {"services": {"compute": {"rbac": [{**wildcard_rule, "apiGroups": ["*"]}]}}},
     {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["*"]}]}}},
     {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["escalate"]}]}}},
+    {"services": {"compute": {"rbac": [{**wildcard_rule, "namespace": "Not_A_Namespace"}]}}},
     {"services": {"compute": {"rbac": []}}},
     {"services": {"compute-agent": {}}},
     {"services": {"compute-peers": {}}},
