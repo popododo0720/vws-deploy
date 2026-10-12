@@ -89,7 +89,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 ### vws apply
 
-`vws apply [--unattended]`: CR → render → 상태 비교 → preflight → 비밀 → 번들 → helm → status. CR의 `status.appliedValuesHash`(렌더한 values의 sha256)와 `observedGeneration`이 지금 값과 같으면 `unchanged`로 끝난다(변경 호출 0건). 번들은 `build/platform/*.yaml`을 파일 이름 순서(=`scripts/platform.sh`의 번호)대로 server-side apply하고 파일마다 CRD Established, Deployment Available을 기다린다. 이어 `helm upgrade --install vws --atomic --wait`, 끝으로 status 하위 리소스를 쓴다. helm이 실패하면 status를 쓰지 않고 1. `--dry-run`은 변경 호출을 출력만 한다. 비밀: 지금 차트는 설치기가 만들 Secret이 없어 이 단계는 아무것도 만들지 않는다. preflight: `lib/checks.sh`(#55)의 api, nodes, storage, release 검사를 돌리고 FAIL이면 아무것도 바꾸지 않고 1. 동시 실행 잠금(Lease `vws-operator-lock`)은 아직 없다(확인 필요, 후속).
+`vws apply [--unattended]`: CR → render → 상태 비교 → preflight → 비밀 → 번들 → helm → status. CR의 `status.appliedValuesHash`(렌더한 values의 sha256과 `charts/vws`의 모든 파일 경로·내용을 합친 해시, `lib/hash.sh`, #101. 차트만 바뀌어도 다시 적용한다)와 `observedGeneration`이 지금 값과 같으면 `unchanged`로 끝난다(변경 호출 0건). 번들은 `build/platform/*.yaml`을 파일 이름 순서(=`scripts/platform.sh`의 번호)대로 server-side apply하고 파일마다 CRD Established, Deployment Available을 기다린다. 이어 `helm upgrade --install vws --atomic --wait`, 끝으로 status 하위 리소스를 쓴다. helm이 실패하면 status를 쓰지 않고 1. `--dry-run`은 변경 호출을 출력만 한다. 비밀: 지금 차트는 설치기가 만들 Secret이 없어 이 단계는 아무것도 만들지 않는다. preflight: `lib/checks.sh`(#55)의 api, nodes, storage, release 검사를 돌리고 FAIL이면 아무것도 바꾸지 않고 1. 동시 실행 잠금(Lease `vws-operator-lock`)은 아직 없다(확인 필요, 후속).
 
 ### vws installer
 
@@ -97,7 +97,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 ### vws status
 
-`vws status`: 설치된 상태를 읽기만 한다(변경 동사 0건). 검사: api, `cluster-cr`(프로필, `metadata.generation`과 `status.observedGeneration`), `applied-hash`(지금 CR이 렌더하는 values의 sha256과 `status.appliedValuesHash`; `vws apply`와 같은 계산), `release`와 `release-drift`(helm 리비전과 상태, 릴리스 values와 CR 렌더 결과 비교), `bundle-kubevirt`, `bundle-cdi`(운영자 CR이 보고하는 버전과 `scripts/versions.env`), `service-<이름>`(`charts/vws/values.yaml`의 서비스마다 Deployment/StatefulSet ready/desired), `pdb`. 드리프트는 WARN이라 `--strict`에서 1.
+`vws status`: 설치된 상태를 읽기만 한다(변경 동사 0건). 검사: api, `cluster-cr`(프로필, `metadata.generation`과 `status.observedGeneration`), `applied-hash`(지금 CR이 렌더하는 values와 지금 차트의 해시와 `status.appliedValuesHash`; `vws apply`와 같은 계산이라 차트만 바뀌어도 드리프트), `release`와 `release-drift`(helm 리비전과 상태, 릴리스 values와 CR 렌더 결과 비교), `bundle-kubevirt`, `bundle-cdi`(운영자 CR이 보고하는 버전과 `scripts/versions.env`), `service-<이름>`(`charts/vws/values.yaml`의 서비스마다 Deployment/StatefulSet ready/desired), `pdb`. 드리프트는 WARN이라 `--strict`에서 1.
 
 **자격 증명.** helm은 릴리스를 Secret에 둔다. `vws installer finish` 뒤 운영 역할(`vws-operator`)은 Secret을 읽지 못하므로 `helm status/get`이 forbidden으로 실패한다. 그래서 status는 VWSCluster status와 워크로드를 1차 자료로 쓰고, 릴리스 리비전과 릴리스 드리프트는 읽을 수 있을 때만 덧붙인다. 읽을 수 없으면 `WARN release ... cannot read Secrets ...; For them run vws status with your own kubeconfig`를 내고 나머지 검사는 그대로 돈다(FAIL 아님). 운영 역할로 `--strict`를 쓰면 이 WARN 때문에 1이다.
 
