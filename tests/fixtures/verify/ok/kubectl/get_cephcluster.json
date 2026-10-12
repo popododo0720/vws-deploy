@@ -1,0 +1,11 @@
+{
+ "items": [
+  {
+   "status": {
+    "ceph": {
+     "health": "HEALTH_OK"
+    }
+   }
+  }
+ ]
+}

@@ -59,7 +59,7 @@
 | 4 | etcd 1개 상실 | T1(k3s 임베디드 etcd 3대) | 컨트롤 플레인 노드 하나를 끈다 | 쿼럼이 유지되어 읽기와 쓰기가 계속된다 | `kubectl create configmap probe-$RANDOM -n vws --from-literal=a=b`가 성공 | 미검증 |
 | 5 | 쿼럼 상실 뒤 복원 | T1, 네트워크와 스토리지 포함은 T2 | 컨트롤 플레인 노드 둘 이상을 끄고 스냅샷으로 복원한다 | 쓰기가 막혀 있다가 복원 뒤 API가 오르고 스냅샷 시점의 객체가 돌아온다. EC2 Query의 쓰기 호출은 중간에 `ServiceUnavailable`을 돌려준다 | 위 복원 절차, `kubectl get vm -A`, `aws ec2 run-instances`의 오류 코드 | 미검증 |
 | 6 | 쿼럼 상실 중 실행 중 VM 유지 | T2 | etcd와 API를 전부 막고 VM에 ping한다 | 실행 중인 VM과 OVS 데이터 경로가 계속 동작한다(설계상 추정) | VM의 `ping`과 `ovs-vsctl show` | 미검증, T2 전용 |
-| 7 | 전체 전원 차단 후 재기동 | T1(네트워크, 스토리지 제외), 전체는 T2 | 모든 노드를 동시에 끄고 켠다 | 기동 순서대로 오르고 VM이 선언된 상태로 돌아온다 | 위 기동 순서 표의 확인 명령 | 미검증 |
+| 7 | 전체 전원 차단 후 재기동 | T1(네트워크, 스토리지 제외), 전체는 T2 | 끄기 전에 `vws verify-reboot --snapshot before.json`, 모든 노드를 동시에 끄고 켠다 | 기동 순서대로 오르고 VM이 선언된 상태로 돌아온다 | `vws verify-reboot --check before.json --timeout 20m`(게이트 순서와 소요 시간, `docs/vws-cli.md`), 위 기동 순서 표의 확인 명령 | 미검증 |
 | 8 | RWO 볼륨 노드 장애 페일오버 | T2 | VM이 쓰는 노드를 전원 차단한다 | out-of-service taint와 Ceph blocklist 뒤 VM이 다른 노드에서 오른다 | `kubectl get vmi -A -o wide`, `ceph osd blocklist ls` | 미검증, T2 전용 |
 
 ## 결과 기록

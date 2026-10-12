@@ -1,0 +1,72 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "namespace": "kube-system",
+    "name": "kube-ovn-cni-x1",
+    "uid": "FAKE-UID-1"
+   },
+   "status": {
+    "phase": "Running",
+    "containerStatuses": [
+     {
+      "name": "c",
+      "ready": true,
+      "restartCount": 0
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "kube-system",
+    "name": "kube-ovn-controller-x2",
+    "uid": "FAKE-UID-2"
+   },
+   "status": {
+    "phase": "Running",
+    "containerStatuses": [
+     {
+      "name": "c",
+      "ready": true,
+      "restartCount": 0
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "vws",
+    "name": "compute-0",
+    "uid": "FAKE-UID-3"
+   },
+   "status": {
+    "phase": "Running",
+    "containerStatuses": [
+     {
+      "name": "c",
+      "ready": true,
+      "restartCount": 1
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "vws",
+    "name": "storage-0",
+    "uid": "FAKE-UID-4"
+   },
+   "status": {
+    "phase": "Running",
+    "containerStatuses": [
+     {
+      "name": "c",
+      "ready": true,
+      "restartCount": 0
+     }
+    ]
+   }
+  }
+ ]
+}

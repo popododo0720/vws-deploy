@@ -1,0 +1,28 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "namespace": "vws-vms",
+    "name": "vm-a"
+   },
+   "spec": {
+    "runStrategy": "Always"
+   },
+   "status": {
+    "printableStatus": "Running"
+   }
+  },
+  {
+   "metadata": {
+    "namespace": "vws-vms",
+    "name": "vm-b"
+   },
+   "spec": {
+    "runStrategy": "Manual"
+   },
+   "status": {
+    "printableStatus": "Stopped"
+   }
+  }
+ ]
+}
