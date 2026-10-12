@@ -374,12 +374,27 @@ cmd_cursor() {
   grep -q 'Cursor 클라우드 에이전트' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
 }
 
+cmd_bundle() {
+  local name version hits
+  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK; do
+    version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
+    [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
+    hits=$(grep -R -n -F -e "$version" . --exclude-dir=.git --exclude-dir=build --exclude-dir=.cache \
+      --exclude=versions.env || true)
+    [[ -z $hits ]] || die "R12: ${name} version is written outside scripts/versions.env: ${hits}"
+  done
+  for name in rbd openvswitch geneve kvm; do
+    grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
+  done
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
   cmd_assets
   cmd_ci
   cmd_cursor
+  cmd_bundle
   cmd_schema
   cmd_hooks
   cmd_docs
@@ -393,7 +408,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|bundle|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -405,6 +420,7 @@ case "$command_name" in
   assets) cmd_assets ;;
   ci) cmd_ci ;;
   cursor) cmd_cursor ;;
+  bundle) cmd_bundle ;;
   schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
