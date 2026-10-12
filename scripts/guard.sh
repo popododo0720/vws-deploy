@@ -495,19 +495,24 @@ namespaces:
 services:
   network:
     flags:
-      kubeconfig: /etc/vws/kubeconfig
+      kubeconfig: /etc/vws/kube/config
       kube-external-subnet: ext
       kube-nad-namespace: {namespace: nad}
       kube-snat: true
+    kubeconfigSecret: acme-network-kubeconfig
 YAML
   helm template acme charts/vws --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
   python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$tmp/override.yaml"
   local want
   for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
-    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -namespace=acme -hypervisor=kubevirt; do
+    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt; do
     grep -q -e "- ${want}\$" "$tmp/override.rendered.yaml" || die "R14: rendered args lack ${want}"
   done
   ! grep -q -e 'vws-vms\|vws-images\|vws-nad' "$tmp/override.rendered.yaml" || die "R14: a default namespace name survived a values override"
+
+  grep -q -e 'secretName: acme-network-kubeconfig' "$tmp/override.rendered.yaml" || die "R16: kubeconfigSecret is not mounted"
+  ! grep -q -e '^kind: Secret' "$tmp/default.yaml" "$tmp/override.rendered.yaml" || die "R16: the chart renders a Secret"
+  ! grep -q -e 'kubeconfig' "$tmp/default.yaml" || die "R16: the default render mounts or passes a kubeconfig"
 
   local bad
   for bad in \
@@ -516,6 +521,10 @@ YAML
     'services: {network: {flags: {kubeconfig: /k}}}' \
     'services: {network: {flags: {kubeconfig: /k, kube-external-subnet: ext}}}' \
     'services: {network: {flags: {kube-snat: true}}}' \
+    'services: {network: {kubeconfigSecret: x}}' \
+    'services: {network: {kubeconfigSecret: Bad_Name, flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
+    'services: {network: {flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
+    'services: {network: {kubeconfigSecret: x, flags: {kubeconfig: rel, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
     'services: {network: {flags: {kube-x: [a]}}}' \
     'global: {probe: http}'; do
     printf '%s\n' "$bad" > "$tmp/bad.yaml"
