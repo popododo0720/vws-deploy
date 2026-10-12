@@ -1,6 +1,6 @@
 # 에이전트 규칙
 
-이 저장소는 VWS 프라이빗 클라우드의 배포 산출물만 다룬다. 제어부는 Helm 차트 하나이고, 하이퍼바이저 노드 에이전트는 호스트의 systemd다. 클러스터에 적용하는 명령은 없다.
+이 저장소는 VWS 프라이빗 클라우드의 배포 산출물만 다룬다. 제어부는 Helm 차트 하나이고, 호스트에는 우리가 설치하는 프로세스가 없다. 설계는 https://github.com/popododo0720/vws-deploy/issues/2 다. 클러스터에 적용하는 명령은 없다.
 
 ## 규칙
 
@@ -8,13 +8,12 @@
 | --- | --- | --- | --- |
 | R1 | 브랜치에서 작업하고 main이나 master에 푸시하지 않는다 | `.githooks/pre-push` | `scripts/guard.sh hooks` |
 | R2 | 커밋 하나는 scripts/scopes의 한 스코프만 건드리고, 제목은 `scope: 요약`이다 | `scripts/scopes` | `scripts/guard.sh commits` |
-| R3 | 하이퍼바이저 에이전트를 Helm 차트나 노드 워크로드로 넣지 않는다 | `charts/vws/templates/control-plane.yaml` `host/` | `scripts/guard.sh layout` |
 | R4 | 제어부 워크로드는 startup, liveness, readiness, PodDisruptionBudget, restartPolicy Always를 갖고, state가 있으면 재시작 뒤에도 남는 볼륨을 갖는다 | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
 | R5 | 제어 서비스를 추가하거나 고치는 곳은 values.yaml의 services 맵 하나다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
-| R6 | 호스트 에이전트는 vws-agent@.service로만 띄우고, 프로세스 재시작과 부팅 복구는 그 유닛이 소유한다 | `host/systemd/vws-agent@.service` `host/install.sh` | `scripts/guard.sh host` |
 | R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
 | R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다 | `.github/workflows/ci.yml` | `scripts/guard.sh ci` |
 | R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
+| R10 | 호스트에 우리 유닛을 두지 않는다. 저장소에 `.service`, `.target` 파일과 `host/`가 없고, 차트는 호스트 네임스페이스나 hostPath를 쓰지 않는다 | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 
@@ -32,7 +31,7 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 
 ### architect
 
-값을 받는 표면이나 렌더 방식, systemd 유닛, `host/install.sh`의 설치 방식을 바꾸기 전에 먼저 설계한다. 대상 파일은 `charts/vws/values.schema.json`, `charts/vws/templates/control-plane.yaml`, `charts/vws/templates/_helpers.tpl`, `host/systemd/vws-agent@.service`다. 고른 안과 버린 안은 `docs/design/`에 남긴다. 구현이 그 설계와 어긋나면 이유를 같은 기록에 적는다.
+값을 받는 표면이나 렌더 방식을 바꾸기 전에 먼저 설계한다. 대상 파일은 `charts/vws/values.schema.json`, `charts/vws/templates/control-plane.yaml`, `charts/vws/templates/_helpers.tpl`다. 고른 안과 버린 안은 `docs/design/`에 남긴다. 구현이 그 설계와 어긋나면 이유를 같은 기록에 적는다.
 
 ### interrogate
 
@@ -52,8 +51,7 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 
 ## 명령
 
-지원하는 진입점은 세 개다.
+지원하는 진입점은 두 개다.
 
 - `make check` — helm lint, kubeconform, 이 파일의 검사
 - `helm template vws charts/vws --namespace vws` — 적용하지 않고 매니페스트를 본다
-- `host/install.sh --help` — 하이퍼바이저에 에이전트를 올리는 방법

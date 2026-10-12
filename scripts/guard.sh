@@ -51,19 +51,17 @@ scope_regex() {
 cmd_layout() {
   local found images
   found=$(find charts/vws/templates -type f -printf '%f\n' | sort | paste -sd' ' -)
-  [[ $found == "_helpers.tpl control-plane.yaml" ]] || die "R3: unexpected template files: ${found}"
-  [[ ! -d charts/vws/charts ]] || die "R3: subcharts are a second catalog"
+  [[ $found == "_helpers.tpl control-plane.yaml" ]] || die "R10: unexpected template files: ${found}"
+  [[ ! -d charts/vws/charts ]] || die "R10: subcharts are a second catalog"
   if grep -q -E '^(dependencies|icon):' charts/vws/Chart.yaml; then
-    die "R3: Chart.yaml must not declare dependencies or an icon"
+    die "R10: Chart.yaml must not declare dependencies or an icon"
   fi
-  if find charts \( -name '*.service' -o -name '*.target' \) | grep -q .; then
-    die "R3: systemd units do not belong in the chart"
+  if find . -path ./.git -prune -o \( -name '*.service' -o -name '*.target' \) -print | grep -q .; then
+    die "R10: this repo ships no systemd units"
   fi
-  if grep -R -n -E '^apiVersion:|^kind:' host; then
-    die "R3: host/ must not contain Kubernetes manifests"
-  fi
+  [[ ! -e host ]] || die "R10: host/ must not exist"
   if grep -R -n -E 'DaemonSet|hostPath:|hostNetwork:' charts; then
-    die "R3: chart templates must not schedule onto the host"
+    die "R10: chart templates must not schedule onto the host"
   fi
   images=0
   if image_lines=$(grep -R -o 'printf "%s/%s:%s"' charts/vws/templates); then
@@ -71,7 +69,7 @@ cmd_layout() {
   fi
   [[ $images -eq 1 ]] || die "R5: derive the image reference in exactly one place"
   if [[ -f go.mod || -f kustomization.yaml ]]; then
-    die "R3: the Helm chart is the only manifest path"
+    die "R10: the Helm chart is the only manifest path"
   fi
 }
 
@@ -140,29 +138,9 @@ if failed:
 PY
 }
 
-cmd_host() {
-  host/install.sh --check
-  host/install.sh --help >/dev/null
-  local rc=0
-  set +e
-  host/install.sh compute-agent >/dev/null 2>&1
-  rc=$?
-  set -e
-  [[ $rc -eq 2 ]] || die "R6: install.sh must reject agent-name arguments with exit 2"
-  local plan name
-  plan=$(host/install.sh --dry-run)
-  for dir in host/agents/*/; do
-    name=$(basename "$dir")
-    grep -q "vws-agent@${name}" <<<"$plan" || die "R6: dry-run omitted declared agent ${name}"
-  done
-  local found
-  found=$(find host/systemd -type f -printf '%f\n' | sort | paste -sd' ' -)
-  [[ $found == "vws-agent@.service vws-agents.target" ]] || die "R6: unexpected systemd files: ${found}"
-}
-
 cmd_ci() {
   if grep -R -n -E 'kubectl[[:space:]]+(apply|create|delete|replace)|helm[[:space:]]+(install|upgrade|uninstall)|kind[[:space:]]+create|k3d[[:space:]]+create' \
-    .github Makefile scripts host charts; then
+    .github Makefile scripts charts; then
     die "R8: this repo must not apply manifests to a cluster"
   fi
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
@@ -383,7 +361,7 @@ cmd_recovery() {
 
 cmd_cursor() {
   [[ ! -e .cursor ]] || die "R9: .cursor/ does not belong in this repo"
-  if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts host charts 2>/dev/null \
+  if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts charts 2>/dev/null \
     | grep -v 'scripts/guard.sh:'; then
     die "R9: Cursor cloud agents must not be called from this repo"
   fi
@@ -394,7 +372,6 @@ cmd_all() {
   cmd_layout
   cmd_names
   cmd_assets
-  cmd_host
   cmd_ci
   cmd_cursor
   cmd_schema
@@ -410,7 +387,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|host|ci|cursor|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -420,7 +397,6 @@ case "$command_name" in
   layout) cmd_layout ;;
   names) cmd_names ;;
   assets) cmd_assets ;;
-  host) cmd_host ;;
   ci) cmd_ci ;;
   cursor) cmd_cursor ;;
   schema) cmd_schema ;;
