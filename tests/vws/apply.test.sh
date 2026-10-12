@@ -34,6 +34,12 @@ run_vws_real --dry-run apply;                    expect_rc "a new generation wit
 assert_no_changes "dry-run changes nothing"
 expect_text "dry-run prints the helm plan" "$ERR" "DRYRUN helm upgrade --install vws"
 
+installer_scenario preflight-fail
+echo '{"items":[]}' >"${VWS_FAKE_DIR}/kubectl/get_storageclass.json"
+run_vws_real apply;                              expect_rc "a failing preflight exits 1" 1
+expect_text "a failing preflight says so" "$OUT" "preflight failed"
+assert_no_changes "a failing preflight changes nothing"
+
 installer_scenario no-cr
 rm "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real apply;                              expect_rc "no CR exits 2" 2

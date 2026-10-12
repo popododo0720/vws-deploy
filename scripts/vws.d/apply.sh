@@ -9,15 +9,11 @@
 VWS_NEED=(jq python3 kubectl helm sha256sum)
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
+# shellcheck source=scripts/vws.d/lib/checks.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/checks.sh"
 
 vws_apply_preflight() {
   local profile=$1
-  if [[ ! -f ${VWS_ROOT}/scripts/vws.d/lib/checks.sh ]]; then
-    vws_emit WARN preflight "skipped: the preflight checks (vws-deploy#55) are not in this build"
-    return 0
-  fi
-  # shellcheck source=/dev/null
-  source "${VWS_ROOT}/scripts/vws.d/lib/checks.sh"
   vws_check_api
   vws_check_nodes "$profile"
   vws_check_storage preflight
