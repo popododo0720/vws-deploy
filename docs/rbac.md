@@ -26,7 +26,8 @@
 | `Get`, `Create`, `Delete` | `snapshot.storage.k8s.io` volumesnapshots | get, create, delete | 같은 네임스페이스(`namespaces.vms`) |
 
 - 모든 호출이 `b.ns` 한 곳을 가리킨다. 그래서 다른 네임스페이스의 PVC는 지울 수 없다.
-- StorageClass를 읽는 코드가 없어 `storageclasses` 규칙을 뺐다. `patch`, `list`, `watch`도 뺐다.
+- **readiness(vws-storage#39, 미머지 `feat/grpc-health`)**: `-block-backend=kube`의 readiness가 클러스터 범위 객체를 `get`한다. Namespace `-kube-namespace`(`internal/backend/kube/ready.go:20`), StorageClass `-kube-class-standard`/`-kube-class-ssd`(`:29`), VolumeSnapshotClass `-kube-snapshot-class`(`:33`). 그래서 storage ClusterRole에 셋의 `get`만 둔다(list, watch 없음). `check_render.py`의 `READY_NEEDS_GET`이 `get`이 있고 그 밖의 동사가 없는지 본다(#69). 이 권한은 게이트 없이 렌더된다(읽기 `get`뿐이고, #39 전 이미지는 쓰지 않는다).
+- 그 밖에 StorageClass를 쓰는 코드는 없다. `patch`, `list`, `watch`는 뺐다.
 - 하위 리소스를 부르는 코드는 없다.
 
 ## network (`internal/network/dataplane_kubeovn*.go`)
