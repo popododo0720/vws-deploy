@@ -5,5 +5,9 @@ metadata:
 spec:
   imagePullPolicy: IfNotPresent
   config:
+    # Opt-in gate (off when absent). With a WaitForFirstConsumer StorageClass, CDI does not
+    # start its worker pod until the VM is scheduled, so the disk lands on the VM's node.
+    # The default Ceph class is Immediate, where the gate changes nothing; the k3s lab's
+    # local-path class is WaitForFirstConsumer, where it matters.
     featureGates:
       - HonorWaitForFirstConsumer
