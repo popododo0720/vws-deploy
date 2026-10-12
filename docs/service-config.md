@@ -73,6 +73,16 @@ vws-network는 `-kubeconfig`가 있어야 Kube-OVN 데이터플레인을 쓴다(
 - **목표는 선택지 2(인클러스터 ServiceAccount)다.** 이를 위해 vws-network가 `-kubeconfig` 없이도 Kube-OVN을 쓰게 해야 하고, 이는 별도 요청이다. 그때 이 키와 볼륨은 지운다. 선택지 1은 장기 자격 증명이 Secret에 남고 회전이 수동이며 Secret 읽기와 파드 exec 권한 보유자가 자격을 얻는다는 한계를 가진 임시 수단이다.
 - 확인 필요: 실제 클러스터에서 이 kubeconfig로 Kube-OVN CRD에 쓰는지, 그 kubeconfig가 `docs/rbac.md`의 network 권한 이상을 갖지 않게 만드는 방법(차트가 통제하지 못한다), `0440`과 `fsGroup`으로 파드가 파일을 읽는지(T1 이상).
 
+## storage RGW 객체 백엔드 (vws-deploy#90)
+
+S3 객체 백엔드는 vws-storage가 구현한다. `-object-backend=s3`, `-s3-profile`, `-s3-endpoint`, `-s3-region` 플래그(`cmd/vws-storage/main.go:53-56`)와 키를 `VWS_S3_ACCESS_KEY`, `VWS_S3_SECRET_KEY` 환경 변수에서 읽는 코드(`main.go:189-205`, `internal/backend/s3/s3.go:75-81`)가 있다. vws-console-api는 S3 REST 표면일 뿐이고 객체를 storage의 gRPC `ObjectService`로 넘긴다(`internal/backend/grpcclient/client.go:54-55`).
+
+- values 키는 `services.storage.s3.rgw.{enabled, endpoint, bucketPrefix, existingSecret}`다. 기본은 꺼짐, `existingSecret: ceph-rgw-s3`.
+- 켜면 차트가 `-object-backend=s3 -s3-profile=rgw -s3-endpoint=<endpoint>`를 넘기고, 키는 `existingSecret`의 `access-key`와 `secret-key`에서 `secretKeyRef` env로만 넣는다. 키는 인자에도 values에도 없다. 이것이 "플래그만, env 없음" 원칙의 유일한 예외다(서비스가 env로만 키를 받기 때문, `main.go:189-190`).
+- `secretKeyRef`는 파드와 같은 네임스페이스의 Secret만 가리킨다. 운영자가 릴리스 네임스페이스(기본 `vws-system`)에 `kubectl -n vws-system create secret generic ceph-rgw-s3 --from-literal=access-key=... --from-literal=secret-key=...`로 만든다. 차트는 Secret을 만들지 않는다.
+- `bucketPrefix`는 vws-storage에 해당 플래그가 없어 `global.pendingFlags: true`일 때만 `-s3-bucket-prefix`로 렌더한다. 서비스 쪽 구현이 필요하다(#90에 적음).
+- `enabled: true`인데 `endpoint`나 `existingSecret`이 비면 렌더가 실패하고, `scripts/guard.sh config`(R16)가 env가 리터럴 값이거나 다른 Secret을 가리키면 실패함을 시험한다.
+
 ## 확인 필요
 
 - **compute 플래그 3개(`-hypervisor`, `-vm-namespace`, `-image-namespace`)는 main에 없다.** vws-compute#23이 머지되기 전에 `global.pendingFlags: true`로 켜면 현재 이미지가 알 수 없는 플래그로 시작을 거절한다. 기본은 꺼짐이다.
