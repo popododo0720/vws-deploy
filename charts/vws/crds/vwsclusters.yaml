@@ -49,7 +49,6 @@ spec:
               type: object
             spec:
               type: object
-              additionalProperties: false
               required: [profile]
               properties:
                 profile:
@@ -61,7 +60,6 @@ spec:
                   pattern: '^$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
                 storage:
                   type: object
-                  additionalProperties: false
                   properties:
                     driver:
                       type: string
@@ -72,14 +70,12 @@ spec:
                       pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
                 network:
                   type: object
-                  additionalProperties: false
                   properties:
                     driver:
                       type: string
                       enum: [kube-ovn]
                 observability:
                   type: object
-                  additionalProperties: false
                   properties:
                     otlpEndpoint:
                       description: Empty turns telemetry off. Not rendered until the chart has observability values.
@@ -89,7 +85,6 @@ spec:
                   type: object
                   additionalProperties:
                     type: object
-                    additionalProperties: false
                     properties:
                       replicas:
                         type: integer
@@ -106,7 +101,6 @@ spec:
                   type: object
                   additionalProperties:
                     type: object
-                    additionalProperties: false
                     required: [secretName]
                     properties:
                       secretName:
