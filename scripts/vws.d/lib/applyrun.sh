@@ -6,6 +6,23 @@
 # and rejects a VWSCluster field a newer chart added ("field not declared in schema", #112). Every
 # command that writes the CR (or applies a newer chart) calls this first. --force-conflicts takes
 # .spec over from whoever created the CRD (helm, or kubectl client-side apply). Cluster-scoped: no -n.
+# vws_crd_current: 0 when the cluster's VWSCluster CRD has the group and versions (schemas
+# included) of charts/vws/crds/vwsclusters.yaml. Read only; vws apply uses it to stay at zero
+# writes when nothing changed (#114).
+vws_crd_current() {
+  local crd have
+  crd=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["metadata"]["name"])' "${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml")
+  have=$(VWS_NAMESPACE='' vws_kubectl get crd "$crd" -o json 2>/dev/null) || return 1
+  python3 - "$have" "${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" <<'PY'
+import json, sys, yaml
+have = json.loads(sys.argv[1]).get("spec") or {}
+want = yaml.safe_load(open(sys.argv[2]))["spec"]
+def key(s):
+    return s.get("group"), [(v.get("name"), v.get("served"), v.get("storage"), v.get("schema"), v.get("subresources")) for v in s.get("versions") or []]
+sys.exit(0 if key(have) == key(want) else 1)
+PY
+}
+
 vws_apply_crd() {
   VWS_NAMESPACE='' vws_kubectl apply --server-side --field-manager=vws --force-conflicts -f - \
     <"${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" >/dev/null ||

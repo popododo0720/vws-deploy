@@ -36,6 +36,12 @@ vws_cmd_main() {
   done
   vws_installer_namespace
   vws_installer_guard_ttl
+  # The CRD before the CR is read: an older CRD prunes fields a newer chart added (spec.storage.s3),
+  # and the values rendered from that CR would turn them off (#114). Helm never upgrades crds/ (#112).
+  if ! vws_crd_current; then
+    vws_apply_crd
+    vws_emit OK crd "VWSCluster CRD applied from charts/vws/crds"
+  fi
   cr=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) || vws_usage "no VWSCluster vws in ${VWS_NAMESPACE}; run vws init first"
   tmp=$(mktemp -d)
   jq '{apiVersion, kind, metadata: {name: .metadata.name}, spec}' <<<"$cr" >"${tmp}/cr.yaml"
@@ -57,9 +63,6 @@ vws_cmd_main() {
 
   vws_apply_preflight "$profile"
   vws_emit OK secrets "none required: the chart takes no Secret from the installer"
-  # The CRD of this chart, before the bundle and helm (helm never upgrades crds/, #112).
-  vws_apply_crd
-  vws_emit OK crd "VWSCluster CRD applied from charts/vws/crds"
 
   # VWS_BUNDLE_DIR: the rendered bundle, build/platform from scripts/platform.sh (the harness points it at fixtures).
   local bundle=${VWS_BUNDLE_DIR:-${VWS_ROOT}/build/platform}
