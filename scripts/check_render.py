@@ -232,6 +232,8 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     # grpc.health.v1: liveness and startup ask the empty name (process up), readiness asks the
     # service's aggregate name, so a cluster outage marks it unready instead of restarting it.
     ready = spec.get("grpcReadinessService")
+    if ready and "grpc" not in (container.get("readinessProbe") or {}):
+        errors.append(f"R15: {name} has grpcReadinessService but no gRPC readiness probe")
     for kind in ("startupProbe", "livenessProbe", "readinessProbe"):
         grpc = (container.get(kind) or {}).get("grpc")
         if grpc is None or not ready:
@@ -673,8 +675,13 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         def live_name(c, ready=ready):
             c["livenessProbe"]["grpc"]["service"] = ready
 
+        def tcp_ready(c):
+            c["readinessProbe"].pop("grpc")
+            c["readinessProbe"]["tcpSocket"] = {"port": "http"}
+
         for label, change in (("readiness without the Ready service name", no_ready_name),
-                              ("liveness asking the Ready service name", live_name)):
+                              ("liveness asking the Ready service name", live_name),
+                              ("a tcpSocket readiness for a gRPC service (#110)", tcp_ready)):
             if not check(hmutate(change), values, release):
                 return [f"R15: {label} did not fail"]
         for group, resource in READY_NEEDS_GET.get(hname, []):

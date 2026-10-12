@@ -109,8 +109,8 @@ services:
         endpoint: ""
         bucketPrefix: ""
         existingSecret: ceph-rgw-s3
-    # gRPC readiness name of vws-storage#39 (internal/health ReadyService). Rendered only when
-    # global.pendingFlags is true, until images with grpc.health.v1 ship; then tcp probes otherwise.
+    # gRPC readiness name of vws-storage#39 (internal/health ReadyService). Always rendered (#110):
+    # startup and liveness ask the empty name, readiness asks this one.
     grpcReadinessService: vws.storage.v1.Ready
     rbac:
     # readiness gets these cluster-scoped objects (vws-storage#39 internal/backend/kube/ready.go).
