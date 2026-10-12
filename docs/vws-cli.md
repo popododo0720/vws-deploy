@@ -56,3 +56,7 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 ### vws help
 
 명령 목록과 공통 플래그, 종료 코드를 보인다. `-o json`이면 명령마다 한 항목. 클러스터 도구가 필요 없다.
+
+### vws render
+
+`vws render <CR.yaml> <OUT.yaml>`: `VWSCluster` CR 하나를 `charts/vws`의 values 오버레이로 바꾼다. 클러스터를 바꾸지 않는다. 같은 CR이면 같은 바이트가 나온다(`sort_keys`, 시각이나 난수 없음). 순서: CR 검증(CRD 스키마, 이름 `vws`, 알 수 없는 필드, 비밀처럼 보이는 필드나 플래그 이름) → `profiles/<spec.profile>.yaml` 위에 CR 값 반영 → `helm template -f`로 `values.schema.json` 재검증 → `OUT`에 쓴다. 잘못된 CR은 종료 코드 2이고 `OUT`을 만들지 않는다. `OUT`이 `-`이면 YAML만 stdout에 쓴다(`-o json`과 함께 쓰지 않는다). 매핑은 `docs/vwscluster.md`.

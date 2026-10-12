@@ -581,6 +581,172 @@ cmd_vws() {
   rm -rf "$tmp"
 }
 
+# crd_check ROOT: the only VWS CRD is VWSCluster in charts/vws/crds/vwsclusters.yaml, its schema has no
+# secret-shaped field name, and its API group is written there and in the example CRs only.
+crd_check() {
+  python3 - "$1" <<'PY'
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("render", root / "scripts/vws.d/lib/render.py")
+render = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(render)
+crd_path = root / "charts/vws/crds/vwsclusters.yaml"
+skip = {".git", "build", ".cache", "node_modules"}
+files = [p for p in root.rglob("*") if p.is_file() and not skip & set(p.relative_to(root).parts)]
+crds = [p for p in files if p.suffix in (".yaml", ".yml") and re.search(r"^kind:\s*CustomResourceDefinition\s*$", p.read_text(errors="ignore"), re.M)]
+if [p.relative_to(root) for p in crds] != [crd_path.relative_to(root)]:
+    sys.exit(f"R18: the only VWS CRD is {crd_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
+docs = [d for d in yaml.safe_load_all(crd_path.read_text()) if d]
+if len(docs) != 1 or docs[0]["spec"]["names"]["kind"] != "VWSCluster":
+    sys.exit("R18: vwsclusters.yaml must hold one CRD, kind VWSCluster")
+group = docs[0]["spec"]["group"]
+crd = docs[0]
+if crd["metadata"]["name"] != f"vwsclusters.{group}":
+    sys.exit("R18: the CRD name must be vwsclusters.<spec.group>")
+# The kubeconform catalog has no CustomResourceDefinition schema, so the structural rules the API
+# server enforces are checked here: apiextensions v1, one storage version, a type on every node.
+if crd.get("apiVersion") != "apiextensions.k8s.io/v1" or crd["spec"].get("scope") != "Namespaced":
+    sys.exit("R18: the CRD must be apiextensions.k8s.io/v1 and Namespaced")
+if [v["name"] for v in crd["spec"]["versions"] if v.get("storage")] != ["v1alpha1"]:
+    sys.exit("R18: v1alpha1 must be the one storage version")
+
+def structural(schema, path):
+    if not schema.get("x-kubernetes-preserve-unknown-fields") and "type" not in schema:
+        sys.exit(f"R18: CRD schema node {path or '/'} has no type (not structural)")
+    for key, sub in (schema.get("properties") or {}).items():
+        structural(sub, f"{path}.{key}")
+    for key in ("additionalProperties", "items"):
+        if isinstance(schema.get(key), dict):
+            structural(schema[key], path + "[*]")
+    if schema.get("properties") and isinstance(schema.get("additionalProperties"), dict):
+        sys.exit(f"R18: CRD schema node {path} has both properties and additionalProperties")
+
+for version in crd["spec"]["versions"]:
+    structural(version["schema"]["openAPIV3Schema"], "")
+
+def walk(schema, path):
+    for key, sub in (schema.get("properties") or {}).items():
+        if key not in render.REFERENCE_NAMES and render.SECRET_NAME.search(key):
+            sys.exit(f"R18: CR schema field {path}.{key} looks like a secret; the CR holds Secret names only")
+        walk(sub, f"{path}.{key}")
+    for key in ("additionalProperties", "items"):
+        if isinstance(schema.get(key), dict):
+            walk(schema[key], path + "[*]")
+
+for version in docs[0]["spec"]["versions"]:
+    walk(version["schema"]["openAPIV3Schema"], "")
+examples = sorted((root / "examples/vwscluster").glob("*.yaml"))
+for p in files:
+    if p == crd_path or p in examples:
+        continue
+    if group in p.read_text(errors="ignore"):
+        sys.exit(f"R18: the API group {group} is written in {p.relative_to(root)}; read it from {crd_path.relative_to(root)}")
+for p in examples:
+    if yaml.safe_load(p.read_text()).get("apiVersion") != f"{group}/v1alpha1":
+        sys.exit(f"R18: {p.relative_to(root)} apiVersion is not {group}/v1alpha1")
+PY
+}
+
+cmd_crd() {
+  local tmp
+  crd_check . || die "R18: VWSCluster CRD rules"
+  tmp=$(mktemp -d)
+  mkdir -p "$tmp/charts/vws" "$tmp/scripts/vws.d/lib"
+  cp -r charts/vws/crds "$tmp/charts/vws/"
+  cp scripts/vws.d/lib/render.py "$tmp/scripts/vws.d/lib/"
+  cp -r examples "$tmp/"
+  crd_check "$tmp" || { rm -rf "$tmp"; die "R18: a clean copy was rejected"; }
+  sed 's/vwsclusters/vwsthings/; s/kind: VWSCluster/kind: VWSThing/' charts/vws/crds/vwsclusters.yaml > "$tmp/charts/vws/crds/second.yaml"
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a second CRD was accepted"; }
+  rm "$tmp/charts/vws/crds/second.yaml"
+  sed 's/^                version:$/                adminPassword:\n                  type: string\n                version:/' charts/vws/crds/vwsclusters.yaml > "$tmp/charts/vws/crds/vwsclusters.yaml"
+  grep -q adminPassword "$tmp/charts/vws/crds/vwsclusters.yaml" || { rm -rf "$tmp"; die "R18: negative test setup failed"; }
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a secret field in the CR schema was accepted"; }
+  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
+  python3 - "$tmp/charts/vws/crds/vwsclusters.yaml" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+d["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["profile"].pop("type")
+yaml.safe_dump(d, open(sys.argv[1], "w"))
+PY
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a schema node without a type was accepted"; }
+  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
+  printf 'group: %s\n' "$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)" > "$tmp/scripts/group.txt"
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: the API group written in a second place was accepted"; }
+  rm "$tmp/scripts/group.txt"
+  sed -i 's#^apiVersion: .*#apiVersion: example.com/v1alpha1#' "$tmp/examples/vwscluster/ha.yaml"
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an example CR with another group was accepted"; }
+  rm -rf "$tmp"
+}
+
+# profile_keys FILE...: fail unless every profile sets the same key paths.
+profile_keys() {
+  python3 - "$@" <<'PY'
+import sys
+import yaml
+
+def paths(node, prefix=""):
+    if isinstance(node, dict):
+        out = set()
+        for key, value in node.items():
+            out |= paths(value, f"{prefix}.{key}")
+        return out
+    return {prefix}
+
+sets = {path: paths(yaml.safe_load(open(path))) for path in sys.argv[1:]}
+first = next(iter(sets.values()))
+for path, keys in sets.items():
+    if keys != first:
+        sys.exit(f"R19: {path} sets different keys: {sorted(keys ^ first)}")
+PY
+}
+
+cmd_profiles() {
+  local tmp profile version size
+  version=$(sed -n 's/^KUBERNETES_VERSION=//p' scripts/versions.env)
+  tmp=$(mktemp -d)
+  profile_keys profiles/*.yaml || die "R19: profiles must set the same keys"
+  for profile in single-node small ha; do
+    [[ -f profiles/${profile}.yaml ]] || die "R19: profiles/${profile}.yaml is missing"
+    helm lint charts/vws --strict -f "profiles/${profile}.yaml" >/dev/null || die "R19: helm lint fails with ${profile}"
+    helm template vws charts/vws --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
+    kubeconform -strict -kubernetes-version "$version" -cache .cache/kubeconform "$tmp/${profile}.yaml" || die "R19: kubeconform rejects ${profile}"
+    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
+    # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
+    scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.values.yaml" >/dev/null || die "R19: vws render fails on examples/vwscluster/${profile}.yaml"
+    scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.again.yaml" >/dev/null
+    cmp -s "$tmp/${profile}.values.yaml" "$tmp/${profile}.again.yaml" || die "R19: vws render is not deterministic for ${profile}"
+    helm template vws charts/vws --namespace vws -f "$tmp/${profile}.values.yaml" > "$tmp/${profile}.cr.yaml"
+    python3 scripts/check_render.py "$tmp/${profile}.cr.yaml" charts/vws/values.yaml vws "$tmp/${profile}.values.yaml" || die "R19: check_render rejects the render of the ${profile} example"
+  done
+  grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/ha.yaml" || die "R19: profile ha does not require spreading"
+  ! grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/single-node.yaml" || die "R19: profile single-node requires spreading over one node"
+  # Ceph overlays, rendered by scripts/platform.sh.
+  for profile in single-node ha; do
+    [[ -f build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml ]] || die "R19: run scripts/platform.sh first"
+  done
+  size=$(python3 -c 'import sys,yaml;print(sorted({p["spec"]["replicated"]["size"] for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"]=="CephBlockPool" for p in [d]}))' build/platform-profiles/31-rook-ceph-cluster.single-node.yaml)
+  [[ $size == "[1]" ]] || die "R19: single-node Ceph block pool size is ${size}, want [1]"
+  size=$(python3 -c 'import sys,yaml;print(sorted({p["spec"]["replicated"]["size"] for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"]=="CephBlockPool" for p in [d]}))' build/platform-profiles/31-rook-ceph-cluster.ha.yaml)
+  [[ $size == "[3]" ]] || die "R19: ha Ceph block pool size is ${size}, want [3]"
+  # Negative: a profile with one more key must fail the key check.
+  cp profiles/*.yaml "$tmp/"
+  python3 - "$tmp/small.yaml" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+d["global"]["pendingFlags"] = True
+yaml.safe_dump(d, open(sys.argv[1], "w"))
+PY
+  ! profile_keys "$tmp/single-node.yaml" "$tmp/small.yaml" "$tmp/ha.yaml" 2>/dev/null || { rm -rf "$tmp"; die "R19: a profile with an extra key was accepted"; }
+  rm -rf "$tmp"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -590,7 +756,9 @@ cmd_all() {
   cmd_agents
   cmd_config
   cmd_vws
+  cmd_crd
   cmd_bundle
+  cmd_profiles
   cmd_schema
   cmd_hooks
   cmd_docs
@@ -604,7 +772,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|crd|profiles|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -620,6 +788,8 @@ case "$command_name" in
   bundle) cmd_bundle ;;
   config) cmd_config ;;
   vws) cmd_vws ;;
+  crd) cmd_crd ;;
+  profiles) cmd_profiles ;;
   schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;

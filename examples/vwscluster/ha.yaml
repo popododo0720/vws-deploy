@@ -1,0 +1,18 @@
+# Production shape: three replicas spread over nodes (hard), a pinned image tag.
+apiVersion: vws.popododo0720.io/v1alpha1
+kind: VWSCluster
+metadata:
+  name: vws
+  namespace: vws
+spec:
+  profile: ha
+  version: 0.1.0
+  storage:
+    driver: rook-ceph
+  network:
+    driver: kube-ovn
+  observability:
+    otlpEndpoint: ""
+  services:
+    console-api:
+      replicas: 4

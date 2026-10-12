@@ -1,0 +1,17 @@
+# Three nodes, a StorageClass the cluster already has, and one flag override.
+apiVersion: vws.popododo0720.io/v1alpha1
+kind: VWSCluster
+metadata:
+  name: vws
+  namespace: vws
+spec:
+  profile: small
+  storage:
+    driver: existing
+    storageClass: fast-rbd
+  network:
+    driver: kube-ovn
+  services:
+    network:
+      flags:
+        pool: 198.18.0.0/24

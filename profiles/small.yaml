@@ -1,0 +1,31 @@
+# Profile small: helm -f profiles/small.yaml on top of charts/vws/values.yaml.
+# A profile changes values only, and every profile sets the same keys (scripts/guard.sh profiles).
+# cpu and memory are requests and limits and are ESTIMATES until measured in a lab (T2).
+global:
+  profile: small
+  topologySpread: soft
+services:
+  console:
+    replicas: 2
+    cpu: 200m
+    memory: 512Mi
+  console-api:
+    replicas: 2
+    cpu: 200m
+    memory: 512Mi
+  # Stateful services run one replica: the services have no multi-replica state (vws-deploy#43 decision 2).
+  compute:
+    cpu: 200m
+    memory: 512Mi
+    state:
+      size: 20Gi
+  storage:
+    cpu: 200m
+    memory: 512Mi
+    state:
+      size: 20Gi
+  network:
+    cpu: 200m
+    memory: 512Mi
+    state:
+      size: 20Gi

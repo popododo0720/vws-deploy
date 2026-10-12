@@ -1,0 +1,86 @@
+# Overlay for profiles/single-node.yaml, after rook-ceph-cluster.values.yaml (helm -f base -f this).
+# NO DATA PROTECTION: one mon, one copy of every block. For a lab or a test only.
+# cephBlockPools is a list, so helm replaces it whole: this is the chart default pool (ROOK_VERSION in
+# scripts/versions.env) with size 1 and failure domain osd. requireSafeReplicaSize false is what
+# Rook asks for to accept size 1 (not verified on a cluster). cephObjectStores is replaced the same way:
+# the default store with replicated size 1 pools instead of erasure coding over hosts.
+cephClusterSpec:
+  mon:
+    count: 1
+    allowMultiplePerNode: true
+  mgr:
+    count: 1
+    allowMultiplePerNode: true
+cephBlockPools:
+- name: ceph-blockpool
+  spec:
+    failureDomain: osd
+    replicated:
+      size: 1
+      requireSafeReplicaSize: false
+  storageClass:
+    allowVolumeExpansion: true
+    allowedTopologies: []
+    annotations: {}
+    enabled: true
+    isDefault: true
+    labels: {}
+    mountOptions: []
+    name: ceph-block
+    parameters:
+      csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+      csi.storage.k8s.io/controller-expand-secret-namespace: '{{ .Release.Namespace }}'
+      csi.storage.k8s.io/controller-modify-secret-name: rook-csi-rbd-provisioner
+      csi.storage.k8s.io/controller-modify-secret-namespace: '{{ .Release.Namespace }}'
+      csi.storage.k8s.io/controller-publish-secret-name: rook-csi-rbd-provisioner
+      csi.storage.k8s.io/controller-publish-secret-namespace: '{{ .Release.Namespace }}'
+      csi.storage.k8s.io/fstype: ext4
+      csi.storage.k8s.io/node-publish-secret-name: rook-csi-rbd-node
+      csi.storage.k8s.io/node-publish-secret-namespace: '{{ .Release.Namespace }}'
+      csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+      csi.storage.k8s.io/node-stage-secret-namespace: '{{ .Release.Namespace }}'
+      csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+      csi.storage.k8s.io/provisioner-secret-namespace: '{{ .Release.Namespace }}'
+      imageFeatures: layering
+      imageFormat: '2'
+    reclaimPolicy: Delete
+    volumeBindingMode: Immediate
+cephObjectStores:
+- name: ceph-objectstore
+  spec:
+    metadataPool:
+      failureDomain: osd
+      replicated:
+        size: 1
+        requireSafeReplicaSize: false
+    dataPool:
+      failureDomain: osd
+      replicated:
+        size: 1
+        requireSafeReplicaSize: false
+      parameters:
+        bulk: 'true'
+    preservePoolsOnDelete: true
+    gateway:
+      port: 80
+      resources:
+        limits:
+          memory: 2Gi
+        requests:
+          cpu: 1000m
+          memory: 1Gi
+      instances: 1
+      priorityClassName: system-cluster-critical
+  storageClass:
+    enabled: true
+    name: ceph-bucket
+    reclaimPolicy: Delete
+    volumeBindingMode: Immediate
+    annotations: {}
+    labels: {}
+    parameters:
+      region: us-east-1
+  ingress:
+    enabled: false
+  route:
+    enabled: false

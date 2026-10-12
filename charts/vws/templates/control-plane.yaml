@@ -37,7 +37,7 @@ metadata:
 {{- $startup := int ($spec.startupSeconds | default 60) }}
 {{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
-{{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
+{{- $image := printf "%s/%s:%s" $.Values.global.registry $name ($.Values.global.tag | default $.Chart.AppVersion) }}
 {{- $rbac := hasKey $spec "rbac" }}
 {{- $args := include "vws.args" (dict "root" $ "spec" $spec) | fromJsonArray }}
 {{- /* kubeconfigSecret: a Secret the operator created, mounted read-only at the directory of the
