@@ -119,6 +119,19 @@ spec:
                   type: integer
                 appliedValuesHash:
                   type: string
+                specHistory:
+                  description: Specs whose helm revision description holds only their hash (too long to record in full). Newest last, at most 10. Written by vws apply, read by vws rollback.
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: object
+                    required: [specHash, spec]
+                    properties:
+                      specHash:
+                        type: string
+                      spec:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
                 conditions:
                   type: array
                   items:

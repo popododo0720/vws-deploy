@@ -137,3 +137,31 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 마스킹: 키 이름 규칙이 먼저다. 이름이 비밀 모양인 키(대소문자 무시: `passw`, `passphrase`, `token`, `secret`, `credential`, `private`, `apikey`/`api-key`/`api_key`, `dsn`, `auth`, `key`로 끝나는 `-`/`_`/`.` 구분 이름, camelCase `...Key`)의 값은 모양과 상관없이 가린다. 중첩 객체/리스트면 그 아래 전체. JSON 파일(예: `helm get values -a -o json`)은 구조로 읽어 값만 `"[REDACTED]"`로 바꾸고 유효한 JSON으로 다시 쓰고, YAML/텍스트는 줄 단위(들여쓰기 블록 포함). `secretName`, `secretRef`, `secretKeyRef`는 Secret 이름 참조라 남긴다. `keys`, `monkey`, `privileged` 같은 비슷한 이름과 이미지 digest는 가리지 않는다. 이어서 `lib/redact.py`가 모든 파일을 훑어 PEM 개인키 블록, `Bearer` 토큰, `token` 값, `data:`/`binaryData:` 아래 40자 이상 base64 값, 12자리 이상 연속 숫자, 자격 증명 URL(`://user:pass@`)이 있는 줄을 `[REDACTED]`로 바꾼다. 스캐너는 먼저 패턴마다 명백히 가짜인 카나리를 잡는지 스스로 확인한다. 스캐너가 없거나(python3가 PATH에 없음) 카나리를 놓치면 번들을 쓰지 않고 3(실패 시 닫힘). 이미지 digest(16진수)는 `data:` 밖이라 가리지 않는다. 마스킹은 완전하지 않다: 공유 전에 사람이 번들을 훑는다(README에도 적힘).
 
 파일: umask 077로 만들고 0600, 같은 이름이 있으면 덮어쓰지 않고 2. API가 응답하지 않으면 3.
+
+### vws upgrade
+
+`vws upgrade --to TAG`: VWSCluster의 `spec.version`을 TAG로 바꾸고 `vws apply`를 돌린다(#43 5절). 같은 태그면 `unchanged`, 쓰기 0건.
+
+- apply의 helm 호출은 `--atomic --wait --timeout 15m --history-max 10`이고, 리비전 설명(`--description`)에 그 리비전을 만든 CR spec을 `vws-spec:<json>`(키 정렬한 한 줄 JSON)으로 남긴다(rollback이 CR을 되돌릴 근거). 설명이 `VWS_SPEC_DESCRIPTION_MAX`(기본 1024자)를 넘으면 `vws-spec-sha256:<spec의 sha256>`만 남기고 spec 전체는 CR의 `status.specHistory`(`{specHash, spec}`, 최신 10개, 오래된 것부터 버림)에 둔다.
+- apply가 실패하면 helm이 `--atomic`으로 릴리스를 되돌렸으므로, CR spec도 이전 값으로 다시 저장하고 1로 끝난다(CR과 릴리스가 어긋나지 않게). `vws reconfigure`와 같은 `lib/applyrun.sh`의 `vws_apply_spec`.
+- 출력에 항상 두 WARN: 백업 권고(`vws backup`(#61)이 아직 없어 최신성은 검사하지 못한다, etcd 스냅샷은 `docs/etcd-runbook.md`), 무중단 미주장(**vws-deploy#39가 닫히기 전에는 무중단을 주장하지 않는다**; 상태 서비스는 짧은 중단이 있다).
+- 무상태 서비스의 롤링 업데이트는 현재 차트 설정(RollingUpdate, PDB)을 그대로 쓴다. 플랫폼 번들 업그레이드는 범위 밖.
+- 업그레이드 뒤 판정(#43 5절 6단계): apply가 성공하면 `vws doctor`(status 포함)를 돌려 그 줄을 `after-<검사>`로 합친다. FAIL이 있으면 1이고 다음 행동으로 `vws rollback --yes`를 알린다(자동 롤백은 하지 않는다). doctor가 판정하지 못하면(종료 코드 2/3) WARN.
+- `--dry-run`은 바뀔 값만 출력한다.
+
+### vws rollback
+
+`vws rollback [--to REVISION] --yes`: helm 릴리스를 리비전으로 되돌리고 VWSCluster spec도 그 리비전에 기록된 spec으로 되돌린다. `--to`가 없으면 직전 리비전.
+
+- `--yes` 없이는 계획(리비전, 되돌아갈 spec)과 한계를 출력하고 2.
+- `--yes`: `helm rollback vws N --wait --timeout 15m` → CR spec 저장 → CR status(appliedValuesHash, observedGeneration) 기록. helm이 실패하면 CR은 건드리지 않고 1.
+- 리비전 설명이 `vws-spec-sha256:<hash>`이면 CR `status.specHistory`에서 그 hash의 spec을 찾는다. 없으면(10개를 넘어 밀려남) 아무것도 하지 않고 1.
+- 리비전 설명에 둘 다 없으면(이 변경 전 리비전, 손으로 만든 리비전) 아무것도 하지 않고 1.
+- 이미 그 리비전이고 CR spec도 같으면 `unchanged`.
+- helm 이력은 Secret에 있어 운영 역할로는 읽을 수 없다. 사용자 자격 증명으로 돌린다(못 읽으면 3).
+
+롤백 한계(출력에도 WARN으로 나온다):
+- `helm rollback`은 차트 리소스와 값만 되돌린다. 새 버전이 저장소 형식을 바꿨다면 옛 바이너리가 못 읽을 수 있다. 직전 리비전이고 저장 형식이 안 바뀐 경우에만 안전하다고 본다.
+- CRD와 플랫폼 operator는 되돌리지 않는다. 유일한 되돌림은 etcd 스냅샷(`docs/etcd-runbook.md`).
+- vws-deploy#39가 닫히기 전에는 무중단을 주장하지 않는다.
+- helm의 rollback은 새 리비전(설명 "Rollback to N")을 만든다. 그 리비전에는 `vws-spec:`이 없어 그리로 다시 rollback할 수는 없다(그 전 리비전 번호를 쓴다).
