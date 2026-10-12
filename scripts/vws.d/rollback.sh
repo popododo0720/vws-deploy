@@ -8,6 +8,8 @@
 # Helm keeps its history in Secrets: this needs credentials that can read them (not the operating role).
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 sha256sum kubectl helm)
+# shellcheck source=scripts/vws.d/lib/hash.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/hash.sh"
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
 
@@ -87,7 +89,7 @@ vws_cmd_main() {
   jq --argjson s "$spec" '{apiVersion, kind, metadata: {name: .metadata.name}, spec: $s}' <<<"$cr" >"${vws_rollback_tmp}/cr.yaml"
   values="${vws_rollback_tmp}/values.yaml"
   python3 "${VWS_ROOT}/scripts/vws.d/lib/render.py" "${vws_rollback_tmp}/cr.yaml" "$values" || vws_die_env "the recorded spec does not render"
-  hash=$(sha256sum "$values" | cut -d' ' -f1)
+  hash=$(vws_applied_hash "$values")
   generation=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null | jq -r '.metadata.generation // 0') || generation=0
   vws_kubectl patch vwsclusters vws --subresource=status --type=merge -p "$(jq -nc --argjson g "$generation" --arg h "$hash" \
     '{status: {observedGeneration: $g, appliedValuesHash: $h, conditions: [{type: "Applied", status: "True", reason: "RolledBack", message: "vws rollback"}]}}')" >/dev/null ||

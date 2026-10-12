@@ -54,7 +54,7 @@ vws_check_applied_hash() {
     vws_emit FAIL applied-hash "the VWSCluster does not render: $(head -1 "${vws_status_tmp}/render.err"); next: fix the CR (vws init)"
     return 0
   fi
-  hash=$(sha256sum "$vws_status_values" | cut -d' ' -f1)
+  hash=$(vws_applied_hash "$vws_status_values")
   applied=$(jq -r '.status.appliedValuesHash // ""' <<<"$vws_status_cr")
   if [[ -z $applied ]]; then
     vws_emit WARN applied-hash "never applied (no status.appliedValuesHash); run vws apply"

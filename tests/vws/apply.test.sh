@@ -33,6 +33,20 @@ run_vws_real apply;                              expect_rc "the second apply exi
 expect_text "the second apply is unchanged" "$OUT" "unchanged"
 assert_no_changes "the second apply changes nothing"
 
+# The applied hash covers the chart: the same values with a chart-only change are not unchanged (#101).
+mkdir -p "${WORK}/root/charts" && cp -r "${VWS_TEST_ROOT}/charts/vws" "${WORK}/root/charts/vws"
+printf 'a: 1\n' >"${WORK}/values.yaml"
+h1=$(VWS_ROOT="${WORK}/root" bash -c 'source "$1"; vws_applied_hash "$2"' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/hash.sh" "${WORK}/values.yaml")
+echo '# chart-only change' >>"${WORK}/root/charts/vws/templates/control-plane.yaml"
+h2=$(VWS_ROOT="${WORK}/root" bash -c 'source "$1"; vws_applied_hash "$2"' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/hash.sh" "${WORK}/values.yaml")
+if [[ -n $h1 && $h1 != "$h2" ]]; then ok "a chart-only change changes the applied hash"; else bad "chart hash" "${h1} ${h2}"; fi
+h3=$(sha256sum "${WORK}/values.yaml" | cut -d' ' -f1)
+if [[ $h1 != "$h3" ]]; then ok "the applied hash is not the values hash alone"; else bad "values-only hash" "$h1"; fi
+jq '.status.appliedValuesHash = "values-only-hash-of-an-older-chart"' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real apply;                              expect_rc "an apply after a chart change exits 0" 0
+if [[ $OUT != *unchanged* ]]; then ok "an apply after a chart change is not unchanged"; else bad "chart change applied" "$OUT"; fi
+
 jq '.metadata.generation = 3' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
 mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real --dry-run apply;                    expect_rc "a new generation with --dry-run exits 0" 0

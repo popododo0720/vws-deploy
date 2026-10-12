@@ -7,6 +7,8 @@
 # (apply asks nothing today; the flag is accepted so automation can state it).
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl helm sha256sum)
+# shellcheck source=scripts/vws.d/lib/hash.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/hash.sh"
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
 # shellcheck source=scripts/vws.d/lib/checks.sh
@@ -40,7 +42,7 @@ vws_cmd_main() {
     vws_usage "the VWSCluster in the cluster is invalid (see above)"
   fi
   values="${tmp}/values.yaml"
-  hash=$(sha256sum "$values" | cut -d' ' -f1)
+  hash=$(vws_applied_hash "$values")
   generation=$(jq -r '.metadata.generation // 0' <<<"$cr")
   applied=$(jq -r '.status.appliedValuesHash // ""' <<<"$cr")
   observed=$(jq -r '.status.observedGeneration // -1' <<<"$cr")
