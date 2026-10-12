@@ -1,0 +1,1 @@
+{"apiVersion":"FILLED_BY_TEST","kind":"VWSCluster","metadata":{"name":"vws","namespace":"vws","managedFields":[{"manager":"vws"}]},"spec":{"profile":"single-node"},"status":{"observedGeneration":2}}

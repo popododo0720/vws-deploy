@@ -1,0 +1,3 @@
+Name: compute-0
+Environment:
+  DSN: postgres://fakeuser:fakepass@db.example.invalid/vws

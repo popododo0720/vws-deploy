@@ -1,0 +1,1 @@
+{"items": [{"metadata": {"namespace": "vws", "name": "compute-0"}, "status": {"phase": "Running", "containerStatuses": [{"ready": false}]}}, {"metadata": {"namespace": "vws", "name": "console-1"}, "status": {"phase": "Running", "containerStatuses": [{"ready": true}]}}, {"metadata": {"namespace": "default", "name": "other"}, "status": {"phase": "Pending"}}]}
