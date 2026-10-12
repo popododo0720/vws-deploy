@@ -15,11 +15,14 @@ order=$(grep -o 'bundle  [0-9a-z.-]*' <<<"$OUT" | awk '{print $2}' | paste -sd' 
 want=$(cd "$VWS_BUNDLE_DIR" && printf '%s\n' *.yaml | sort | paste -sd' ')
 if [[ $order == "$want" ]]; then ok "the bundle goes in file number order"; else bad "bundle order" "${order} vs ${want}"; fi
 applies=$(grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG")
-if [[ $applies -eq 3 ]]; then ok "one apply per bundle file"; else bad "one apply per bundle file" "$applies"; fi
+# One apply for the VWSCluster CRD (#112, helm never upgrades crds/) and one per bundle file.
+if [[ $applies -eq 4 ]]; then ok "one CRD apply and one apply per bundle file"; else bad "one CRD apply and one apply per bundle file" "$applies"; fi
+first_doc=$(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -m1 '^kind:' || true)
+if [[ $first_doc == "kind: CustomResourceDefinition" ]] && grep -q 'name: vwsclusters' <(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin"); then ok "the VWSCluster CRD is applied before the bundle"; else bad "CRD first" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 # Bundle files carry their own namespaces; -n vws on their apply makes kubectl refuse them.
 if grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -q -e '--namespace' -e $'\t-n '; then bad "bundle apply has no namespace flag" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; else ok "bundle apply has no namespace flag"; fi
 if grep $'^kubectl\twait' "$VWS_FAKE_LOG" | grep -e ' -A' | grep -q -e '--namespace'; then bad "the -A wait has no namespace flag" "$(grep $'^kubectl\twait' "$VWS_FAKE_LOG")"; else ok "the -A wait has no namespace flag"; fi
-if [[ $(grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -c -e '--force-conflicts') -eq 3 ]]; then ok "bundle apply takes fields back from operators"; else bad "bundle apply --force-conflicts" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; fi
+if [[ $(grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -c -e '--force-conflicts') -eq 4 ]]; then ok "bundle apply takes fields back from operators"; else bad "bundle apply --force-conflicts" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; fi
 if grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -q -e '--namespace=vws'; then ok "the CR status patch keeps the release namespace"; else bad "status patch namespace" "$(grep $'^kubectl\tpatch' "$VWS_FAKE_LOG")"; fi
 first_helm=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
 last_apply=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | tail -1 | cut -d: -f1)

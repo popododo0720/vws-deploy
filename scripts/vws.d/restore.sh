@@ -69,7 +69,7 @@ vws_cmd_main() {
   vws_confirm "vws restore"
 
   # 3. Apply.
-  vws_kubectl apply --server-side --field-manager=vws -f - <"${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" >/dev/null || vws_die_env "cannot apply CRD ${crd}"
+  vws_apply_crd
   if ((cr_changed)); then
     vws_save_spec "$cr" "$spec" || vws_die_env "cannot save VWSCluster vws"
     vws_emit OK restore "VWSCluster vws saved from the backup"

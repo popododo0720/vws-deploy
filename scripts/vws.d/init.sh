@@ -7,6 +7,8 @@
 VWS_NEED=(jq python3 kubectl)
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
+# shellcheck source=scripts/vws.d/lib/applyrun.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
 vws_init_ask() { # PROMPT DEFAULT -> answer
   local answer
@@ -61,6 +63,7 @@ PY
     vws_emit OK init "unchanged: VWSCluster vws already has this spec"
     return 0
   fi
+  vws_apply_crd
   vws_kubectl apply --server-side --field-manager=vws -f - <"$file" >/dev/null || { rm -f "$file"; vws_die_env "cannot save VWSCluster vws"; }
   rm -f "$file"
   vws_emit OK init "saved VWSCluster vws in ${VWS_NAMESPACE}"
