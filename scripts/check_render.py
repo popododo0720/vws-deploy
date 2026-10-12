@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 ALLOWED_KINDS = {
+    "Namespace",
     "ServiceAccount",
     "Service",
     "Deployment",
@@ -26,48 +27,108 @@ ALLOWED_KINDS = {
 }
 
 
+# Resources a ClusterRole rule may name. Everything else is namespaced and needs a rule with a
+# namespace. The kubeovn.io entries are the CRDs of the pinned bundle that VWS writes; their
+# scope is Cluster in the rendered Kube-OVN CRDs.
+CLUSTER_SCOPED = {
+    ("", "namespaces"),
+    ("", "nodes"),
+    ("", "persistentvolumes"),
+    ("storage.k8s.io", "storageclasses"),
+    ("snapshot.storage.k8s.io", "volumesnapshotclasses"),
+    ("kubeovn.io", "vpcs"),
+    ("kubeovn.io", "subnets"),
+    ("kubeovn.io", "security-groups"),
+    ("kubeovn.io", "ovn-eips"),
+    ("kubeovn.io", "ovn-fips"),
+    ("kubeovn.io", "ovn-snat-rules"),
+    ("kubeovn.io", "vpc-nat-gateways"),
+}
+
+
 def load_docs(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc]
 
 
-def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str) -> list[str]:
+def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns: str) -> list[str]:
     errors: list[str] = []
     want = f"{release}-{name}"
     cluster_role = by_kind.get("ClusterRole", {}).get(want)
     binding = by_kind.get("ClusterRoleBinding", {}).get(want)
-    lease_role = by_kind.get("Role", {}).get(f"{name}-leader")
-    lease_binding = by_kind.get("RoleBinding", {}).get(f"{name}-leader")
+    lease_role = by_kind.get("Role", {}).get((ns, f"{name}-leader"))
+    lease_binding = by_kind.get("RoleBinding", {}).get((ns, f"{name}-leader"))
     mounted = pod.get("automountServiceAccountToken")
+    own_roles = {
+        key[0]: obj for key, obj in by_kind.get("Role", {}).items() if key[1] == want
+    }
+    own_bindings = {
+        key[0]: obj for key, obj in by_kind.get("RoleBinding", {}).items() if key[1] == want
+    }
     if "rbac" not in spec:
         if mounted is not False:
             errors.append(f"R11: {name} has no rbac and must not mount an API token")
-        if any(obj is not None for obj in (cluster_role, binding, lease_role, lease_binding)):
+        if any(
+            obj is not None for obj in (cluster_role, binding, lease_role, lease_binding)
+        ) or own_roles or own_bindings:
             errors.append(f"R11: {name} has no rbac but renders RBAC objects")
         return errors
     if mounted is not True:
         errors.append(f"R11: {name} has rbac and needs an API token")
-    for kind, obj in (
-        ("ClusterRole", cluster_role),
-        ("ClusterRoleBinding", binding),
-        ("Role", lease_role),
-        ("RoleBinding", lease_binding),
-    ):
+
+    cluster_rules = [rule for rule in spec["rbac"] if "namespace" not in rule]
+    ns_rules: dict[str, list[dict]] = {}
+    for rule in spec["rbac"]:
+        if "namespace" in rule:
+            ns_rules.setdefault(rule["namespace"], []).append(
+                {key: value for key, value in rule.items() if key != "namespace"}
+            )
+    for rule in cluster_rules:
+        for group in rule["apiGroups"]:
+            for resource in rule["resources"]:
+                if (group, resource) not in CLUSTER_SCOPED:
+                    errors.append(
+                        f"R11: {name} gives {group or 'core'}/{resource} to every namespace;"
+                        " add a namespace to the rule or list it in CLUSTER_SCOPED"
+                    )
+
+    expected = [("Role", lease_role), ("RoleBinding", lease_binding)]
+    if cluster_rules:
+        expected += [("ClusterRole", cluster_role), ("ClusterRoleBinding", binding)]
+    elif cluster_role is not None or binding is not None:
+        errors.append(f"R11: {name} has no cluster rules but renders a ClusterRole")
+    for kind, obj in expected:
         if obj is None:
             errors.append(f"R11: missing {kind} for {name}")
-    for obj in (cluster_role, lease_role):
+    for namespace in ns_rules:
+        if own_roles.get(namespace) is None:
+            errors.append(f"R11: missing Role {want} in {namespace}")
+        if own_bindings.get(namespace) is None:
+            errors.append(f"R11: missing RoleBinding {want} in {namespace}")
+        if namespace not in by_kind.get("Namespace", {}):
+            errors.append(f"R11: missing Namespace {namespace}")
+    for extra in (set(own_roles) | set(own_bindings)) - set(ns_rules):
+        errors.append(f"R11: {name} has a Role or RoleBinding in {extra} that values do not ask for")
+
+    for obj in [cluster_role, lease_role, *own_roles.values()]:
         for rule in (obj or {}).get("rules") or []:
             for field in ("apiGroups", "resources", "verbs", "resourceNames"):
                 if any("*" in item for item in rule.get(field) or []):
                     errors.append(f"R11: {name} has a wildcard in {field}")
-    if cluster_role is not None and cluster_role.get("rules") != spec["rbac"]:
+    if cluster_role is not None and cluster_role.get("rules") != cluster_rules:
         errors.append(f"R11: ClusterRole {want} does not match values")
+    for namespace, rules in ns_rules.items():
+        role = own_roles.get(namespace)
+        if role is not None and role.get("rules") != rules:
+            errors.append(f"R11: Role {want} in {namespace} does not match values")
     if lease_role is not None:
         leases = [r for r in lease_role["rules"] if r.get("resourceNames") == [name]]
         if not leases or not set(leases[0]["verbs"]) >= {"get", "update"}:
             errors.append(f"R11: {name} lacks get and update on its own Lease")
-    for obj in (binding, lease_binding):
-        subjects = (obj or {}).get("subjects") or []
-        if [s.get("name") for s in subjects] != [name]:
+    for obj in (binding, lease_binding, *own_bindings.values()):
+        if obj is None:
+            continue
+        subjects = obj.get("subjects") or []
+        if [(s.get("name"), s.get("namespace")) for s in subjects] != [(name, ns)]:
             errors.append(f"R11: {name} binding must name only its own ServiceAccount")
     return errors
 
@@ -81,10 +142,11 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         if kind not in ALLOWED_KINDS:
             errors.append(f"R10: kind {kind} is not a control-plane object")
             continue
-        if name in by_kind.get(kind, {}):
+        key = (doc["metadata"].get("namespace"), name) if kind in ("Role", "RoleBinding") else name
+        if key in by_kind.get(kind, {}):
             errors.append(f"R5: duplicate {kind} {name}")
             continue
-        by_kind.setdefault(kind, {})[name] = doc
+        by_kind.setdefault(kind, {})[key] = doc
         pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
         if pod.get("hostNetwork") or pod.get("hostPID") or pod.get("hostIPC"):
             errors.append(f"R10: {kind}/{name} joins the host namespace")
@@ -142,7 +204,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             want = "LoadBalancer" if spec.get("external") else "ClusterIP"
             if (service.get("spec") or {}).get("type") != want:
                 errors.append(f"R4: Service {name} type is not {want}")
-        errors.extend(check_rbac(name, spec, by_kind, pod, release))
+        errors.extend(check_rbac(name, spec, by_kind, pod, release, workload["metadata"].get("namespace")))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -248,30 +310,77 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not check(docs, broken_values, release):
             return ["R4: null state did not fail"]
 
-    with_rbac = next(
-        (name for name, spec in values["services"].items() if "rbac" in (spec or {})), None
-    )
-    if with_rbac is not None:
+    def service_with(pred):
+        return next(
+            (
+                name
+                for name, spec in values["services"].items()
+                if any(pred(rule) for rule in (spec or {}).get("rbac") or [])
+            ),
+            None,
+        )
+
+    with_cluster = service_with(lambda rule: "namespace" not in rule)
+    with_ns = service_with(lambda rule: "namespace" in rule)
+    with_rbac = with_cluster or with_ns
+
+    def without(kind, name, namespace=None):
+        return [
+            doc
+            for doc in copy.deepcopy(docs)
+            if not (
+                doc.get("kind") == kind
+                and doc["metadata"]["name"] == name
+                and (namespace is None or doc["metadata"].get("namespace") == namespace)
+            )
+        ]
+
+    if with_cluster is not None:
         broken = copy.deepcopy(docs)
         for doc in broken:
-            if doc.get("kind") == "ClusterRole" and doc["metadata"]["name"] == f"{release}-{with_rbac}":
+            if doc.get("kind") == "ClusterRole" and doc["metadata"]["name"] == f"{release}-{with_cluster}":
                 doc["rules"][0]["resources"] = ["*"]
         if not check(broken, values, release):
             return ["R11: a wildcard resource did not fail"]
-        broken = [
-            doc
-            for doc in copy.deepcopy(docs)
-            if not (doc.get("kind") == "RoleBinding" and doc["metadata"]["name"] == f"{with_rbac}-leader")
-        ]
-        if not check(broken, values, release):
-            return ["R11: removing the Lease binding did not fail"]
-        broken = [
-            doc
-            for doc in copy.deepcopy(docs)
-            if not (doc.get("kind") == "ClusterRoleBinding" and doc["metadata"]["name"] == f"{release}-{with_rbac}")
-        ]
-        if not check(broken, values, release):
+        if not check(without("ClusterRoleBinding", f"{release}-{with_cluster}"), values, release):
             return ["R11: removing the ClusterRoleBinding did not fail"]
+    if with_rbac is not None:
+        if not check(without("RoleBinding", f"{with_rbac}-leader"), values, release):
+            return ["R11: removing the Lease binding did not fail"]
+    if with_ns is not None:
+        role = next(
+            doc
+            for doc in docs
+            if doc.get("kind") == "Role"
+            and doc["metadata"]["name"] == f"{release}-{with_ns}"
+        )
+        namespace = role["metadata"]["namespace"]
+        if not check(without("Role", f"{release}-{with_ns}", namespace), values, release):
+            return ["R11: removing a namespaced Role did not fail"]
+        if not check(without("RoleBinding", f"{release}-{with_ns}", namespace), values, release):
+            return ["R11: removing a namespaced RoleBinding did not fail"]
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc is not None and doc.get("kind") == "Role" and doc["metadata"] == role["metadata"]:
+                doc["rules"][0]["verbs"] = doc["rules"][0]["verbs"] + ["patch"]
+        if not check(broken, values, release):
+            return ["R11: a Role that differs from values did not fail"]
+        broken = copy.deepcopy(docs)
+        extra = copy.deepcopy(role)
+        extra["metadata"]["namespace"] = "elsewhere"
+        broken.append(extra)
+        if not check(broken, values, release):
+            return ["R11: a Role in a namespace that values do not ask for did not fail"]
+        broken = without("Namespace", namespace)
+        if not check(broken, values, release):
+            return ["R11: a missing Namespace did not fail"]
+        # A namespaced resource in a ClusterRole is the cluster-wide grant R11 forbids.
+        broken_values = copy.deepcopy(values)
+        for rule in broken_values["services"][with_ns]["rbac"]:
+            rule.pop("namespace", None)
+        wide = [err for err in check(docs, broken_values, release) if "every namespace" in err]
+        if not wide:
+            return ["R11: a namespaced resource without a namespace did not fail"]
 
     # A catalog with only one kind must still prove the other kind's check.
     synthetic = check(

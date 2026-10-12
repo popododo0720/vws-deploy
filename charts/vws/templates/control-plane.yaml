@@ -2,9 +2,28 @@
 One bundle per key in the services map: ServiceAccount, Service, workload, PDB.
 state present -> StatefulSet, one retained volume, headless peers Service.
 state absent -> Deployment, at least two replicas.
-rbac present -> API token, a ClusterRole from the listed rules, and a Lease Role for leader election.
+rbac present -> API token, a Lease Role for leader election, and the listed rules:
+a rule with a namespace becomes a Role and RoleBinding in that namespace, a rule without one goes into a ClusterRole.
+Every namespace named by a rule is rendered once and kept on uninstall.
 Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 */}}
+{{- $namespaces := dict }}
+{{- range $name := keys .Values.services | sortAlpha }}
+  {{- range (index $.Values.services $name).rbac }}
+    {{- if .namespace }}{{ $_ := set $namespaces .namespace true }}{{ end }}
+  {{- end }}
+{{- end }}
+{{- range $ns := keys $namespaces | sortAlpha }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/part-of: vws
+{{- end }}
 {{- range $name := keys .Values.services | sortAlpha }}
 {{- $spec := index $.Values.services $name }}
 {{- $stateful := hasKey $spec "state" }}
@@ -136,6 +155,16 @@ spec:
     matchLabels:
       {{- include "vws.selector" $ctx | nindent 6 }}
 {{- if $rbac }}
+{{- $cluster := list }}
+{{- $byNamespace := dict }}
+{{- range $spec.rbac }}
+  {{- if .namespace }}
+    {{- $byNamespace = set $byNamespace .namespace (append (get $byNamespace .namespace | default (list)) (omit . "namespace")) }}
+  {{- else }}
+    {{- $cluster = append $cluster . }}
+  {{- end }}
+{{- end }}
+{{- if $cluster }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -144,7 +173,7 @@ metadata:
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
 rules:
-  {{- toYaml $spec.rbac | nindent 2 }}
+  {{- toYaml $cluster | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -160,6 +189,35 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- range $ns := keys $byNamespace | sortAlpha }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+rules:
+  {{- toYaml (get $byNamespace $ns) | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $.Release.Name }}-{{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
