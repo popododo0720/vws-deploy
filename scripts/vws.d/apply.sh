@@ -13,6 +13,8 @@ source "${VWS_ROOT}/scripts/vws.d/lib/hash.sh"
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
 # shellcheck source=scripts/vws.d/lib/checks.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/checks.sh"
+# shellcheck source=scripts/vws.d/lib/applyrun.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
 vws_apply_preflight() {
   local profile=$1
@@ -55,6 +57,9 @@ vws_cmd_main() {
 
   vws_apply_preflight "$profile"
   vws_emit OK secrets "none required: the chart takes no Secret from the installer"
+  # The CRD of this chart, before the bundle and helm (helm never upgrades crds/, #112).
+  vws_apply_crd
+  vws_emit OK crd "VWSCluster CRD applied from charts/vws/crds"
 
   # VWS_BUNDLE_DIR: the rendered bundle, build/platform from scripts/platform.sh (the harness points it at fixtures).
   local bundle=${VWS_BUNDLE_DIR:-${VWS_ROOT}/build/platform}

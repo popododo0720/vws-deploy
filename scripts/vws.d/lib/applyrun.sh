@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
-# Shared by vws reconfigure and vws upgrade. Source after common.sh.
+# Shared by vws reconfigure, upgrade, init, apply and restore. Source after common.sh.
+
+# vws_apply_crd: server-side apply charts/vws/crds/vwsclusters.yaml. Helm installs crds/ on the first
+# install only and never upgrades them, so a cluster keeps the CRD of the chart it was installed with
+# and rejects a VWSCluster field a newer chart added ("field not declared in schema", #112). Every
+# command that writes the CR (or applies a newer chart) calls this first. --force-conflicts takes
+# .spec over from whoever created the CRD (helm, or kubectl client-side apply). Cluster-scoped: no -n.
+vws_apply_crd() {
+  VWS_NAMESPACE='' vws_kubectl apply --server-side --field-manager=vws --force-conflicts -f - \
+    <"${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" >/dev/null ||
+    vws_die_env "cannot apply the VWSCluster CRD from charts/vws/crds/vwsclusters.yaml"
+}
 
 # vws_save_spec CR_JSON SPEC_JSON: server-side apply the VWSCluster of CR_JSON with that spec.
 vws_save_spec() {
@@ -29,6 +40,7 @@ vws_run_apply() {
 # line is emitted and the command exits 1 through vws_finish, so CR and release agree.
 vws_apply_spec() {
   local name=$1 cr=$2 new=$3 rc=0
+  vws_apply_crd
   vws_save_spec "$cr" "$new" || vws_die_env "cannot save VWSCluster vws"
   vws_emit OK "$name" "saved VWSCluster vws; applying"
   vws_run_apply || rc=$?
