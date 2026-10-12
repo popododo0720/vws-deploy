@@ -109,6 +109,30 @@ vws_check_nodes() {
   else
     vws_emit FAIL node-resources "allocatable ${have_cpu}m/${have_mem}Mi, VWS requests ${need_cpu}m/${need_mem}Mi"
   fi
+  vws_check_node_ip "$json"
+}
+
+# vws_check_node_ip NODES_JSON: node addresses must be static (docs/quickstart.md). A k3s node that
+# does not pin --node-ip follows whatever DHCP hands out; after a lease change the node, the CNI
+# tunnels and every certificate SAN point at the old address (vws-deploy#118). Only k3s exposes the
+# flags (annotation k3s.io/node-args); other distributions are not checked.
+vws_check_node_ip() {
+  local json=$1 bad k3s
+  k3s=$(jq '[.items[] | select(.metadata.annotations["k3s.io/node-args"])] | length' <<<"$json")
+  bad=$(jq -r '[.items[] | select(.metadata.annotations["k3s.io/node-args"]) |
+      (.metadata.annotations["k3s.io/node-args"] | try fromjson catch []) as $a |
+      ([range(0; $a | length) as $i | if $a[$i] == "--node-ip" then $a[$i + 1]
+        elif ($a[$i] | startswith("--node-ip=")) then $a[$i][10:] else empty end] | first // "") as $pin |
+      ([.status.addresses[]? | select(.type == "InternalIP") | .address] | first // "") as $ip |
+      select($pin == "" or $pin != $ip) |
+      "\(.metadata.name) (InternalIP \($ip), --node-ip \(if $pin == "" then "not set" else $pin end))"] | join(", ")' <<<"$json")
+  if ((k3s == 0)); then
+    vws_emit OK node-ip "not k3s; keep node addresses static (docs/quickstart.md)"
+  elif [[ -z $bad ]]; then
+    vws_emit OK node-ip "${k3s} k3s nodes pin --node-ip to their InternalIP"
+  else
+    vws_emit WARN node-ip "${bad}: pin a static address with --node-ip, a DHCP change breaks the node (docs/quickstart.md)"
+  fi
 }
 
 vws_check_storage() {

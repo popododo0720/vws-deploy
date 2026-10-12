@@ -43,6 +43,21 @@ run_vws_real preflight --profile ha;              expect_rc "3 nodes for ha exit
 edit_json kubectl/get_nodes.json '.items[1].status.conditions[0].status = "False"'
 run_vws_real preflight --profile small;           expect_rc "a NotReady node does not count" 1
 
+# #118: k3s nodes must pin --node-ip to their InternalIP; other distributions are not checked.
+scenario node-ip
+run_vws_real preflight --profile single-node;     expect_rc "a node without k3s args exits 0" 0
+expect_line "a node without k3s args is OK" OK node-ip
+edit_json kubectl/get_nodes.json '.items[0].status.addresses = [{"type": "InternalIP", "address": "10.0.0.5"}]
+  | .items[0].metadata.annotations["k3s.io/node-args"] = "[\"server\",\"--node-ip\",\"10.0.0.5\"]"'
+run_vws_real preflight --profile single-node;     expect_rc "a pinned k3s node exits 0" 0
+expect_line "a pinned k3s node is OK" OK node-ip
+edit_json kubectl/get_nodes.json '.items[0].metadata.annotations["k3s.io/node-args"] = "[\"server\",\"--node-ip=10.0.0.9\"]"'
+run_vws_real preflight --profile single-node;     expect_rc "a mismatched --node-ip only warns" 0
+expect_line "a mismatched --node-ip warns" WARN node-ip
+edit_json kubectl/get_nodes.json '.items[0].metadata.annotations["k3s.io/node-args"] = "[\"server\"]"'
+run_vws_real preflight --profile single-node
+expect_line "a k3s node without --node-ip warns" WARN node-ip
+
 scenario small-node
 edit_json kubectl/get_nodes.json '.items[0].status.allocatable = {"cpu": "500m", "memory": "1Gi"}'
 run_vws_real preflight --profile single-node;     expect_rc "too little cpu and memory exits 1" 1
