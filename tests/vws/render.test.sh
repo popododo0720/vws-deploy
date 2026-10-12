@@ -43,6 +43,19 @@ bad_cr "otlp endpoint the chart cannot take yet" 's/otlpEndpoint: ""/otlpEndpoin
 bad_cr "existing driver without a class" 's/driver: rook-ceph/driver: existing/'
 bad_cr "version with a slash" 's/version: 0.1.0/version: a\/b/'
 
+# spec.storage.s3.rgw goes to services.storage.s3.rgw so vws apply keeps RGW on (#108).
+sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    s3:\n      rgw:\n        enabled: true\n        endpoint: http:\/\/10.77.0.101:8080\n        bucketPrefix: vwslab\n        existingSecret: ceph-rgw-s3/' "${EX}/small.yaml" >"${WORK}/rgw.yaml"
+run_vws_real render "${WORK}/rgw.yaml" "${WORK}/rgw.out"; expect_rc "s3.rgw renders" 0
+if python3 -c 'import sys,yaml; r=yaml.safe_load(open(sys.argv[1]))["services"]["storage"]["s3"]["rgw"]; sys.exit(r != {"enabled": True, "endpoint": "http://10.77.0.101:8080", "bucketPrefix": "vwslab", "existingSecret": "ceph-rgw-s3"})' "${WORK}/rgw.out"; then
+  ok "s3.rgw becomes services.storage.s3.rgw"; else bad "s3.rgw values" "$(cat "${WORK}/rgw.out")"; fi
+if ! grep -q 's3:' "${WORK}/small.yaml"; then ok "without s3.rgw the overlay leaves the object backend off"; else bad "no s3 by default" "$(cat "${WORK}/small.yaml")"; fi
+for prefix in abcdefghij123456789 Acme -acme; do
+  sed -e "s/bucketPrefix: vwslab/bucketPrefix: ${prefix}/" "${WORK}/rgw.yaml" >"${WORK}/rgwbad.yaml"
+  run_vws_real render "${WORK}/rgwbad.yaml" "${WORK}/rgwbad.out"; expect_rc "bucketPrefix ${prefix} exits 2" 2
+done
+sed -e 's/        existingSecret: ceph-rgw-s3/        existingSecret: ceph-rgw-s3\n        secretKey: x/' "${WORK}/rgw.yaml" >"${WORK}/rgwkey.yaml"
+run_vws_real render "${WORK}/rgwkey.yaml" "${WORK}/rgwkey.out"; expect_rc "a key under s3.rgw exits 2" 2
+
 printf -- '---\na: 1\n---\nb: 2\n' >"${WORK}/two.yaml"
 run_vws_real render "${WORK}/two.yaml" "${WORK}/x.yaml"; expect_rc "two documents exit 2" 2
 run_vws_real render "${WORK}/missing.yaml" "${WORK}/x.yaml"; expect_rc "a missing file exits 2" 2
