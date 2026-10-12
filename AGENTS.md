@@ -11,11 +11,11 @@
 | R4 | 제어부 워크로드는 startup, liveness, readiness, PodDisruptionBudget, restartPolicy Always를 갖고, state가 있으면 재시작 뒤에도 남는 볼륨을 갖는다 | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
 | R5 | 제어 서비스를 추가하거나 고치는 곳은 values.yaml의 services 맵 하나다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
 | R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
-| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다 | `.github/workflows/ci.yml` | `scripts/guard.sh ci` |
+| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`뿐이다 | `.github/workflows/ci.yml` | `scripts/guard.sh ci` |
 | R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
 | R10 | 호스트에 우리 유닛을 두지 않는다. 저장소에 `.service`, `.target` 파일과 `host/`가 없고, 차트는 호스트 네임스페이스나 hostPath를 쓰지 않는다 | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
 | R11 | 제어 서비스의 쿠버네티스 API 권한은 values.yaml의 서비스별 `rbac`뿐이다. 와일드카드와 escalate, bind 같은 동사를 쓰지 않고, 리더 선출용 Lease는 자기 이름의 것만 쓴다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh recovery` |
-| R12 | 플랫폼 번들(KubeVirt, CDI, Multus, Kube-OVN, Rook-Ceph)의 버전은 `scripts/versions.env`에만 쓰고, 필요한 커널 모듈을 문서에 적는다 | `scripts/versions.env` `docs/platform-bundle.md` | `scripts/guard.sh bundle` |
+| R12 | 플랫폼 번들(KubeVirt, CDI, Multus, Kube-OVN, Rook-Ceph)의 버전은 `scripts/versions.env`에만 쓰고(로컬 랩의 k3s 포함), 필요한 커널 모듈을 문서에 적는다 | `scripts/versions.env` `docs/platform-bundle.md` | `scripts/guard.sh bundle` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 
