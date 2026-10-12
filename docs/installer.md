@@ -55,10 +55,10 @@ cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임�
 
 ## 설치 이미지 발행과 digest 고정 (#96)
 
-`.github/workflows/installer-image.yml`이 `bootstrap/Containerfile`을 빌드한다.
+`.github/workflows/installer-image.yml`(풀 리퀘스트 빌드)과 `.github/workflows/installer-publish.yml`(main·`v*` 태그 푸시 발행)이 `bootstrap/Containerfile`을 빌드한다. 둘을 나눠 풀 리퀘스트 체크에 건너뛴 잡이 나오지 않는다.
 
 - 풀 리퀘스트: 빌드만 한다. 권한은 `contents: read`이고 푸시하지 않는다.
-- main 푸시와 `v*` 태그 푸시: `publish` 잡만 `packages: write`를 받아 `ghcr.io/<owner>/vws/installer:sha-<커밋>`과 `:<브랜치 또는 태그>`로 푸시한다. 잡 요약에 `VWS_INSTALLER_IMAGE=...@sha256:...` 한 줄을 남긴다.
+- main 푸시와 `v*` 태그 푸시: `installer-publish.yml`의 `publish` 잡만 `packages: write`를 받아 `ghcr.io/<owner>/vws/installer:sha-<커밋>`과 `:<브랜치 또는 태그>`로 푸시한다. 잡 요약에 `VWS_INSTALLER_IMAGE=...@sha256:...` 한 줄을 남긴다.
 - CI는 저장소에 커밋하지 않는다. digest 고정은 사람이 한다.
   1. 발행된 실행의 잡 요약에서 `VWS_INSTALLER_IMAGE` 줄을 복사한다(또는 `crane digest ghcr.io/<owner>/vws/installer:<태그>`).
   2. 새 브랜치에서 `scripts/versions.env`의 `VWS_INSTALLER_IMAGE`와 "NOT PUBLISHED YET" 주석을 바꾼다. 커밋 제목은 `ci: 설치 이미지 digest를 고정한다`.
