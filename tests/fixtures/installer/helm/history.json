@@ -1,0 +1,17 @@
+[
+  {
+    "revision": 1,
+    "status": "superseded",
+    "description": "Install complete"
+  },
+  {
+    "revision": 2,
+    "status": "superseded",
+    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"},\"version\":\"v2\"}"
+  },
+  {
+    "revision": 3,
+    "status": "deployed",
+    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"}}"
+  }
+]

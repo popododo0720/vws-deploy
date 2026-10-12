@@ -64,7 +64,10 @@ vws_cmd_main() {
     vws_emit OK bundle "$(basename "$file")"
   done
 
-  vws_helm upgrade --install vws "${VWS_ROOT}/charts/vws" -f "$values" --atomic --wait --timeout 15m >/dev/null ||
+  # --description carries the spec this revision came from, so vws rollback can put the CR back in
+  # step with the release (vws-deploy#60). --history-max 10 bounds the release history (#43 section 5).
+  vws_helm upgrade --install vws "${VWS_ROOT}/charts/vws" -f "$values" --atomic --wait --timeout 15m --history-max 10 \
+    --description "vws-spec:$(jq -c '.spec' <<<"$cr")" >/dev/null ||
     { rm -rf "$tmp"; vws_emit FAIL helm "helm release upgrade failed and rolled back (--atomic)"; vws_finish; }
   vws_emit OK helm "release vws upgraded"
 
