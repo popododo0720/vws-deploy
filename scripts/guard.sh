@@ -138,11 +138,24 @@ if failed:
 PY
 }
 
+# r8_scan PATH...: print lines that change a cluster. The only allowed callers are exactly
+# vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
+r8_scan() {
+  grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
+    --exclude-dir=lab "$@"
+}
+
 cmd_ci() {
-  if grep -R -n -E '(^|[^_[:alnum:]])kubectl[[:space:]]+(apply|create|delete|replace)|(^|[^_[:alnum:]])helm[[:space:]]+(install|upgrade|uninstall)|kind[[:space:]]+create|k3d[[:space:]]+create' \
-    .github Makefile scripts charts --exclude-dir=lab; then
+  if r8_scan .github Makefile scripts charts; then
     die "R8: this repo must not apply manifests to a cluster"
   fi
+  local f
+  for f in tests/fixtures/r8/bad/*; do
+    r8_scan "$f" >/dev/null || die "R8: negative test ${f} was accepted"
+  done
+  for f in tests/fixtures/r8/good/*; do
+    ! r8_scan "$f" >/dev/null || die "R8: positive test ${f} was rejected"
+  done
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
   grep -q 'helm lint' Makefile || die "R8: make check must run helm lint"
   grep -q 'kubeconform' Makefile || die "R8: make check must run kubeconform"
