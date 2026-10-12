@@ -47,9 +47,9 @@ metadata:
   {{- $path := required (printf "services.%s.kubeconfigSecret needs flags.kubeconfig" $name) (get ($spec.flags | default dict) "kubeconfig") }}
   {{- $kube = dict "secret" $spec.kubeconfigSecret "dir" (dir $path) "key" (base $path) }}
 {{- end }}
-{{- /* A service with grpcReadinessService gets gRPC probes, readiness on that name. Gated by
-global.pendingFlags until the service images on main implement grpc.health.v1 (vws-storage#39). */}}
-{{- $grpcReady := ternary ($spec.grpcReadinessService | default "") "" (and (hasKey $spec "grpcReadinessService") (or $.Values.global.pendingFlags (eq $.Values.global.probe "grpc"))) }}
+{{- /* A service with grpcReadinessService gets gRPC probes, readiness on that name. The image
+implements grpc.health.v1 (vws-storage#39, merged), so no gate (#110). */}}
+{{- $grpcReady := $spec.grpcReadinessService | default "" }}
 {{- $rgw := ($spec.s3 | default dict).rgw | default dict }}
 {{- $rgwSecret := "" }}{{ if $rgw.enabled }}{{ $rgwSecret = $rgw.existingSecret }}{{ end }}
 {{- $ctx := dict "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
