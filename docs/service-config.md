@@ -38,9 +38,10 @@ services:
 | storage | `db: /var/lib/vws/storage.db` | `-db=<경로>` | 비면 메모리 SQLite라 재시작에 상태를 잃는다(#85). `scripts/check_render.py`가 필수로 검사 | vws-storage README `-db` |
 | storage | (넘기지 않음) `kube-config` | `-kube-config` | 비면 인클러스터 자격 | `main.go:46` |
 | compute | `namespace: {namespace: release}` | `-namespace=<릴리스 네임스페이스>` | ConfigMap 저장소. 비면 메모리 저장소 | `cmd/vws-compute/main.go:34` |
-| compute | `pendingFlags.hypervisor: kubevirt` | `-hypervisor=kubevirt` | vws-compute#23에서 들어옴 | main에 없음 |
-| compute | `pendingFlags.vm-namespace: {namespace: vms}` | `-vm-namespace=<vms>` | `vws-vms` | main에 없음 |
-| compute | `pendingFlags.image-namespace: {namespace: images}` | `-image-namespace=<images>` | `vws-images` | main에 없음 |
+| compute | `hypervisor: kubevirt` | `-hypervisor=kubevirt` | 코드 기본 `fake`(VM을 만들지 않는다, #121) | vws-compute `62d90e7` `cmd/vws-compute/config.go` |
+| compute | `vm-namespace: {namespace: vms}` | `-vm-namespace=<vms>` | `vws-vms` | 같은 곳 |
+| compute | `image-namespace: {namespace: images}` | `-image-namespace=<images>` | `vws-images` | 같은 곳 |
+| compute | `storage: storage:7400` | `-storage=storage:7400` | 비면 CreateInstance가 DEPENDENCY_MISSING(#121) | 같은 곳 |
 | 세 서비스 | `listen: 0.0.0.0:<port>` | `-listen=0.0.0.0:<port>` | 코드 기본은 `127.0.0.1`. `port` 키와 같아야 한다 | compute `main.go:33`, storage `main.go:40`, network `main.go:22` |
 | console-api | `backend: grpc`, `console-addr: 0.0.0.0:8080`, `compute-addr`/`storage-addr`/`network-addr: <서비스>:<port>` | 같은 이름 | 코드 기본은 `fake`와 `127.0.0.1`(#84). EC2(`-ec2-addr`)와 S3(`-s3-addr`)는 아직 127.0.0.1이고 Service 포트가 없다. 자격 증명 플래그도 넘기지 않아 개발용 기본값이다(확인 필요, #84) | vws-console-api `cmd/vws-console-api/main.go:40-50` |
 | network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`의 기본값은 자리표시자 | `main.go:23-24,33-34` |
@@ -86,7 +87,7 @@ S3 객체 백엔드는 vws-storage가 구현한다. `-object-backend=s3`, `-s3-p
 
 ## 확인 필요
 
-- **compute 플래그 3개(`-hypervisor`, `-vm-namespace`, `-image-namespace`)는 main에 없다.** vws-compute#23이 머지되기 전에 `global.pendingFlags: true`로 켜면 현재 이미지가 알 수 없는 플래그로 시작을 거절한다. 기본은 꺼짐이다.
+- **compute의 KubeVirt 플래그는 기본 렌더에 있다(#121).** vws-compute main(`62d90e7`)이 `-hypervisor`, `-vm-namespace`, `-image-namespace`, `-storage`를 받는다. 예전에는 `pendingFlags`였지만 지금 `pendingFlags`를 쓰는 서비스는 없다. vws-test T1(#51)에서 이 네 플래그로 볼륨 부팅을 확인했다.
 - compute의 환경 변수 폴백(`VWS_VM_NAMESPACE` 등)은 이 차트가 쓰지 않는다. 플래그만 넘긴다.
 - 실제 클러스터에서 렌더한 인자로 서비스를 띄워 보지 않았다(정적 렌더 검사만).
 
