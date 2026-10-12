@@ -161,6 +161,37 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
 REQUIRED_FLAGS = {"network": ["db", "pool"]}
 
 
+# Resources a service creates with an existing-object check (Create, then Get on AlreadyExists).
+# The rule that grants create on them must grant get too.
+# network: internal/network/dataplane_kubeovn.go ensureObject, vws-network #27.
+ENSURE_NEEDS_GET = {
+    "network": [
+        ("kubeovn.io", "vpcs"),
+        ("kubeovn.io", "subnets"),
+        ("kubeovn.io", "ovn-eips"),
+        ("kubeovn.io", "ovn-fips"),
+        ("kubeovn.io", "ovn-snat-rules"),
+        ("kubeovn.io", "security-groups"),
+        ("kubeovn.io", "vpc-nat-gateways"),
+        ("k8s.cni.cncf.io", "network-attachment-definitions"),
+    ]
+}
+
+
+def check_ensure_get(name: str, spec: dict) -> list[str]:
+    errors: list[str] = []
+    for group, resource in ENSURE_NEEDS_GET.get(name, []):
+        verbs: set[str] = set()
+        for rule in spec.get("rbac") or []:
+            if group in rule["apiGroups"] and resource in rule["resources"]:
+                verbs.update(rule["verbs"])
+        if "create" in verbs and "get" not in verbs:
+            errors.append(f"R11: {name} creates {group}/{resource} but cannot get it, so ensure fails on an existing object")
+        if "create" not in verbs:
+            errors.append(f"R11: {name} has no create on {group}/{resource}, which ensure needs")
+    return errors
+
+
 def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
     """The listen flag, the service port, the container port and every probe name one port."""
     errors: list[str] = []
@@ -309,6 +340,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         nsmap = {**(values.get("namespaces") or {}), "release": release_ns}
         errors.extend(check_rbac(name, spec, by_kind, pod, release, release_ns, nsmap))
         errors.extend(check_flags(name, spec, container, values, nsmap))
+        errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         if stateful:
@@ -563,6 +595,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not check(docs, broken_values, release):
             return ["R15: a -listen port that differs from the service port did not fail"]
     if "network" in values["services"]:
+        for rule in values["services"]["network"].get("rbac") or []:
+            if "get" in rule["verbs"] and "create" in rule["verbs"] and rule["resources"]:
+                broken_values = copy.deepcopy(values)
+                for broken_rule in broken_values["services"]["network"]["rbac"]:
+                    if broken_rule["resources"] == rule["resources"] and broken_rule.get("namespace") == rule.get("namespace"):
+                        broken_rule["verbs"] = [v for v in broken_rule["verbs"] if v != "get"]
+                if not check(docs, broken_values, release):
+                    return [f"R11: dropping get from {rule['resources']} did not fail"]
         broken_values = copy.deepcopy(values)
         broken_values["services"]["network"]["flags"].pop("pool", None)
         if not check(docs, broken_values, release):
