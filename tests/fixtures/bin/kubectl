@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fake kubectl for tests/vws. It never talks to a cluster.
+# Every call is appended to $VWS_FAKE_LOG as: tool<TAB>verb<TAB>all arguments.
+# The answer is the file $VWS_FAKE_DIR/kubectl/<verb>_<resource>.json (a "/" in the resource becomes "_").
+# A call without such a file fails loudly, so a test never passes on an unplanned call.
+set -euo pipefail
+: "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
+verb='' resource='' skip=0
+for arg in "$@"; do
+  if ((skip)); then skip=0; continue; fi
+  case $arg in
+    --context | --namespace | -n | -o) skip=1 ;;
+    -*) ;;
+    *)
+      if [[ -z $verb ]]; then verb=$arg; elif [[ -z $resource ]]; then resource=$arg; fi
+      ;;
+  esac
+done
+printf 'kubectl\t%s\t%s\n' "$verb" "$*" >>"$VWS_FAKE_LOG"
+file="${VWS_FAKE_DIR}/kubectl/${verb}_${resource//\//_}.json"
+if [[ ! -f $file ]]; then
+  echo "fake kubectl: no fixture ${file}" >&2
+  exit 1
+fi
+cat "$file"

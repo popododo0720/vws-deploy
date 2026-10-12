@@ -9,7 +9,7 @@ RELEASE := vws
 NAMESPACE := vws
 export VWS_RELEASE := $(RELEASE)
 
-.PHONY: check tools hooks lint render conform platform guard
+.PHONY: check tools hooks lint render conform platform guard vws-test
 
 check:
 	$(MAKE) tools
@@ -42,3 +42,11 @@ platform:
 
 guard:
 	scripts/guard.sh all
+
+# make vws-<command> is an alias for scripts/vws <command>. Flags go through ARGS, for example
+# make vws-help ARGS="-o json". vws-test runs the harness with fake kubectl and helm.
+vws-test:
+	tests/vws/run.sh
+
+vws-%:
+	scripts/vws $(ARGS) $*
