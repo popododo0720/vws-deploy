@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# vws: one command for deploying and operating VWS. One file per command in scripts/vws.d/.
+# Usage: scripts/vws [flags] <command> [args]. Design: vws-deploy#43. Details: docs/vws-cli.md.
+set -euo pipefail
+
+VWS_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export VWS_ROOT
+# VWS_COMMAND_DIR exists so the test harness can run fixture commands. Nothing else sets it.
+VWS_COMMAND_DIR=${VWS_COMMAND_DIR:-${VWS_ROOT}/scripts/vws.d}
+export VWS_COMMAND_DIR
+# shellcheck source=scripts/vws.d/lib/common.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/common.sh"
+
+command_name=
+args=()
+while (($#)); do
+  case $1 in
+    --context | --namespace | -n | -o)
+      (($# >= 2)) || vws_usage "$1 needs a value"
+      case $1 in
+        --context) VWS_CONTEXT=$2 ;;
+        --namespace | -n) VWS_NAMESPACE=$2 ;;
+        -o)
+          [[ $2 == text || $2 == json ]] || vws_usage "-o must be text or json, not $2"
+          VWS_OUTPUT=$2
+          ;;
+      esac
+      shift 2
+      ;;
+    --context=* | --namespace=* | -o=*)
+      case $1 in
+        --context=*) VWS_CONTEXT=${1#*=} ;;
+        --namespace=*) VWS_NAMESPACE=${1#*=} ;;
+        -o=*)
+          [[ ${1#*=} == text || ${1#*=} == json ]] || vws_usage "-o must be text or json, not ${1#*=}"
+          VWS_OUTPUT=${1#*=}
+          ;;
+      esac
+      shift
+      ;;
+    --dry-run) VWS_DRY_RUN=1; shift ;;
+    --yes | -y) VWS_YES=1; shift ;;
+    --strict) VWS_STRICT=1; shift ;;
+    -h | --help) command_name=${command_name:-help}; shift ;;
+    --)
+      shift
+      args+=("$@")
+      break
+      ;;
+    -*)
+      # A flag this dispatcher does not know belongs to the command only after the command name.
+      if [[ -n $command_name ]]; then
+        args+=("$1")
+        shift
+      else
+        vws_usage "unknown flag $1"
+      fi
+      ;;
+    *)
+      if [[ -z $command_name ]]; then command_name=$1; else args+=("$1"); fi
+      shift
+      ;;
+  esac
+done
+export VWS_CONTEXT VWS_NAMESPACE VWS_OUTPUT VWS_DRY_RUN VWS_YES VWS_STRICT
+
+[[ -n $command_name ]] || vws_usage "no command; try: scripts/vws help"
+[[ $command_name =~ ^[a-z][a-z0-9-]*$ ]] || vws_usage "unknown command ${command_name}"
+file="${VWS_COMMAND_DIR}/${command_name}.sh"
+[[ -f $file ]] || vws_usage "unknown command ${command_name}; try: scripts/vws help"
+
+VWS_NEED=()
+# shellcheck source=/dev/null
+source "$file"
+declare -F vws_cmd_main >/dev/null || vws_die_env "${file} defines no vws_cmd_main"
+if ((${#VWS_NEED[@]})); then vws_need "${VWS_NEED[@]}"; fi
+vws_cmd_main "${args[@]+"${args[@]}"}"
+vws_finish
