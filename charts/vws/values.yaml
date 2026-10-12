@@ -21,6 +21,9 @@ global:
   registry: ghcr.io/popododo0720/vws
   storageClass: ""
   pendingFlags: false
+  # How kubelet checks every service: tcp opens the service port. grpc calls grpc.health.v1 on it
+  # and works only after the service images implement that. Switching is this one value.
+  probe: tcp
 
 namespaces:
   vms: vws-vms
@@ -34,7 +37,11 @@ services:
     external: true
   compute:
     external: true
+    # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
+    # scripts/guard.sh config fails when they differ.
+    port: 50051
     flags:
+      listen: 0.0.0.0:50051
       namespace: {namespace: release}
     pendingFlags:
       hypervisor: kubevirt
@@ -65,7 +72,9 @@ services:
       size: 20Gi
   storage:
     external: true
+    port: 7400
     flags:
+      listen: 0.0.0.0:7400
       block-backend: kube
       kube-namespace: {namespace: vms}
       kube-class-standard: ceph-block
@@ -84,6 +93,13 @@ services:
       size: 20Gi
   network:
     external: true
+    port: 8080
+    flags:
+      listen: 0.0.0.0:8080
+      # The sqlite file lives on the retained state volume mounted at /var/lib/vws.
+      db: /var/lib/vws/network.db
+      # Elastic IP pool CIDR. 192.0.2.0/24 is the documentation range: replace it per site.
+      pool: 192.0.2.0/24
     rbac:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]
