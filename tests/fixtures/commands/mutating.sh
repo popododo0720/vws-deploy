@@ -3,6 +3,6 @@
 # shellcheck disable=SC2034
 VWS_NEED=(kubectl)
 vws_cmd_main() {
-  vws_kubectl apply configmap -f - >/dev/null
+  vws_kubectl apply configmap -f - </dev/null >/dev/null
   vws_emit OK apply "applied"
 }

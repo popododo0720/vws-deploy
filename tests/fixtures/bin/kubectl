@@ -20,6 +20,15 @@ for arg in "$@"; do
   esac
 done
 printf 'kubectl\t%s\t%s\n' "$verb" "$*" >>"$VWS_FAKE_LOG"
+# "-f -": the document on stdin is appended to $VWS_FAKE_LOG.stdin after a "--- <verb>" line.
+prev=''
+for arg in "$@"; do
+  if [[ $prev == -f && $arg == - ]]; then
+    { echo "--- ${verb}"; cat; echo; } >>"${VWS_FAKE_LOG}.stdin"
+    break
+  fi
+  prev=$arg
+done
 file="${VWS_FAKE_DIR}/kubectl/${verb}_${resource//\//_}.json"
 if ((${#positional[@]} >= 4)); then
   specific=$(IFS=_; echo "${positional[*]:0:4}")
