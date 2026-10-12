@@ -1,0 +1,38 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "name": "node-a",
+    "uid": "FAKE-UID-NODE-A"
+   },
+   "status": {
+    "conditions": [
+     {
+      "type": "Ready",
+      "status": "True"
+     }
+    ],
+    "nodeInfo": {
+     "bootID": "boot-a-1"
+    }
+   }
+  },
+  {
+   "metadata": {
+    "name": "node-b",
+    "uid": "FAKE-UID-NODE-B"
+   },
+   "status": {
+    "conditions": [
+     {
+      "type": "Ready",
+      "status": "True"
+     }
+    ],
+    "nodeInfo": {
+     "bootID": "boot-b-1"
+    }
+   }
+  }
+ ]
+}

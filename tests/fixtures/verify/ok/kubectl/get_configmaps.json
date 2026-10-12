@@ -1,0 +1,14 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "name": "vws-compute-store",
+    "uid": "FAKE-UID-CM"
+   },
+   "data": {
+    "vm-1": "FAKE-CONFIGMAP-DATA",
+    "vm-2": "FAKE-CONFIGMAP-DATA"
+   }
+  }
+ ]
+}

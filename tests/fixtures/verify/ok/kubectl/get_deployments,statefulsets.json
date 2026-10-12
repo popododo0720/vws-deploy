@@ -1,0 +1,869 @@
+{
+ "items": [
+  {
+   "apiVersion": "apps/v1",
+   "kind": "Deployment",
+   "metadata": {
+    "name": "console",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "console",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "replicas": 2,
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "console",
+      "app.kubernetes.io/instance": "vws"
+     }
+    },
+    "strategy": {
+     "type": "RollingUpdate",
+     "rollingUpdate": {
+      "maxUnavailable": 0,
+      "maxSurge": 1
+     }
+    },
+    "template": {
+     "metadata": {
+      "labels": {
+       "app.kubernetes.io/name": "console",
+       "app.kubernetes.io/instance": "vws",
+       "app.kubernetes.io/part-of": "vws",
+       "app.kubernetes.io/component": "control-plane",
+       "app.kubernetes.io/version": "0.1.0",
+       "helm.sh/chart": "vws-0.1.0"
+      }
+     },
+     "spec": {
+      "restartPolicy": "Always",
+      "serviceAccountName": "console",
+      "automountServiceAccountToken": false,
+      "enableServiceLinks": false,
+      "terminationGracePeriodSeconds": 30,
+      "securityContext": {
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "runAsGroup": 65532,
+       "fsGroup": 65532,
+       "fsGroupChangePolicy": "OnRootMismatch",
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "topologySpreadConstraints": [
+       {
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": {
+         "matchLabels": {
+          "app.kubernetes.io/name": "console",
+          "app.kubernetes.io/instance": "vws"
+         }
+        }
+       }
+      ],
+      "containers": [
+       {
+        "name": "console",
+        "image": "ghcr.io/popododo0720/vws/console:0.1.0",
+        "imagePullPolicy": "IfNotPresent",
+        "ports": [
+         {
+          "name": "http",
+          "containerPort": 8080
+         }
+        ],
+        "env": [
+         {
+          "name": "VWS_SERVICE_NAME",
+          "value": "console"
+         }
+        ],
+        "startupProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 13
+        },
+        "livenessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 10,
+         "timeoutSeconds": 2,
+         "failureThreshold": 3
+        },
+        "readinessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 2
+        },
+        "resources": {
+         "requests": {
+          "cpu": "100m",
+          "memory": "256Mi"
+         },
+         "limits": {
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "readOnlyRootFilesystem": true,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         }
+        },
+        "volumeMounts": [
+         {
+          "name": "tmp",
+          "mountPath": "/tmp"
+         }
+        ]
+       }
+      ],
+      "volumes": [
+       {
+        "name": "tmp",
+        "emptyDir": {}
+       }
+      ]
+     }
+    }
+   },
+   "status": {
+    "readyReplicas": 2,
+    "replicas": 2
+   }
+  },
+  {
+   "apiVersion": "apps/v1",
+   "kind": "Deployment",
+   "metadata": {
+    "name": "console-api",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "console-api",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "replicas": 2,
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "console-api",
+      "app.kubernetes.io/instance": "vws"
+     }
+    },
+    "strategy": {
+     "type": "RollingUpdate",
+     "rollingUpdate": {
+      "maxUnavailable": 0,
+      "maxSurge": 1
+     }
+    },
+    "template": {
+     "metadata": {
+      "labels": {
+       "app.kubernetes.io/name": "console-api",
+       "app.kubernetes.io/instance": "vws",
+       "app.kubernetes.io/part-of": "vws",
+       "app.kubernetes.io/component": "control-plane",
+       "app.kubernetes.io/version": "0.1.0",
+       "helm.sh/chart": "vws-0.1.0"
+      }
+     },
+     "spec": {
+      "restartPolicy": "Always",
+      "serviceAccountName": "console-api",
+      "automountServiceAccountToken": false,
+      "enableServiceLinks": false,
+      "terminationGracePeriodSeconds": 30,
+      "securityContext": {
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "runAsGroup": 65532,
+       "fsGroup": 65532,
+       "fsGroupChangePolicy": "OnRootMismatch",
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "topologySpreadConstraints": [
+       {
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": {
+         "matchLabels": {
+          "app.kubernetes.io/name": "console-api",
+          "app.kubernetes.io/instance": "vws"
+         }
+        }
+       }
+      ],
+      "containers": [
+       {
+        "name": "console-api",
+        "image": "ghcr.io/popododo0720/vws/console-api:0.1.0",
+        "imagePullPolicy": "IfNotPresent",
+        "ports": [
+         {
+          "name": "http",
+          "containerPort": 8080
+         }
+        ],
+        "env": [
+         {
+          "name": "VWS_SERVICE_NAME",
+          "value": "console-api"
+         }
+        ],
+        "startupProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 13
+        },
+        "livenessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 10,
+         "timeoutSeconds": 2,
+         "failureThreshold": 3
+        },
+        "readinessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 2
+        },
+        "resources": {
+         "requests": {
+          "cpu": "100m",
+          "memory": "256Mi"
+         },
+         "limits": {
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "readOnlyRootFilesystem": true,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         }
+        },
+        "volumeMounts": [
+         {
+          "name": "tmp",
+          "mountPath": "/tmp"
+         }
+        ]
+       }
+      ],
+      "volumes": [
+       {
+        "name": "tmp",
+        "emptyDir": {}
+       }
+      ]
+     }
+    }
+   },
+   "status": {
+    "readyReplicas": 2,
+    "replicas": 2
+   }
+  },
+  {
+   "apiVersion": "apps/v1",
+   "kind": "StatefulSet",
+   "metadata": {
+    "name": "compute",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "compute",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "serviceName": "compute-peers",
+    "replicas": 1,
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+     "type": "RollingUpdate"
+    },
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "compute",
+      "app.kubernetes.io/instance": "vws"
+     }
+    },
+    "persistentVolumeClaimRetentionPolicy": {
+     "whenDeleted": "Retain",
+     "whenScaled": "Retain"
+    },
+    "template": {
+     "metadata": {
+      "labels": {
+       "app.kubernetes.io/name": "compute",
+       "app.kubernetes.io/instance": "vws",
+       "app.kubernetes.io/part-of": "vws",
+       "app.kubernetes.io/component": "control-plane",
+       "app.kubernetes.io/version": "0.1.0",
+       "helm.sh/chart": "vws-0.1.0"
+      }
+     },
+     "spec": {
+      "restartPolicy": "Always",
+      "serviceAccountName": "compute",
+      "automountServiceAccountToken": true,
+      "enableServiceLinks": false,
+      "terminationGracePeriodSeconds": 30,
+      "securityContext": {
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "runAsGroup": 65532,
+       "fsGroup": 65532,
+       "fsGroupChangePolicy": "OnRootMismatch",
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "topologySpreadConstraints": [
+       {
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": {
+         "matchLabels": {
+          "app.kubernetes.io/name": "compute",
+          "app.kubernetes.io/instance": "vws"
+         }
+        }
+       }
+      ],
+      "containers": [
+       {
+        "name": "compute",
+        "image": "ghcr.io/popododo0720/vws/compute:0.1.0",
+        "imagePullPolicy": "IfNotPresent",
+        "args": [
+         "-listen=0.0.0.0:50051",
+         "-namespace=vws"
+        ],
+        "ports": [
+         {
+          "name": "http",
+          "containerPort": 50051
+         }
+        ],
+        "env": [
+         {
+          "name": "VWS_SERVICE_NAME",
+          "value": "compute"
+         },
+         {
+          "name": "VWS_STATE_DIR",
+          "value": "/var/lib/vws"
+         }
+        ],
+        "startupProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 13
+        },
+        "livenessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 10,
+         "timeoutSeconds": 2,
+         "failureThreshold": 3
+        },
+        "readinessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 2
+        },
+        "resources": {
+         "requests": {
+          "cpu": "100m",
+          "memory": "256Mi"
+         },
+         "limits": {
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "readOnlyRootFilesystem": true,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         }
+        },
+        "volumeMounts": [
+         {
+          "name": "tmp",
+          "mountPath": "/tmp"
+         },
+         {
+          "name": "state",
+          "mountPath": "/var/lib/vws"
+         }
+        ]
+       }
+      ],
+      "volumes": [
+       {
+        "name": "tmp",
+        "emptyDir": {}
+       }
+      ]
+     }
+    },
+    "volumeClaimTemplates": [
+     {
+      "metadata": {
+       "name": "state",
+       "labels": {
+        "app.kubernetes.io/name": "compute",
+        "app.kubernetes.io/instance": "vws"
+       }
+      },
+      "spec": {
+       "accessModes": [
+        "ReadWriteOnce"
+       ],
+       "resources": {
+        "requests": {
+         "storage": "20Gi"
+        }
+       }
+      }
+     }
+    ]
+   },
+   "status": {
+    "readyReplicas": 1,
+    "replicas": 1
+   }
+  },
+  {
+   "apiVersion": "apps/v1",
+   "kind": "StatefulSet",
+   "metadata": {
+    "name": "network",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "network",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "serviceName": "network-peers",
+    "replicas": 1,
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+     "type": "RollingUpdate"
+    },
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "network",
+      "app.kubernetes.io/instance": "vws"
+     }
+    },
+    "persistentVolumeClaimRetentionPolicy": {
+     "whenDeleted": "Retain",
+     "whenScaled": "Retain"
+    },
+    "template": {
+     "metadata": {
+      "labels": {
+       "app.kubernetes.io/name": "network",
+       "app.kubernetes.io/instance": "vws",
+       "app.kubernetes.io/part-of": "vws",
+       "app.kubernetes.io/component": "control-plane",
+       "app.kubernetes.io/version": "0.1.0",
+       "helm.sh/chart": "vws-0.1.0"
+      }
+     },
+     "spec": {
+      "restartPolicy": "Always",
+      "serviceAccountName": "network",
+      "automountServiceAccountToken": true,
+      "enableServiceLinks": false,
+      "terminationGracePeriodSeconds": 30,
+      "securityContext": {
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "runAsGroup": 65532,
+       "fsGroup": 65532,
+       "fsGroupChangePolicy": "OnRootMismatch",
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "topologySpreadConstraints": [
+       {
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": {
+         "matchLabels": {
+          "app.kubernetes.io/name": "network",
+          "app.kubernetes.io/instance": "vws"
+         }
+        }
+       }
+      ],
+      "containers": [
+       {
+        "name": "network",
+        "image": "ghcr.io/popododo0720/vws/network:0.1.0",
+        "imagePullPolicy": "IfNotPresent",
+        "args": [
+         "-db=/var/lib/vws/network.db",
+         "-listen=0.0.0.0:8080",
+         "-pool=192.0.2.0/24"
+        ],
+        "ports": [
+         {
+          "name": "http",
+          "containerPort": 8080
+         }
+        ],
+        "env": [
+         {
+          "name": "VWS_SERVICE_NAME",
+          "value": "network"
+         },
+         {
+          "name": "VWS_STATE_DIR",
+          "value": "/var/lib/vws"
+         }
+        ],
+        "startupProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 13
+        },
+        "livenessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 10,
+         "timeoutSeconds": 2,
+         "failureThreshold": 3
+        },
+        "readinessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 2
+        },
+        "resources": {
+         "requests": {
+          "cpu": "100m",
+          "memory": "256Mi"
+         },
+         "limits": {
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "readOnlyRootFilesystem": true,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         }
+        },
+        "volumeMounts": [
+         {
+          "name": "tmp",
+          "mountPath": "/tmp"
+         },
+         {
+          "name": "state",
+          "mountPath": "/var/lib/vws"
+         }
+        ]
+       }
+      ],
+      "volumes": [
+       {
+        "name": "tmp",
+        "emptyDir": {}
+       }
+      ]
+     }
+    },
+    "volumeClaimTemplates": [
+     {
+      "metadata": {
+       "name": "state",
+       "labels": {
+        "app.kubernetes.io/name": "network",
+        "app.kubernetes.io/instance": "vws"
+       }
+      },
+      "spec": {
+       "accessModes": [
+        "ReadWriteOnce"
+       ],
+       "resources": {
+        "requests": {
+         "storage": "20Gi"
+        }
+       }
+      }
+     }
+    ]
+   },
+   "status": {
+    "readyReplicas": 1,
+    "replicas": 1
+   }
+  },
+  {
+   "apiVersion": "apps/v1",
+   "kind": "StatefulSet",
+   "metadata": {
+    "name": "storage",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "storage",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "serviceName": "storage-peers",
+    "replicas": 1,
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+     "type": "RollingUpdate"
+    },
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "storage",
+      "app.kubernetes.io/instance": "vws"
+     }
+    },
+    "persistentVolumeClaimRetentionPolicy": {
+     "whenDeleted": "Retain",
+     "whenScaled": "Retain"
+    },
+    "template": {
+     "metadata": {
+      "labels": {
+       "app.kubernetes.io/name": "storage",
+       "app.kubernetes.io/instance": "vws",
+       "app.kubernetes.io/part-of": "vws",
+       "app.kubernetes.io/component": "control-plane",
+       "app.kubernetes.io/version": "0.1.0",
+       "helm.sh/chart": "vws-0.1.0"
+      }
+     },
+     "spec": {
+      "restartPolicy": "Always",
+      "serviceAccountName": "storage",
+      "automountServiceAccountToken": true,
+      "enableServiceLinks": false,
+      "terminationGracePeriodSeconds": 30,
+      "securityContext": {
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "runAsGroup": 65532,
+       "fsGroup": 65532,
+       "fsGroupChangePolicy": "OnRootMismatch",
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "topologySpreadConstraints": [
+       {
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": {
+         "matchLabels": {
+          "app.kubernetes.io/name": "storage",
+          "app.kubernetes.io/instance": "vws"
+         }
+        }
+       }
+      ],
+      "containers": [
+       {
+        "name": "storage",
+        "image": "ghcr.io/popododo0720/vws/storage:0.1.0",
+        "imagePullPolicy": "IfNotPresent",
+        "args": [
+         "-block-backend=kube",
+         "-kube-class-ssd=ceph-block",
+         "-kube-class-standard=ceph-block",
+         "-kube-namespace=vws-vms",
+         "-kube-snapshot-class=ceph-block",
+         "-listen=0.0.0.0:7400"
+        ],
+        "ports": [
+         {
+          "name": "http",
+          "containerPort": 7400
+         }
+        ],
+        "env": [
+         {
+          "name": "VWS_SERVICE_NAME",
+          "value": "storage"
+         },
+         {
+          "name": "VWS_STATE_DIR",
+          "value": "/var/lib/vws"
+         }
+        ],
+        "startupProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 13
+        },
+        "livenessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 10,
+         "timeoutSeconds": 2,
+         "failureThreshold": 3
+        },
+        "readinessProbe": {
+         "tcpSocket": {
+          "port": "http"
+         },
+         "periodSeconds": 5,
+         "timeoutSeconds": 2,
+         "failureThreshold": 2
+        },
+        "resources": {
+         "requests": {
+          "cpu": "100m",
+          "memory": "256Mi"
+         },
+         "limits": {
+          "memory": "256Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "readOnlyRootFilesystem": true,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         }
+        },
+        "volumeMounts": [
+         {
+          "name": "tmp",
+          "mountPath": "/tmp"
+         },
+         {
+          "name": "state",
+          "mountPath": "/var/lib/vws"
+         }
+        ]
+       }
+      ],
+      "volumes": [
+       {
+        "name": "tmp",
+        "emptyDir": {}
+       }
+      ]
+     }
+    },
+    "volumeClaimTemplates": [
+     {
+      "metadata": {
+       "name": "state",
+       "labels": {
+        "app.kubernetes.io/name": "storage",
+        "app.kubernetes.io/instance": "vws"
+       }
+      },
+      "spec": {
+       "accessModes": [
+        "ReadWriteOnce"
+       ],
+       "resources": {
+        "requests": {
+         "storage": "20Gi"
+        }
+       }
+      }
+     }
+    ]
+   },
+   "status": {
+    "readyReplicas": 1,
+    "replicas": 1
+   }
+  }
+ ]
+}

@@ -1,0 +1,21 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "name": "data-storage-0",
+    "uid": "FAKE-UID-PVC"
+   },
+   "status": {
+    "phase": "Bound"
+   }
+  },
+  {
+   "metadata": {
+    "name": "data-network-0"
+   },
+   "status": {
+    "phase": "Bound"
+   }
+  }
+ ]
+}
