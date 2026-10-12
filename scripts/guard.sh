@@ -381,12 +381,22 @@ cmd_recovery() {
   rm -f "$rendered"
 }
 
+cmd_cursor() {
+  [[ ! -e .cursor ]] || die "R9: .cursor/ does not belong in this repo"
+  if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts host charts 2>/dev/null \
+    | grep -v 'scripts/guard.sh:'; then
+    die "R9: Cursor cloud agents must not be called from this repo"
+  fi
+  grep -q 'Cursor 클라우드 에이전트' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
   cmd_assets
   cmd_host
   cmd_ci
+  cmd_cursor
   cmd_schema
   cmd_hooks
   cmd_docs
@@ -400,7 +410,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|host|ci|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|host|ci|cursor|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -412,6 +422,7 @@ case "$command_name" in
   assets) cmd_assets ;;
   host) cmd_host ;;
   ci) cmd_ci ;;
+  cursor) cmd_cursor ;;
   schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
