@@ -81,6 +81,9 @@ services:
     port: 7400
     flags:
       listen: 0.0.0.0:7400
+      # The sqlite file lives on the retained state volume. Empty -db is an in-memory store that
+      # loses every volume and snapshot record on restart (#85).
+      db: /var/lib/vws/storage.db
       block-backend: kube
       kube-namespace: {namespace: vms}
       kube-class-standard: ceph-block
