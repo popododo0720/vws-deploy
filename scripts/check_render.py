@@ -146,7 +146,7 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
     rgw = (spec.get("s3") or {}).get("rgw") or {}
     if rgw.get("enabled"):
         flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
-        if rgw.get("bucketPrefix") and (values.get("global") or {}).get("pendingFlags"):
+        if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
     for key in sorted(flags):
         value = flags[key]

@@ -29,7 +29,7 @@ A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" 
   {{- $_ = set $flags "s3-profile" "rgw" }}
   {{- $_ = set $flags "s3-endpoint" (required "services.*.s3.rgw.enabled needs s3.rgw.endpoint" $rgw.endpoint) }}
   {{- $_ = required "services.*.s3.rgw.enabled needs s3.rgw.existingSecret" $rgw.existingSecret }}
-  {{- if and $rgw.bucketPrefix .root.Values.global.pendingFlags }}
+  {{- if $rgw.bucketPrefix }}
     {{- $_ = set $flags "s3-bucket-prefix" $rgw.bucketPrefix }}
   {{- end }}
 {{- end }}
