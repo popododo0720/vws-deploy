@@ -16,6 +16,9 @@ want=$(cd "$VWS_BUNDLE_DIR" && printf '%s\n' *.yaml | sort | paste -sd' ')
 if [[ $order == "$want" ]]; then ok "the bundle goes in file number order"; else bad "bundle order" "${order} vs ${want}"; fi
 applies=$(grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG")
 if [[ $applies -eq 3 ]]; then ok "one apply per bundle file"; else bad "one apply per bundle file" "$applies"; fi
+# Bundle files carry their own namespaces; -n vws on their apply makes kubectl refuse them.
+if grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -q -e '--namespace' -e $'\t-n '; then bad "bundle apply has no namespace flag" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; else ok "bundle apply has no namespace flag"; fi
+if grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -q -e '--namespace=vws'; then ok "the CR status patch keeps the release namespace"; else bad "status patch namespace" "$(grep $'^kubectl\tpatch' "$VWS_FAKE_LOG")"; fi
 first_helm=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
 last_apply=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | tail -1 | cut -d: -f1)
 if ((first_helm > last_apply)); then ok "helm runs after the bundle"; else bad "helm after bundle" "$(calls)"; fi
