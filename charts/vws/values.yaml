@@ -70,10 +70,12 @@ services:
       apiGroups: [kubevirt.io]
       resources: [virtualmachines]
       verbs: [get, list, create, patch, delete]
+    # get: the READY check reads the VMI phase (vws-compute#50); without it a running instance
+    # stays RECONCILING (#121). delete: agent.go update, reboot deletes the VMI.
     - namespace: vms
       apiGroups: [kubevirt.io]
       resources: [virtualmachineinstances]
-      verbs: [delete]
+      verbs: [get, delete]
     # get: volumes.go checkAttachable reads a volume claim's access modes before attach and boot,
     # and the health check gets a probe claim in the VM namespace (#121).
     - namespace: vms
