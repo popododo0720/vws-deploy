@@ -27,6 +27,17 @@ VWS 제어부가 올라가기 전에 클러스터에 있어야 하는 구성 요
 4. **KubeVirt와 CDI.** operator(`40-`, `42-`)가 Ready가 된 뒤 CR(`41-`, `43-`)을 올린다.
 5. **VWS.** `charts/vws`를 올린다. 컨트롤러 권한은 차트의 서비스별 `rbac`가 만든다.
 
+## 스토리지 클래스 이름
+
+Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과 맞춘다. 번들 값 파일은 이름을 덮어쓰지 않으므로 이름은 차트 기본값이다. 번들 이름은 바꾸지 않고, vws-storage 기본값을 번들에 맞춘다.
+
+| 대상 | 번들이 만드는 이름 | vws-storage 쪽 |
+| --- | --- | --- |
+| StorageClass | `ceph-block` | 볼륨 타입 표(`kube.Classes`)의 값 |
+| VolumeSnapshotClass | `ceph-block` | `kube.NewBlock`의 `snapshotClass` 인자 |
+
+두 이름은 번들이 만드는 이름과 일치해야 한다. `scripts/guard.sh bundle`이 `build/platform/31-rook-ceph-cluster.yaml`(`scripts/platform.sh`가 만든다)에서 두 이름이 각각 한 번씩 있고 provisioner와 driver가 같은지 보고, 이 문서에 같은 이름이 적혀 있는지 본다. 실제 클러스터에서 PVC 바인딩과 VolumeSnapshot 생성은 확인하지 않았다(확인 필요, T1 이상).
+
 ## 필요한 호스트 커널 모듈
 
 노드 OS가 제공해야 한다. 이 저장소의 코드는 호스트에 아무것도 설치하지 않는다.
