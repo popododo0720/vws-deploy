@@ -33,12 +33,14 @@
 
 | 호출 | 리소스 | 동사 | 범위 |
 | --- | --- | --- | --- |
-| `Create`, `Delete` | `kubeovn.io` vpcs, subnets, ovn-eips, ovn-snat-rules | create, delete | 클러스터 |
+| `Create`, `Get`(이미 있을 때 `ensure`), `Delete` | `kubeovn.io` vpcs, subnets, ovn-eips, ovn-snat-rules | get, create, delete | 클러스터 |
 | `Get`, `Update`, `Create`, `Delete` | `kubeovn.io` security-groups | get, create, update, delete | 클러스터 |
-| `List`, `Create`, `Delete` | `kubeovn.io` ovn-fips | list, create, delete | 클러스터 |
+| `List`, `Create`, `Get`(`ensure`), `Delete` | `kubeovn.io` ovn-fips | get, list, create, delete | 클러스터 |
 | `Get`, `Create`, `Delete` | `kubeovn.io` vpc-nat-gateways | get, create, delete | 클러스터 |
-| `Create`, `Delete` | `k8s.cni.cncf.io` network-attachment-definitions | create, delete | NAD 네임스페이스 `NADNamespace` |
+| `Create`, `Get`(`ensure`), `Delete` | `k8s.cni.cncf.io` network-attachment-definitions | get, create, delete | NAD 네임스페이스 `NADNamespace` |
 
+- **`get`의 근거(vws-network `72bbde9`, #27 머지 후)**: `ensureObject`가 `Create`(`internal/network/dataplane_kubeovn.go:69`) 뒤 `AlreadyExists`면 `Get`(`:74`)으로 id 어노테이션과 spec을 확인한다. `ensure`를 부르는 곳은 vpc `dataplane_kubeovn.go:107`, subnet `:124`, ovn-eip `dataplane_kubeovn_eip.go:18`, ovn-fip `dataplane_kubeovn_eip.go:41`, security-group `dataplane_kubeovn_sg.go:18`, vpc-nat-gateway `dataplane_kubeovn_snat.go:39`, SNAT용 ovn-eip `:47`, ovn-snat-rule `:53`이고, NAD는 `dataplane_kubeovn_nad.go:43`의 `ensureObject`다. security-groups와 vpc-nat-gateways의 `get`은 위 표에 이미 있다(`dataplane_kubeovn_sg.go:67`, `dataplane_kubeovn_snat.go:70`).
+- **vws-network #33**(삭제 전에 `Get`으로 UID 확인): 확인 시점에 OPEN이다. 머지 뒤에는 모든 `remove` 대상에 `get`이 필요한데 위 표가 이미 갖는다. `delete`는 그대로다. 머지 뒤 삭제 경로의 리소스와 동사를 다시 대조한다(확인 필요).
 - 렌더한 Kube-OVN CRD에서 위 kubeovn.io 리소스의 plural 이름이 일치하고 범위가 모두 `Cluster`인 것을 확인했다. NAD CRD는 `Namespaced`다.
 - 모두 `/status` 하위 리소스 없이 본 객체를 쓴다. `subnets/status` 같은 규칙은 코드가 부르지 않아 넣지 않았다(상태는 Kube-OVN 컨트롤러가 쓴다).
 
