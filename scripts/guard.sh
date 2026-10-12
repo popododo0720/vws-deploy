@@ -774,6 +774,17 @@ cmd_profiles() {
   done
   grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/ha.yaml" || die "R19: profile ha does not require spreading"
   ! grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/single-node.yaml" || die "R19: profile single-node requires spreading over one node"
+  # spec.storage.s3.rgw of the CR reaches the storage flags and the secretKeyRef env (#108); without it the backend stays off.
+  ! grep -q -e '-object-backend=' "$tmp/small.cr.yaml" || die "R19: a CR without s3.rgw turns the object backend on"
+  sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    s3:\n      rgw: {enabled: true, endpoint: "http:\/\/rgw:8080", bucketPrefix: lab, existingSecret: lab-rgw}/' \
+    examples/vwscluster/small.yaml > "$tmp/rgw.cr.in.yaml"
+  scripts/vws render "$tmp/rgw.cr.in.yaml" "$tmp/rgw.values.yaml" >/dev/null || die "R19: vws render fails on a CR with s3.rgw"
+  helm template vws charts/vws --namespace vws -f "$tmp/rgw.values.yaml" > "$tmp/rgw.cr.yaml"
+  python3 scripts/check_render.py "$tmp/rgw.cr.yaml" charts/vws/values.yaml vws "$tmp/rgw.values.yaml" || die "R19: check_render rejects a CR with s3.rgw"
+  for want in -object-backend=s3 -s3-endpoint=http://rgw:8080 -s3-bucket-prefix=lab; do
+    grep -q -e "- ${want}\$" "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not render ${want}"
+  done
+  grep -q -e 'name: lab-rgw' "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not reference existingSecret"
   # Ceph overlays, rendered by scripts/platform.sh.
   for profile in single-node ha; do
     [[ -f build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml ]] || die "R19: run scripts/platform.sh first"

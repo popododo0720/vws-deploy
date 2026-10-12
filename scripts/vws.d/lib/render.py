@@ -24,7 +24,7 @@ HEADER = "# Rendered by scripts/vws render from VWSCluster vws. Do not edit: cha
 # A field or flag name that looks like it holds a secret value. spec.secrets.<x>.secretName is a
 # name reference and is allowed; nothing else may look like this (AGENTS.md R18).
 SECRET_NAME = re.compile(r"(?i)(passw|token|secret|credential|private|apikey|api-key|api_key|dsn|(^|[-_])key$)")
-REFERENCE_NAMES = {"secrets", "secretName"}
+REFERENCE_NAMES = {"secrets", "secretName", "existingSecret"}
 
 
 class Invalid(Exception):
@@ -114,6 +114,10 @@ def render(cr):
         flags["kube-class-ssd"] = cls
     elif storage.get("storageClass"):
         raise Invalid("spec.storage.storageClass: only for driver existing; rook-ceph makes ceph-block")
+    # spec.storage.s3.rgw -> services.storage.s3.rgw, so vws apply keeps RGW on (#108).
+    rgw = (storage.get("s3") or {}).get("rgw")
+    if rgw is not None:
+        services.setdefault("storage", {})["s3"] = {"rgw": dict(rgw)}
     if (spec.get("observability") or {}).get("otlpEndpoint"):
         raise Invalid("spec.observability.otlpEndpoint: the chart has no observability values yet; leave it empty")
     if spec.get("secrets"):
