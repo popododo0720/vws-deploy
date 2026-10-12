@@ -1,7 +1,0 @@
-[Unit]
-Description=VWS hypervisor agents
-After=network-online.target
-Wants=network-online.target
-
-[Install]
-WantedBy=multi-user.target
