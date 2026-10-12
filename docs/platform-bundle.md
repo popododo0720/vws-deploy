@@ -67,6 +67,7 @@ k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다�
     device_ownership_from_security_context = true
   ```
 - **krbd 노드 재부팅(#87).** RBD를 매핑한 노드를 그냥 재부팅하면 네트워크가 먼저 내려가 `libceph ... error -101`로 shutdown이 멈췄다. 재부팅 전에 `kubectl drain`으로 RBD 파드를 옮긴다. 멈추면 하이퍼바이저에서 하드 리부트가 필요했다.
+  재부팅 절차(#116): ① `vws verify-reboot --snapshot FILE` — RBD 볼륨이 붙은 노드마다 `WARN krbd`를 낸다(읽기만 한다). ② 경고된 노드는 `kubectl drain NODE --ignore-daemonsets --delete-emptydir-data`로 비우고 해당 노드의 `rbd.csi.ceph.com` VolumeAttachment가 사라질 때까지 기다린다. ③ 재부팅. ④ `kubectl uncordon NODE`. ⑤ `vws verify-reboot --check FILE`.
 
 ## 알려진 한계
 

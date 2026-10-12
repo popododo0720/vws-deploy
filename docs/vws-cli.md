@@ -170,6 +170,8 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 `vws verify-reboot --snapshot FILE` (재부팅 전), `vws verify-reboot --check FILE [--timeout 20m]` (재부팅 뒤). 이 명령은 재부팅하지 않는다(사람이나 `talosctl`이 한다). 읽기 전용(#43 8절).
 
+`--snapshot`은 `rbd.csi.ceph.com` VolumeAttachment가 붙은 노드마다 `WARN krbd`를 낸다. 그 노드는 재부팅 전에 drain한다(krbd shutdown 멈춤, #116, 절차는 [platform-bundle.md](platform-bundle.md)).
+
 - 스냅샷(0600, 덮어쓰지 않음): 노드 이름과 boot ID, 서비스별 ready/desired, 네임스페이스별 파드 **개수**, 릴리스 네임스페이스 PVC 이름과 phase, VWS ConfigMap의 키 **개수**, `runStrategy: Always` VM 이름과 상태. 파드 UID, ConfigMap 데이터, Secret은 없다.
 - 확인 게이트(기동 순서, 각 소요 시간 출력): `api` → `nodes`(스냅샷의 노드가 모두 Ready) → `cni`(kube-ovn 파드 Ready) → `csi`(Ceph `HEALTH_OK`, single-node 프로필은 `HEALTH_WARN` 허용) → `bundle`(KubeVirt, CDI CR `Deployed`) → `services`(스냅샷 서비스가 ready == desired). 기다리면 되는 상태는 `VWS_VERIFY_INTERVAL`(기본 10초)마다 다시 본다.
 - 막힌 게이트가 출력의 **첫 줄**이다. 통과할 수 없는 상태(노드 사라짐, Ceph `HEALTH_ERR`, operator `Failed`, 워크로드 없는 서비스)는 1, `--timeout`까지 기다려도 안 되면 3.
