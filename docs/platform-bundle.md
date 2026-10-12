@@ -53,4 +53,4 @@ Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과
 
 - 렌더와 kubeconform까지만 확인했다. 실제 클러스터 설치, 기동 순서, 업그레이드는 미검증이다. 실측은 T2 랩에서 한다.
 - kubeconform은 CRD 기반 리소스(CephCluster, KubeVirt, CDI 등)의 스키마가 기본 카탈로그에 없어 건너뛴다. 이 리소스들은 문법만 확인한다.
-- `KUBERNETES_VERSION`(검사용 스키마 버전)이 번들 구성 요소가 요구하는 쿠버네티스 버전과 맞는지는 확인하지 않았다.
+- `KUBERNETES_VERSION`(kubeconform 스키마)과 `K3S_VERSION`은 같은 쿠버네티스 마이너여야 하고 `scripts/guard.sh bundle`이 이를 검사한다. 그 마이너는 문서로 확인한 지원 범위(KubeVirt, Rook, Kube-OVN)의 교집합 안에서 골랐다. CDI와 Multus는 지원 범위를 문서에서 찾지 못했다(확인 필요). 실제 클러스터에서의 동작도 확인하지 않았다.

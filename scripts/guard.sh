@@ -384,6 +384,11 @@ cmd_bundle() {
       --exclude=versions.env || true)
     [[ -z $hits ]] || die "R12: ${name} version is written outside scripts/versions.env: ${hits}"
   done
+  local k8s k3s
+  k8s=$(sed -n 's/^KUBERNETES_VERSION=\([0-9]*\.[0-9]*\)\..*/\1/p' scripts/versions.env)
+  k3s=$(sed -n 's/^K3S_VERSION=v\([0-9]*\.[0-9]*\)\..*/\1/p' scripts/versions.env)
+  [[ -n $k8s && -n $k3s ]] || die "R12: scripts/versions.env needs KUBERNETES_VERSION and K3S_VERSION as major.minor.patch"
+  [[ $k8s == "$k3s" ]] || die "R12: KUBERNETES_VERSION is ${k8s} but K3S_VERSION is ${k3s}"
   for name in rbd openvswitch geneve kvm; do
     grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
   done
