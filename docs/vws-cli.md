@@ -85,7 +85,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 ### vws init
 
-`vws init [--from FILE]`: `VWSCluster` CR을 저장한다. `--from`이 없으면 stdin으로 프로필, 스토리지 드라이버, StorageClass(`existing`일 때만), 이미지 태그를 묻고 같은 CR을 만든다. 검증은 `vws render`와 같은 코드(`lib/render.py`)이고 잘못되면 종료 코드 2로 아무것도 저장하지 않는다. 클러스터의 CR과 `spec`이 같으면 `unchanged`(변경 호출 0건). 워크로드는 건드리지 않는다. 저장은 `kubectl apply --server-side --field-manager=vws`. 저장 전에 `charts/vws/crds/vwsclusters.yaml`을 server-side apply(`--force-conflicts`)한다. Helm은 `crds/`를 첫 설치 때만 만들고 올리지 않아, 옛 CRD가 새 필드를 거절하기 때문이다(#112). `reconfigure`, `upgrade`, `restore`도 CR을 쓰기 전에, `apply`는 번들과 helm 전에 같은 CRD apply를 한다.
+`vws init [--from FILE]`: `VWSCluster` CR을 저장한다. `--from`이 없으면 stdin으로 프로필, 스토리지 드라이버, StorageClass(`existing`일 때만), 이미지 태그를 묻고 같은 CR을 만든다. 검증은 `vws render`와 같은 코드(`lib/render.py`)이고 잘못되면 종료 코드 2로 아무것도 저장하지 않는다. 클러스터의 CR과 `spec`이 같으면 `unchanged`(변경 호출 0건). 워크로드는 건드리지 않는다. 저장은 `kubectl apply --server-side --field-manager=vws`. 저장 전에 `charts/vws/crds/vwsclusters.yaml`을 server-side apply(`--force-conflicts`)한다. Helm은 `crds/`를 첫 설치 때만 만들고 올리지 않아, 옛 CRD가 새 필드를 거절하기 때문이다(#112). `reconfigure`, `upgrade`, `restore`도 CR을 쓰기 전에, `apply`는 CR을 읽기 **전에** 클러스터의 CRD가 차트와 다를 때만 같은 CRD apply를 한다(옛 CRD가 읽은 CR에서 새 필드를 지워 RGW 등을 끄는 것을 막는다, #114. 같으면 쓰기 0건).
 
 ### vws apply
 

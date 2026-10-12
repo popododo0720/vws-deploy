@@ -15,14 +15,13 @@ order=$(grep -o 'bundle  [0-9a-z.-]*' <<<"$OUT" | awk '{print $2}' | paste -sd' 
 want=$(cd "$VWS_BUNDLE_DIR" && printf '%s\n' *.yaml | sort | paste -sd' ')
 if [[ $order == "$want" ]]; then ok "the bundle goes in file number order"; else bad "bundle order" "${order} vs ${want}"; fi
 applies=$(grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG")
-# One apply for the VWSCluster CRD (#112, helm never upgrades crds/) and one per bundle file.
-if [[ $applies -eq 4 ]]; then ok "one CRD apply and one apply per bundle file"; else bad "one CRD apply and one apply per bundle file" "$applies"; fi
-first_doc=$(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -m1 '^kind:' || true)
-if [[ $first_doc == "kind: CustomResourceDefinition" ]] && grep -q 'name: vwsclusters' <(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin"); then ok "the VWSCluster CRD is applied before the bundle"; else bad "CRD first" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+# The cluster has the chart's CRD: no CRD apply, one apply per bundle file (#114).
+if [[ $applies -eq 3 ]]; then ok "one apply per bundle file, none for a current CRD"; else bad "one apply per bundle file" "$applies"; fi
+expect_text "the CRD is read before the CR" "$(calls)" "get crd vwsclusters.${GROUP}"
 # Bundle files carry their own namespaces; -n vws on their apply makes kubectl refuse them.
 if grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -q -e '--namespace' -e $'\t-n '; then bad "bundle apply has no namespace flag" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; else ok "bundle apply has no namespace flag"; fi
 if grep $'^kubectl\twait' "$VWS_FAKE_LOG" | grep -e ' -A' | grep -q -e '--namespace'; then bad "the -A wait has no namespace flag" "$(grep $'^kubectl\twait' "$VWS_FAKE_LOG")"; else ok "the -A wait has no namespace flag"; fi
-if [[ $(grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -c -e '--force-conflicts') -eq 4 ]]; then ok "bundle apply takes fields back from operators"; else bad "bundle apply --force-conflicts" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; fi
+if [[ $(grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -c -e '--force-conflicts') -eq 3 ]]; then ok "bundle apply takes fields back from operators"; else bad "bundle apply --force-conflicts" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; fi
 if grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -q -e '--namespace=vws'; then ok "the CR status patch keeps the release namespace"; else bad "status patch namespace" "$(grep $'^kubectl\tpatch' "$VWS_FAKE_LOG")"; fi
 first_helm=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
 last_apply=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | tail -1 | cut -d: -f1)
@@ -105,3 +104,14 @@ run_vws_real apply;                              expect_rc "past the TTL apply r
 if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "no install past the TTL" "$(calls)"; else ok "no install past the TTL"; fi
 
 finish_tests
+
+# #114: an older CRD (no spec.storage.s3) is applied before the CR is read, so the CR keeps the field.
+installer_scenario oldcrd
+jq 'del(.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.storage.properties.s3)' \
+  "${VWS_FAKE_DIR}/kubectl/get_crd.json" >"${WORK}/oldcrd.json" && mv "${WORK}/oldcrd.json" "${VWS_FAKE_DIR}/kubectl/get_crd.json"
+run_vws_real apply --unattended;                 expect_rc "apply over an older CRD exits 0" 0
+expect_text "the CRD step is reported" "$OUT" "OK    crd"
+crd_line=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
+cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRD is applied before the CR is read"; else bad "CRD apply before CR read" "$(calls)"; fi
+if sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -q '^kind: CustomResourceDefinition'; then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
