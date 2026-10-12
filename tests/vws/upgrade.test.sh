@@ -22,6 +22,8 @@ PY
 
 # with_doctor_fixtures: add the healthy status/doctor answers (tests/fixtures/status/ok) to the scenario.
 with_doctor_fixtures() {
+  # doctor reads the CRD list (status/ok), not the single CRD installer_scenario writes (#114).
+  rm -f "${VWS_FAKE_DIR}/kubectl/get_crd.json"
   cp -rn "${FIXTURES}/status/ok/." "${VWS_FAKE_DIR}/"
   local f="${VWS_FAKE_DIR}/kubectl/get_crd.json" env="${VWS_TEST_ROOT}/scripts/versions.env"
   jq --arg g "$GROUP" '(.items[] | select(.spec.group == "FILLED_BY_TEST")) |= (.spec.group = $g | .metadata.name = "vwsclusters." + $g)' "$f" >"${f}.new" && mv "${f}.new" "$f"
