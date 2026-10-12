@@ -144,7 +144,21 @@ spec:
         - name: state
           mountPath: /var/lib/vws
         {{- end }}
+        {{- if .kube }}
+        - name: kubeconfig
+          mountPath: {{ .kube.dir }}
+          readOnly: true
+        {{- end }}
   volumes:
     - name: tmp
       emptyDir: {}
+    {{- if .kube }}
+    - name: kubeconfig
+      secret:
+        secretName: {{ .kube.secret }}
+        defaultMode: 0440
+        items:
+          - key: {{ .kube.key }}
+            path: {{ .kube.key }}
+    {{- end }}
 {{- end -}}

@@ -192,6 +192,38 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     return errors
 
 
+def check_kubeconfig(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
+    """kubeconfigSecret mounts one operator-made Secret read-only next to the -kubeconfig path."""
+    errors: list[str] = []
+    mounts = [m for m in container.get("volumeMounts") or [] if m.get("name") == "kubeconfig"]
+    volumes = [v for v in pod.get("volumes") or [] if v.get("name") == "kubeconfig"]
+    secret = spec.get("kubeconfigSecret")
+    if secret is None:
+        if mounts or volumes:
+            errors.append(f"R16: {name} mounts a kubeconfig volume that values do not ask for")
+        return errors
+    path = (spec.get("flags") or {}).get("kubeconfig")
+    if not path:
+        return [f"R16: {name} has kubeconfigSecret but no -kubeconfig flag"]
+    directory, _, key = path.rpartition("/")
+    if len(mounts) != 1 or mounts[0].get("mountPath") != directory or mounts[0].get("readOnly") is not True:
+        errors.append(f"R16: {name} must mount the kubeconfig Secret read-only at {directory}")
+    if directory in ("/tmp", "/var/lib/vws") or directory.startswith(("/tmp/", "/var/lib/vws/")):
+        errors.append(f"R16: {name} kubeconfig directory {directory} overlaps another mount")
+    if len(volumes) != 1 or (volumes[0].get("secret") or {}).get("secretName") != secret:
+        errors.append(f"R16: {name} kubeconfig volume must be Secret {secret}")
+    else:
+        vol = volumes[0]["secret"]
+        if [i.get("key") for i in vol.get("items") or []] != [key]:
+            errors.append(f"R16: {name} must project only the key {key} of the Secret")
+        if vol.get("defaultMode") != 0o440:
+            errors.append(f"R16: {name} kubeconfig file mode must be 0440")
+    for env in container.get("env") or []:
+        if "KUBECONFIG" in env.get("name", "").upper() or "TOKEN" in env.get("name", "").upper():
+            errors.append(f"R16: {name} passes a credential through env {env.get('name')}")
+    return errors
+
+
 def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dict) -> list[str]:
     want, errors = want_args(spec, values, nsmap)
     got = container.get("args") or []
@@ -278,6 +310,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_rbac(name, spec, by_kind, pod, release, release_ns, nsmap))
         errors.extend(check_flags(name, spec, container, values, nsmap))
         errors.extend(check_listen(name, spec, pod, container))
+        errors.extend(check_kubeconfig(name, spec, pod, container))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -534,6 +567,40 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"]["network"]["flags"].pop("pool", None)
         if not check(docs, broken_values, release):
             return ["R15: network without -pool did not fail"]
+
+    # kubeconfigSecret: the mount, the Secret name, the key and the mode come from values only.
+    kube = next((n for n, spec in values["services"].items() if (spec or {}).get("kubeconfigSecret")), None)
+    if kube is not None:
+        def mutate_pod(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == kube:
+                    change(doc["spec"]["template"]["spec"])
+            return broken
+
+        def volume(pod):
+            return next(v for v in pod["volumes"] if v["name"] == "kubeconfig")
+
+        def mount(pod):
+            return next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == "kubeconfig")
+
+        cases = {
+            "another Secret": lambda pod: volume(pod)["secret"].update(secretName="other"),
+            "a writable mount": lambda pod: mount(pod).pop("readOnly"),
+            "a mount path that differs from the flag": lambda pod: mount(pod).update(mountPath="/etc/other"),
+            "a world-readable mode": lambda pod: volume(pod)["secret"].update(defaultMode=0o644),
+            "the whole Secret projected": lambda pod: volume(pod)["secret"].pop("items"),
+            "a credential in env": lambda pod: pod["containers"][0]["env"].append({"name": "KUBECONFIG", "value": "x"}),
+            "no mount": lambda pod: pod["containers"][0]["volumeMounts"].remove(mount(pod)),
+        }
+        for label, change in cases.items():
+            if not check(mutate_pod(change), values, release):
+                return [f"R16: {label} did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][kube]["kubeconfigSecret"] = None
+        broken_values["services"][kube].pop("kubeconfigSecret")
+        if not check(docs, broken_values, release):
+            return ["R16: a kubeconfig volume that values do not ask for did not fail"]
 
     broken = copy.deepcopy(docs)
     for doc in broken:
