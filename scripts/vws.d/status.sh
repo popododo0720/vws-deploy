@@ -4,6 +4,8 @@
 # cluster cannot be read. Works with the operating role (no Secrets): see lib/status.sh.
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 sha256sum kubectl helm)
+# shellcheck source=scripts/vws.d/lib/hash.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/hash.sh"
 # shellcheck source=scripts/vws.d/lib/checks.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/checks.sh"
 # shellcheck source=scripts/vws.d/lib/status.sh
