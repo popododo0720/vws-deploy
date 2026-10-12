@@ -5,7 +5,8 @@
 # with render.py, the chart schema (helm template) and scripts/check_render.py before anything is
 # written; invalid input exits 2 and changes nothing. The changed spec fields are printed
 # (secret-shaped fields as "(hidden)"). Same spec as in the cluster: unchanged, no call that writes.
-# --dry-run prints the change summary only. Otherwise the CR is saved and vws apply runs.
+# --dry-run prints the change summary only. Otherwise the CR is saved and vws apply runs; when apply
+# fails the previous spec is saved again and the exit code is 1 (lib/applyrun.sh, same as vws upgrade).
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl helm)
 # shellcheck source=scripts/vws.d/lib/installer.sh
@@ -70,8 +71,5 @@ vws_cmd_main() {
     vws_emit OK reconfigure "dry-run: the change above is not saved and apply does not run"
     return 0
   fi
-  vws_kubectl apply --server-side --field-manager=vws -f - <"${vws_reconfigure_tmp}/cr.yaml" >/dev/null ||
-    vws_die_env "cannot save VWSCluster vws"
-  vws_emit OK reconfigure "saved VWSCluster vws; applying"
-  vws_run_apply || true
+  vws_apply_spec reconfigure "$current" "$(python3 -c 'import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["spec"]))' "${vws_reconfigure_tmp}/cr.yaml")"
 }

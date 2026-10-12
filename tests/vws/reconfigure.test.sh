@@ -93,6 +93,17 @@ expect_template '.spec.version = "v2"'
 rm "${VWS_FAKE_DIR}/helm/upgrade.json"
 run_vws_real reconfigure --set version=v2;        expect_rc "a failing apply exits 1" 1
 expect_text "the failing apply is reported" "$OUT" "FAIL  helm"
+expect_text "the previous spec is restored" "$OUT" "the VWSCluster spec is back to the previous value"
+specs=$(python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
+import sys, yaml, json
+for doc in open(sys.argv[1]).read().split("--- apply\n"):
+    d = yaml.safe_load(doc) if doc.strip() else None
+    if isinstance(d, dict) and d.get("kind") == "VWSCluster":
+        print(json.dumps(d["spec"], sort_keys=True))
+PY
+)
+first=$(head -1 <<<"$specs"); last=$(tail -1 <<<"$specs")
+if [[ $first == *'"version": "v2"'* && $last != *'"version"'* && $(wc -l <<<"$specs") -eq 2 ]]; then ok "saved new, then saved the previous spec again"; else bad "restore order" "$specs"; fi
 
 installer_scenario no-cr
 rm "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
