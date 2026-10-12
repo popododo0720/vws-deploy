@@ -8,7 +8,7 @@ VWS 제어부가 올라가기 전에 클러스터에 있어야 하는 구성 요
 
 | 구성 요소 | 변수 | 설치 방식 |
 | --- | --- | --- |
-| Multus | `MULTUS_VERSION` | 업스트림 thick 데몬셋 매니페스트 |
+| Multus | `MULTUS_VERSION` | 업스트림 thick 데몬셋 매니페스트. `kube-multus` 메모리만 request 100Mi, limit 300Mi로 바꾼다(업스트림 50Mi는 노드 재부팅 때 OOMKilled, #88) |
 | Kube-OVN | `KUBEOVN_VERSION` | Helm 차트 `kube-ovn`, 값 `platform/kube-ovn.values.yaml` |
 | Rook operator | `ROOK_VERSION` | Helm 차트 `rook-ceph`, 값 `platform/rook-ceph.values.yaml` |
 | Rook Ceph 클러스터 | `ROOK_VERSION` | Helm 차트 `rook-ceph-cluster`, 값 `platform/rook-ceph-cluster.values.yaml` |
