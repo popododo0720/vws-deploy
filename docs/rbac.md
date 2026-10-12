@@ -57,3 +57,7 @@
 - 클라이언트가 캐시를 쓰게 되면 `get`/`list`에 `watch`가 추가로 필요하다. 지금 main 코드는 캐시 없는 `client.New`(compute `internal/store/kubestore/cluster.go:20`, network `internal/network/dataplane_kubeovn_open.go:41`)나 `kubernetes.NewForConfig`(storage `internal/backend/kube/config.go:47`)를 쓴다.
 - **교차 네임스페이스 복제(`datavolumes/source`)는 T2 랩 항목이다.** VM의 `dataVolumeTemplates`가 `vws-images`의 DataSource를 `vws-vms`로 복제할 때 CDI가 호출자 권한(`datavolumes/source` create 등)을 요구하는지 코드나 문서로 확인하지 못했다. 실제 클러스터에서 VM을 만들어 보고, 거절되면 compute 규칙에 추가한다.
 - 네임스페이스 값 `vws-vms`, `vws-images`, `vws-nad`는 서비스가 같은 값을 받을 때만 의미가 있다. 값 한 곳에서 플래그로 넘기지만 서비스 이미지가 그 플래그를 받는지는 서비스 저장소 main의 `cmd`를 읽어 확인했다. compute의 세 플래그는 제외다(`docs/service-config.md`).
+
+## 설치 뒤 운영 역할 (bootstrap, vws-deploy#54, #77)
+
+설치용 임시 cluster-admin을 회수한 뒤 남는 권한은 `bootstrap/bootstrap.yaml`의 Role `vws-operator`(릴리스 네임스페이스)와 ClusterRole `vws-operator-read`(클러스터 범위, 읽기만)다. `vws-operator-read`의 정확한 목록과 근거는 `docs/installer.md`의 표. #77로 추가된 것: `kubevirt.io/kubevirts`, `cdi.kubevirt.io/cdis`, `ceph.rook.io/cephclusters`, 클러스터 범위 `persistentvolumeclaims`, 모두 get, list만. Secret, watch, 쓰기 동사, 와일드카드는 없다(R20).

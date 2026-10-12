@@ -814,6 +814,28 @@ for d in docs:
                 fail(f"{d['kind']} {d['metadata']['name']} keeps RBAC rights")
             if d["kind"] == "ClusterRole" and set(rule["verbs"]) - {"get", "list"}:
                 fail(f"ClusterRole {d['metadata']['name']} writes cluster objects after finish")
+# The operating ClusterRole holds exactly this list (vws-deploy#77): group, resource, get and list only.
+OPERATOR_READ = {
+    ("", "nodes"), ("storage.k8s.io", "storageclasses"), ("snapshot.storage.k8s.io", "volumesnapshotclasses"),
+    ("apiextensions.k8s.io", "customresourcedefinitions"), ("kubevirt.io", "kubevirts"), ("cdi.kubevirt.io", "cdis"),
+    ("ceph.rook.io", "cephclusters"), ("", "persistentvolumeclaims"),
+}
+read = by.get(("ClusterRole", "vws-operator-read"))
+if read is None:
+    fail("the ClusterRole vws-operator-read is missing")
+have = set()
+for rule in read["rules"]:
+    if sorted(rule["verbs"]) != ["get", "list"]:
+        fail(f"vws-operator-read rule {rule['resources']} has verbs {rule['verbs']}; only get and list")
+    if rule.get("resourceNames") or rule.get("nonResourceURLs"):
+        fail("vws-operator-read uses resourceNames or nonResourceURLs")
+    for group in rule["apiGroups"]:
+        for resource in rule["resources"]:
+            if (group, resource) not in OPERATOR_READ:
+                fail(f"vws-operator-read grants {group or 'core'}/{resource}, which is not in the allowed list (docs/rbac.md)")
+            have.add((group, resource))
+if have != OPERATOR_READ:
+    fail(f"vws-operator-read lacks {sorted(OPERATOR_READ - have)}")
 PY
 }
 
@@ -838,6 +860,12 @@ cmd_bootstrap() {
   bad_bootstrap "a second cluster-admin binding" 's/name: vws-operator-read$/name: cluster-admin/'
   bad_bootstrap "the operating Role reading secrets" 's/resources: \[pods, /resources: [secrets, pods, /'
   bad_bootstrap "a wildcard rule" 's/resources: \[nodes\]/resources: ["*"]/'
+  bad_bootstrap "watch on kubevirts" '/resources: \[kubevirts\]/{n;s/verbs: \[get, list\]/verbs: [get, list, watch]/}'
+  bad_bootstrap "a resource outside the list" 's/resources: \[kubevirts\]/resources: [kubevirts, virtualmachines]/'
+  bad_bootstrap "a write verb on PVCs" '/resources: \[persistentvolumeclaims\]$/{n;s/verbs: \[get, list\]/verbs: [get, list, delete]/}'
+  bad_bootstrap "a group outside the list" 's/apiGroups: \[ceph.rook.io\]/apiGroups: [ceph.rook.io, objectbucket.io]/'
+  bad_bootstrap "pods cluster-wide" 's/resources: \[cdis\]/resources: [cdis, pods]/'
+  bad_bootstrap "an allowed read removed" '/resources: \[cephclusters\]/s/cephclusters/cephblockpools/'
   rm -rf "$tmp"
 }
 
