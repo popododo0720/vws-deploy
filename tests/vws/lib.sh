@@ -12,7 +12,7 @@ trap 'rm -rf "$WORK"' EXIT
 export VWS_FAKE_DIR="$FIXTURES"
 export VWS_FAKE_LOG="${WORK}/calls.log"
 
-reset_log() { : >"$VWS_FAKE_LOG"; }
+reset_log() { : >"$VWS_FAKE_LOG"; : >"${VWS_FAKE_LOG}.stdin"; }
 
 # run_vws ARGS...: runs scripts/vws with the fixture commands. Sets OUT, ERR and RC.
 run_vws() {
