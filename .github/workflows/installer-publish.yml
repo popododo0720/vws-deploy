@@ -1,0 +1,68 @@
+# Publishes the installer image (bootstrap/Containerfile, vws-deploy#96) on a push to main or a v* tag.
+# A separate file so pull request checks show only the installer-image build job.
+# The digest is not committed by CI: docs/installer.md has the manual step that pins it in
+# scripts/versions.env through a pull request.
+name: installer-publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/vws/installer
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          scripts/install-tools.sh
+          echo /tmp/bin >> "$GITHUB_PATH"
+      - name: Render platform bundle
+        run: scripts/platform.sh
+      - name: Build args
+        id: args
+        run: |
+          # shellcheck source=/dev/null
+          source scripts/versions.env
+          {
+            echo "build-args<<ARGS"
+            echo "BASE=${INSTALLER_BASE_IMAGE}"
+            echo "HELM_VERSION=${HELM_VERSION}"
+            echo "HELM_SHA256=${HELM_SHA256}"
+            echo "KUBERNETES_VERSION=${KUBERNETES_VERSION}"
+            echo "KUBECTL_SHA256=${KUBECTL_SHA256}"
+            echo "ARGS"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: bootstrap/Containerfile
+          build-args: ${{ steps.args.outputs.build-args }}
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+      - name: Digest for scripts/versions.env (manual pin, docs/installer.md)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          echo "VWS_INSTALLER_IMAGE=${IMAGE}@${DIGEST}" | tee -a "$GITHUB_STEP_SUMMARY"
