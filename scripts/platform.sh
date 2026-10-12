@@ -25,7 +25,12 @@ fetch "https://github.com/kubevirt/containerized-data-importer/releases/download
 fetch "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
   "$MULTUS_SHA256" .cache/platform/multus.yaml
 
-cp .cache/platform/multus.yaml "$out/10-multus.yaml"
+# Upstream thick daemonset limits kube-multus to 50Mi; it is OOMKilled while a rebooted node starts
+# all its pods at once (#88). Request 100Mi, limit 300Mi, and fail if upstream changed.
+sed -e '0,/memory: "50Mi"/s//memory: "100Mi"/' -e '0,/memory: "50Mi"/s//memory: "300Mi"/' \
+  .cache/platform/multus.yaml > "$out/10-multus.yaml"
+grep -q 'memory: "300Mi"' "$out/10-multus.yaml" && grep -q 'memory: "100Mi"' "$out/10-multus.yaml" \
+  || { echo "platform: multus memory patch did not apply" >&2; exit 1; }
 helm template kube-ovn kube-ovn --repo https://kubeovn.github.io/kube-ovn/ --version "$KUBEOVN_VERSION" \
   --namespace kube-system -f platform/kube-ovn.values.yaml > "$out/20-kube-ovn.yaml"
 helm template rook-ceph rook-ceph --repo https://charts.rook.io/release --version "$ROOK_VERSION" \
