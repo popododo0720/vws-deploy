@@ -1,0 +1,1 @@
+my-helm uninstall vws
