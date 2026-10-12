@@ -1,13 +1,12 @@
-# Common insider-risk workflow. Copy this file and scripts/guard-agents.sh as-is into another repo.
-# The repo is private on a free plan, so branch protection is unavailable. These checks replace it:
-# pull-request checks stop a bad merge, the push check only reports a commit that skipped review.
+# Common insider-risk workflow for pull requests. Copy this file, direct-push-watch.yml and
+# scripts/guard-agents.sh as-is into another repo.
+# The repo is private on a free plan, so branch protection is unavailable. These checks replace it.
+# The push check lives in its own file so that a pull request run has no skipped check.
 name: repo-guard
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -15,7 +14,6 @@ permissions:
 
 jobs:
   pr-hygiene:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,18 +28,3 @@ jobs:
         run: scripts/guard-agents.sh pr-body
       - name: AGENTS.md has the guardrails
         run: scripts/guard-agents.sh agents
-
-  direct-push-watch:
-    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Every commit on main came from a pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: scripts/guard-agents.sh push-watch "$BEFORE" "$AFTER"
