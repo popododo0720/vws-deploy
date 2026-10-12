@@ -10,6 +10,8 @@
 VWS_NEED=(jq python3 kubectl helm)
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
+# shellcheck source=scripts/vws.d/lib/applyrun.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
 vws_reconfigure_tmp=''
 
@@ -22,18 +24,6 @@ vws_reconfigure_validate() {
     vws_usage "the rendered values fail charts/vws/values.schema.json: $(head -1 "${dir}/helm.err"); nothing was written"
   python3 "${VWS_ROOT}/scripts/check_render.py" "${dir}/rendered.yaml" "${VWS_ROOT}/charts/vws/values.yaml" "$VWS_NAMESPACE" "${dir}/values.yaml" >"${dir}/check.out" 2>&1 ||
     vws_usage "scripts/check_render.py rejects the result: $(head -1 "${dir}/check.out"); nothing was written"
-}
-
-# vws_reconfigure_apply: run vws apply and fold its results into this command's results.
-vws_reconfigure_apply() {
-  local json rc=0
-  json=$(VWS_OUTPUT=json "${VWS_ROOT}/scripts/vws" -o json apply --unattended) || rc=$?
-  ((rc == 2 || rc == 3)) && { [[ -z $json ]] || jq -r '.checks[] | "\(.level) \(.name) \(.message)"' <<<"$json" >&2; }
-  ((rc == 2)) && vws_usage "vws apply rejected the saved CR"
-  ((rc == 3)) && vws_die_env "vws apply could not evaluate the cluster"
-  while IFS=$'\t' read -r level name message; do
-    [[ -n $level ]] && vws_emit "$level" "$name" "$message"
-  done < <(jq -r '.checks[] | [.level, .name, .message] | @tsv' <<<"$json")
 }
 
 vws_cmd_main() {
@@ -83,5 +73,5 @@ vws_cmd_main() {
   vws_kubectl apply --server-side --field-manager=vws -f - <"${vws_reconfigure_tmp}/cr.yaml" >/dev/null ||
     vws_die_env "cannot save VWSCluster vws"
   vws_emit OK reconfigure "saved VWSCluster vws; applying"
-  vws_reconfigure_apply
+  vws_run_apply || true
 }
