@@ -1,0 +1,10 @@
+{
+  "items": [
+    {
+      "status": {
+        "phase": "Deployed",
+        "observedKubeVirtVersion": "FILLED_BY_TEST"
+      }
+    }
+  ]
+}

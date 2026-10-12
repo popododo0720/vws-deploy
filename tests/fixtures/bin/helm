@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fake helm for tests/vws. Same rules as the fake kubectl: log every call, answer from
-# $VWS_FAKE_DIR/helm/<verb>.json, fail when the file is missing.
+# $VWS_FAKE_DIR/helm/<verb>.json (or fail with <verb>.err), fail when neither exists.
 set -euo pipefail
 : "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
 verb='' skip=0
@@ -16,6 +16,11 @@ for arg in "$@"; do
 done
 printf 'helm\t%s\t%s\n' "$verb" "$*" >>"$VWS_FAKE_LOG"
 file="${VWS_FAKE_DIR}/helm/${verb}.json"
+# <verb>.err: the call fails with that text on stderr (forbidden, not found).
+if [[ -f ${file%.json}.err ]]; then
+  cat "${file%.json}.err" >&2
+  exit 1
+fi
 if [[ ! -f $file ]]; then
   echo "fake helm: no fixture ${file}" >&2
   exit 1

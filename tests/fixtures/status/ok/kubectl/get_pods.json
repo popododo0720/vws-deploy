@@ -1,0 +1,84 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "name": "console-0"
+   },
+   "status": {
+    "containerStatuses": [
+     {
+      "name": "c",
+      "restartCount": 0,
+      "state": {
+       "running": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "name": "console-api-0"
+   },
+   "status": {
+    "containerStatuses": [
+     {
+      "name": "c",
+      "restartCount": 0,
+      "state": {
+       "running": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "name": "compute-0"
+   },
+   "status": {
+    "containerStatuses": [
+     {
+      "name": "c",
+      "restartCount": 0,
+      "state": {
+       "running": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "name": "network-0"
+   },
+   "status": {
+    "containerStatuses": [
+     {
+      "name": "c",
+      "restartCount": 0,
+      "state": {
+       "running": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "metadata": {
+    "name": "storage-0"
+   },
+   "status": {
+    "containerStatuses": [
+     {
+      "name": "c",
+      "restartCount": 0,
+      "state": {
+       "running": {}
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "namespace": "vws",
+    "name": "data-storage-0"
+   },
+   "status": {
+    "phase": "Bound"
+   }
+  }
+ ]
+}

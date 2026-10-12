@@ -94,3 +94,13 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 ### vws installer
 
 `vws installer finish`: 설치용 임시 cluster-admin 바인딩(`vws-installer-temp`)을 지우고 정말 사라졌는지 확인한다. 설계와 근거는 `docs/installer.md`. 확인은 `kubectl auth can-i`(SelfSubjectAccessReview, 파드 밖이면 `--as=system:serviceaccount:vws:vws-installer` 즉 SubjectAccessReview)로 `* *`, `create clusterrolebindings`, `create clusterroles`, `delete namespaces`, `create customresourcedefinitions`, `get secrets`가 모두 `no`이고, 운영용 `get vwsclusters`, `patch vwsclusters/status`는 `yes`인지 본다. 하나라도 어긋나면 1, 답을 못 읽으면 3. 이미 지워졌으면 `unchanged`이고 확인은 다시 한다(멱등).
+
+### vws status
+
+`vws status`: 설치된 상태를 읽기만 한다(변경 동사 0건). 검사: api, `cluster-cr`(프로필, `metadata.generation`과 `status.observedGeneration`), `applied-hash`(지금 CR이 렌더하는 values의 sha256과 `status.appliedValuesHash`; `vws apply`와 같은 계산), `release`와 `release-drift`(helm 리비전과 상태, 릴리스 values와 CR 렌더 결과 비교), `bundle-kubevirt`, `bundle-cdi`(운영자 CR이 보고하는 버전과 `scripts/versions.env`), `service-<이름>`(`charts/vws/values.yaml`의 서비스마다 Deployment/StatefulSet ready/desired), `pdb`. 드리프트는 WARN이라 `--strict`에서 1.
+
+**자격 증명.** helm은 릴리스를 Secret에 둔다. `vws installer finish` 뒤 운영 역할(`vws-operator`)은 Secret을 읽지 못하므로 `helm status/get`이 forbidden으로 실패한다. 그래서 status는 VWSCluster status와 워크로드를 1차 자료로 쓰고, 릴리스 리비전과 릴리스 드리프트는 읽을 수 있을 때만 덧붙인다. 읽을 수 없으면 `WARN release ... cannot read Secrets ...; For them run vws status with your own kubeconfig`를 내고 나머지 검사는 그대로 돈다(FAIL 아님). 운영 역할로 `--strict`를 쓰면 이 WARN 때문에 1이다.
+
+### vws doctor
+
+`vws doctor`: status 전부 + `restarts`(CrashLoopBackOff 또는 재시작 5회 이상), `pending-pvc`(모든 네임스페이스), `vws-crd`(VWSCluster CRD Established), `crd-<그룹>`과 `kubevirt-phase`, `cdi-phase`(preflight와 같은 `checks.sh` 함수, doctor 모드라 없으면 FAIL), `read-rights`(status에 필요한 읽기 권한; `get secrets`만 없으면 운영 역할로 보고 OK), `ceph`(CR의 storage driver가 rook-ceph일 때 CephCluster health), `pending-flags`(CR이 렌더하는 `global.pendingFlags`와 실제 컨테이너 인자에 pendingFlags가 있는지, #38). 모든 FAIL 메시지는 `next: <다음 행동 한 줄>`로 끝난다. 읽기 전용.
