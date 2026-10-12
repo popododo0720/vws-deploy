@@ -37,6 +37,10 @@ services:
 
 차트는 아이콘을 두지 않는다. `helm lint`가 아이콘을 권장한다고 알려도 로고 파일은 추가하지 않는다.
 
+## 로컬 랩
+
+`scripts/lab/`은 k3s, KubeVirt, CDI를 올리는 일회용 T1 랩이다. 이 저장소에서 클러스터에 적용하는 유일한 경로다. 순서는 `k3s-up.sh`, `virt-up.sh`, `vm-test.sh`, `down.sh`다. `/dev/kvm`이 없으면 `kvm-check.sh`가 `emulation`을 돌려주고 KubeVirt는 `useEmulation`으로 뜬다. `LAB_DRY_RUN=1`이면 상태를 바꾸는 명령을 실행하지 않고 출력만 한다. **미검증**. 박스 RAM이 모자라 실제 클러스터에서 돌려 보지 않았다.
+
 ## 검사
 
 `make check`가 로컬과 GitHub Actions에서 같은 검사를 돌린다. 렌더된 매니페스트는 `build/`에만 있고 커밋하지 않는다. 작업 규칙은 `AGENTS.md`에 있다.
