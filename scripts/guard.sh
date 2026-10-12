@@ -641,7 +641,9 @@ def structural(schema, path):
     for key in ("additionalProperties", "items"):
         if isinstance(schema.get(key), dict):
             structural(schema[key], path + "[*]")
-    if schema.get("properties") and isinstance(schema.get("additionalProperties"), dict):
+    # The API server rejects additionalProperties beside properties in any form, false included
+    # (vws-deploy#81). Unknown fields are refused by render.py and pruned by the API server.
+    if schema.get("properties") and "additionalProperties" in schema:
         sys.exit(f"R18: CRD schema node {path} has both properties and additionalProperties")
 
 for version in crd["spec"]["versions"]:
@@ -693,6 +695,14 @@ d["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["pro
 yaml.safe_dump(d, open(sys.argv[1], "w"))
 PY
   ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a schema node without a type was accepted"; }
+  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
+  python3 - "$tmp/charts/vws/crds/vwsclusters.yaml" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+d["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["additionalProperties"] = False
+yaml.safe_dump(d, open(sys.argv[1], "w"))
+PY
+  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: additionalProperties: false beside properties was accepted"; }
   cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
   printf 'group: %s\n' "$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)" > "$tmp/scripts/group.txt"
   ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: the API group written in a second place was accepted"; }
