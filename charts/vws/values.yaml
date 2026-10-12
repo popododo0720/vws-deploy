@@ -24,6 +24,12 @@ global:
   # How kubelet checks every service: tcp opens the service port. grpc calls grpc.health.v1 on it
   # and works only after the service images implement that. Switching is this one value.
   probe: tcp
+  # How replicas of a service spread over nodes: soft prefers different nodes (ScheduleAnyway),
+  # hard requires them (DoNotSchedule). profiles/ha.yaml sets hard. profiles/*.yaml also set
+  # global.profile, which only records the profile a render came from.
+  topologySpread: soft
+  # tag is the image tag of every service. Absent means Chart.yaml appVersion. vws render sets it
+  # from VWSCluster spec.version.
 
 namespaces:
   vms: vws-vms

@@ -103,7 +103,7 @@ spec:
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: ScheduleAnyway
+      whenUnsatisfiable: {{ ternary "DoNotSchedule" "ScheduleAnyway" (eq (.root.Values.global.topologySpread | default "soft") "hard") }}
       labelSelector:
         matchLabels:
           {{- include "vws.selector" . | nindent 10 }}

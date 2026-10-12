@@ -1,0 +1,31 @@
+# Profile ha: helm -f profiles/ha.yaml on top of charts/vws/values.yaml.
+# A profile changes values only, and every profile sets the same keys (scripts/guard.sh profiles).
+# cpu and memory are requests and limits and are ESTIMATES until measured in a lab (T2).
+global:
+  profile: ha
+  topologySpread: hard
+services:
+  console:
+    replicas: 3
+    cpu: 500m
+    memory: 1Gi
+  console-api:
+    replicas: 3
+    cpu: 500m
+    memory: 1Gi
+  # Stateful services run one replica: the services have no multi-replica state (vws-deploy#43 decision 2).
+  compute:
+    cpu: 500m
+    memory: 1Gi
+    state:
+      size: 20Gi
+  storage:
+    cpu: 500m
+    memory: 1Gi
+    state:
+      size: 20Gi
+  network:
+    cpu: 500m
+    memory: 1Gi
+    state:
+      size: 20Gi

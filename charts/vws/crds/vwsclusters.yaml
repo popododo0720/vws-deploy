@@ -1,0 +1,126 @@
+# VWSCluster: the deployment settings of one VWS install, and the only VWS CRD (AGENTS.md R18,
+# docs/vwscluster.md). spec.group below is the one place the API group is written; scripts read it
+# from here. It is temporary until a domain is secured (vws-deploy#43 decision 9).
+# No controller watches it. No service reads it. It holds no secret, only Secret names.
+# Helm installs files in crds/ once and never deletes them, so an uninstall keeps the CR.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vwsclusters.vws.popododo0720.io
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  group: vws.popododo0720.io
+  scope: Namespaced
+  names:
+    kind: VWSCluster
+    listKind: VWSClusterList
+    plural: vwsclusters
+    singular: vwscluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Profile
+          type: string
+          jsonPath: .spec.profile
+        - name: Version
+          type: string
+          jsonPath: .spec.version
+        - name: Applied
+          type: integer
+          jsonPath: .status.observedGeneration
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          x-kubernetes-validations:
+            - rule: self.metadata.name == 'vws'
+              message: VWSCluster is a singleton named vws
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              additionalProperties: false
+              required: [profile]
+              properties:
+                profile:
+                  type: string
+                  enum: [single-node, small, ha]
+                version:
+                  description: Image tag of every VWS service. Empty means the chart appVersion.
+                  type: string
+                  pattern: '^$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+                storage:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    driver:
+                      type: string
+                      enum: [rook-ceph, existing]
+                    storageClass:
+                      description: The StorageClass to use when driver is existing.
+                      type: string
+                      pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                network:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    driver:
+                      type: string
+                      enum: [kube-ovn]
+                observability:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    otlpEndpoint:
+                      description: Empty turns telemetry off. Not rendered until the chart has observability values.
+                      type: string
+                services:
+                  description: Per-service overrides, checked again by charts/vws/values.schema.json.
+                  type: object
+                  additionalProperties:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      replicas:
+                        type: integer
+                        minimum: 1
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                      flags:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                secrets:
+                  description: Names of Secrets the installer created. Never a value.
+                  type: object
+                  additionalProperties:
+                    type: object
+                    additionalProperties: false
+                    required: [secretName]
+                    properties:
+                      secretName:
+                        type: string
+                        pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                appliedValuesHash:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
