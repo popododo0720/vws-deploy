@@ -115,3 +115,25 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 - spec이 클러스터의 CR과 같으면 `unchanged`, 쓰는 호출 0건.
 - `--dry-run`: 요약만 출력하고 CR 저장도 apply도 하지 않는다.
 - 그 밖에는 CR을 server-side apply(`--field-manager=vws`)로 저장하고 `vws apply --unattended`를 돌려 그 결과 줄을 같은 출력(`-o json` 포함)에 합친다. apply가 실패하면 1. CR은 이미 저장된 상태로 남는다(다음 `vws apply`나 되돌리는 `reconfigure`로 맞춘다, 확인 필요).
+
+### vws diag
+
+`vws diag [--out FILE] [--since 1h]`: 장애 신고용 진단 번들(tar.gz) 하나를 쓴다. 클러스터는 읽기만 하고 업로드하지 않는다(#43 7절).
+
+| 파일 | 내용 |
+| --- | --- |
+| `vwscluster.json` | VWSCluster spec과 status(managedFields 제외) |
+| `helm-status.json`, `helm-history.json`, `helm-values.json` | `helm status/history`, `helm get values -a`. 운영 역할은 Secret을 못 읽어 `unavailable: ...`가 된다(사용자 자격 증명으로 다시 돌리면 채워진다) |
+| `cluster.txt` | `get nodes,pods,pvc,pdb,events -A -o wide` |
+| `pods/<ns>_<pod>.describe.txt`, `.log` | 릴리스 네임스페이스와 번들 네임스페이스(kubevirt, cdi, kube-system, rook-ceph)의 비정상 파드만(Running/Succeeded가 아니거나 준비 안 된 컨테이너). 로그는 `--since`(기본 1h), 파드당 500줄 |
+| `crds.txt`, `kubevirt-status.json`, `cdi-status.json`, `cephcluster-status.json` | CRD 이름, 각 CR의 status |
+| `configmaps.json` | 릴리스 네임스페이스 ConfigMap 이름과 키별 크기(data 없음) |
+| `status.json`, `doctor.json` | 이 빌드에 `vws status`/`doctor`(#56)가 있을 때 그 출력 |
+| `versions.env`, `kubectl-version.txt`, `helm-version.txt`, `context.txt` | 버전과 컨텍스트 이름 |
+| `README`, `REDACTION_REPORT` | 안내, 패턴별 마스킹 개수(값 없음) |
+
+수집하지 않는 것: Secret 전부(어떤 호출도 secrets를 읽지 않는다), ConfigMap data, 환경 변수, 노드 호스트 파일, VM 콘솔/디스크.
+
+마스킹: 키 이름 규칙이 먼저다. 이름이 비밀 모양인 키(대소문자 무시: `passw`, `passphrase`, `token`, `secret`, `credential`, `private`, `apikey`/`api-key`/`api_key`, `dsn`, `auth`, `key`로 끝나는 `-`/`_`/`.` 구분 이름, camelCase `...Key`)의 값은 모양과 상관없이 가린다. 중첩 객체/리스트면 그 아래 전체. JSON 파일(예: `helm get values -a -o json`)은 구조로 읽어 값만 `"[REDACTED]"`로 바꾸고 유효한 JSON으로 다시 쓰고, YAML/텍스트는 줄 단위(들여쓰기 블록 포함). `secretName`, `secretRef`, `secretKeyRef`는 Secret 이름 참조라 남긴다. `keys`, `monkey`, `privileged` 같은 비슷한 이름과 이미지 digest는 가리지 않는다. 이어서 `lib/redact.py`가 모든 파일을 훑어 PEM 개인키 블록, `Bearer` 토큰, `token` 값, `data:`/`binaryData:` 아래 40자 이상 base64 값, 12자리 이상 연속 숫자, 자격 증명 URL(`://user:pass@`)이 있는 줄을 `[REDACTED]`로 바꾼다. 스캐너는 먼저 패턴마다 명백히 가짜인 카나리를 잡는지 스스로 확인한다. 스캐너가 없거나(python3가 PATH에 없음) 카나리를 놓치면 번들을 쓰지 않고 3(실패 시 닫힘). 이미지 digest(16진수)는 `data:` 밖이라 가리지 않는다. 마스킹은 완전하지 않다: 공유 전에 사람이 번들을 훑는다(README에도 적힘).
+
+파일: umask 077로 만들고 0600, 같은 이름이 있으면 덮어쓰지 않고 2. API가 응답하지 않으면 3.
