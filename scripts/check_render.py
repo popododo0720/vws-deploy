@@ -33,7 +33,7 @@ def check(docs: list[dict], values: dict) -> list[str]:
         kind = doc.get("kind")
         name = doc.get("metadata", {}).get("name")
         if kind not in ALLOWED_KINDS:
-            errors.append(f"R3: kind {kind} is not a control-plane object")
+            errors.append(f"R10: kind {kind} is not a control-plane object")
             continue
         if name in by_kind.get(kind, {}):
             errors.append(f"R5: duplicate {kind} {name}")
@@ -41,10 +41,10 @@ def check(docs: list[dict], values: dict) -> list[str]:
         by_kind.setdefault(kind, {})[name] = doc
         pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
         if pod.get("hostNetwork") or pod.get("hostPID") or pod.get("hostIPC"):
-            errors.append(f"R3: {kind}/{name} joins the host namespace")
+            errors.append(f"R10: {kind}/{name} joins the host namespace")
         for volume in pod.get("volumes") or []:
             if "hostPath" in volume:
-                errors.append(f"R3: {kind}/{name} mounts a host path")
+                errors.append(f"R10: {kind}/{name} mounts a host path")
 
     for name, spec in values["services"].items():
         spec = spec or {}
@@ -167,7 +167,7 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
         broken = copy.deepcopy(docs)
         _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
         if not check(broken, values):
-            return ["R3: hostNetwork did not fail"]
+            return ["R10: hostNetwork did not fail"]
 
     stateful_doc = _first(docs, "StatefulSet")
     if stateful_doc is not None:
