@@ -390,6 +390,7 @@ cmd_bundle() {
   k3s=$(sed -n 's/^K3S_VERSION=v\([0-9]*\.[0-9]*\)\..*/\1/p' scripts/versions.env)
   [[ -n $k8s && -n $k3s ]] || die "R12: scripts/versions.env needs KUBERNETES_VERSION and K3S_VERSION as major.minor.patch"
   [[ $k8s == "$k3s" ]] || die "R12: KUBERNETES_VERSION is ${k8s} but K3S_VERSION is ${k3s}"
+  cmd_cdi_cr
   for name in rbd openvswitch geneve kvm; do
     grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
   done
@@ -417,6 +418,39 @@ doc = Path("docs/platform-bundle.md").read_text()
 for kind in ("StorageClass", "VolumeSnapshotClass"):
     if not any(line.startswith(f"| {kind} | `{WANT}` |") for line in doc.splitlines()):
         sys.exit(f"R12: docs/platform-bundle.md must list {kind} {WANT}")
+PY
+}
+
+cmd_cdi_cr() {
+  local crd=.cache/platform/cdi-operator.yaml
+  [[ -f $crd ]] || die "R12: ${crd} is missing; run scripts/platform.sh first"
+  python3 - "$crd" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+docs = [d for d in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if d]
+crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition" and d["metadata"]["name"] == "cdis.cdi.kubevirt.io")
+cr = yaml.safe_load(Path("platform/cdi-cr.yaml").read_text())
+version = cr["apiVersion"].split("/")[1]
+schema = next(v for v in crd["spec"]["versions"] if v["name"] == version)["schema"]["openAPIV3Schema"]
+
+
+def walk(value, node, path):
+    if "properties" in node and isinstance(value, dict):
+        for key, item in value.items():
+            if key not in node["properties"]:
+                sys.exit(f"R12: platform/cdi-cr.yaml {path}.{key} is not in the CDI CRD schema")
+            walk(item, node["properties"][key], f"{path}.{key}")
+    elif node.get("type") == "array" and isinstance(value, list):
+        for item in value:
+            walk(item, node.get("items", {}), f"{path}[]")
+    elif node.get("type") == "string" and not isinstance(value, str):
+        sys.exit(f"R12: platform/cdi-cr.yaml {path} must be a string")
+
+
+walk(cr["spec"], schema["properties"]["spec"], "spec")
 PY
 }
 
