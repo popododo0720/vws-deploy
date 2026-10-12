@@ -47,7 +47,10 @@ metadata:
   {{- $path := required (printf "services.%s.kubeconfigSecret needs flags.kubeconfig" $name) (get ($spec.flags | default dict) "kubeconfig") }}
   {{- $kube = dict "secret" $spec.kubeconfigSecret "dir" (dir $path) "key" (base $path) }}
 {{- end }}
-{{- $ctx := dict "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- /* A service with grpcReadinessService gets gRPC probes, readiness on that name. Gated by
+global.pendingFlags until the service images on main implement grpc.health.v1 (vws-storage#39). */}}
+{{- $grpcReady := ternary ($spec.grpcReadinessService | default "") "" (and (hasKey $spec "grpcReadinessService") (or $.Values.global.pendingFlags (eq $.Values.global.probe "grpc"))) }}
+{{- $ctx := dict "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount

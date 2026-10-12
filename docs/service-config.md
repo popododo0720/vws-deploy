@@ -57,6 +57,7 @@ services:
 - 서비스의 `port` 키 하나가 컨테이너 포트, 프로브 포트, `-listen` 포트의 기준이다. 셋이 다르면 `scripts/guard.sh config`(R15)가 실패한다.
 - 프로브는 HTTP가 아니다. 서비스의 비-vendor Go 코드에 `healthz`, `readyz`, `grpc_health`가 없다(위 세 커밋 기준, 부재 증거일 뿐이다). 기본은 `tcpSocket`이다. 이 검사는 포트가 열려 있음만 보장하고 DB나 클러스터 접근 같은 의존성은 보장하지 않는다.
 - **gRPC 프로브로 바꾸는 방법**: 서비스 이미지가 `grpc.health.v1`을 구현한 뒤 `global.probe: grpc` 한 줄만 바꾼다. 렌더가 `grpc: {port: <port>}` 프로브로 바뀌고 같은 포트 검사를 받는다. 구현 전에 켜면 프로브가 실패한다. 서비스의 구현은 별도로 요청되어 있다.
+- **storage의 gRPC 헬스(vws-storage#39, #69)**: `services.storage.grpcReadinessService: vws.storage.v1.Ready`(`internal/health/health.go:22`의 `ReadyService`). 이 키가 있는 서비스는 `global.pendingFlags: true`(또는 `global.probe: grpc`)일 때 gRPC 프로브를 받는다: startup과 liveness는 빈 서비스 이름(프로세스만 본다, 클러스터 장애로 재시작하지 않는다), readiness는 `vws.storage.v1.Ready`(엔진, 저장소, kube 점검). #39가 미머지라 main 이미지에는 `grpc.health.v1`이 없어 기본 렌더는 tcpSocket 그대로다. 이미지가 나오면 게이트를 없애는 PR을 연다. `-listen`은 이미 `0.0.0.0:7400`(#39 기본값 `127.0.0.1:7400`은 프로브가 닿지 않는다, `cmd/vws-storage/main.go:42`). `-health-period`(기본 10s), `-health-timeout`(기본 3s, `:57-58`)은 기본값을 쓰므로 넘기지 않는다. 실제 kubelet gRPC 프로브 통과는 T1 확인 필요.
 - 확인 필요: 실제 파드에서 프로브 통과 여부(T1 이상), `0.0.0.0`으로 연 포트의 NetworkPolicy 필요 여부, console과 console-api가 같은 `8080` tcp 검사로 충분한지(이 PR은 console 레포를 읽지 않았다).
 
 ## network kubeconfig (vws-deploy#40, 임시)

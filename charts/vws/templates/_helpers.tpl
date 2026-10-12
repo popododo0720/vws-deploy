@@ -51,13 +51,18 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 
 {{/*
 Probes of every service. global.probe picks the check: tcp (default) opens the container port,
-grpc calls grpc.health.v1 on it and needs the service to implement that. No HTTP probes: the
+grpc calls grpc.health.v1 on it and needs the service to implement that. A service with
+grpcReadinessService gets grpc probes on its own (when global.pendingFlags is true): liveness and
+startup ask the empty service name, readiness asks grpcReadinessService. No HTTP probes: the
 services speak gRPC and have no /healthz. The port is the service port from values.
 */}}
 {{- define "vws.probe" -}}
-{{- if eq .root.Values.global.probe "grpc" }}
+{{- if or (eq .root.Values.global.probe "grpc") .grpcReady }}
 grpc:
   port: {{ .port }}
+  {{- if and .readiness .grpcReady }}
+  service: {{ .grpcReady }}
+  {{- end }}
 {{- else }}
 tcpSocket:
   port: http
@@ -76,7 +81,7 @@ livenessProbe:
   timeoutSeconds: 2
   failureThreshold: 3
 readinessProbe:
-  {{- include "vws.probe" . | nindent 2 }}
+  {{- include "vws.probe" (merge (dict "readiness" true) .) | nindent 2 }}
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: 2

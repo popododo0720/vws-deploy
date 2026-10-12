@@ -190,6 +190,10 @@
         "pendingFlags": {
           "$ref": "#/definitions/flags"
         },
+        "grpcReadinessService": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.]*$"
+        },
         "kubeconfigSecret": {
           "type": "string",
           "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"
