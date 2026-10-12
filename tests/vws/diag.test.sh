@@ -36,6 +36,17 @@ if [[ ! -e ${WORK}/x/vws-diag/pods/vws_console-1.log && ! -e ${WORK}/x/vws-diag/
 report=$(cat "${WORK}/x/vws-diag/REDACTION_REPORT")
 expect_text "the report counts" "$report" "pem-private-key 1"
 if [[ $(grep -cvE '^[a-z0-9-]+ [0-9]+$' <<<"$report" || true) == 0 ]]; then ok "the report holds counts only"; else bad "report shape" "$report"; fi
+# Key-name rule: values under secret-shaped keys are masked whatever they look like, at any depth.
+vals="${WORK}/x/vws-diag/helm-values.json"
+for fake in FAKE-KEYNAME-PW FAKE-KEYNAME-NESTED '"short"'; do
+  if ! grep -q -- "$fake" "$vals"; then ok "key-name masked: ${fake}"; else bad "key-name ${fake}" "$(cat "$vals")"; fi
+done
+if jq -e '.services.network.flags["db-password"] == "[REDACTED]" and .services.network.flags.oidc.clientSecret == "[REDACTED]"' "$vals" >/dev/null; then
+  ok "masked JSON stays valid JSON"; else bad "json valid" "$(cat "$vals")"; fi
+if jq -e '(.global.image | endswith("@sha256:" + ("c" * 64))) and .replicas == 2 and .keys == 3 and .monkey == "banana" and .services.network.flags.oidc.issuer == "https://issuer.example.invalid"' "$vals" >/dev/null; then
+  ok "no false positive: digest, keys, monkey, issuer kept"; else bad "false positive" "$(cat "$vals")"; fi
+n=$(awk '$1 == "secret-key" {print $2}' "${WORK}/x/vws-diag/REDACTION_REPORT")
+if ((n >= 3)); then ok "the report counts key-name hits"; else bad "secret-key count" "$n"; fi
 expect_text "the README warns to review" "$(cat "${WORK}/x/vws-diag/README")" "read the bundle before you share it"
 if ! grep -qE $'\t(get|describe|logs)\t.*\\bsecrets?\\b' "$VWS_FAKE_LOG"; then ok "no Secret is read"; else bad "secret read" "$(cat "$VWS_FAKE_LOG")"; fi
 if ! grep -qE 'upload|curl|wget' "$VWS_FAKE_LOG"; then ok "no upload call"; else bad "upload" "$(cat "$VWS_FAKE_LOG")"; fi
@@ -75,5 +86,12 @@ printf 'image: x@sha256:%s\n' "$(printf 'a%.0s' {1..64})" >"${WORK}/digest.txt"
 mkdir -p "${WORK}/scan" && mv "${WORK}/digest.txt" "${WORK}/scan/"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/redact.py" "${WORK}/scan" "${WORK}/rep"
 expect_text "an image digest is not masked" "$(cat "${WORK}/scan/digest.txt")" "sha256:aaaa"
+
+# The scanner on its own, YAML text: nested secret block, camelCase key, references kept.
+printf 'db:\n  auth:\n    pass: FAKE-YAML-NESTED\n  secretName: vws-db\n  publicKey: FAKE-CAMEL\nkeys: 3\nprivileged: false\n' >"${WORK}/scan/v.yaml"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/redact.py" "${WORK}/scan" "${WORK}/rep"
+y=$(cat "${WORK}/scan/v.yaml")
+if [[ $y != *FAKE-YAML-NESTED* && $y != *FAKE-CAMEL* ]]; then ok "YAML nested and camelCase keys masked"; else bad "yaml mask" "$y"; fi
+if [[ $y == *"secretName: vws-db"* && $y == *"keys: 3"* && $y == *"privileged: false"* ]]; then ok "YAML references and look-alike keys kept"; else bad "yaml false positive" "$y"; fi
 
 finish_tests

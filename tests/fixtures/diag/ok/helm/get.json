@@ -1,1 +1,1 @@
-{"global":{"registry":"ghcr.io/popododo0720/vws"}}
+{"global":{"registry":"ghcr.io/popododo0720/vws","image":"ghcr.io/popododo0720/vws/compute@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"services":{"network":{"flags":{"db-password":"FAKE-KEYNAME-PW","oidc":{"clientSecret":"FAKE-KEYNAME-NESTED","issuer":"https://issuer.example.invalid"},"apiKey":"short"}}},"replicas":2,"keys":3,"monkey":"banana"}
