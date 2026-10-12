@@ -162,7 +162,8 @@ REQUIRED_FLAGS = {"network": ["db", "pool"]}
 
 
 # Resources a service creates with an existing-object check (Create, then Get on AlreadyExists).
-# The rule that grants create on them must grant get too.
+# The rule that grants create on them must grant get too, and delete: remove reads the object with
+# Get and deletes it under a UID precondition (vws-network #33, dataplane_kubeovn.go removeObject).
 # network: internal/network/dataplane_kubeovn.go ensureObject, vws-network #27.
 ENSURE_NEEDS_GET = {
     "network": [
@@ -189,6 +190,8 @@ def check_ensure_get(name: str, spec: dict) -> list[str]:
             errors.append(f"R11: {name} creates {group}/{resource} but cannot get it, so ensure fails on an existing object")
         if "create" not in verbs:
             errors.append(f"R11: {name} has no create on {group}/{resource}, which ensure needs")
+        if "delete" not in verbs or "get" not in verbs:
+            errors.append(f"R11: {name} cannot get and delete {group}/{resource}, which remove needs")
     return errors
 
 
@@ -603,6 +606,13 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                         broken_rule["verbs"] = [v for v in broken_rule["verbs"] if v != "get"]
                 if not check(docs, broken_values, release):
                     return [f"R11: dropping get from {rule['resources']} did not fail"]
+            if "delete" in rule["verbs"] and rule["resources"]:
+                broken_values = copy.deepcopy(values)
+                for broken_rule in broken_values["services"]["network"]["rbac"]:
+                    if broken_rule["resources"] == rule["resources"] and broken_rule.get("namespace") == rule.get("namespace"):
+                        broken_rule["verbs"] = [v for v in broken_rule["verbs"] if v != "delete"]
+                if not check(docs, broken_values, release):
+                    return [f"R11: dropping delete from {rule['resources']} did not fail"]
         broken_values = copy.deepcopy(values)
         broken_values["services"]["network"]["flags"].pop("pool", None)
         if not check(docs, broken_values, release):
