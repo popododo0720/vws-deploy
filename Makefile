@@ -8,13 +8,14 @@ CHART := charts/vws
 RELEASE := vws
 NAMESPACE := vws
 
-.PHONY: check tools hooks lint render conform guard
+.PHONY: check tools hooks lint render conform platform guard
 
 check:
 	$(MAKE) tools
 	$(MAKE) hooks
 	$(MAKE) lint
 	$(MAKE) conform
+	$(MAKE) platform
 	$(MAKE) guard
 
 tools:
@@ -34,6 +35,9 @@ render:
 conform: render
 	mkdir -p .cache/kubeconform
 	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) -cache .cache/kubeconform build/vws.yaml
+
+platform:
+	scripts/platform.sh
 
 guard:
 	scripts/guard.sh all
