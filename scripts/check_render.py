@@ -50,7 +50,7 @@ def load_docs(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc]
 
 
-def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns: str) -> list[str]:
+def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns: str, nsmap: dict) -> list[str]:
     errors: list[str] = []
     want = f"{release}-{name}"
     cluster_role = by_kind.get("ClusterRole", {}).get(want)
@@ -79,7 +79,10 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
     ns_rules: dict[str, list[dict]] = {}
     for rule in spec["rbac"]:
         if "namespace" in rule:
-            ns_rules.setdefault(rule["namespace"], []).append(
+            if rule["namespace"] not in nsmap:
+                errors.append(f"R14: {name} rule names namespace key {rule['namespace']}, which values do not define")
+                continue
+            ns_rules.setdefault(nsmap[rule["namespace"]], []).append(
                 {key: value for key, value in rule.items() if key != "namespace"}
             )
     for rule in cluster_rules:
@@ -104,7 +107,7 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
             errors.append(f"R11: missing Role {want} in {namespace}")
         if own_bindings.get(namespace) is None:
             errors.append(f"R11: missing RoleBinding {want} in {namespace}")
-        if namespace not in by_kind.get("Namespace", {}):
+        if namespace != ns and namespace not in by_kind.get("Namespace", {}):
             errors.append(f"R11: missing Namespace {namespace}")
     for extra in (set(own_roles) | set(own_bindings)) - set(ns_rules):
         errors.append(f"R11: {name} has a Role or RoleBinding in {extra} that values do not ask for")
@@ -133,6 +136,42 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
     return errors
 
 
+def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
+    """The args a service must get from values, and the errors found while resolving them."""
+    flags = dict(spec.get("flags") or {})
+    if (values.get("global") or {}).get("pendingFlags"):
+        flags.update(spec.get("pendingFlags") or {})
+    args: list[str] = []
+    errors: list[str] = []
+    for key in sorted(flags):
+        value = flags[key]
+        if isinstance(value, dict):
+            if value.get("namespace") not in nsmap:
+                errors.append(f"R14: flag -{key} names namespace key {value.get('namespace')}, which values do not define")
+                continue
+            value = nsmap[value["namespace"]]
+        elif isinstance(value, bool):
+            value = str(value).lower()
+        args.append(f"-{key}={value}")
+    return args, errors
+
+
+def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dict) -> list[str]:
+    want, errors = want_args(spec, values, nsmap)
+    got = container.get("args") or []
+    if got != want:
+        errors.append(f"R14: {name} args {got} do not match the flags in values {want}")
+    roles = {
+        nsmap[rule["namespace"]]
+        for rule in spec.get("rbac") or []
+        if rule.get("namespace") in nsmap
+    }
+    for key, value in (spec.get("flags") or {}).items():
+        if isinstance(value, dict) and nsmap.get(value.get("namespace")) not in roles:
+            errors.append(f"R14: {name} gets a namespace through -{key} but has no Role there")
+    return errors
+
+
 def check(docs: list[dict], values: dict, release: str) -> list[str]:
     errors: list[str] = []
     by_kind: dict[str, dict[str, dict]] = {}
@@ -154,6 +193,9 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             if "hostPath" in volume:
                 errors.append(f"R10: {kind}/{name} mounts a host path")
 
+    for doc in by_kind.get("Namespace", {}).values():
+        if (doc["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep":
+            errors.append(f"R14: Namespace {doc['metadata']['name']} must be kept on uninstall")
     for name, spec in values["services"].items():
         spec = spec or {}
         if "state" in spec and spec["state"] is None:
@@ -204,7 +246,10 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             want = "LoadBalancer" if spec.get("external") else "ClusterIP"
             if (service.get("spec") or {}).get("type") != want:
                 errors.append(f"R4: Service {name} type is not {want}")
-        errors.extend(check_rbac(name, spec, by_kind, pod, release, workload["metadata"].get("namespace")))
+        release_ns = workload["metadata"].get("namespace")
+        nsmap = {**(values.get("namespaces") or {}), "release": release_ns}
+        errors.extend(check_rbac(name, spec, by_kind, pod, release, release_ns, nsmap))
+        errors.extend(check_flags(name, spec, container, values, nsmap))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -348,11 +393,13 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not check(without("RoleBinding", f"{with_rbac}-leader"), values, release):
             return ["R11: removing the Lease binding did not fail"]
     if with_ns is not None:
+        kept = {d["metadata"]["name"] for d in docs if d.get("kind") == "Namespace"}
         role = next(
             doc
             for doc in docs
             if doc.get("kind") == "Role"
             and doc["metadata"]["name"] == f"{release}-{with_ns}"
+            and doc["metadata"]["namespace"] in kept
         )
         namespace = role["metadata"]["namespace"]
         if not check(without("Role", f"{release}-{with_ns}", namespace), values, release):
@@ -382,6 +429,53 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not wide:
             return ["R11: a namespaced resource without a namespace did not fail"]
 
+    # Flags come from values, and a namespace flag needs a Role in that namespace.
+    with_flags = next(
+        (n for n, spec in values["services"].items() if (spec or {}).get("flags")), None
+    )
+    if with_flags is not None:
+        for index in range(3):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == with_flags:
+                    args = doc["spec"]["template"]["spec"]["containers"][0].setdefault("args", [])
+                    if index == 0 and args:
+                        args.pop()
+                    elif index == 1:
+                        args.append("-surprise=1")
+                    elif index == 2 and args:
+                        args[0] = args[0].split("=")[0] + "=changed"
+            if not check(broken, values, release):
+                return [f"R14: changing the args of {with_flags} did not fail (case {index})"]
+        ns_flag = next(
+            (
+                (n, key)
+                for n, spec in values["services"].items()
+                for key, value in ((spec or {}).get("flags") or {}).items()
+                if isinstance(value, dict)
+            ),
+            None,
+        )
+        if ns_flag is not None:
+            broken_values = copy.deepcopy(values)
+            broken_values["services"][ns_flag[0]]["flags"][ns_flag[1]] = {"namespace": "nowhere"}
+            if not check(docs, broken_values, release):
+                return ["R14: a flag naming an undefined namespace did not fail"]
+            broken_values = copy.deepcopy(values)
+            has_role = {r.get("namespace") for r in values["services"][ns_flag[0]].get("rbac") or []}
+            others = [k for k in values.get("namespaces") or {} if k not in has_role]
+            if others:
+                broken_values["services"][ns_flag[0]]["flags"][ns_flag[1]] = {"namespace": others[0]}
+                if not any("no Role there" in err for err in check(docs, broken_values, release)):
+                    return ["R14: a namespace flag without a Role in that namespace did not fail"]
+    broken = copy.deepcopy(docs)
+    for doc in broken:
+        if doc.get("kind") == "Namespace":
+            doc["metadata"]["annotations"] = {}
+            break
+    if any(d.get("kind") == "Namespace" for d in docs) and not check(broken, values, release):
+        return ["R14: a Namespace that is not kept did not fail"]
+
     # A catalog with only one kind must still prove the other kind's check.
     synthetic = check(
         [
@@ -407,12 +501,25 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     return []
 
 
+def deep_merge(base: dict, over: dict) -> dict:
+    """Helm's value merge: maps merge key by key, everything else is replaced."""
+    out = copy.deepcopy(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 4:
-        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE", file=sys.stderr)
+    if len(argv) not in (4, 5):
+        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE [OVERRIDE.yaml]", file=sys.stderr)
         return 2
     docs = load_docs(Path(argv[1]).read_text())
     values = yaml.safe_load(Path(argv[2]).read_text())
+    if len(argv) == 5:
+        values = deep_merge(values, yaml.safe_load(Path(argv[4]).read_text()))
     errors = self_test(docs, values, argv[3])
     for error in errors:
         print(error, file=sys.stderr)
