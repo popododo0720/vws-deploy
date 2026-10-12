@@ -40,20 +40,29 @@ services:
 | compute | `pendingFlags.hypervisor: kubevirt` | `-hypervisor=kubevirt` | vws-compute#23에서 들어옴 | main에 없음 |
 | compute | `pendingFlags.vm-namespace: {namespace: vms}` | `-vm-namespace=<vms>` | `vws-vms` | main에 없음 |
 | compute | `pendingFlags.image-namespace: {namespace: images}` | `-image-namespace=<images>` | `vws-images` | main에 없음 |
+| 세 서비스 | `listen: 0.0.0.0:<port>` | `-listen=0.0.0.0:<port>` | 코드 기본은 `127.0.0.1`. `port` 키와 같아야 한다 | compute `main.go:33`, storage `main.go:40`, network `main.go:22` |
+| network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`의 기본값은 자리표시자 | `main.go:23-24,33-34` |
 | network | (기본 없음) `kubeconfig` | `-kubeconfig=<경로>` | 있으면 Kube-OVN 데이터플레인, 없으면 fake | `cmd/vws-network/main.go:25` |
 | network | `kube-external-subnet` | `-kube-external-subnet=<이름>` | `-kubeconfig`와 함께 필수 | `main.go:26` |
 | network | `kube-nad-namespace: {namespace: nad}` | `-kube-nad-namespace=<nad>` | `-kubeconfig`만 있으면 `vws-system`이라 차트는 항상 넘긴다 | `main.go:27,30-31` |
 | network | `kube-snat` | `-kube-snat=true` | 꺼짐. 외부 서브넷 필요 | `main.go:28` |
 
 - 스키마가 `kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`를, `kube-snat`이 있으면 `kube-external-subnet`을 요구한다(vws-deploy#30). 빠진 값으로 렌더하면 거절된다.
-- 기본값에서 network에는 플래그가 없다. Kube-OVN 데이터플레인을 켜려면 values에 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`를 넣는다(`scripts/guard.sh config`가 이 형태를 시험한다). network는 `-kubeconfig`가 비면 인클러스터 자격을 쓰지 않고 fake로 가므로, 차트가 kubeconfig 파일을 볼륨으로 마운트하는 일은 아직 없다(확인 필요: 마운트 방법).
+- network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)와 `pool: 192.0.2.0/24`를 넘긴다. **`pool`은 문서용 대역(RFC 5737)의 자리표시자이므로 사이트마다 바꿔야 한다(확인 필요: 실제 엘라스틱 IP 대역).** Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`를 더 넣는다(`scripts/guard.sh config`가 이 형태를 시험한다).
 - compute의 `-nad-namespace`(`VWS_NAD_NAMESPACE`, 기본 `vws-nad`)는 예약뿐이고 NAD를 쓰는 코드가 없어 넘기지 않는다.
+
+## 포트와 프로브 (vws-deploy#39)
+
+- 서비스의 `-listen` 기본값은 `127.0.0.1`이라 파드 밖에서 닿지 않는다(compute `main.go:33`, storage `main.go:40`, network `main.go:22`). 세 서비스 모두 values에서 `flags.listen: 0.0.0.0:<port>`를 넘긴다. 기본 포트는 서비스 코드의 기본 포트와 같다(compute 50051, storage 7400, network 8080).
+- 서비스의 `port` 키 하나가 컨테이너 포트, 프로브 포트, `-listen` 포트의 기준이다. 셋이 다르면 `scripts/guard.sh config`(R15)가 실패한다.
+- 프로브는 HTTP가 아니다. 서비스의 비-vendor Go 코드에 `healthz`, `readyz`, `grpc_health`가 없다(위 세 커밋 기준, 부재 증거일 뿐이다). 기본은 `tcpSocket`이다. 이 검사는 포트가 열려 있음만 보장하고 DB나 클러스터 접근 같은 의존성은 보장하지 않는다.
+- **gRPC 프로브로 바꾸는 방법**: 서비스 이미지가 `grpc.health.v1`을 구현한 뒤 `global.probe: grpc` 한 줄만 바꾼다. 렌더가 `grpc: {port: <port>}` 프로브로 바뀌고 같은 포트 검사를 받는다. 구현 전에 켜면 프로브가 실패한다. 서비스의 구현은 별도로 요청되어 있다.
+- 확인 필요: 실제 파드에서 프로브 통과 여부(T1 이상), `0.0.0.0`으로 연 포트의 NetworkPolicy 필요 여부, console과 console-api가 같은 `8080` tcp 검사로 충분한지(이 PR은 console 레포를 읽지 않았다).
 
 ## 확인 필요
 
 - **compute 플래그 3개(`-hypervisor`, `-vm-namespace`, `-image-namespace`)는 main에 없다.** vws-compute#23이 머지되기 전에 `global.pendingFlags: true`로 켜면 현재 이미지가 알 수 없는 플래그로 시작을 거절한다. 기본은 꺼짐이다.
 - compute의 환경 변수 폴백(`VWS_VM_NAMESPACE` 등)은 이 차트가 쓰지 않는다. 플래그만 넘긴다.
-- **차트의 컨테이너 포트와 프로브는 서비스 코드와 맞지 않는다.** 차트는 `http` 8080에서 `/healthz`, `/readyz`를 본다. 서비스의 `-listen` 기본값은 `127.0.0.1`의 gRPC 주소이고(compute `main.go:33`, storage `main.go:40`, network `main.go:22`) HTTP 프로브를 구현하는지는 확인하지 못했다. network는 `-db`와 `-pool`이 필요하다(`main.go:34`의 사용법 문구). 이 PR은 `-listen`, `-db`, `-pool`을 다루지 않는다. 별도 이슈로 다뤄야 한다.
 - 실제 클러스터에서 렌더한 인자로 서비스를 띄워 보지 않았다(정적 렌더 검사만).
 
 ## 네임스페이스를 남기는 이유

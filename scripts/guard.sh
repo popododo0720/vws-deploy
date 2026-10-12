@@ -478,6 +478,13 @@ cmd_config() {
   grep -q -e '- -kube-namespace=vws-vms' "$tmp/default.yaml" || die "R14: storage does not get -kube-namespace from values"
   ! grep -q -e '-vm-namespace' "$tmp/default.yaml" || die "R14: pendingFlags are rendered while global.pendingFlags is false"
 
+  ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
+  grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
+  helm template vws charts/vws --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
+  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws <(printf 'global:\n  probe: grpc\n')
+  grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
+  ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
+
   cat > "$tmp/override.yaml" <<'YAML'
 global:
   pendingFlags: true
@@ -509,7 +516,8 @@ YAML
     'services: {network: {flags: {kubeconfig: /k}}}' \
     'services: {network: {flags: {kubeconfig: /k, kube-external-subnet: ext}}}' \
     'services: {network: {flags: {kube-snat: true}}}' \
-    'services: {network: {flags: {kube-x: [a]}}}'; do
+    'services: {network: {flags: {kube-x: [a]}}}' \
+    'global: {probe: http}'; do
     printf '%s\n' "$bad" > "$tmp/bad.yaml"
     if helm template vws charts/vws --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
       rm -rf "$tmp"

@@ -49,25 +49,34 @@ app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
 helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" }}
 {{- end -}}
 
+{{/*
+Probes of every service. global.probe picks the check: tcp (default) opens the container port,
+grpc calls grpc.health.v1 on it and needs the service to implement that. No HTTP probes: the
+services speak gRPC and have no /healthz. The port is the service port from values.
+*/}}
+{{- define "vws.probe" -}}
+{{- if eq .root.Values.global.probe "grpc" }}
+grpc:
+  port: {{ .port }}
+{{- else }}
+tcpSocket:
+  port: http
+{{- end }}
+{{- end -}}
+
 {{- define "vws.probes" -}}
 startupProbe:
-  httpGet:
-    path: /healthz
-    port: http
+  {{- include "vws.probe" . | nindent 2 }}
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: {{ .threshold }}
 livenessProbe:
-  httpGet:
-    path: /healthz
-    port: http
+  {{- include "vws.probe" . | nindent 2 }}
   periodSeconds: 10
   timeoutSeconds: 2
   failureThreshold: 3
 readinessProbe:
-  httpGet:
-    path: /readyz
-    port: http
+  {{- include "vws.probe" . | nindent 2 }}
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: 2

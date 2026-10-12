@@ -156,6 +156,42 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
     return args, errors
 
 
+# Flags a service refuses to start without, from its usage text on origin/main.
+# network: cmd/vws-network/main.go (-db PATH -pool CIDR).
+REQUIRED_FLAGS = {"network": ["db", "pool"]}
+
+
+def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
+    """The listen flag, the service port, the container port and every probe name one port."""
+    errors: list[str] = []
+    port = int(spec.get("port", 8080))
+    listen = (spec.get("flags") or {}).get("listen")
+    if listen is not None:
+        host, _, number = str(listen).rpartition(":")
+        if host != "0.0.0.0" or not number.isdigit() or int(number) != port:
+            errors.append(f"R15: {name} -listen={listen} must be 0.0.0.0:{port}, the service port")
+    ports = [p for p in container.get("ports") or []]
+    if [p.get("containerPort") for p in ports] != [port]:
+        errors.append(f"R15: {name} containerPort {[p.get('containerPort') for p in ports]} must be only {port}")
+    named = {p.get("name"): p.get("containerPort") for p in ports}
+    for kind in ("startupProbe", "livenessProbe", "readinessProbe"):
+        probe = container.get(kind) or {}
+        if "httpGet" in probe or "exec" in probe:
+            errors.append(f"R15: {name} {kind} must be tcpSocket or grpc, not HTTP or exec")
+            continue
+        target = probe.get("tcpSocket") or probe.get("grpc")
+        if target is None:
+            errors.append(f"R15: {name} has no {kind}")
+            continue
+        number = named.get(target.get("port"), target.get("port"))
+        if number != port:
+            errors.append(f"R15: {name} {kind} port {target.get('port')} is not the service port {port}")
+    for flag in REQUIRED_FLAGS.get(name, []):
+        if flag not in (spec.get("flags") or {}):
+            errors.append(f"R15: {name} needs the -{flag} flag to start")
+    return errors
+
+
 def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dict) -> list[str]:
     want, errors = want_args(spec, values, nsmap)
     got = container.get("args") or []
@@ -216,15 +252,6 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             errors.append(f"R4: {name} must have one container")
             continue
         container = containers[0]
-        expected = (
-            ("startupProbe", "/healthz"),
-            ("livenessProbe", "/healthz"),
-            ("readinessProbe", "/readyz"),
-        )
-        for probe, path in expected:
-            http = (container.get(probe) or {}).get("httpGet") or {}
-            if http.get("path") != path or http.get("port") != "http":
-                errors.append(f"R4: {name} {probe} must request {path} on port http")
         startup_seconds = int(spec.get("startupSeconds") or 60)
         want_threshold = (startup_seconds + 4) // 5 + 1
         got_threshold = (container.get("startupProbe") or {}).get("failureThreshold")
@@ -250,6 +277,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         nsmap = {**(values.get("namespaces") or {}), "release": release_ns}
         errors.extend(check_rbac(name, spec, by_kind, pod, release, release_ns, nsmap))
         errors.extend(check_flags(name, spec, container, values, nsmap))
+        errors.extend(check_listen(name, spec, pod, container))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -468,6 +496,45 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 broken_values["services"][ns_flag[0]]["flags"][ns_flag[1]] = {"namespace": others[0]}
                 if not any("no Role there" in err for err in check(docs, broken_values, release)):
                     return ["R14: a namespace flag without a Role in that namespace did not fail"]
+    # One port: -listen, containerPort and the probes. Probes are tcpSocket or grpc, never HTTP.
+    target = next(
+        (n for n, spec in values["services"].items() if (spec or {}).get("flags", {}).get("listen")), None
+    )
+    if target is not None:
+        def mutate(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == target:
+                    change(doc["spec"]["template"]["spec"]["containers"][0])
+            return broken
+
+        def http(c):
+            c["readinessProbe"] = {"httpGet": {"path": "/readyz", "port": "http"}}
+
+        def probe_port(c):
+            (c["livenessProbe"].get("tcpSocket") or c["livenessProbe"]["grpc"])["port"] = 9
+
+        def container_port(c):
+            c["ports"][0]["containerPort"] = 9999
+
+        for label, change in (("an HTTP probe", http), ("a probe on another port", probe_port),
+                              ("a containerPort that differs", container_port)):
+            if not check(mutate(change), values, release):
+                return [f"R15: {label} did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][target]["flags"]["listen"] = "127.0.0.1:%d" % int(values["services"][target].get("port", 8080))
+        if not check(docs, broken_values, release):
+            return ["R15: a -listen on 127.0.0.1 did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][target]["flags"]["listen"] = "0.0.0.0:9"
+        if not check(docs, broken_values, release):
+            return ["R15: a -listen port that differs from the service port did not fail"]
+    if "network" in values["services"]:
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["network"]["flags"].pop("pool", None)
+        if not check(docs, broken_values, release):
+            return ["R15: network without -pool did not fail"]
+
     broken = copy.deepcopy(docs)
     for doc in broken:
         if doc.get("kind") == "Namespace":

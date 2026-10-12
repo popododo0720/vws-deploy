@@ -25,6 +25,13 @@
         },
         "pendingFlags": {
           "type": "boolean"
+        },
+        "probe": {
+          "type": "string",
+          "enum": [
+            "tcp",
+            "grpc"
+          ]
         }
       }
     },
