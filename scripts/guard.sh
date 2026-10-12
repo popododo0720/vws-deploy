@@ -162,7 +162,13 @@ values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
 services = values["services"]
 stateless = next((name for name, spec in services.items() if "state" not in (spec or {})), None)
 stateful = next((name for name, spec in services.items() if "state" in (spec or {})), None)
+wildcard_rule = {"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines"], "verbs": ["get"]}
 cases = [
+    {"services": {"compute": {"rbac": [{**wildcard_rule, "resources": ["*"]}]}}},
+    {"services": {"compute": {"rbac": [{**wildcard_rule, "apiGroups": ["*"]}]}}},
+    {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["*"]}]}}},
+    {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["escalate"]}]}}},
+    {"services": {"compute": {"rbac": []}}},
     {"services": {"compute-agent": {}}},
     {"services": {"compute-peers": {}}},
 ]
