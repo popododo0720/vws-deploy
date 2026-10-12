@@ -131,6 +131,12 @@ services:
       apiGroups: [snapshot.storage.k8s.io]
       resources: [volumesnapshots]
       verbs: [get, create, delete]
+    # list: Volume status.instance reads the managed VirtualMachines that use a claim (vws-storage#68
+    # internal/backend/kube/attach.go, one uncached List per Get/List; no get, no watch) (#123).
+    - namespace: vms
+      apiGroups: [kubevirt.io]
+      resources: [virtualmachines]
+      verbs: [list]
     state:
       size: 20Gi
   network:
