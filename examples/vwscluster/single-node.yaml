@@ -1,0 +1,12 @@
+# A lab install on one node. No data protection (one Ceph copy).
+apiVersion: vws.popododo0720.io/v1alpha1
+kind: VWSCluster
+metadata:
+  name: vws
+  namespace: vws
+spec:
+  profile: single-node
+  storage:
+    driver: rook-ceph
+  network:
+    driver: kube-ovn
