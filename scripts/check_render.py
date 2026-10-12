@@ -143,6 +143,11 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         flags.update(spec.get("pendingFlags") or {})
     args: list[str] = []
     errors: list[str] = []
+    rgw = (spec.get("s3") or {}).get("rgw") or {}
+    if rgw.get("enabled"):
+        flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
+        if rgw.get("bucketPrefix") and (values.get("global") or {}).get("pendingFlags"):
+            flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -284,6 +289,31 @@ def check_kubeconfig(name: str, spec: dict, pod: dict, container: dict) -> list[
     return errors
 
 
+S3_KEYS = {"VWS_S3_ACCESS_KEY": "access-key", "VWS_S3_SECRET_KEY": "secret-key"}
+
+
+def check_s3(name: str, spec: dict, container: dict) -> list[str]:
+    """s3.rgw: an endpoint and a Secret name, and the keys only through secretKeyRef of that Secret (#90)."""
+    errors: list[str] = []
+    rgw = (spec.get("s3") or {}).get("rgw") or {}
+    env = {e.get("name"): e for e in container.get("env") or []}
+    for key, value in env.items():
+        upper = (key or "").upper()
+        if ("ACCESS_KEY" in upper or "SECRET" in upper) and "value" in value:
+            errors.append(f"R16: {name} passes a credential through env value {key}")
+    if not rgw.get("enabled"):
+        if set(S3_KEYS) & set(env):
+            errors.append(f"R16: {name} gets S3 keys that values do not ask for")
+        return errors
+    if not rgw.get("endpoint") or not rgw.get("existingSecret"):
+        errors.append(f"R16: {name} enables s3.rgw with an empty endpoint or existingSecret")
+    for key, secret_key in S3_KEYS.items():
+        ref = ((env.get(key) or {}).get("valueFrom") or {}).get("secretKeyRef") or {}
+        if ref != {"name": rgw.get("existingSecret"), "key": secret_key}:
+            errors.append(f"R16: {name} must read {key} from Secret {rgw.get('existingSecret')} key {secret_key}")
+    return errors
+
+
 def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dict) -> list[str]:
     want, errors = want_args(spec, values, nsmap)
     got = container.get("args") or []
@@ -372,6 +402,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
         errors.extend(check_kubeconfig(name, spec, pod, container))
+        errors.extend(check_s3(name, spec, container))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -711,6 +742,33 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][kube].pop("kubeconfigSecret")
         if not check(docs, broken_values, release):
             return ["R16: a kubeconfig volume that values do not ask for did not fail"]
+
+    # s3.rgw: the keys come only from secretKeyRef, and enabled needs every value.
+    rgw_name = next((n for n, s in values["services"].items() if (((s or {}).get("s3") or {}).get("rgw") or {}).get("enabled")), None)
+    if rgw_name is not None:
+        def mutate_env(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == rgw_name:
+                    change(doc["spec"]["template"]["spec"]["containers"][0]["env"])
+            return broken
+
+        def entry(env, key):
+            return next(e for e in env if e["name"] == key)
+
+        cases = {
+            "a key as a literal value": lambda env: entry(env, "VWS_S3_SECRET_KEY").update(value="x"),
+            "another Secret": lambda env: entry(env, "VWS_S3_ACCESS_KEY")["valueFrom"]["secretKeyRef"].update(name="other"),
+            "no secret key env": lambda env: env.remove(entry(env, "VWS_S3_SECRET_KEY")),
+        }
+        for label, change in cases.items():
+            if not check(mutate_env(change), values, release):
+                return [f"R16: s3.rgw {label} did not fail"]
+        for field in ("endpoint", "existingSecret"):
+            broken_values = copy.deepcopy(values)
+            broken_values["services"][rgw_name]["s3"]["rgw"][field] = ""
+            if not check(docs, broken_values, release):
+                return [f"R16: s3.rgw with an empty {field} did not fail"]
 
     broken = copy.deepcopy(docs)
     for doc in broken:

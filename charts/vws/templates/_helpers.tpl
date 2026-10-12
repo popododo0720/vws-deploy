@@ -23,6 +23,16 @@ A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" 
 {{- if .root.Values.global.pendingFlags }}
   {{- $flags = mergeOverwrite $flags (deepCopy (.spec.pendingFlags | default dict)) }}
 {{- end }}
+{{- $rgw := (.spec.s3 | default dict).rgw | default dict }}
+{{- if $rgw.enabled }}
+  {{- $_ := set $flags "object-backend" "s3" }}
+  {{- $_ = set $flags "s3-profile" "rgw" }}
+  {{- $_ = set $flags "s3-endpoint" (required "services.*.s3.rgw.enabled needs s3.rgw.endpoint" $rgw.endpoint) }}
+  {{- $_ = required "services.*.s3.rgw.enabled needs s3.rgw.existingSecret" $rgw.existingSecret }}
+  {{- if and $rgw.bucketPrefix .root.Values.global.pendingFlags }}
+    {{- $_ = set $flags "s3-bucket-prefix" $rgw.bucketPrefix }}
+  {{- end }}
+{{- end }}
 {{- $args := list }}
 {{- range $key := keys $flags | sortAlpha }}
   {{- $value := index $flags $key }}
@@ -129,6 +139,18 @@ spec:
         {{- if .stateful }}
         - name: VWS_STATE_DIR
           value: /var/lib/vws
+        {{- end }}
+        {{- with .rgwSecret }}
+        - name: VWS_S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: access-key
+        - name: VWS_S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: secret-key
         {{- end }}
       {{- include "vws.probes" . | nindent 6 }}
       resources:
