@@ -1,0 +1,159 @@
+{
+ "items": [
+  {
+   "apiVersion": "policy/v1",
+   "kind": "PodDisruptionBudget",
+   "metadata": {
+    "name": "compute",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "compute",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "maxUnavailable": 1,
+    "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "compute",
+      "app.kubernetes.io/instance": "vws"
+     }
+    }
+   },
+   "status": {
+    "currentHealthy": 2,
+    "desiredHealthy": 1,
+    "disruptionsAllowed": 1
+   }
+  },
+  {
+   "apiVersion": "policy/v1",
+   "kind": "PodDisruptionBudget",
+   "metadata": {
+    "name": "console",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "console",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "maxUnavailable": 1,
+    "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "console",
+      "app.kubernetes.io/instance": "vws"
+     }
+    }
+   },
+   "status": {
+    "currentHealthy": 2,
+    "desiredHealthy": 1,
+    "disruptionsAllowed": 1
+   }
+  },
+  {
+   "apiVersion": "policy/v1",
+   "kind": "PodDisruptionBudget",
+   "metadata": {
+    "name": "console-api",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "console-api",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "maxUnavailable": 1,
+    "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "console-api",
+      "app.kubernetes.io/instance": "vws"
+     }
+    }
+   },
+   "status": {
+    "currentHealthy": 2,
+    "desiredHealthy": 1,
+    "disruptionsAllowed": 1
+   }
+  },
+  {
+   "apiVersion": "policy/v1",
+   "kind": "PodDisruptionBudget",
+   "metadata": {
+    "name": "network",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "network",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "maxUnavailable": 1,
+    "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "network",
+      "app.kubernetes.io/instance": "vws"
+     }
+    }
+   },
+   "status": {
+    "currentHealthy": 2,
+    "desiredHealthy": 1,
+    "disruptionsAllowed": 1
+   }
+  },
+  {
+   "apiVersion": "policy/v1",
+   "kind": "PodDisruptionBudget",
+   "metadata": {
+    "name": "storage",
+    "namespace": "vws",
+    "labels": {
+     "app.kubernetes.io/name": "storage",
+     "app.kubernetes.io/instance": "vws",
+     "app.kubernetes.io/part-of": "vws",
+     "app.kubernetes.io/component": "control-plane",
+     "app.kubernetes.io/version": "0.1.0",
+     "helm.sh/chart": "vws-0.1.0"
+    }
+   },
+   "spec": {
+    "maxUnavailable": 1,
+    "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    "selector": {
+     "matchLabels": {
+      "app.kubernetes.io/name": "storage",
+      "app.kubernetes.io/instance": "vws"
+     }
+    }
+   },
+   "status": {
+    "currentHealthy": 2,
+    "desiredHealthy": 1,
+    "disruptionsAllowed": 1
+   }
+  }
+ ]
+}

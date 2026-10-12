@@ -1,0 +1,10 @@
+{
+  "items": [
+    {
+      "status": {
+        "phase": "Deployed",
+        "observedVersion": "FILLED_BY_TEST"
+      }
+    }
+  ]
+}

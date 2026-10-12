@@ -1,0 +1,22 @@
+{
+  "apiVersion": "FILLED_BY_TEST",
+  "kind": "VWSCluster",
+  "metadata": {
+    "name": "vws",
+    "namespace": "vws",
+    "generation": 2
+  },
+  "spec": {
+    "profile": "single-node",
+    "storage": {
+      "driver": "rook-ceph"
+    },
+    "network": {
+      "driver": "kube-ovn"
+    }
+  },
+  "status": {
+    "observedGeneration": 2,
+    "appliedValuesHash": "2cc7c941facab4bf13616e04cf3fc4d2ca2e62cd64233e0b7038fc66924c9b15"
+  }
+}

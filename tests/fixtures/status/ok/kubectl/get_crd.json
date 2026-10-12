@@ -1,0 +1,100 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "virtualmachines.kubevirt.io"
+      },
+      "spec": {
+        "group": "kubevirt.io"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "datavolumes.cdi.kubevirt.io"
+      },
+      "spec": {
+        "group": "cdi.kubevirt.io"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "vpcs.kubeovn.io"
+      },
+      "spec": {
+        "group": "kubeovn.io"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "network-attachment-definitions.k8s.cni.cncf.io"
+      },
+      "spec": {
+        "group": "k8s.cni.cncf.io"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "volumesnapshots.snapshot.storage.k8s.io"
+      },
+      "spec": {
+        "group": "snapshot.storage.k8s.io"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "vwsclusters.FILLED_BY_TEST"
+      },
+      "spec": {
+        "group": "FILLED_BY_TEST"
+      },
+      "status": {
+        "conditions": [
+          {
+            "type": "Established",
+            "status": "True"
+          }
+        ]
+      }
+    }
+  ]
+}
