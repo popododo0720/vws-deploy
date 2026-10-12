@@ -60,3 +60,25 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 ### vws render
 
 `vws render <CR.yaml> <OUT.yaml>`: `VWSCluster` CR 하나를 `charts/vws`의 values 오버레이로 바꾼다. 클러스터를 바꾸지 않는다. 같은 CR이면 같은 바이트가 나온다(`sort_keys`, 시각이나 난수 없음). 순서: CR 검증(CRD 스키마, 이름 `vws`, 알 수 없는 필드, 비밀처럼 보이는 필드나 플래그 이름) → `profiles/<spec.profile>.yaml` 위에 CR 값 반영 → `helm template -f`로 `values.schema.json` 재검증 → `OUT`에 쓴다. 잘못된 CR은 종료 코드 2이고 `OUT`을 만들지 않는다. `OUT`이 `-`이면 YAML만 stdout에 쓴다(`-o json`과 함께 쓰지 않는다). 매핑은 `docs/vwscluster.md`.
+
+### vws preflight
+
+`vws preflight --profile single-node|small|ha`: 설치 전 검사. 클러스터에 쓰지 않는다(읽기 동사만). 검사 함수는 `scripts/vws.d/lib/checks.sh`에 하나씩 있고 status, doctor가 같은 함수를 쓴다(#43 4절).
+
+| 검사 이름 | 방법 | 실패 |
+| --- | --- | --- |
+| `tools` | `helm version --short`가 `HELM_VERSION`으로 시작 | WARN |
+| `api` | `kubectl version`, 현재 컨텍스트 이름 출력 | 응답 없음은 종료 코드 3 |
+| `k8s-minor` | 서버 마이너 = `KUBERNETES_VERSION` 마이너 | WARN |
+| `install-rights` | `kubectl auth can-i create`로 네임스페이스, CRD, 클러스터/네임스페이스 RBAC, 차트가 만드는 종류 | FAIL과 부족한 동사/리소스 |
+| `nodes` | Ready 노드 ≥ 프로필 최소(1/3/6) | FAIL |
+| `node-resources` | Ready 노드 allocatable 합 ≥ 프로필 requests×replicas 합(`profiles/<p>.yaml`, 없으면 차트 기본) | FAIL |
+| `default-storageclass` | 기본 StorageClass 있음 | FAIL |
+| `ceph-block`, `ceph-block-snapshot` | StorageClass와 VolumeSnapshotClass `ceph-block` | 번들 전이면 WARN |
+| `crd-<group>` | 번들 CRD 그룹(kubevirt.io, cdi.kubevirt.io, kubeovn.io, k8s.cni.cncf.io, snapshot.storage.k8s.io)이 Established | 없으면 WARN, Established가 아니면 FAIL |
+| `kubevirt-phase`, `cdi-phase` | KubeVirt/CDI CR의 phase Deployed | 없으면 WARN, 다른 phase면 FAIL |
+| `kernel-indirect` | `kubevirt.io/schedulable` 노드 존재로 간접 확인(`--node-probe` 없음, 결정 3) | WARN |
+| `release` | helm 릴리스 `vws`가 `pending-*`/`failed`면 | FAIL |
+| `source` | 체크아웃이면 `guard.sh bundle`, `recovery`, `config` | FAIL. `VWS_SOURCE_CHECKS=0`이면 건너뜀(하네스) |
+
+FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3. 하네스 `tests/vws/preflight.test.sh`는 `tests/fixtures/preflight/ok`를 시나리오마다 한 파일씩 바꿔 검사별 통과/실패를 본다.
