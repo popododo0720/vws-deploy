@@ -4,7 +4,8 @@
 # Same tag as the CR: unchanged, nothing written. Otherwise the CR is saved with the new tag and
 # vws apply runs (helm --atomic --wait --history-max 10). When apply fails, helm has rolled the
 # release back and the CR spec is put back to the previous value, so CR and release agree. The
-# platform bundle is not upgraded here (#43 section 5, out of scope).
+# platform bundle is not upgraded here (#43 section 5, out of scope). After a successful apply,
+# vws doctor judges the result; a FAIL there exits 1 and names vws rollback (no automatic rollback).
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl helm)
 # shellcheck source=scripts/vws.d/lib/installer.sh
@@ -48,4 +49,29 @@ vws_cmd_main() {
     return 0
   fi
   vws_apply_spec upgrade "$cr" "$(jq -c '.spec' <<<"$new")"
+  # shellcheck disable=SC2154 # vws_fail_count is set by lib/common.sh
+  ((vws_fail_count == 0)) || return 0
+  vws_upgrade_judge
+}
+
+# vws_upgrade_judge: after a successful apply, judge the result with vws doctor (status plus
+# diagnosis, #43 section 5 step 6). Its lines are folded in as after-<name>; a FAIL there fails
+# the upgrade (exit 1) without rolling back: the next step is printed (vws rollback --yes).
+vws_upgrade_judge() {
+  local json rc=0 level name message fails=0
+  json=$("${VWS_ROOT}/scripts/vws" -o json doctor 2>/dev/null) || rc=$?
+  if ((rc == 2 || rc == 3)) || ! jq -e '.checks' <<<"$json" >/dev/null 2>&1; then
+    vws_emit WARN after-upgrade "vws doctor could not judge the result (exit ${rc}); run vws status and vws doctor by hand"
+    return 0
+  fi
+  while IFS=$'\t' read -r level name message; do
+    [[ -n $level ]] || continue
+    [[ $level == FAIL ]] && fails=$((fails + 1))
+    vws_emit "$level" "after-${name}" "$message"
+  done < <(jq -r '.checks[] | [.level, .name, .message] | @tsv' <<<"$json")
+  if ((fails > 0)); then
+    vws_emit FAIL upgrade "applied, but vws doctor reports ${fails} FAIL after the upgrade; next: fix them, or vws rollback --yes to the previous revision"
+  else
+    vws_emit OK upgrade "vws doctor reports no FAIL after the upgrade"
+  fi
 }
