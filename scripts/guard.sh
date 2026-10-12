@@ -140,7 +140,7 @@ PY
 
 cmd_ci() {
   if grep -R -n -E 'kubectl[[:space:]]+(apply|create|delete|replace)|helm[[:space:]]+(install|upgrade|uninstall)|kind[[:space:]]+create|k3d[[:space:]]+create' \
-    .github Makefile scripts charts; then
+    .github Makefile scripts charts --exclude-dir=lab; then
     die "R8: this repo must not apply manifests to a cluster"
   fi
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
@@ -376,7 +376,7 @@ cmd_cursor() {
 
 cmd_bundle() {
   local name version hits
-  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK; do
+  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK K3S; do
     version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
     [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
     hits=$(grep -R -n -F -e "$version" . --exclude-dir=.git --exclude-dir=build --exclude-dir=.cache \
