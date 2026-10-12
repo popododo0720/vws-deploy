@@ -165,3 +165,14 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 - CRD와 플랫폼 operator는 되돌리지 않는다. 유일한 되돌림은 etcd 스냅샷(`docs/etcd-runbook.md`).
 - vws-deploy#39가 닫히기 전에는 무중단을 주장하지 않는다.
 - helm의 rollback은 새 리비전(설명 "Rollback to N")을 만든다. 그 리비전에는 `vws-spec:`이 없어 그리로 다시 rollback할 수는 없다(그 전 리비전 번호를 쓴다).
+
+### vws verify-reboot
+
+`vws verify-reboot --snapshot FILE` (재부팅 전), `vws verify-reboot --check FILE [--timeout 20m]` (재부팅 뒤). 이 명령은 재부팅하지 않는다(사람이나 `talosctl`이 한다). 읽기 전용(#43 8절).
+
+- 스냅샷(0600, 덮어쓰지 않음): 노드 이름과 boot ID, 서비스별 ready/desired, 네임스페이스별 파드 **개수**, 릴리스 네임스페이스 PVC 이름과 phase, VWS ConfigMap의 키 **개수**, `runStrategy: Always` VM 이름과 상태. 파드 UID, ConfigMap 데이터, Secret은 없다.
+- 확인 게이트(기동 순서, 각 소요 시간 출력): `api` → `nodes`(스냅샷의 노드가 모두 Ready) → `cni`(kube-ovn 파드 Ready) → `csi`(Ceph `HEALTH_OK`, single-node 프로필은 `HEALTH_WARN` 허용) → `bundle`(KubeVirt, CDI CR `Deployed`) → `services`(스냅샷 서비스가 ready == desired). 기다리면 되는 상태는 `VWS_VERIFY_INTERVAL`(기본 10초)마다 다시 본다.
+- 막힌 게이트가 출력의 **첫 줄**이다. 통과할 수 없는 상태(노드 사라짐, Ceph `HEALTH_ERR`, operator `Failed`, 워크로드 없는 서비스)는 1, `--timeout`까지 기다려도 안 되면 3.
+- 게이트 뒤 비교(실패 시 1): 스냅샷의 Bound PVC가 같은 이름으로 Bound, ConfigMap 키 수가 같거나 많음, Always VM이 모두 Running, 재시작 횟수가 임계(`VWS_VERIFY_RESTARTS`, 기본 3)를 넘는 파드 없음. 어느 노드도 boot ID가 바뀌지 않았으면 `WARN reboot not observed`.
+- 부팅 시각 대신 노드의 `status.nodeInfo.bootID`로 재부팅 여부를 판단한다(재부팅마다 바뀐다).
+- 실제 재부팅/전원 차단 실측은 미검증: cluster-verification-list I9, etcd 런북 시나리오 7(A7).
