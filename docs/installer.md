@@ -6,9 +6,24 @@
 | --- | --- | --- |
 | `kubectl apply -f build/bootstrap.yaml` | `vws-installer-temp` (ClusterRoleBinding → `cluster-admin`), `vws-operator`(Role), `vws-operator-read`(ClusterRole) | cluster-admin + 운영 권한 |
 | `vws init`, `vws apply` | 같음 | 번들(CRD, ClusterRole, 네임스페이스)과 차트를 설치 |
-| `vws installer finish` | `vws-installer-temp` 삭제 | 운영 권한만: 릴리스 네임스페이스의 VWSCluster와 그 status, `vws-operator-lock` Lease, 워크로드 읽기, 노드/StorageClass/VolumeSnapshotClass/CRD 읽기. Secret, RBAC, 클러스터 쓰기 없음 |
+| `vws installer finish` | `vws-installer-temp` 삭제 | 운영 권한만: 릴리스 네임스페이스의 VWSCluster와 그 status, `vws-operator-lock` Lease, 워크로드 읽기, 클러스터 범위 읽기(아래 표). Secret, RBAC, 클러스터 쓰기, watch 없음 |
 
 cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임스페이스, 웹훅을 만든다. 그 목록을 동사 단위로 줄인 최소 권한 초안은 번들 매니페스트에 따라 바뀌어 유지 비용이 커서, 결정 8대로 임시 cluster-admin + 회수로 했다.
+
+## 운영 ClusterRole `vws-operator-read` (정확한 목록, R20이 강제)
+
+| apiGroup | resource | verbs | 쓰는 곳 |
+| --- | --- | --- | --- |
+| `""` | `nodes` | get, list | preflight, doctor |
+| `storage.k8s.io` | `storageclasses` | get, list | preflight |
+| `snapshot.storage.k8s.io` | `volumesnapshotclasses` | get, list | preflight |
+| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list | doctor(CRD Established) |
+| `kubevirt.io` | `kubevirts` | get, list | status(번들 버전), doctor(phase), diag (#77) |
+| `cdi.kubevirt.io` | `cdis` | get, list | status(번들 버전), doctor(phase), diag (#77) |
+| `ceph.rook.io` | `cephclusters` | get, list | doctor(Ceph health), diag (#77) |
+| `""` | `persistentvolumeclaims` (모든 네임스페이스) | get, list | doctor(Pending PVC) (#77) |
+
+목록 밖 그룹/리소스, get/list 밖 동사(watch 포함), `resourceNames`, `nonResourceURLs`는 `scripts/guard.sh bootstrap`이 거절한다(음성 시험: watch, 목록 밖 리소스, PVC 쓰기 동사, 목록 밖 그룹, 클러스터 범위 pods, 허용 항목 제거).
 
 ## 회수와 확인 (`vws installer finish`)
 
