@@ -489,7 +489,17 @@ cmd_config() {
 
   helm template vws charts/vws --namespace vws > "$tmp/default.yaml"
   grep -q -e '- -kube-namespace=vws-vms' "$tmp/default.yaml" || die "R14: storage does not get -kube-namespace from values"
-  ! grep -q -e '-vm-namespace' "$tmp/default.yaml" || die "R14: pendingFlags are rendered while global.pendingFlags is false"
+  local f
+  for f in -hypervisor=kubevirt -vm-namespace=vws-vms -image-namespace=vws-images -storage=storage:7400; do
+    grep -q -e "- ${f}\$" "$tmp/default.yaml" || die "R14: the default render lacks compute ${f} (#121)"
+  done
+  python3 - "$tmp/default.yaml" <<'PY' || die "R14: compute has no persistentvolumeclaims get in the VM namespace (#121)"
+import sys, yaml
+ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-compute" and d["metadata"].get("namespace") == "vws-vms"
+         and any("" in r.get("apiGroups", []) and "persistentvolumeclaims" in r.get("resources", []) and "get" in r.get("verbs", []) for r in d.get("rules", []))
+         for d in yaml.safe_load_all(open(sys.argv[1])))
+sys.exit(0 if ok else 1)
+PY
 
   ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
