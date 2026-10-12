@@ -517,12 +517,16 @@ services:
       kube-nad-namespace: {namespace: nad}
       kube-snat: true
     kubeconfigSecret: acme-network-kubeconfig
+  storage:
+    s3:
+      rgw: {enabled: true, endpoint: "http://rgw.acme:8080", bucketPrefix: acme, existingSecret: acme-rgw-s3}
 YAML
   helm template acme charts/vws --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
   python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$tmp/override.yaml"
   local want
   for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
-    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt; do
+    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt \
+    -object-backend=s3 -s3-profile=rgw -s3-endpoint=http://rgw.acme:8080 -s3-bucket-prefix=acme; do
     grep -q -e "- ${want}\$" "$tmp/override.rendered.yaml" || die "R14: rendered args lack ${want}"
   done
   ! grep -q -e 'vws-vms\|vws-images\|vws-nad' "$tmp/override.rendered.yaml" || die "R14: a default namespace name survived a values override"
@@ -530,6 +534,8 @@ YAML
   grep -q -e 'secretName: acme-network-kubeconfig' "$tmp/override.rendered.yaml" || die "R16: kubeconfigSecret is not mounted"
   ! grep -q -e '^kind: Secret' "$tmp/default.yaml" "$tmp/override.rendered.yaml" || die "R16: the chart renders a Secret"
   ! grep -q -e 'kubeconfig' "$tmp/default.yaml" || die "R16: the default render mounts or passes a kubeconfig"
+  grep -q -e 'name: acme-rgw-s3' "$tmp/override.rendered.yaml" || die "R16: s3.rgw existingSecret is not referenced"
+  ! grep -q -e 'VWS_S3_\|object-backend' "$tmp/default.yaml" || die "R16: the default render enables the s3 object backend"
 
   local bad
   for bad in \
@@ -543,6 +549,9 @@ YAML
     'services: {network: {flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
     'services: {network: {kubeconfigSecret: x, flags: {kubeconfig: rel, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
     'services: {network: {flags: {kube-x: [a]}}}' \
+    'services: {storage: {s3: {rgw: {enabled: true}}}}' \
+    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", existingSecret: ""}}}}' \
+    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", accessKey: x}}}}' \
     'global: {probe: http}'; do
     printf '%s\n' "$bad" > "$tmp/bad.yaml"
     if helm template vws charts/vws --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
