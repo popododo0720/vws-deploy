@@ -142,8 +142,8 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 `vws upgrade --to TAG`: VWSCluster의 `spec.version`을 TAG로 바꾸고 `vws apply`를 돌린다(#43 5절). 같은 태그면 `unchanged`, 쓰기 0건.
 
-- apply의 helm 호출은 `--atomic --wait --timeout 15m --history-max 10`이고, 리비전 설명(`--description`)에 그 리비전을 만든 CR spec을 `vws-spec:<json>`으로 남긴다(rollback이 CR을 되돌릴 근거).
-- apply가 실패하면 helm이 `--atomic`으로 릴리스를 되돌렸으므로, CR spec도 이전 값으로 다시 저장하고 1로 끝난다(CR과 릴리스가 어긋나지 않게).
+- apply의 helm 호출은 `--atomic --wait --timeout 15m --history-max 10`이고, 리비전 설명(`--description`)에 그 리비전을 만든 CR spec을 `vws-spec:<json>`(키 정렬한 한 줄 JSON)으로 남긴다(rollback이 CR을 되돌릴 근거). 설명이 `VWS_SPEC_DESCRIPTION_MAX`(기본 1024자)를 넘으면 `vws-spec-sha256:<spec의 sha256>`만 남기고 spec 전체는 CR의 `status.specHistory`(`{specHash, spec}`, 최신 10개, 오래된 것부터 버림)에 둔다.
+- apply가 실패하면 helm이 `--atomic`으로 릴리스를 되돌렸으므로, CR spec도 이전 값으로 다시 저장하고 1로 끝난다(CR과 릴리스가 어긋나지 않게). `vws reconfigure`와 같은 `lib/applyrun.sh`의 `vws_apply_spec`.
 - 출력에 항상 두 WARN: 백업 권고(`vws backup`(#61)이 아직 없어 최신성은 검사하지 못한다, etcd 스냅샷은 `docs/etcd-runbook.md`), 무중단 미주장(**vws-deploy#39가 닫히기 전에는 무중단을 주장하지 않는다**; 상태 서비스는 짧은 중단이 있다).
 - 무상태 서비스의 롤링 업데이트는 현재 차트 설정(RollingUpdate, PDB)을 그대로 쓴다. 플랫폼 번들 업그레이드는 범위 밖.
 - 업그레이드 뒤 `vws status`/`doctor` 판정(#43 5절 6단계)은 #56이 main에 들어온 뒤 붙인다(확인 필요).
@@ -155,7 +155,8 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 - `--yes` 없이는 계획(리비전, 되돌아갈 spec)과 한계를 출력하고 2.
 - `--yes`: `helm rollback vws N --wait --timeout 15m` → CR spec 저장 → CR status(appliedValuesHash, observedGeneration) 기록. helm이 실패하면 CR은 건드리지 않고 1.
-- 리비전 설명에 `vws-spec:`이 없으면(이 변경 전 리비전, 손으로 만든 리비전) 아무것도 하지 않고 1.
+- 리비전 설명이 `vws-spec-sha256:<hash>`이면 CR `status.specHistory`에서 그 hash의 spec을 찾는다. 없으면(10개를 넘어 밀려남) 아무것도 하지 않고 1.
+- 리비전 설명에 둘 다 없으면(이 변경 전 리비전, 손으로 만든 리비전) 아무것도 하지 않고 1.
 - 이미 그 리비전이고 CR spec도 같으면 `unchanged`.
 - helm 이력은 Secret에 있어 운영 역할로는 읽을 수 없다. 사용자 자격 증명으로 돌린다(못 읽으면 3).
 
