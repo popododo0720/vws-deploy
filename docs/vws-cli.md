@@ -176,3 +176,11 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 - 게이트 뒤 비교(실패 시 1): 스냅샷의 Bound PVC가 같은 이름으로 Bound, ConfigMap 키 수가 같거나 많음, Always VM이 모두 Running, 재시작 횟수가 임계(`VWS_VERIFY_RESTARTS`, 기본 3)를 넘는 파드 없음. 어느 노드도 boot ID가 바뀌지 않았으면 `WARN reboot not observed`.
 - 부팅 시각 대신 노드의 `status.nodeInfo.bootID`로 재부팅 여부를 판단한다(재부팅마다 바뀐다).
 - 실제 재부팅/전원 차단 실측은 미검증: cluster-verification-list I9, etcd 런북 시나리오 7(A7).
+
+### vws backup
+
+`vws backup [--out DIR] [--etcd-snapshot FILE]` reads the cluster and writes `vws-backup-<UTC>/` (0700, files 0600; an existing directory is refused, exit 2): the VWSCluster spec, `helm get values -a`, history and manifest, the release-namespace ConfigMaps labelled `app.kubernetes.io/part-of=vws` (WARN when there are none), `manifest.json` (files with size and sha256, versions, profile, VolumeSnapshot names, CephCluster health, the etcd snapshot path and whether it is under 24 hours old) and `SHA256SUMS`. Secrets, Ceph/VM disks and etcd itself are not included. The CR and helm files are scanned with `scripts/vws.d/lib/redact.py` first; any hit is a FAIL and nothing is written. Helm keeps its release in Secrets, so the operating role cannot run it: use your own kubeconfig. Copying the directory off the node is up to you. Not yet checked on a real cluster (cluster-verification-list I8).
+
+### vws restore
+
+`vws restore DIR [--yes]` checks `SHA256SUMS` first (a mismatch exits 1 before any write), then prints the plan; without `--yes` it exits 2, `--dry-run` stops after the plan. With `--yes` it applies the VWSCluster CRD from `charts/vws/crds`, saves the CR spec when it differs, runs `vws apply`, compares the release values with the backup (WARN when they differ), server-side applies only the ConfigMaps that differ, and folds `vws doctor` in as `after-*` lines. Restoring the same backup twice reports unchanged. State volumes are restored by hand from the VolumeSnapshots listed in the plan. Not yet checked on a real cluster (cluster-verification-list I8, I2).
