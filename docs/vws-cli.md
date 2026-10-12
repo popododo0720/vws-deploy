@@ -82,3 +82,15 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 | `source` | 체크아웃이면 `guard.sh bundle`, `recovery`, `config` | FAIL. `VWS_SOURCE_CHECKS=0`이면 건너뜀(하네스) |
 
 FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3. 하네스 `tests/vws/preflight.test.sh`는 `tests/fixtures/preflight/ok`를 시나리오마다 한 파일씩 바꿔 검사별 통과/실패를 본다.
+
+### vws init
+
+`vws init [--from FILE]`: `VWSCluster` CR을 저장한다. `--from`이 없으면 stdin으로 프로필, 스토리지 드라이버, StorageClass(`existing`일 때만), 이미지 태그를 묻고 같은 CR을 만든다. 검증은 `vws render`와 같은 코드(`lib/render.py`)이고 잘못되면 종료 코드 2로 아무것도 저장하지 않는다. 클러스터의 CR과 `spec`이 같으면 `unchanged`(변경 호출 0건). 워크로드는 건드리지 않는다. 저장은 `kubectl apply --server-side --field-manager=vws`.
+
+### vws apply
+
+`vws apply [--unattended]`: CR → render → 상태 비교 → preflight → 비밀 → 번들 → helm → status. CR의 `status.appliedValuesHash`(렌더한 values의 sha256)와 `observedGeneration`이 지금 값과 같으면 `unchanged`로 끝난다(변경 호출 0건). 번들은 `build/platform/*.yaml`을 파일 이름 순서(=`scripts/platform.sh`의 번호)대로 server-side apply하고 파일마다 CRD Established, Deployment Available을 기다린다. 이어 `helm upgrade --install vws --atomic --wait`, 끝으로 status 하위 리소스를 쓴다. helm이 실패하면 status를 쓰지 않고 1. `--dry-run`은 변경 호출을 출력만 한다. 비밀: 지금 차트는 설치기가 만들 Secret이 없어 이 단계는 아무것도 만들지 않는다. preflight: `lib/checks.sh`(#55)가 있으면 api, nodes, storage, release 검사를 돌리고 FAIL이면 아무것도 바꾸지 않고 1, 없으면 WARN으로 건너뛴다. 동시 실행 잠금(Lease `vws-operator-lock`)은 아직 없다(확인 필요, 후속).
+
+### vws installer
+
+`vws installer finish`: 설치용 임시 cluster-admin 바인딩(`vws-installer-temp`)을 지우고 정말 사라졌는지 확인한다. 설계와 근거는 `docs/installer.md`. 확인은 `kubectl auth can-i`(SelfSubjectAccessReview, 파드 밖이면 `--as=system:serviceaccount:vws:vws-installer` 즉 SubjectAccessReview)로 `* *`, `create clusterrolebindings`, `create clusterroles`, `delete namespaces`, `create customresourcedefinitions`, `get secrets`가 모두 `no`이고, 운영용 `get vwsclusters`, `patch vwsclusters/status`는 `yes`인지 본다. 하나라도 어긋나면 1, 답을 못 읽으면 3. 이미 지워졌으면 `unchanged`이고 확인은 다시 한다(멱등).
