@@ -20,6 +20,7 @@
 | R14 | 서비스 설정은 values.yaml의 `services.*.flags`뿐이고 네임스페이스 이름은 `namespaces` 한 곳뿐이다. 렌더된 args는 값과 같고, 네임스페이스 플래그를 받는 서비스는 그 네임스페이스에 Role이 있다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
 | R15 | 모든 서비스의 `-listen` 포트, 컨테이너 포트, 프로브 포트는 서비스의 `port` 하나다. 프로브는 tcpSocket 또는 grpc이고 HTTP가 아니다. network는 `-db`와 `-pool`을 넘긴다 | `charts/vws/values.yaml` `charts/vws/templates/_helpers.tpl` `scripts/check_render.py` | `scripts/guard.sh config` |
 | R16 | network kubeconfig는 operator가 만든 Secret을 읽기 전용으로 마운트하는 임시 방법뿐이다. 차트는 Secret을 렌더하지 않고 자격 증명 값을 values나 env에 두지 않는다 | `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
+| R17 | `scripts/vws`의 모든 명령은 `scripts/vws.d/<이름>.sh` 한 파일이고 `# summary:` 줄, `vws_cmd_main`, `tests/vws/<이름>.test.sh`, `docs/vws-cli.md`의 `### vws <이름>` 항목을 가진다. 명령은 kubectl과 helm을 직접 부르지 않고 `vws_kubectl`, `vws_helm`만 쓴다(`--dry-run`이 변경 호출을 막는다). 하네스는 가짜 kubectl과 helm으로 돌고 클러스터에 닿지 않는다 | `scripts/vws` `scripts/vws.d/lib/common.sh` `tests/vws/run.sh` | `scripts/guard.sh vws` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 

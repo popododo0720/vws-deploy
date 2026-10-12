@@ -536,6 +536,51 @@ YAML
   rm -rf "$tmp"
 }
 
+# vws_layout_check DIR: every scripts/vws.d/<name>.sh has a summary, vws_cmd_main, a test and a doc
+# entry, and no command calls kubectl or helm directly (only vws_kubectl and vws_helm honor --dry-run).
+vws_layout_check() {
+  local root=$1 file name
+  [[ -x ${root}/scripts/vws ]] || { echo "R17: scripts/vws is not executable" >&2; return 1; }
+  [[ -x ${root}/tests/vws/run.sh ]] || { echo "R17: tests/vws/run.sh is not executable" >&2; return 1; }
+  for file in "${root}"/scripts/vws.d/*.sh; do
+    [[ -f $file ]] || continue
+    name=$(basename "$file" .sh)
+    grep -q '^# summary: ' "$file" || { echo "R17: vws.d/${name}.sh has no '# summary:' line" >&2; return 1; }
+    grep -q '^vws_cmd_main() {' "$file" || { echo "R17: vws.d/${name}.sh defines no vws_cmd_main" >&2; return 1; }
+    [[ -f ${root}/tests/vws/${name}.test.sh ]] || { echo "R17: vws.d/${name}.sh has no tests/vws/${name}.test.sh" >&2; return 1; }
+    grep -q -x "### vws ${name}" "${root}/docs/vws-cli.md" || { echo "R17: docs/vws-cli.md has no '### vws ${name}'" >&2; return 1; }
+    if grep -v '^[[:space:]]*#' "$file" | grep -q -E '(^|[;&|(])[[:space:]]*(kubectl|helm)[[:space:]]+[a-z-]'; then
+      echo "R17: vws.d/${name}.sh calls kubectl or helm directly; use vws_kubectl and vws_helm" >&2
+      return 1
+    fi
+  done
+}
+
+cmd_vws() {
+  local tmp
+  vws_layout_check . || die "R17: scripts/vws layout is broken"
+  bash tests/vws/run.sh >/dev/null || die "R17: the vws harness fails; run tests/vws/run.sh"
+  if command -v shellcheck >/dev/null; then
+    shellcheck -x -S warning scripts/vws scripts/vws.d/*.sh scripts/vws.d/lib/*.sh tests/vws/*.sh tests/fixtures/bin/* tests/fixtures/commands/*.sh ||
+      die "R17: shellcheck rejects the vws files"
+  fi
+  # The layout check must fail on each broken copy.
+  tmp=$(mktemp -d)
+  cp -r scripts tests docs "$tmp"/
+  printf '#!/usr/bin/env bash\n# summary: x\nvws_cmd_main() { :; }\n' > "$tmp/scripts/vws.d/orphan.sh"
+  ! vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a command without test and doc was accepted"; }
+  : > "$tmp/tests/vws/orphan.test.sh"
+  ! vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a command without a doc entry was accepted"; }
+  printf '### vws orphan\n' >> "$tmp/docs/vws-cli.md"
+  vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a complete command was rejected"; }
+  printf '#!/usr/bin/env bash\n# summary: x\nvws_cmd_main() {\n  kubectl get nodes\n}\n' > "$tmp/scripts/vws.d/orphan.sh"
+  ! vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a direct kubectl call was accepted"; }
+  rm -f "$tmp/scripts/vws.d/orphan.sh"
+  printf '#!/usr/bin/env bash\n# no summary\nvws_cmd_main() { :; }\n' > "$tmp/scripts/vws.d/nosummary.sh"
+  ! vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a command without a summary was accepted"; }
+  rm -rf "$tmp"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -544,6 +589,7 @@ cmd_all() {
   cmd_cursor
   cmd_agents
   cmd_config
+  cmd_vws
   cmd_bundle
   cmd_schema
   cmd_hooks
@@ -558,7 +604,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|schema|hooks|docs|recovery|commits|commit-msg|all>
 EOF
 }
 
@@ -573,6 +619,7 @@ case "$command_name" in
   agents) cmd_agents ;;
   bundle) cmd_bundle ;;
   config) cmd_config ;;
+  vws) cmd_vws ;;
   schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
