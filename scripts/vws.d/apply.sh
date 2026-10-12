@@ -65,14 +65,26 @@ vws_cmd_main() {
   done
 
   # --description carries the spec this revision came from, so vws rollback can put the CR back in
-  # step with the release (vws-deploy#60). --history-max 10 bounds the release history (#43 section 5).
+  # step with the release (vws-deploy#60). A spec longer than VWS_SPEC_DESCRIPTION_MAX characters is
+  # recorded by its sha256 only and kept in full in status.specHistory (newest 10).
+  # --history-max 10 bounds the release history (#43 section 5).
+  local spec_json spec_hash description history
+  spec_json=$(jq -cS '.spec' <<<"$cr")
+  spec_hash=$(printf '%s' "$spec_json" | sha256sum | cut -d' ' -f1)
+  history=$(jq -c '.status.specHistory // []' <<<"$cr")
+  if ((${#spec_json} + 9 <= ${VWS_SPEC_DESCRIPTION_MAX:-1024})); then
+    description="vws-spec:${spec_json}"
+  else
+    description="vws-spec-sha256:${spec_hash}"
+    history=$(jq -c --arg h "$spec_hash" --argjson s "$spec_json" '[.[] | select(.specHash != $h)] + [{specHash: $h, spec: $s}] | .[-10:]' <<<"$history")
+  fi
   vws_helm upgrade --install vws "${VWS_ROOT}/charts/vws" -f "$values" --atomic --wait --timeout 15m --history-max 10 \
-    --description "vws-spec:$(jq -c '.spec' <<<"$cr")" >/dev/null ||
+    --description "$description" >/dev/null ||
     { rm -rf "$tmp"; vws_emit FAIL helm "helm release upgrade failed and rolled back (--atomic)"; vws_finish; }
   vws_emit OK helm "release vws upgraded"
 
-  vws_kubectl patch vwsclusters vws --subresource=status --type=merge -p "$(jq -nc --argjson g "$generation" --arg h "$hash" \
-    '{status: {observedGeneration: $g, appliedValuesHash: $h, conditions: [{type: "Applied", status: "True", reason: "Applied", message: "vws apply"}]}}')" >/dev/null ||
+  vws_kubectl patch vwsclusters vws --subresource=status --type=merge -p "$(jq -nc --argjson g "$generation" --arg h "$hash" --argjson sh "$history" \
+    '{status: {observedGeneration: $g, appliedValuesHash: $h, specHistory: $sh, conditions: [{type: "Applied", status: "True", reason: "Applied", message: "vws apply"}]}}')" >/dev/null ||
     vws_die_env "cannot write VWSCluster status"
   rm -rf "$tmp"
   vws_emit OK apply "applied generation ${generation} (values ${hash:0:12})"

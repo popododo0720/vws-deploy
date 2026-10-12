@@ -39,7 +39,7 @@ assert_no_changes "same tag changes nothing"
 installer_scenario atomic-fails
 rm "${VWS_FAKE_DIR}/helm/upgrade.json"
 run_vws_real upgrade --to v2;                     expect_rc "a failing --atomic apply exits 1" 1
-expect_text "the failure says the CR is back" "$OUT" "the CR spec is back to the previous value"
+expect_text "the failure says the CR is back" "$OUT" "the VWSCluster spec is back to the previous value"
 last=$(saved_specs | tail -1)
 if [[ $last != *'"version"'* && $last == *'"profile": "single-node"'* ]]; then ok "the last saved CR is the previous spec"; else bad "CR kept" "$(saved_specs)"; fi
 

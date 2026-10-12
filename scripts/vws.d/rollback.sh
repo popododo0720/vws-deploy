@@ -20,7 +20,7 @@ vws_rollback_limits() {
 }
 
 vws_cmd_main() {
-  local to='' history current target spec cr err values hash generation
+  local to='' history current spec cr err values hash generation
   while (($#)); do
     case $1 in
       --to) (($# >= 2)) || vws_usage "--to needs a revision"; to=$2; shift 2 ;;
@@ -46,13 +46,26 @@ vws_cmd_main() {
     [[ -n $to ]] || vws_usage "no earlier revision to roll back to"
   fi
   jq -e --argjson t "$to" 'any(.[]; .revision == $t)' <<<"$history" >/dev/null || vws_usage "revision ${to} is not in the history (the last 10 are kept)"
-  spec=$(jq -r --argjson t "$to" '.[] | select(.revision == $t) | .description // ""' <<<"$history")
-  if [[ $spec != vws-spec:* ]] || ! spec=$(jq -ce '.' <<<"${spec#vws-spec:}" 2>/dev/null); then
+  cr=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) || vws_usage "no VWSCluster vws in ${VWS_NAMESPACE}"
+  # The revision description holds the spec ("vws-spec:<json>") or, for a long spec, its sha256
+  # ("vws-spec-sha256:<hash>") with the spec in the CR's status.specHistory.
+  local description
+  description=$(jq -r --argjson t "$to" '.[] | select(.revision == $t) | .description // ""' <<<"$history")
+  spec=''
+  case $description in
+    vws-spec:*) spec=$(jq -ce '.' <<<"${description#vws-spec:}" 2>/dev/null) || spec='' ;;
+    vws-spec-sha256:*)
+      spec=$(jq -c --arg h "${description#vws-spec-sha256:}" '[.status.specHistory[]? | select(.specHash == $h) | .spec] | last // empty' <<<"$cr")
+      [[ -n $spec ]] || {
+        vws_emit FAIL rollback "revision ${to} records spec hash ${description#vws-spec-sha256:} but status.specHistory no longer has it (only the newest 10 are kept); next: roll the release back by hand and run vws reconfigure --from the matching CR"
+        return 0
+      } ;;
+  esac
+  if [[ -z $spec ]]; then
     vws_emit FAIL rollback "revision ${to} has no recorded VWSCluster spec (made before vws-deploy#60 or by hand); CR and release cannot be kept in step; next: roll the release back by hand and run vws reconfigure --from the matching CR"
     return 0
   fi
-  cr=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) || vws_usage "no VWSCluster vws in ${VWS_NAMESPACE}"
-  if [[ $to == "$current" && $(jq -c '.spec' <<<"$cr") == "$spec" ]]; then
+  if [[ $to == "$current" && $(jq -cS '.spec' <<<"$cr") == "$(jq -cS '.' <<<"$spec")" ]]; then
     vws_emit OK rollback "unchanged: release is at revision ${to} and the CR has its spec"
     return 0
   fi

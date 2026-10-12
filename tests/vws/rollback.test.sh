@@ -46,6 +46,20 @@ run_vws_real --yes rollback --to 3;               expect_rc "rollback to the cur
 expect_text "current revision with its spec is unchanged" "$OUT" "unchanged"
 assert_no_changes "unchanged changes nothing"
 
+installer_scenario hashed
+# Revision 2 records only a hash; the spec is in the CR's status.specHistory.
+spec2=$(recorded_spec 2)
+hash2=$(printf '%s' "$spec2" | sha256sum | cut -d' ' -f1)
+jq --arg d "vws-spec-sha256:${hash2}" '(.[] | select(.revision == 2) | .description) = $d' "${VWS_FAKE_DIR}/helm/history.json" >"${WORK}/h" && mv "${WORK}/h" "${VWS_FAKE_DIR}/helm/history.json"
+jq --arg h "$hash2" --argjson s "$spec2" '.status.specHistory = [{specHash: $h, spec: $s}]' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/c" && mv "${WORK}/c" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real --yes rollback;                      expect_rc "a hashed revision with its spec in status exits 0" 0
+have=$(last_saved_spec | jq -S -c .)
+if [[ $have == "$spec2" ]]; then ok "a hashed revision restores the spec from status.specHistory"; else bad "hashed spec" "have ${have} want ${spec2}"; fi
+jq '.status.specHistory = []' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/c" && mv "${WORK}/c" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real --yes rollback;                      expect_rc "a hashed revision missing from status exits 1" 1
+expect_text "a missing hash says why" "$OUT" "status.specHistory no longer has it"
+assert_no_changes "a missing hash changes nothing"
+
 installer_scenario no-record
 run_vws_real --yes rollback --to 1;               expect_rc "a revision without a recorded spec exits 1" 1
 expect_text "no record says why" "$OUT" "no recorded VWSCluster spec"

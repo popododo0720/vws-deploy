@@ -14,14 +14,8 @@ source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
 vws_upgrade_tmp=''
 
-# vws_upgrade_save_spec CR_JSON SPEC_JSON: server-side apply the CR with that spec.
-vws_upgrade_save_spec() {
-  jq --argjson s "$2" '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec: $s}' <<<"$1" |
-    vws_kubectl apply --server-side --field-manager=vws -f - >/dev/null
-}
-
 vws_cmd_main() {
-  local to='' cr old new rc=0
+  local to='' cr new
   while (($#)); do
     case $1 in
       --to) (($# >= 2)) || vws_usage "--to needs a tag"; to=$2; shift 2 ;;
@@ -34,7 +28,6 @@ vws_cmd_main() {
   vws_installer_namespace
   vws_installer_guard_ttl
   cr=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) || vws_usage "no VWSCluster vws in ${VWS_NAMESPACE}; run vws init first"
-  old=$(jq -c '.spec' <<<"$cr")
   if [[ $(jq -r '.spec.version // ""' <<<"$cr") == "$to" ]]; then
     vws_emit OK upgrade "unchanged: spec.version is already ${to}"
     return 0
@@ -54,11 +47,5 @@ vws_cmd_main() {
     vws_emit OK upgrade "dry-run: the CR is not saved and apply does not run"
     return 0
   fi
-  vws_upgrade_save_spec "$cr" "$(jq -c '.spec' <<<"$new")" || vws_die_env "cannot save VWSCluster vws"
-  vws_run_apply || rc=$?
-  # shellcheck disable=SC2154 # vws_fail_count is set by lib/common.sh
-  if ((rc != 0 || vws_fail_count > 0)); then
-    vws_upgrade_save_spec "$cr" "$old" || vws_die_env "apply failed and the CR could not be put back; set spec.version back by hand"
-    vws_emit FAIL upgrade "apply failed (the release was rolled back by --atomic); the CR spec is back to the previous value; next: vws status, then fix and retry"
-  fi
+  vws_apply_spec upgrade "$cr" "$(jq -c '.spec' <<<"$new")"
 }

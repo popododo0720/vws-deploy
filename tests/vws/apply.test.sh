@@ -40,6 +40,25 @@ run_vws_real apply;                              expect_rc "a failing preflight 
 expect_text "a failing preflight says so" "$OUT" "preflight failed"
 assert_no_changes "a failing preflight changes nothing"
 
+installer_scenario description-cap
+run_vws_real apply;                              expect_rc "a short spec: apply exits 0" 0
+expect_text "a short spec is recorded in full" "$(calls)" '--description vws-spec:{'
+spec_json=$(jq -cS '.spec' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json")
+spec_hash=$(printf '%s' "$spec_json" | sha256sum | cut -d' ' -f1)
+export VWS_SPEC_DESCRIPTION_MAX=20
+run_vws_real apply;                              expect_rc "a spec over the cap: apply exits 0" 0
+expect_text "over the cap only the hash is in the description" "$(calls)" "--description vws-spec-sha256:${spec_hash}"
+patch=$(grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -o '{"status".*}')
+if jq -e --arg h "$spec_hash" --argjson s "$spec_json" '.status.specHistory[-1] == {specHash: $h, spec: $s}' <<<"$patch" >/dev/null; then
+  ok "over the cap the full spec goes to status.specHistory"; else bad "specHistory" "$patch"; fi
+jq '.status.specHistory = [range(10) | {specHash: "old\(.)", spec: {profile: "small"}}]' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real apply;                              expect_rc "a full specHistory: apply exits 0" 0
+patch=$(grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -o '{"status".*}')
+if jq -e --arg h "$spec_hash" '(.status.specHistory | length) == 10 and .status.specHistory[0].specHash == "old1" and .status.specHistory[-1].specHash == $h' <<<"$patch" >/dev/null; then
+  ok "specHistory keeps the newest 10"; else bad "specHistory bound" "$patch"; fi
+unset VWS_SPEC_DESCRIPTION_MAX
+
 installer_scenario no-cr
 rm "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real apply;                              expect_rc "no CR exits 2" 2
