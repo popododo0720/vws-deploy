@@ -386,6 +386,31 @@ cmd_bundle() {
   for name in rbd openvswitch geneve kvm; do
     grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
   done
+  cmd_storage_names
+}
+
+cmd_storage_names() {
+  local rendered=build/platform/31-rook-ceph-cluster.yaml
+  [[ -f $rendered ]] || die "R12: ${rendered} is missing; run scripts/platform.sh first"
+  python3 - "$rendered" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+WANT = "ceph-block"
+docs = [d for d in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if d]
+classes = [d for d in docs if d["kind"] == "StorageClass" and d["metadata"]["name"] == WANT]
+snaps = [d for d in docs if d["kind"] == "VolumeSnapshotClass" and d["metadata"]["name"] == WANT]
+if len(classes) != 1 or len(snaps) != 1:
+    sys.exit(f"R12: the bundle must render StorageClass and VolumeSnapshotClass {WANT} once each")
+if classes[0]["provisioner"] != snaps[0]["driver"]:
+    sys.exit("R12: StorageClass provisioner and VolumeSnapshotClass driver differ")
+doc = Path("docs/platform-bundle.md").read_text()
+for kind in ("StorageClass", "VolumeSnapshotClass"):
+    if not any(line.startswith(f"| {kind} | `{WANT}` |") for line in doc.splitlines()):
+        sys.exit(f"R12: docs/platform-bundle.md must list {kind} {WANT}")
+PY
 }
 
 cmd_all() {
