@@ -158,7 +158,8 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
 
 # Flags a service refuses to start without, from its usage text on origin/main.
 # network: cmd/vws-network/main.go (-db PATH -pool CIDR).
-REQUIRED_FLAGS = {"network": ["db", "pool"]}
+# storage: starts without -db but keeps state in memory only, so a restart loses it (#85).
+REQUIRED_FLAGS = {"network": ["db", "pool"], "storage": ["db"]}
 
 
 # Resources a service creates with an existing-object check (Create, then Get on AlreadyExists).
@@ -677,6 +678,11 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"]["network"]["flags"].pop("pool", None)
         if not check(docs, broken_values, release):
             return ["R15: network without -pool did not fail"]
+    if "storage" in values["services"]:
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["storage"]["flags"].pop("db", None)
+        if not check(docs, broken_values, release):
+            return ["R15: storage without -db did not fail"]
 
     # kubeconfigSecret: the mount, the Secret name, the key and the mode come from values only.
     kube = next((n for n, spec in values["services"].items() if (spec or {}).get("kubeconfigSecret")), None)
