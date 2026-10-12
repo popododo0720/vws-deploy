@@ -1,0 +1,18 @@
+# 예시. 클러스터에 적용하지 않았고 값은 T2 랩에서 확인해야 한다(미검증).
+machine:
+  network:
+    interfaces:
+      - interface: eth0
+        dhcp: true
+        vip:
+          ip: 10.0.0.10
+  kernel:
+    modules:
+      - name: openvswitch
+      - name: geneve
+      - name: rbd
+cluster:
+  allowSchedulingOnControlPlanes: false
+  network:
+    cni:
+      name: none
