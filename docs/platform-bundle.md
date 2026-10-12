@@ -53,6 +53,21 @@ Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과
 | `geneve` | Kube-OVN의 기본 터널(`platform/kube-ovn.values.yaml`의 `TUNNEL_TYPE`) |
 | `kvm`(`kvm_intel` 또는 `kvm_amd`) | KubeVirt의 VM 가속. 없으면 `platform/kubevirt-cr.yaml`의 `useEmulation`을 켜야 하고 매우 느리다 |
 
+## 실제 클러스터에서 필요했던 것 (vws-test, #51)
+
+k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다른 배포판은 미검증.
+
+- **LoadBalancer 구현(#86).** 차트의 `external: true` 서비스는 `type: LoadBalancer`다. servicelb를 끈 k3s에서는 EXTERNAL-IP가 pending이고 `vws apply`의 `helm --wait --atomic`이 타임아웃까지 기다린다. MetalLB(L2, IPAddressPool과 L2Advertisement) 같은 구현을 먼저 올리거나 서비스의 `external`을 끈다.
+- **OpenStack 위 랩의 LB 주소(#86).** OVN이 모르는 주소는 ARP에 답하지 않으므로 LB 주소를 광고 노드 포트의 추가 fixed IP로 넣었다. 추가 fixed IP가 있으면 cloud-init DHCP가 다른 주소를 잡아 노드 주소가 바뀌었으므로 노드 주소를 정적 netplan으로 고정하고 cloud-init 네트워크 설정을 끈다.
+- **블록 장치 소유권(#87).** CDI importer가 Block 모드 PVC에 쓰려면 containerd의 `device_ownership_from_security_context = true`가 필요하다. k3s(containerd v2, config v3)에서는 `config-v3.toml.tmpl`이 아니라 드롭인 `/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/10-device-ownership.toml`로 넣고 k3s를 재시작한다.
+
+  ```toml
+  version = 3
+  [plugins."io.containerd.cri.v1.runtime"]
+    device_ownership_from_security_context = true
+  ```
+- **krbd 노드 재부팅(#87).** RBD를 매핑한 노드를 그냥 재부팅하면 네트워크가 먼저 내려가 `libceph ... error -101`로 shutdown이 멈췄다. 재부팅 전에 `kubectl drain`으로 RBD 파드를 옮긴다. 멈추면 하이퍼바이저에서 하드 리부트가 필요했다.
+
 ## 알려진 한계
 
 - 렌더와 kubeconform까지만 확인했다. 실제 클러스터 설치, 기동 순서, 업그레이드는 미검증이다. 실측은 T2 랩에서 한다.
