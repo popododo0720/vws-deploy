@@ -21,6 +21,8 @@
 | R15 | 모든 서비스의 `-listen` 포트, 컨테이너 포트, 프로브 포트는 서비스의 `port` 하나다. 프로브는 tcpSocket 또는 grpc이고 HTTP가 아니다. network는 `-db`와 `-pool`을 넘긴다 | `charts/vws/values.yaml` `charts/vws/templates/_helpers.tpl` `scripts/check_render.py` | `scripts/guard.sh config` |
 | R16 | network kubeconfig는 operator가 만든 Secret을 읽기 전용으로 마운트하는 임시 방법뿐이다. 차트는 Secret을 렌더하지 않고 자격 증명 값을 values나 env에 두지 않는다 | `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
 | R17 | `scripts/vws`의 모든 명령은 `scripts/vws.d/<이름>.sh` 한 파일이고 `# summary:` 줄, `vws_cmd_main`, `tests/vws/<이름>.test.sh`, `docs/vws-cli.md`의 `### vws <이름>` 항목을 가진다. 명령은 kubectl과 helm을 직접 부르지 않고 `vws_kubectl`, `vws_helm`만 쓴다(`--dry-run`이 변경 호출을 막는다). 하네스는 가짜 kubectl과 helm으로 돌고 클러스터에 닿지 않는다 | `scripts/vws` `scripts/vws.d/lib/common.sh` `tests/vws/run.sh` | `scripts/guard.sh vws` |
+| R18 | VWS 전용 CRD는 `VWSCluster` 하나뿐이고(#2 결정의 예외, `docs/vwscluster.md`), API 그룹은 그 CRD의 `spec.group` 한 곳에만 쓴다(예제 CR의 `apiVersion`은 가드가 대조). CR 스키마에 비밀처럼 보이는 필드 이름이 없고 CR은 Secret 이름만 담는다 | `charts/vws/crds/vwsclusters.yaml` `scripts/vws.d/lib/render.py` | `scripts/guard.sh crd` |
+| R19 | 프로필은 `profiles/<이름>.yaml`의 값 파일이고 세 프로필은 같은 키를 갖는다. 프로필마다 lint, template, kubeconform, check_render가 통과하고, 같은 CR의 `vws render`는 같은 바이트다 | `profiles/` `platform/rook-ceph-cluster.single-node.values.yaml` `platform/rook-ceph-cluster.ha.values.yaml` | `scripts/guard.sh profiles` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 
