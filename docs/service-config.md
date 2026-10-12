@@ -42,13 +42,13 @@ services:
 | compute | `pendingFlags.image-namespace: {namespace: images}` | `-image-namespace=<images>` | `vws-images` | main에 없음 |
 | 세 서비스 | `listen: 0.0.0.0:<port>` | `-listen=0.0.0.0:<port>` | 코드 기본은 `127.0.0.1`. `port` 키와 같아야 한다 | compute `main.go:33`, storage `main.go:40`, network `main.go:22` |
 | network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`의 기본값은 자리표시자 | `main.go:23-24,33-34` |
-| network | (기본 없음) `kubeconfig` | `-kubeconfig=<경로>` | 있으면 Kube-OVN 데이터플레인, 없으면 fake | `cmd/vws-network/main.go:25` |
+| network | (기본 없음) `kubeconfig`와 `kubeconfigSecret` | `-kubeconfig=<경로>`, Secret 볼륨 | 있으면 Kube-OVN 데이터플레인, 없으면 fake | `cmd/vws-network/main.go:25` |
 | network | `kube-external-subnet` | `-kube-external-subnet=<이름>` | `-kubeconfig`와 함께 필수 | `main.go:26` |
 | network | `kube-nad-namespace: {namespace: nad}` | `-kube-nad-namespace=<nad>` | `-kubeconfig`만 있으면 `vws-system`이라 차트는 항상 넘긴다 | `main.go:27,30-31` |
 | network | `kube-snat` | `-kube-snat=true` | 꺼짐. 외부 서브넷 필요 | `main.go:28` |
 
 - 스키마가 `kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`를, `kube-snat`이 있으면 `kube-external-subnet`을 요구한다(vws-deploy#30). 빠진 값으로 렌더하면 거절된다.
-- network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)와 `pool: 192.0.2.0/24`를 넘긴다. **`pool`은 문서용 대역(RFC 5737)의 자리표시자이므로 사이트마다 바꿔야 한다(확인 필요: 실제 엘라스틱 IP 대역).** Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`를 더 넣는다(`scripts/guard.sh config`가 이 형태를 시험한다).
+- network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)와 `pool: 192.0.2.0/24`를 넘긴다. **`pool`은 문서용 대역(RFC 5737)의 자리표시자이므로 사이트마다 바꿔야 한다(확인 필요: 실제 엘라스틱 IP 대역).** Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`와 함께 kubeconfig를 담은 Secret의 이름 `kubeconfigSecret`을 넣는다. 차트는 그 Secret을 `flags.kubeconfig` 경로의 디렉터리에 읽기 전용으로 마운트한다(아래 "network kubeconfig"). `scripts/guard.sh config`가 이 형태를 시험한다.
 - compute의 `-nad-namespace`(`VWS_NAD_NAMESPACE`, 기본 `vws-nad`)는 예약뿐이고 NAD를 쓰는 코드가 없어 넘기지 않는다.
 
 ## 포트와 프로브 (vws-deploy#39)
@@ -58,6 +58,16 @@ services:
 - 프로브는 HTTP가 아니다. 서비스의 비-vendor Go 코드에 `healthz`, `readyz`, `grpc_health`가 없다(위 세 커밋 기준, 부재 증거일 뿐이다). 기본은 `tcpSocket`이다. 이 검사는 포트가 열려 있음만 보장하고 DB나 클러스터 접근 같은 의존성은 보장하지 않는다.
 - **gRPC 프로브로 바꾸는 방법**: 서비스 이미지가 `grpc.health.v1`을 구현한 뒤 `global.probe: grpc` 한 줄만 바꾼다. 렌더가 `grpc: {port: <port>}` 프로브로 바뀌고 같은 포트 검사를 받는다. 구현 전에 켜면 프로브가 실패한다. 서비스의 구현은 별도로 요청되어 있다.
 - 확인 필요: 실제 파드에서 프로브 통과 여부(T1 이상), `0.0.0.0`으로 연 포트의 NetworkPolicy 필요 여부, console과 console-api가 같은 `8080` tcp 검사로 충분한지(이 PR은 console 레포를 읽지 않았다).
+
+## network kubeconfig (vws-deploy#40, 임시)
+
+vws-network는 `-kubeconfig`가 있어야 Kube-OVN 데이터플레인을 쓴다(`main.go:25`). 차트는 **선택지 1(Secret 볼륨)만 임시로** 지원한다.
+
+- values 키는 `services.network.kubeconfigSecret`(이미 만든 Secret의 이름) 하나가 새로 늘었다. 마운트 경로는 `flags.kubeconfig` 파일 경로의 디렉터리이고 Secret의 키 이름은 그 파일 이름이다. 둘은 서로를 요구한다(스키마 `if/then`). 기존 규칙(`kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`)은 그대로다.
+- 차트는 Secret을 만들지 않고 값 파일에 자격 증명이 없다. 운영자가 `kubectl create secret generic <이름> --from-file=<키>=<kubeconfig 파일>`로 릴리스 네임스페이스에 만든다.
+- 렌더 결과: Secret 볼륨을 읽기 전용으로 `flags.kubeconfig`의 디렉터리에 마운트하고, 키 하나만 투영하며 파일 모드는 `0440`(파드는 `runAsNonRoot`와 `fsGroup 65532`)이다. 환경 변수로 자격 증명을 넘기지 않는다. `scripts/guard.sh config`(R16)가 이를 검사한다. 경로는 `/tmp`와 `/var/lib/vws` 안이면 거절한다.
+- **목표는 선택지 2(인클러스터 ServiceAccount)다.** 이를 위해 vws-network가 `-kubeconfig` 없이도 Kube-OVN을 쓰게 해야 하고, 이는 별도 요청이다. 그때 이 키와 볼륨은 지운다. 선택지 1은 장기 자격 증명이 Secret에 남고 회전이 수동이며 Secret 읽기와 파드 exec 권한 보유자가 자격을 얻는다는 한계를 가진 임시 수단이다.
+- 확인 필요: 실제 클러스터에서 이 kubeconfig로 Kube-OVN CRD에 쓰는지, 그 kubeconfig가 `docs/rbac.md`의 network 권한 이상을 갖지 않게 만드는 방법(차트가 통제하지 못한다), `0440`과 `fsGroup`으로 파드가 파일을 읽는지(T1 이상).
 
 ## 확인 필요
 

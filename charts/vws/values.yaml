@@ -93,6 +93,10 @@ services:
       size: 20Gi
   network:
     external: true
+    # TEMPORARY: to use the Kube-OVN dataplane today, add kubeconfigSecret (the name of a Secret you
+    # created with one key, the kubeconfig) and flags.kubeconfig (the file path; its directory is the
+    # read-only mount). The chart never creates that Secret and no credential goes in values.
+    # The target is the in-cluster ServiceAccount, see docs/service-config.md.
     port: 8080
     flags:
       listen: 0.0.0.0:8080

@@ -170,6 +170,10 @@
         },
         "pendingFlags": {
           "$ref": "#/definitions/flags"
+        },
+        "kubeconfigSecret": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"
         }
       },
       "allOf": [
@@ -193,6 +197,44 @@
                 "minimum": 2
               }
             }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kubeconfigSecret"
+            ]
+          },
+          "then": {
+            "required": [
+              "flags"
+            ],
+            "properties": {
+              "flags": {
+                "required": [
+                  "kubeconfig"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "flags"
+            ],
+            "properties": {
+              "flags": {
+                "required": [
+                  "kubeconfig"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "kubeconfigSecret"
+            ]
           }
         }
       ]
@@ -236,6 +278,12 @@
         "kube-snat": [
           "kube-external-subnet"
         ]
+      },
+      "properties": {
+        "kubeconfig": {
+          "type": "string",
+          "pattern": "^/[^/]+(/[^/]+)*/[^/]+$"
+        }
       }
     }
   }

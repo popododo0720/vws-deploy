@@ -40,7 +40,14 @@ metadata:
 {{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
 {{- $rbac := hasKey $spec "rbac" }}
 {{- $args := include "vws.args" (dict "root" $ "spec" $spec) | fromJsonArray }}
-{{- $ctx := dict "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- /* kubeconfigSecret: a Secret the operator created, mounted read-only at the directory of the
+ kubeconfig flag. The chart never renders a Secret and no credential is in values. Temporary, see docs/service-config.md. */}}
+{{- $kube := dict }}
+{{- if $spec.kubeconfigSecret }}
+  {{- $path := required (printf "services.%s.kubeconfigSecret needs flags.kubeconfig" $name) (get ($spec.flags | default dict) "kubeconfig") }}
+  {{- $kube = dict "secret" $spec.kubeconfigSecret "dir" (dir $path) "key" (base $path) }}
+{{- end }}
+{{- $ctx := dict "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
