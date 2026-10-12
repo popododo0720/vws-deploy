@@ -104,3 +104,14 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 ### vws doctor
 
 `vws doctor`: status 전부 + `restarts`(CrashLoopBackOff 또는 재시작 5회 이상), `pending-pvc`(모든 네임스페이스), `vws-crd`(VWSCluster CRD Established), `crd-<그룹>`과 `kubevirt-phase`, `cdi-phase`(preflight와 같은 `checks.sh` 함수, doctor 모드라 없으면 FAIL), `read-rights`(status에 필요한 읽기 권한; `get secrets`만 없으면 운영 역할로 보고 OK), `ceph`(CR의 storage driver가 rook-ceph일 때 CephCluster health), `pending-flags`(CR이 렌더하는 `global.pendingFlags`와 실제 컨테이너 인자에 pendingFlags가 있는지, #38). 모든 FAIL 메시지는 `next: <다음 행동 한 줄>`로 끝난다. 읽기 전용.
+
+### vws reconfigure
+
+`vws reconfigure (--from FILE | --set path=value [--set ...])`: VWSCluster를 고치고 `vws apply`를 돌린다(#43 3절). CR이 유일한 출처라 values 파일을 직접 고치는 경로는 없다.
+
+- `--set`: `spec` 아래 경로(`spec.`은 생략 가능), 값은 YAML로 읽는다(`3`은 숫자, `true`는 불리언). 여러 번 쓸 수 있다. `--from`: CR 전체. 둘은 함께 쓰지 않는다.
+- 검증(무엇이든 쓰기 전): `lib/render.py`(CRD 스키마, 비밀 모양 필드 거절) → `helm template`(values.schema.json) → `scripts/check_render.py`(복구 불변식). 하나라도 실패하면 종료 코드 2이고 클러스터에 아무것도 쓰지 않는다.
+- 변경 요약: 바뀐 spec 잎마다 `OK change spec.x: 이전 -> 새 값`. 비밀 모양 필드는 `(hidden)`, `secretName`은 이름이라 그대로(지금 render.py는 `spec.secrets`를 받지 않아 거절된다).
+- spec이 클러스터의 CR과 같으면 `unchanged`, 쓰는 호출 0건.
+- `--dry-run`: 요약만 출력하고 CR 저장도 apply도 하지 않는다.
+- 그 밖에는 CR을 server-side apply(`--field-manager=vws`)로 저장하고 `vws apply --unattended`를 돌려 그 결과 줄을 같은 출력(`-o json` 포함)에 합친다. apply가 실패하면 1. CR은 이미 저장된 상태로 남는다(다음 `vws apply`나 되돌리는 `reconfigure`로 맞춘다, 확인 필요).
