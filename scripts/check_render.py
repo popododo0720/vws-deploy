@@ -30,9 +30,9 @@ def load_docs(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc]
 
 
-def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict) -> list[str]:
+def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str) -> list[str]:
     errors: list[str] = []
-    want = "vws-" + name
+    want = f"{release}-{name}"
     cluster_role = by_kind.get("ClusterRole", {}).get(want)
     binding = by_kind.get("ClusterRoleBinding", {}).get(want)
     lease_role = by_kind.get("Role", {}).get(f"{name}-leader")
@@ -72,7 +72,7 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict) -> list[str]:
     return errors
 
 
-def check(docs: list[dict], values: dict) -> list[str]:
+def check(docs: list[dict], values: dict, release: str) -> list[str]:
     errors: list[str] = []
     by_kind: dict[str, dict[str, dict]] = {}
     for doc in docs:
@@ -142,7 +142,7 @@ def check(docs: list[dict], values: dict) -> list[str]:
             want = "LoadBalancer" if spec.get("external") else "ClusterIP"
             if (service.get("spec") or {}).get("type") != want:
                 errors.append(f"R4: Service {name} type is not {want}")
-        errors.extend(check_rbac(name, spec, by_kind, pod))
+        errors.extend(check_rbac(name, spec, by_kind, pod, release))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -194,8 +194,8 @@ def _first(docs: list[dict], kind: str) -> dict | None:
     return None
 
 
-def self_test(docs: list[dict], values: dict) -> list[str]:
-    base = check(docs, values)
+def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
+    base = check(docs, values, release)
     if base:
         return ["R4: rendered chart failed before mutations"] + base
 
@@ -205,22 +205,22 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
         _first(broken, "Deployment")["spec"]["template"]["spec"]["containers"][0].pop(
             "livenessProbe", None
         )
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R4: removing livenessProbe did not fail"]
         broken = copy.deepcopy(docs)
         _first(broken, "Deployment")["spec"]["template"]["spec"]["restartPolicy"] = "Never"
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R4: restartPolicy Never did not fail"]
         broken = copy.deepcopy(docs)
         _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R10: hostNetwork did not fail"]
 
     stateful_doc = _first(docs, "StatefulSet")
     if stateful_doc is not None:
         broken = copy.deepcopy(docs)
         _first(broken, "StatefulSet")["spec"].pop("volumeClaimTemplates", None)
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R4: removing the state volume did not fail"]
 
     stateless = next(
@@ -235,7 +235,7 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
                 doc.get("kind") == "PodDisruptionBudget" and doc["metadata"]["name"] == stateless
             )
         ]
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R4: removing a PodDisruptionBudget did not fail"]
 
     stateful = next(
@@ -245,7 +245,7 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
     if stateful is not None:
         broken_values = copy.deepcopy(values)
         broken_values["services"][stateful]["state"] = None
-        if not check(docs, broken_values):
+        if not check(docs, broken_values, release):
             return ["R4: null state did not fail"]
 
     with_rbac = next(
@@ -254,23 +254,23 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
     if with_rbac is not None:
         broken = copy.deepcopy(docs)
         for doc in broken:
-            if doc.get("kind") == "ClusterRole" and doc["metadata"]["name"] == "vws-" + with_rbac:
+            if doc.get("kind") == "ClusterRole" and doc["metadata"]["name"] == f"{release}-{with_rbac}":
                 doc["rules"][0]["resources"] = ["*"]
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R11: a wildcard resource did not fail"]
         broken = [
             doc
             for doc in copy.deepcopy(docs)
             if not (doc.get("kind") == "RoleBinding" and doc["metadata"]["name"] == f"{with_rbac}-leader")
         ]
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R11: removing the Lease binding did not fail"]
         broken = [
             doc
             for doc in copy.deepcopy(docs)
-            if not (doc.get("kind") == "ClusterRoleBinding" and doc["metadata"]["name"] == "vws-" + with_rbac)
+            if not (doc.get("kind") == "ClusterRoleBinding" and doc["metadata"]["name"] == f"{release}-{with_rbac}")
         ]
-        if not check(broken, values):
+        if not check(broken, values, release):
             return ["R11: removing the ClusterRoleBinding did not fail"]
 
     # A catalog with only one kind must still prove the other kind's check.
@@ -291,6 +291,7 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
             }
         ],
         {"services": {"probe": {}}},
+        release,
     )
     if not any("restartPolicy" in item or "livenessProbe" in item for item in synthetic):
         return ["R4: synthetic deployment did not fail the recovery check"]
@@ -298,12 +299,12 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: check_render.py RENDERED.yaml VALUES.yaml", file=sys.stderr)
+    if len(argv) != 4:
+        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE", file=sys.stderr)
         return 2
     docs = load_docs(Path(argv[1]).read_text())
     values = yaml.safe_load(Path(argv[2]).read_text())
-    errors = self_test(docs, values)
+    errors = self_test(docs, values, argv[3])
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0
