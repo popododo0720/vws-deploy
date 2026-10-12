@@ -24,12 +24,13 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | `spec.version` | 이미지 태그, 비면 차트 appVersion | `global.tag` |
 | `spec.storage.driver` | `rook-ceph`(기본), `existing` | `existing`이면 `global.storageClass`와 storage의 `kube-class-standard`, `kube-class-ssd` |
 | `spec.storage.storageClass` | `existing`일 때 필수, 아니면 금지 | 위와 같음 |
+| `spec.storage.s3.rgw.{enabled,endpoint,bucketPrefix,existingSecret}` | RGW 객체 백엔드(#108). `bucketPrefix`는 `^([a-z0-9][a-z0-9-]{0,17})?$`, `existingSecret`은 릴리스 네임스페이스의 Secret 이름(키 `access-key`, `secret-key`) | `services.storage.s3.rgw` 그대로. 없으면 객체 백엔드는 꺼진 채(기본 fake). `vws apply`가 RGW 설정을 지우지 않는다 |
 | `spec.network.driver` | `kube-ovn` 하나 | 바꾸는 값 없음 |
 | `spec.observability.otlpEndpoint` | 비어 있어야 한다 | 차트에 관측성 값이 아직 없어 값이 있으면 종료 코드 2 |
 | `spec.services.<이름>.{replicas,cpu,memory,flags}` | `charts/vws/values.yaml`에 있는 서비스만 | 같은 이름의 `services.<이름>` 키, `flags`는 합친다 |
 | `spec.secrets.<이름>.secretName` | Secret 이름 참조만 | 지금은 받는 values가 없어 비어 있어야 한다 |
 
-- 비밀 값 필드는 없다. 필드나 플래그 이름이 비밀처럼 보이면(`password`, `token`, `secret`, `credential`, `key` 등, `secrets`/`secretName` 제외) `vws render`가 거절하고 가드가 CRD 스키마에서 거절한다.
+- 비밀 값 필드는 없다. 필드나 플래그 이름이 비밀처럼 보이면(`password`, `token`, `secret`, `credential`, `key` 등, `secrets`/`secretName`/`existingSecret` 제외) `vws render`가 거절하고 가드가 CRD 스키마에서 거절한다.
 - `existing`의 VolumeSnapshotClass(`kube-snapshot-class`)는 바꾸지 않는다(확인 필요: 기존 StorageClass에 맞는 스냅숏 클래스를 CR에 둘지).
 
 ## 프로필
