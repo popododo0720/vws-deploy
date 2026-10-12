@@ -38,6 +38,10 @@ Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과
 
 두 이름은 번들이 만드는 이름과 일치해야 한다. `scripts/guard.sh bundle`이 `build/platform/31-rook-ceph-cluster.yaml`(`scripts/platform.sh`가 만든다)에서 두 이름이 각각 한 번씩 있고 provisioner와 driver가 같은지 보고, 이 문서에 같은 이름이 적혀 있는지 본다. 실제 클러스터에서 PVC 바인딩과 VolumeSnapshot 생성은 확인하지 않았다(확인 필요, T1 이상).
 
+## CDI 기능 게이트
+
+`platform/cdi-cr.yaml`은 `spec.config.featureGates`에 `HonorWaitForFirstConsumer`를 켠다. 이 게이트는 켜는 항목이고 CR에 없으면 꺼진다. 켜면 `WaitForFirstConsumer` StorageClass에서 CDI가 워커 파드를 VM이 스케줄될 때까지 만들지 않는다. 기본 Ceph 클래스는 `Immediate`라 이 게이트가 아무 일도 하지 않는다. 로컬 랩의 k3s 기본 클래스(`local-path`)는 `WaitForFirstConsumer`라 이때 의미가 있다. 게이트 이름과 필드 경로는 고정한 CDI의 소스, 문서, CRD로 확인했다. `scripts/guard.sh bundle`은 번들 CRD 스키마에 이 CR의 필드가 있는지 본다. 실제 클러스터에서 DataVolume이 동작하는지는 확인하지 않았다(확인 필요, T1 이상).
+
 ## 필요한 호스트 커널 모듈
 
 노드 OS가 제공해야 한다. 이 저장소의 코드는 호스트에 아무것도 설치하지 않는다.
