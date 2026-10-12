@@ -52,3 +52,15 @@ cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임�
 - 실제 RBAC 회수: finish 뒤 `kubectl auth can-i --as=system:serviceaccount:vws:vws-installer '*' '*'`가 `no`, 리퍼가 TTL에 실제로 지우는지(TTL을 짧게 바꿔서), 리퍼 파드 강제 삭제 뒤 시한 유지.
 - cluster-admin으로 번들과 차트가 끝까지 설치되는지, 운영 권한으로 `status`가 되는지(helm 릴리스는 Secret에 있어 운영 권한으로는 `helm list`가 안 된다; status/doctor는 사용자 자격으로 돌리는 것을 전제, #56에서 확인 필요).
 - 설치 이미지 빌드와 발행(지금 digest 0), 파드 안에서 helm이 `HOME=/tmp`로 도는지.
+
+## 설치 이미지 발행과 digest 고정 (#96)
+
+`.github/workflows/installer-image.yml`이 `bootstrap/Containerfile`을 빌드한다.
+
+- 풀 리퀘스트: 빌드만 한다. 권한은 `contents: read`이고 푸시하지 않는다.
+- main 푸시와 `v*` 태그 푸시: `publish` 잡만 `packages: write`를 받아 `ghcr.io/<owner>/vws/installer:sha-<커밋>`과 `:<브랜치 또는 태그>`로 푸시한다. 잡 요약에 `VWS_INSTALLER_IMAGE=...@sha256:...` 한 줄을 남긴다.
+- CI는 저장소에 커밋하지 않는다. digest 고정은 사람이 한다.
+  1. 발행된 실행의 잡 요약에서 `VWS_INSTALLER_IMAGE` 줄을 복사한다(또는 `crane digest ghcr.io/<owner>/vws/installer:<태그>`).
+  2. 새 브랜치에서 `scripts/versions.env`의 `VWS_INSTALLER_IMAGE`와 "NOT PUBLISHED YET" 주석을 바꾼다. 커밋 제목은 `ci: 설치 이미지 digest를 고정한다`.
+  3. `scripts/bootstrap.sh`로 `bootstrap/bootstrap.yaml`을 다시 만들어 별도 `cli:` 커밋으로 넣고 PR을 연다(`Closes #N`).
+- ghcr 패키지는 비공개로 만들어진다. 공개 여부와 클러스터의 pull 자격은 별도 결정이다(확인 필요).
