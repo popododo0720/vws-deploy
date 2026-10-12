@@ -107,19 +107,19 @@ services:
     rbac:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]
-      verbs: [create, delete]
+      verbs: [get, create, delete]
     - apiGroups: [kubeovn.io]
       resources: [security-groups]
       verbs: [get, create, update, delete]
     - apiGroups: [kubeovn.io]
       resources: [ovn-fips]
-      verbs: [list, create, delete]
+      verbs: [get, list, create, delete]
     - apiGroups: [kubeovn.io]
       resources: [vpc-nat-gateways]
       verbs: [get, create, delete]
     - namespace: nad
       apiGroups: [k8s.cni.cncf.io]
       resources: [network-attachment-definitions]
-      verbs: [create, delete]
+      verbs: [get, create, delete]
     state:
       size: 20Gi
