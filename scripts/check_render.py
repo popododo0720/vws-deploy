@@ -189,7 +189,33 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     for flag in REQUIRED_FLAGS.get(name, []):
         if flag not in (spec.get("flags") or {}):
             errors.append(f"R15: {name} needs the -{flag} flag to start")
+    # grpc.health.v1: liveness and startup ask the empty name (process up), readiness asks the
+    # service's aggregate name, so a cluster outage marks it unready instead of restarting it.
+    ready = spec.get("grpcReadinessService")
+    for kind in ("startupProbe", "livenessProbe", "readinessProbe"):
+        grpc = (container.get(kind) or {}).get("grpc")
+        if grpc is None or not ready:
+            continue
+        want = ready if kind == "readinessProbe" else None
+        if grpc.get("service") != want:
+            errors.append(f"R15: {name} {kind} grpc service is {grpc.get('service')!r}, want {want!r}")
+    for group, resource in READY_NEEDS_GET.get(name, []) if ready else []:
+        rules = [r for r in spec.get("rbac") or [] if "namespace" not in r and group in r["apiGroups"] and resource in r["resources"]]
+        if not any("get" in r["verbs"] for r in rules):
+            errors.append(f"R11: {name} readiness gets cluster-scoped {group}/{resource} but has no ClusterRole get on it")
+        if any(set(r["verbs"]) - {"get"} for r in rules):
+            errors.append(f"R11: {name} needs only get on {group}/{resource}")
     return errors
+
+
+# Cluster-scoped objects a service's readiness reads (vws-storage#39 internal/backend/kube/ready.go:20,29,33).
+READY_NEEDS_GET = {
+    "storage": [
+        ("", "namespaces"),
+        ("storage.k8s.io", "storageclasses"),
+        ("snapshot.storage.k8s.io", "volumesnapshotclasses"),
+    ]
+}
 
 
 def check_kubeconfig(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
@@ -558,6 +584,40 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][target]["flags"]["listen"] = "127.0.0.1:%d" % int(values["services"][target].get("port", 8080))
         if not check(docs, broken_values, release):
             return ["R15: a -listen on 127.0.0.1 did not fail"]
+    # gRPC health names and the readiness ClusterRole (vws-storage#39), when rendered.
+    for hname, hspec in values["services"].items():
+        ready = (hspec or {}).get("grpcReadinessService")
+        if not ready:
+            continue
+        rendered = [d for d in docs if d.get("kind") in ("Deployment", "StatefulSet") and d["metadata"]["name"] == hname]
+        if not rendered or "grpc" not in rendered[0]["spec"]["template"]["spec"]["containers"][0]["readinessProbe"]:
+            continue
+
+        def hmutate(change, hname=hname):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == hname:
+                    change(doc["spec"]["template"]["spec"]["containers"][0])
+            return broken
+
+        def no_ready_name(c):
+            c["readinessProbe"]["grpc"].pop("service", None)
+
+        def live_name(c, ready=ready):
+            c["livenessProbe"]["grpc"]["service"] = ready
+
+        for label, change in (("readiness without the Ready service name", no_ready_name),
+                              ("liveness asking the Ready service name", live_name)):
+            if not check(hmutate(change), values, release):
+                return [f"R15: {label} did not fail"]
+        for group, resource in READY_NEEDS_GET.get(hname, []):
+            for how in ("drop", "list"):
+                broken_values = copy.deepcopy(values)
+                for rule in broken_values["services"][hname]["rbac"]:
+                    if "namespace" not in rule and group in rule["apiGroups"] and resource in rule["resources"]:
+                        rule["verbs"] = ["list"] if how == "drop" else ["get", "list"]
+                if not check(docs, broken_values, release):
+                    return [f"R11: {hname} readiness rule on {resource} ({how}) did not fail"]
         broken_values = copy.deepcopy(values)
         broken_values["services"][target]["flags"]["listen"] = "0.0.0.0:9"
         if not check(docs, broken_values, release):

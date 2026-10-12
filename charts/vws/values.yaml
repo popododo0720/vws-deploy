@@ -80,7 +80,20 @@ services:
       kube-class-standard: ceph-block
       kube-class-ssd: ceph-block
       kube-snapshot-class: ceph-block
+    # gRPC readiness name of vws-storage#39 (internal/health ReadyService). Rendered only when
+    # global.pendingFlags is true, until images with grpc.health.v1 ship; then tcp probes otherwise.
+    grpcReadinessService: vws.storage.v1.Ready
     rbac:
+    # readiness gets these cluster-scoped objects (vws-storage#39 internal/backend/kube/ready.go).
+    - apiGroups: [""]
+      resources: [namespaces]
+      verbs: [get]
+    - apiGroups: [storage.k8s.io]
+      resources: [storageclasses]
+      verbs: [get]
+    - apiGroups: [snapshot.storage.k8s.io]
+      resources: [volumesnapshotclasses]
+      verbs: [get]
     - namespace: vms
       apiGroups: [""]
       resources: [persistentvolumeclaims]
