@@ -58,9 +58,13 @@ vws_cmd_main() {
   local bundle=${VWS_BUNDLE_DIR:-${VWS_ROOT}/build/platform}
   compgen -G "${bundle}/*.yaml" >/dev/null || vws_die_env "${bundle} has no bundle files; the installer image carries them (scripts/platform.sh)"
   for file in "${bundle}"/*.yaml; do
-    vws_kubectl apply --server-side --field-manager=vws -f - <"$file" >/dev/null || vws_die_env "applying $(basename "$file") failed"
+    # Bundle objects carry their own namespaces (kube-system, kubevirt, cdi, ...). Without -n, so
+    # kubectl does not refuse them against the release namespace; the same for the -A wait (vws-deploy#81).
+    # --force-conflicts: operators of the bundle (cdi-operator on its CRDs) take fields over after the
+    # first apply, so a second apply would conflict; the bundle file is the wanted state (vws-deploy#81).
+    VWS_NAMESPACE='' vws_kubectl apply --server-side --field-manager=vws --force-conflicts -f - <"$file" >/dev/null || vws_die_env "applying $(basename "$file") failed"
     vws_kubectl wait --for=condition=Established crd --all --timeout=300s >/dev/null || vws_die_env "CRDs not Established after $(basename "$file")"
-    vws_kubectl wait --for=condition=Available deployment --all -A --timeout=600s >/dev/null || vws_die_env "Deployments not Available after $(basename "$file")"
+    VWS_NAMESPACE='' vws_kubectl wait --for=condition=Available deployment --all -A --timeout=600s >/dev/null || vws_die_env "Deployments not Available after $(basename "$file")"
     vws_emit OK bundle "$(basename "$file")"
   done
 
