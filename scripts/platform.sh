@@ -32,6 +32,13 @@ helm template rook-ceph rook-ceph --repo https://charts.rook.io/release --versio
   --namespace rook-ceph -f platform/rook-ceph.values.yaml > "$out/30-rook-ceph-operator.yaml"
 helm template rook-ceph-cluster rook-ceph-cluster --repo https://charts.rook.io/release --version "$ROOK_VERSION" \
   --namespace rook-ceph -f platform/rook-ceph-cluster.values.yaml > "$out/31-rook-ceph-cluster.yaml"
+# Profile overlays of the Ceph cluster (profiles/*.yaml). Rendered beside the bundle, not part of it.
+mkdir -p build/platform-profiles
+for profile in single-node ha; do
+  helm template rook-ceph-cluster rook-ceph-cluster --repo https://charts.rook.io/release --version "$ROOK_VERSION" \
+    --namespace rook-ceph -f platform/rook-ceph-cluster.values.yaml -f "platform/rook-ceph-cluster.${profile}.values.yaml" \
+    > "build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml"
+done
 cp .cache/platform/kubevirt-operator.yaml "$out/40-kubevirt-operator.yaml"
 cp platform/kubevirt-cr.yaml "$out/41-kubevirt-cr.yaml"
 cp .cache/platform/cdi-operator.yaml "$out/42-cdi-operator.yaml"
@@ -40,3 +47,5 @@ cp platform/cdi-cr.yaml "$out/43-cdi-cr.yaml"
 # CRs of the bundle have no schema in the default catalog, so they are skipped by kind.
 kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version "$KUBERNETES_VERSION" \
   -cache .cache/kubeconform "$out"
+kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version "$KUBERNETES_VERSION" \
+  -cache .cache/kubeconform build/platform-profiles
