@@ -1,0 +1,47 @@
+# Common insider-risk workflow. Copy this file and scripts/guard-agents.sh as-is into another repo.
+# The repo is private on a free plan, so branch protection is unavailable. These checks replace it:
+# pull-request checks stop a bad merge, the push check only reports a commit that skipped review.
+name: repo-guard
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-hygiene:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Base is the main branch
+        env:
+          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_REF: ${{ github.base_ref }}
+        run: scripts/guard-agents.sh pr-base "$BASE_REF"
+      - name: Body closes an issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/guard-agents.sh pr-body
+      - name: AGENTS.md has the guardrails
+        run: scripts/guard-agents.sh agents
+
+  direct-push-watch:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit on main came from a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: scripts/guard-agents.sh push-watch "$BEFORE" "$AFTER"
