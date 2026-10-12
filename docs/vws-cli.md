@@ -146,7 +146,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 - apply가 실패하면 helm이 `--atomic`으로 릴리스를 되돌렸으므로, CR spec도 이전 값으로 다시 저장하고 1로 끝난다(CR과 릴리스가 어긋나지 않게). `vws reconfigure`와 같은 `lib/applyrun.sh`의 `vws_apply_spec`.
 - 출력에 항상 두 WARN: 백업 권고(`vws backup`(#61)이 아직 없어 최신성은 검사하지 못한다, etcd 스냅샷은 `docs/etcd-runbook.md`), 무중단 미주장(**vws-deploy#39가 닫히기 전에는 무중단을 주장하지 않는다**; 상태 서비스는 짧은 중단이 있다).
 - 무상태 서비스의 롤링 업데이트는 현재 차트 설정(RollingUpdate, PDB)을 그대로 쓴다. 플랫폼 번들 업그레이드는 범위 밖.
-- 업그레이드 뒤 `vws status`/`doctor` 판정(#43 5절 6단계)은 #56이 main에 들어온 뒤 붙인다(확인 필요).
+- 업그레이드 뒤 판정(#43 5절 6단계): apply가 성공하면 `vws doctor`(status 포함)를 돌려 그 줄을 `after-<검사>`로 합친다. FAIL이 있으면 1이고 다음 행동으로 `vws rollback --yes`를 알린다(자동 롤백은 하지 않는다). doctor가 판정하지 못하면(종료 코드 2/3) WARN.
 - `--dry-run`은 바뀔 값만 출력한다.
 
 ### vws rollback
