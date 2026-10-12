@@ -41,6 +41,15 @@ services:
     external: true
   console-api:
     external: true
+    # Image defaults are -backend=fake and 127.0.0.1 listeners (vws-console-api
+    # cmd/vws-console-api/main.go:40-50), so the default render served a fake cloud that the
+    # Service could not reach (#84). Backend addresses are the in-namespace Service names.
+    flags:
+      backend: grpc
+      console-addr: 0.0.0.0:8080
+      compute-addr: compute:50051
+      storage-addr: storage:7400
+      network-addr: network:8080
   compute:
     external: true
     # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
