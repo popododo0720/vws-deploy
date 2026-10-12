@@ -59,8 +59,9 @@ expect_line "HEALTH_ERR FAIL" FAIL ceph "HEALTH_ERR"
 
 scenario pending-flags
 edit_json kubectl/get_deployments,statefulsets.json '(.items[] | select(.metadata.name == "compute") | .spec.template.spec.containers[0].args) += ["-hypervisor=kubevirt"]'
-run_vws_real doctor;                          expect_rc "pendingFlags mismatch: WARN exits 0" 0
-expect_line "pendingFlags mismatch WARN" WARN pending-flags "compute runs with hypervisor"
+# #121: the compute KubeVirt flags are ordinary flags now, so running with them is not a mismatch.
+run_vws_real doctor;                          expect_rc "compute -hypervisor=kubevirt exits 0" 0
+expect_line "compute -hypervisor=kubevirt is not a pendingFlags mismatch" OK pending-flags "global.pendingFlags=false"
 
 scenario all-bad
 edit_json kubectl/get_pvc.json '.items[0].status.phase = "Pending"'
