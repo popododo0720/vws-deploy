@@ -19,11 +19,57 @@ ALLOWED_KINDS = {
     "Deployment",
     "StatefulSet",
     "PodDisruptionBudget",
+    "ClusterRole",
+    "ClusterRoleBinding",
+    "Role",
+    "RoleBinding",
 }
 
 
 def load_docs(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc]
+
+
+def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict) -> list[str]:
+    errors: list[str] = []
+    want = "vws-" + name
+    cluster_role = by_kind.get("ClusterRole", {}).get(want)
+    binding = by_kind.get("ClusterRoleBinding", {}).get(want)
+    lease_role = by_kind.get("Role", {}).get(f"{name}-leader")
+    lease_binding = by_kind.get("RoleBinding", {}).get(f"{name}-leader")
+    mounted = pod.get("automountServiceAccountToken")
+    if "rbac" not in spec:
+        if mounted is not False:
+            errors.append(f"R11: {name} has no rbac and must not mount an API token")
+        if any(obj is not None for obj in (cluster_role, binding, lease_role, lease_binding)):
+            errors.append(f"R11: {name} has no rbac but renders RBAC objects")
+        return errors
+    if mounted is not True:
+        errors.append(f"R11: {name} has rbac and needs an API token")
+    for kind, obj in (
+        ("ClusterRole", cluster_role),
+        ("ClusterRoleBinding", binding),
+        ("Role", lease_role),
+        ("RoleBinding", lease_binding),
+    ):
+        if obj is None:
+            errors.append(f"R11: missing {kind} for {name}")
+    for obj in (cluster_role, lease_role):
+        for rule in (obj or {}).get("rules") or []:
+            for field in ("apiGroups", "resources", "verbs", "resourceNames"):
+                if any("*" in item for item in rule.get(field) or []):
+                    errors.append(f"R11: {name} has a wildcard in {field}")
+    if cluster_role is not None and cluster_role.get("rules") != spec["rbac"]:
+        errors.append(f"R11: ClusterRole {want} does not match values")
+    if lease_role is not None:
+        leases = [r for r in lease_role["rules"] if r.get("resourceNames") == [name]]
+        if not leases or not set(leases[0]["verbs"]) >= {"get", "update"}:
+            errors.append(f"R11: {name} lacks get and update on its own Lease")
+    for obj in (binding, lease_binding):
+        subjects = (obj or {}).get("subjects") or []
+        if [s.get("name") for s in subjects] != [name]:
+            errors.append(f"R11: {name} binding must name only its own ServiceAccount")
+    return errors
 
 
 def check(docs: list[dict], values: dict) -> list[str]:
@@ -33,7 +79,7 @@ def check(docs: list[dict], values: dict) -> list[str]:
         kind = doc.get("kind")
         name = doc.get("metadata", {}).get("name")
         if kind not in ALLOWED_KINDS:
-            errors.append(f"R3: kind {kind} is not a control-plane object")
+            errors.append(f"R10: kind {kind} is not a control-plane object")
             continue
         if name in by_kind.get(kind, {}):
             errors.append(f"R5: duplicate {kind} {name}")
@@ -41,10 +87,10 @@ def check(docs: list[dict], values: dict) -> list[str]:
         by_kind.setdefault(kind, {})[name] = doc
         pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
         if pod.get("hostNetwork") or pod.get("hostPID") or pod.get("hostIPC"):
-            errors.append(f"R3: {kind}/{name} joins the host namespace")
+            errors.append(f"R10: {kind}/{name} joins the host namespace")
         for volume in pod.get("volumes") or []:
             if "hostPath" in volume:
-                errors.append(f"R3: {kind}/{name} mounts a host path")
+                errors.append(f"R10: {kind}/{name} mounts a host path")
 
     for name, spec in values["services"].items():
         spec = spec or {}
@@ -96,6 +142,7 @@ def check(docs: list[dict], values: dict) -> list[str]:
             want = "LoadBalancer" if spec.get("external") else "ClusterIP"
             if (service.get("spec") or {}).get("type") != want:
                 errors.append(f"R4: Service {name} type is not {want}")
+        errors.extend(check_rbac(name, spec, by_kind, pod))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -167,7 +214,7 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
         broken = copy.deepcopy(docs)
         _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
         if not check(broken, values):
-            return ["R3: hostNetwork did not fail"]
+            return ["R10: hostNetwork did not fail"]
 
     stateful_doc = _first(docs, "StatefulSet")
     if stateful_doc is not None:
@@ -200,6 +247,31 @@ def self_test(docs: list[dict], values: dict) -> list[str]:
         broken_values["services"][stateful]["state"] = None
         if not check(docs, broken_values):
             return ["R4: null state did not fail"]
+
+    with_rbac = next(
+        (name for name, spec in values["services"].items() if "rbac" in (spec or {})), None
+    )
+    if with_rbac is not None:
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") == "ClusterRole" and doc["metadata"]["name"] == "vws-" + with_rbac:
+                doc["rules"][0]["resources"] = ["*"]
+        if not check(broken, values):
+            return ["R11: a wildcard resource did not fail"]
+        broken = [
+            doc
+            for doc in copy.deepcopy(docs)
+            if not (doc.get("kind") == "RoleBinding" and doc["metadata"]["name"] == f"{with_rbac}-leader")
+        ]
+        if not check(broken, values):
+            return ["R11: removing the Lease binding did not fail"]
+        broken = [
+            doc
+            for doc in copy.deepcopy(docs)
+            if not (doc.get("kind") == "ClusterRoleBinding" and doc["metadata"]["name"] == "vws-" + with_rbac)
+        ]
+        if not check(broken, values):
+            return ["R11: removing the ClusterRoleBinding did not fail"]
 
     # A catalog with only one kind must still prove the other kind's check.
     synthetic = check(

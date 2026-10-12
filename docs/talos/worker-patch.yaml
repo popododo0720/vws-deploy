@@ -1,0 +1,7 @@
+# 예시. 클러스터에 적용하지 않았고 값은 T2 랩에서 확인해야 한다(미검증).
+machine:
+  kernel:
+    modules:
+      - name: openvswitch
+      - name: geneve
+      - name: rbd

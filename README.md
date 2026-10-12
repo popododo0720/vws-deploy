@@ -1,6 +1,6 @@
 # vws-deploy
 
-VWS 프라이빗 클라우드의 배포 저장소다. 제어부만 Kubernetes에 올리고, 하이퍼바이저 노드 에이전트는 호스트의 systemd로 띄운다. 이 저장소는 클러스터에 적용하지 않는다.
+VWS 프라이빗 클라우드의 배포 저장소다. Kubernetes 안에서 도는 제어부와 플랫폼 번들만 다룬다. 호스트에 우리가 설치하는 프로세스는 없다. 설계는 https://github.com/popododo0720/vws-deploy/issues/2 다. 이 저장소는 클러스터에 적용하지 않는다.
 
 ## 제어부
 
@@ -24,18 +24,22 @@ helm template vws charts/vws --namespace vws
 
 이미지는 `<global.registry>/<서비스>:<Chart.appVersion>`이다. 외부로 열 `external: true`인 서비스는 LoadBalancer가 된다. 상태 있는 워크로드는 기동 순서를 기다리지 않고 같이 올라와서, 전원 복구 때 순번 대기로 멈추지 않는다.
 
-차트는 아이콘을 두지 않는다. `helm lint`가 아이콘을 권장한다고 알려도 로고 파일은 추가하지 않는다.
+컨트롤러가 쿠버네티스 API를 쓰는 서비스는 `rbac` 규칙 목록을 가진다. 차트는 그 규칙으로 ClusterRole과 바인딩을 만들고, 자기 이름의 Lease만 쓰는 Role을 더해 리더 선출을 허용한다. `rbac`가 없는 서비스는 API 토큰을 마운트하지 않는다. 와일드카드와 `escalate`, `bind` 같은 동사는 스키마가 거절한다.
 
-## 하이퍼바이저 에이전트
-
-에이전트 목록은 `host/agents/` 아래 디렉터리 이름이다. 유닛 파일은 `host/systemd/vws-agent@.service` 하나다. 디렉터리 안의 `deps.conf`는 `[Unit]` 순서만 적을 수 있다.
-
-```bash
-host/install.sh --dry-run
-sudo host/install.sh --control-plane https://compute.example.test --bundle /srv/vws-agents
+```yaml
+services:
+  compute:
+    rbac:
+      - apiGroups: [kubevirt.io]
+        resources: [virtualmachines]
+        verbs: [get, list, watch, create, update, patch, delete]
 ```
 
-바이너리 이름은 `vws-agent-<디렉터리>`다. 프로세스가 죽으면 systemd가 다시 띄우고, 부팅 때는 `vws-agents.target`이 붙는다. 에이전트 상태는 `/var/lib/vws/<디렉터리>`에 남는다. 인자로 에이전트 이름을 넘기는 설치 방법은 없다.
+차트는 아이콘을 두지 않는다. `helm lint`가 아이콘을 권장한다고 알려도 로고 파일은 추가하지 않는다.
+
+## 로컬 랩
+
+`scripts/lab/`은 k3s, KubeVirt, CDI를 올리는 일회용 T1 랩이다. 이 저장소에서 클러스터에 적용하는 유일한 경로다. 순서는 `k3s-up.sh`, `virt-up.sh`, `vm-test.sh`, `down.sh`다. `/dev/kvm`이 없으면 `kvm-check.sh`가 `emulation`을 돌려주고 KubeVirt는 `useEmulation`으로 뜬다. `LAB_DRY_RUN=1`이면 상태를 바꾸는 명령을 실행하지 않고 출력만 한다. **미검증**. 박스 RAM이 모자라 실제 클러스터에서 돌려 보지 않았다.
 
 ## 검사
 

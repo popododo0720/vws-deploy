@@ -2,6 +2,7 @@
 One bundle per key in the services map: ServiceAccount, Service, workload, PDB.
 state present -> StatefulSet, one retained volume, headless peers Service.
 state absent -> Deployment, at least two replicas.
+rbac present -> API token, a ClusterRole from the listed rules, and a Lease Role for leader election.
 Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 */}}
 {{- range $name := keys .Values.services | sortAlpha }}
@@ -16,7 +17,8 @@ Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 {{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
 {{- $image := printf "%s/%s:%s" $.Values.global.registry $name $.Chart.AppVersion }}
-{{- $ctx := dict "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $rbac := hasKey $spec "rbac" }}
+{{- $ctx := dict "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -25,7 +27,7 @@ metadata:
   namespace: {{ $.Release.Namespace }}
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
-automountServiceAccountToken: false
+automountServiceAccountToken: {{ $rbac }}
 ---
 apiVersion: v1
 kind: Service
@@ -133,4 +135,62 @@ spec:
   selector:
     matchLabels:
       {{- include "vws.selector" $ctx | nindent 6 }}
+{{- if $rbac }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+rules:
+  {{- toYaml $spec.rbac | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Release.Name }}-{{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-leader
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: [{{ $name | quote }}]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-leader
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-leader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 {{- end }}

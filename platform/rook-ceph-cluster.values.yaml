@@ -1,0 +1,8 @@
+operatorNamespace: rook-ceph
+toolbox:
+  enabled: true
+cephFileSystems: []
+cephFileSystemVolumeSnapshotClass:
+  enabled: false
+cephBlockPoolsVolumeSnapshotClass:
+  enabled: true
