@@ -21,6 +21,22 @@ kc() {
   run sudo k3s kubectl "$@"
 }
 
+# retry TRIES SECONDS cmd...: run cmd until it succeeds. A dry run prints it once.
+retry() {
+  local tries=$1 delay=$2 i
+  shift 2
+  if [[ ${LAB_DRY_RUN:-0} == 1 ]]; then
+    "$@"
+    return
+  fi
+  for ((i = 1; i <= tries; i++)); do
+    "$@" && return 0
+    sleep "$delay"
+  done
+  echo "gave up after ${tries} tries: $*" >&2
+  return 1
+}
+
 fetch() {
   local url=$1 sha=$2 file=$3
   if [[ -f $file ]] && echo "${sha}  ${file}" | sha256sum -c --status -; then

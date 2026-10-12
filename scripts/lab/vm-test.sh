@@ -26,12 +26,19 @@ spec:
       volumes:
         - name: root
           containerDisk:
-            image: quay.io/kubevirt/cirros-container-disk-demo:${KUBEVIRT_VERSION}
+            image: ${LAB_VM_IMAGE}
 YAML
 
+# virt-controller creates the VMI after the apply, and kubectl wait fails at once on a missing object.
+wait_running() {
+  retry 60 5 kc get vmi lab-vm -o name
+  kc wait vmi lab-vm --for=jsonpath='{.status.phase}'=Running --timeout=600s
+}
+
 kc apply -f "$LAB_CACHE/lab-vm.yaml"
-kc wait vmi lab-vm --for=jsonpath='{.status.phase}'=Running --timeout=600s
+wait_running
 run sudo systemctl restart k3s
+retry 60 5 kc get --raw /readyz
 kc wait --for=condition=Ready node --all --timeout=180s
-kc wait vmi lab-vm --for=jsonpath='{.status.phase}'=Running --timeout=600s
+wait_running
 echo "lab-vm is Running after the k3s restart"
