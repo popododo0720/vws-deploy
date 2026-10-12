@@ -35,6 +35,7 @@ services:
 | storage | `block-backend: kube` | `-block-backend=kube` | `fake`가 코드 기본 | `cmd/vws-storage/main.go:44` |
 | storage | `kube-namespace: {namespace: vms}` | `-kube-namespace=<vms>` | PVC와 스냅샷이 같이 쓴다 | `main.go:47` |
 | storage | `kube-class-standard`, `kube-class-ssd`, `kube-snapshot-class` | 같은 이름 | 모두 `ceph-block` | `main.go:48-50` |
+| storage | `db: /var/lib/vws/storage.db` | `-db=<경로>` | 비면 메모리 SQLite라 재시작에 상태를 잃는다(#85). `scripts/check_render.py`가 필수로 검사 | vws-storage README `-db` |
 | storage | (넘기지 않음) `kube-config` | `-kube-config` | 비면 인클러스터 자격 | `main.go:46` |
 | compute | `namespace: {namespace: release}` | `-namespace=<릴리스 네임스페이스>` | ConfigMap 저장소. 비면 메모리 저장소 | `cmd/vws-compute/main.go:34` |
 | compute | `pendingFlags.hypervisor: kubevirt` | `-hypervisor=kubevirt` | vws-compute#23에서 들어옴 | main에 없음 |
