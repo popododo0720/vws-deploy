@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# summary: check the cluster before an install (read only)
+# Sourced by scripts/vws. Usage: vws preflight --profile single-node|small|ha
+# Exit 1 on any FAIL (or WARN with --strict), 3 when the cluster cannot be evaluated.
+# shellcheck disable=SC2034 # read by scripts/vws
+VWS_NEED=(jq python3 kubectl helm)
+# shellcheck source=scripts/vws.d/lib/checks.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/checks.sh"
+
+vws_cmd_main() {
+  local profile=''
+  while (($#)); do
+    case $1 in
+      --profile) (($# >= 2)) || vws_usage "--profile needs a value"; profile=$2; shift 2 ;;
+      --profile=*) profile=${1#*=}; shift ;;
+      *) vws_usage "usage: vws preflight --profile single-node|small|ha" ;;
+    esac
+  done
+  [[ -n $profile ]] || vws_usage "usage: vws preflight --profile single-node|small|ha"
+  [[ -n ${VWS_PROFILE_MIN_NODES[$profile]:-} ]] || vws_usage "unknown profile ${profile}"
+  vws_check_tools
+  vws_check_api
+  vws_check_k8s_minor
+  vws_check_install_rights
+  vws_check_nodes "$profile"
+  vws_check_storage preflight
+  vws_check_crds preflight
+  vws_check_kernel_indirect preflight
+  vws_check_release
+  vws_check_source
+}
