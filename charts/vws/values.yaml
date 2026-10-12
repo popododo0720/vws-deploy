@@ -101,8 +101,8 @@ services:
     # Object backend (#90). enabled -> -object-backend=s3 -s3-profile=rgw -s3-endpoint=<endpoint>, and
     # env VWS_S3_ACCESS_KEY / VWS_S3_SECRET_KEY from secretKeyRef of existingSecret (keys access-key,
     # secret-key) in the release namespace. The operator makes that Secret; no key is ever in values.
-    # bucketPrefix renders -s3-bucket-prefix only when global.pendingFlags is true (vws-storage has no
-    # such flag yet). The render fails when enabled with an empty endpoint or existingSecret.
+    # bucketPrefix renders -s3-bucket-prefix=<prefix> (vws-storage#46): buckets are <prefix>-vws-<hash>.
+    # The render fails when enabled with an empty endpoint or existingSecret.
     s3:
       rgw:
         enabled: false
