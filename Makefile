@@ -9,13 +9,14 @@ RELEASE := vws
 NAMESPACE := vws
 export VWS_RELEASE := $(RELEASE)
 
-.PHONY: check tools hooks lint render conform platform guard vws-test
+.PHONY: check tools hooks lint render conform crd platform guard vws-test
 
 check:
 	$(MAKE) tools
 	$(MAKE) hooks
 	$(MAKE) lint
 	$(MAKE) conform
+	$(MAKE) crd
 	$(MAKE) platform
 	$(MAKE) guard
 
@@ -36,6 +37,10 @@ render:
 conform: render
 	mkdir -p .cache/kubeconform
 	kubeconform -strict -summary -kubernetes-version $(KUBERNETES_VERSION) -cache .cache/kubeconform build/vws.yaml
+
+# CRDs against a real kube-apiserver (envtest, ENVTEST_VERSION): apiserver-only rules like uniqueItems (#210).
+crd:
+	scripts/crd-check.sh
 
 platform:
 	scripts/platform.sh

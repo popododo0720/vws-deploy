@@ -144,7 +144,7 @@ PY
 # vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
 r8_scan() {
   grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
-    --exclude-dir=lab "$@"
+    --exclude-dir=lab --exclude=crd-check.sh "$@"
 }
 
 cmd_ci() {

@@ -11,7 +11,7 @@
 | R4 | 제어부 워크로드는 startup, liveness, readiness, PodDisruptionBudget, restartPolicy Always를 갖고, state가 있으면 재시작 뒤에도 남는 볼륨을 갖는다 | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
 | R5 | 제어 서비스를 추가하거나 고치는 곳은 values.yaml의 services 맵 하나다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
 | R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
-| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`과, 정확히 `vws_kubectl`, `vws_helm`이라는 이름의 래퍼(`--dry-run` 지원)로 부르는 운영 CLI 호출뿐이다. 다른 접두어나 접미어(`foo_kubectl`, `xhelm`, `my-helm`, `foo_vws_kubectl`, `Vws_helm`)는 직접 호출과 같이 실패한다 | `.github/workflows/ci.yml` `tests/fixtures/r8/` | `scripts/guard.sh ci` (음성 `tests/fixtures/r8/bad/`, 양성 `tests/fixtures/r8/good/`) |
+| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`, 일회용 envtest kube-apiserver에만 `--dry-run=server`로 CRD를 보내는 `scripts/crd-check.sh`(#210), 정확히 `vws_kubectl`, `vws_helm`이라는 이름의 래퍼(`--dry-run` 지원)로 부르는 운영 CLI 호출뿐이다. 다른 접두어나 접미어(`foo_kubectl`, `xhelm`, `my-helm`, `foo_vws_kubectl`, `Vws_helm`)는 직접 호출과 같이 실패한다 | `.github/workflows/ci.yml` `tests/fixtures/r8/` | `scripts/guard.sh ci` (음성 `tests/fixtures/r8/bad/`, 양성 `tests/fixtures/r8/good/`) |
 | R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
 | R10 | 호스트에 우리 유닛을 두지 않는다. 저장소에 `.service`, `.target` 파일과 `host/`가 없고, 차트는 호스트 네임스페이스나 hostPath를 쓰지 않는다 | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
 | R11 | 제어 서비스의 쿠버네티스 API 권한은 values.yaml의 서비스별 `rbac`뿐이다. 와일드카드와 escalate, bind 같은 동사를 쓰지 않는다. 네임스페이스 리소스의 규칙에는 `namespace`를 적어 그 네임스페이스의 Role로만 주고, ClusterRole에는 클러스터 범위 리소스만 둔다. 리더 선출용 Lease는 자기 이름의 것만 쓴다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh recovery` |
@@ -77,5 +77,5 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 
 지원하는 진입점은 두 개다.
 
-- `make check` — helm lint, kubeconform, 플랫폼 번들 렌더 검사, 이 파일의 검사
+- `make check` — helm lint, kubeconform, envtest kube-apiserver의 CRD 검사(`make crd`), 플랫폼 번들 렌더 검사, 이 파일의 검사
 - `helm template vws charts/vws --namespace vws` — 적용하지 않고 매니페스트를 본다
