@@ -142,6 +142,8 @@ expect_text "the CRD step is reported" "$OUT" "OK    crd"
 crd_line=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
 cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
 if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRD is applied before the CR is read"; else bad "CRD apply before CR read" "$(calls)"; fi
-if sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -q '^kind: CustomResourceDefinition'; then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+# grep -c reads to the end: grep -q would close the pipe early and, under pipefail, fail on sed's SIGPIPE
+# once the CRD outgrows the pipe buffer.
+if (( $(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -c '^kind: CustomResourceDefinition') > 0 )); then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 
 finish_tests
