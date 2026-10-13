@@ -25,6 +25,7 @@
 | --- | --- | --- | --- |
 | `Get`, `Create`, `Update`(확장), `Delete` | persistentvolumeclaims | get, create, update, delete | `-kube-namespace` 하나. 값에서는 VM 네임스페이스(`namespaces.vms`)와 같다 |
 | `Get`, `Create`, `Delete` | `snapshot.storage.k8s.io` volumesnapshots | get, create, delete | 같은 네임스페이스(`namespaces.vms`) |
+| `Create`, `Get`, `List`, `Delete`(`-kube-volume-mode=Filesystem`, vws-storage#73 `datavolume.go`) | `cdi.kubevirt.io` datavolumes | get, list, create, delete | 같은 네임스페이스. `spec.storage.driver: nfs`나 `existing` + `volumeMode: Filesystem`일 때만 `vws render`가 넣는다 |
 | `List`(관리 VM, `vws.io/managed=true`) | `kubevirt.io` virtualmachines | list | 같은 네임스페이스(`namespaces.vms`) |
 
 - 모든 호출이 `b.ns` 한 곳을 가리킨다. 그래서 다른 네임스페이스의 PVC는 지울 수 없다.
