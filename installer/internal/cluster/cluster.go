@@ -12,9 +12,14 @@ type NIC struct {
 
 // Node is one cluster node as the wizard shows it.
 type Node struct {
-	Name   string            `json:"name"`
-	Labels map[string]string `json:"labels,omitempty"`
-	NICs   []NIC             `json:"nics,omitempty"`
+	Name        string            `json:"name"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Ready       bool              `json:"ready"`
+	InternalIPs []string          `json:"internalIPs,omitempty"`
+	// NICs come from a links file (talosctl get links), never from the host (R10). NICsKnown is
+	// false when no links file names this node: preflight reports the NIC checks as unknown.
+	NICs      []NIC `json:"nics,omitempty"`
+	NICsKnown bool  `json:"nicsKnown"`
 }
 
 // Result is what a finished install hands to GET /result.

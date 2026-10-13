@@ -31,6 +31,7 @@ import (
 
 	"github.com/popododo0720/vws-deploy/installer/internal/api"
 	"github.com/popododo0720/vws-deploy/installer/internal/cluster"
+	"github.com/popododo0720/vws-deploy/installer/internal/preflight"
 )
 
 func main() {
@@ -46,6 +47,7 @@ func run(args []string) error {
 	dir := fs.String("state-dir", "/tmp/vws-installer", "directory for the access code, the fingerprint and the CR file")
 	kubectl := fs.String("kubectl", "kubectl", "kubectl binary")
 	vws := fs.String("vws", "vws", "vws CLI binary")
+	links := fs.String("links", "", "optional talosctl get links -o json file for the NIC checks (#128, #143)")
 	apiVersion := fs.String("api-version", "", "VWSCluster apiVersion (group/version from the CRD); required")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -76,9 +78,11 @@ func run(args []string) error {
 	if err := writeSecretFile(filepath.Join(*dir, "fingerprint"), fingerprint); err != nil {
 		return err
 	}
+	cl := cluster.VWS{Kubectl: *kubectl, VWS: *vws, WorkDir: *dir, Links: *links}
 	srv := api.New(api.Config{
 		Auth:       auth,
-		Cluster:    cluster.VWS{Kubectl: *kubectl, VWS: *vws, WorkDir: *dir},
+		Cluster:    cl,
+		Preflight:  preflight.Engine{StorageClasses: cl.StorageClasses}.Run,
 		Context:    ctx,
 		APIVersion: *apiVersion,
 	})
