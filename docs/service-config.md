@@ -44,14 +44,14 @@ services:
 | compute | `storage: storage:7400` | `-storage=storage:7400` | 비면 CreateInstance가 DEPENDENCY_MISSING(#121) | 같은 곳 |
 | 세 서비스 | `listen: 0.0.0.0:<port>` | `-listen=0.0.0.0:<port>` | 코드 기본은 `127.0.0.1`. `port` 키와 같아야 한다 | compute `main.go:33`, storage `main.go:40`, network `main.go:22` |
 | console-api | `backend: grpc`, `console-addr: 0.0.0.0:8080`, `compute-addr`/`storage-addr`/`network-addr: <서비스>:<port>` | 같은 이름 | 코드 기본은 `fake`와 `127.0.0.1`(#84). EC2(`-ec2-addr`)와 S3(`-s3-addr`)는 아직 127.0.0.1이고 Service 포트가 없다. 자격 증명 플래그도 넘기지 않아 개발용 기본값이다(확인 필요, #84) | vws-console-api `cmd/vws-console-api/main.go:40-50` |
-| network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`의 기본값은 자리표시자 | `main.go:23-24,33-34` |
+| network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`은 기본값이 없다(#148) | `main.go:23-24,33-34` |
 | network | (기본 없음) `kubeconfig`와 `kubeconfigSecret` | `-kubeconfig=<경로>`, Secret 볼륨 | 있으면 Kube-OVN 데이터플레인, 없으면 fake | `cmd/vws-network/main.go:25` |
 | network | `kube-external-subnet` | `-kube-external-subnet=<이름>` | `-kubeconfig`와 함께 필수 | `main.go:26` |
 | network | `kube-nad-namespace: {namespace: nad}` | `-kube-nad-namespace=<nad>` | `-kubeconfig`만 있으면 `vws-system`이라 차트는 항상 넘긴다 | `main.go:27,30-31` |
 | network | `kube-snat` | `-kube-snat=true` | 꺼짐. 외부 서브넷 필요 | `main.go:28` |
 
 - 스키마가 `kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`를, `kube-snat`이 있으면 `kube-external-subnet`을 요구한다(vws-deploy#30). 빠진 값으로 렌더하면 거절된다.
-- network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)와 `pool: 192.0.2.0/24`를 넘긴다. **`pool`은 문서용 대역(RFC 5737)의 자리표시자이므로 사이트마다 바꿔야 한다(확인 필요: 실제 엘라스틱 IP 대역).** Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`와 함께 kubeconfig를 담은 Secret의 이름 `kubeconfigSecret`을 넣는다. 차트는 그 Secret을 `flags.kubeconfig` 경로의 디렉터리에 읽기 전용으로 마운트한다(아래 "network kubeconfig"). `scripts/guard.sh config`가 이 형태를 시험한다.
+- network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)만 넘긴다. `pool`(엘라스틱 IP 대역)은 기본값이 없고 사이트마다 CR의 `spec.services.network.flags.pool`로 준다. 없거나 RFC 5737 문서 대역이면 `vws render`가 종료 코드 2로 거절한다(#148). 레포 검사는 `charts/vws/ci/site.yaml`의 검사용 대역을 쓴다. Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`와 함께 kubeconfig를 담은 Secret의 이름 `kubeconfigSecret`을 넣는다. 차트는 그 Secret을 `flags.kubeconfig` 경로의 디렉터리에 읽기 전용으로 마운트한다(아래 "network kubeconfig"). `scripts/guard.sh config`가 이 형태를 시험한다.
 - compute의 `-nad-namespace`(`VWS_NAD_NAMESPACE`, 기본 `vws-nad`)는 예약뿐이고 NAD를 쓰는 코드가 없어 넘기지 않는다.
 
 ## 포트와 프로브 (vws-deploy#39)
