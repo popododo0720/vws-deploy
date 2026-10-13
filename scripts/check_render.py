@@ -828,13 +828,13 @@ def deep_merge(base: dict, over: dict) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) not in (4, 5):
-        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE [OVERRIDE.yaml]", file=sys.stderr)
+    if len(argv) < 4:
+        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE [OVERRIDE.yaml...]", file=sys.stderr)
         return 2
     docs = load_docs(Path(argv[1]).read_text())
     values = yaml.safe_load(Path(argv[2]).read_text())
-    if len(argv) == 5:
-        values = deep_merge(values, yaml.safe_load(Path(argv[4]).read_text()))
+    for override in argv[4:]:
+        values = deep_merge(values, yaml.safe_load(Path(override).read_text()))
     errors = self_test(docs, values, argv[3])
     for error in errors:
         print(error, file=sys.stderr)
