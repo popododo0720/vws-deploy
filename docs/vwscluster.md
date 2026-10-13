@@ -26,6 +26,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | `spec.storage.storageClass` | `existing`일 때 필수, 아니면 금지 | 위와 같음 |
 | `spec.storage.s3.rgw.{enabled,endpoint,bucketPrefix,existingSecret}` | RGW 객체 백엔드(#108). `bucketPrefix`는 `^([a-z0-9][a-z0-9-]{0,17})?$`, `existingSecret`은 릴리스 네임스페이스의 Secret 이름(키 `access-key`, `secret-key`) | `services.storage.s3.rgw` 그대로. 없으면 객체 백엔드는 꺼진 채(기본 fake). `vws apply`가 RGW 설정을 지우지 않는다 |
 | `spec.network.driver` | `kube-ovn` 하나 | 바꾸는 값 없음 |
+| `spec.network.nodes`, `spec.network.direct` | 노드 NIC별 망과 direct provider network. 규칙과 예는 `docs/node-network.md`(#125) | Kube-OVN, Ceph 번들 설정과 `services.network.flags` |
 | `spec.observability.otlpEndpoint` | 비어 있어야 한다 | 차트에 관측성 값이 아직 없어 값이 있으면 종료 코드 2 |
 | `spec.services.<이름>.{replicas,cpu,memory,flags}` | `charts/vws/values.yaml`에 있는 서비스만 | 같은 이름의 `services.<이름>` 키, `flags`는 합친다 |
 | `spec.secrets.<이름>.secretName` | Secret 이름 참조만 | 지금은 받는 values가 없어 비어 있어야 한다 |
