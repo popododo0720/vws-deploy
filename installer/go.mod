@@ -1,6 +1,6 @@
 module github.com/popododo0720/vws-deploy/installer
 
-go 1.26.0
+go 1.26.9
 
 toolchain go1.26.9
 
