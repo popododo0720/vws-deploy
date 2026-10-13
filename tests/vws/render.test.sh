@@ -124,13 +124,12 @@ args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[
 expect_text "kube-ovn-cni uses the tunnel VLAN interface" "$args" "--iface=enp2s0.20 --mtu=8900 --network-type=geneve"
 ceph=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["spec"]["network"], sort_keys=True))' "${WORK}/pout/31-rook-ceph-cluster.yaml")
 expect_text "Ceph gets the public and cluster networks" "$ceph" '{"addressRanges": {"cluster": ["10.31.0.0/24"], "public": ["10.30.0.0/24"]}, "connections": {"requireMsgr2": true}, "provider": "host"}'
-gw=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1])), sort_keys=True))' "${WORK}/pout/21-ovn-external-gw-config.yaml")
-expect_text "the external gateway uses the vws-external Subnet" "$gw" '{"apiVersion": "v1", "data": {"enable-external-gw": "true", "external-gw-nic": "enp4s0", "external-gw-switch": "vws-external", "type": "distributed"}, "kind": "ConfigMap", "metadata": {"name": "ovn-external-gw-config", "namespace": "kube-system"}}'
+if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]]; then ok "external writes no ovn-external-gw-config (#164)"; else bad "gw config" "$(cat "${WORK}/pout/21-ovn-external-gw-config.yaml")"; fi
 platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct")'
 run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
 expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
-if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]] && cmp -s "$PLATFORM_BUNDLE/31-rook-ceph-cluster.yaml" "${WORK}/pout/31-rook-ceph-cluster.yaml"; then ok "no external gateway and no Ceph network without them"; else bad "optional parts" "$(ls "${WORK}/pout")"; fi
+if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]] && cmp -s "$PLATFORM_BUNDLE/31-rook-ceph-cluster.yaml" "${WORK}/pout/31-rook-ceph-cluster.yaml"; then ok "no Ceph network without storage"; else bad "optional parts" "$(ls "${WORK}/pout")"; fi
 mkdir -p "${WORK}/oldovn" && sed 's/--iface=$/--iface=eth9/' "$PLATFORM_BUNDLE/20-kube-ovn.yaml" >"${WORK}/oldovn/20-kube-ovn.yaml"
 platform_cr pass
 run_platform "${WORK}/oldovn"

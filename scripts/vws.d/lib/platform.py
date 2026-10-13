@@ -5,8 +5,8 @@ A pure function of the CR and the rendered bundle (build/platform). Without spec
 is a byte copy of BUNDLE. With it:
 - kube-ovn-cni gets --iface=<tunnel interface> and --mtu=<tunnel mtu - 100> (geneve overhead);
 - the CephCluster gets network.provider host and addressRanges.public/cluster;
-- with nodes.external, 21-ovn-external-gw-config.yaml turns on the OVN external gateway over the
-  underlay Subnet that vws-network creates (external-gw-switch, vws-network docs/underlay.md).
+No ovn-external-gw-config: it would delete the underlay bridge and wants a Subnet named external
+(vws-deploy#164). Gateway node labels belong to vws-network.
 Exit 2 when the CR or the bundle does not fit.
 """
 import shutil
@@ -16,10 +16,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import GENEVE_OVERHEAD, EXTERNAL_SUBNET, Invalid, host_interface  # noqa: E402
-
-GW_CONFIG = "21-ovn-external-gw-config.yaml"
-
+from render import GENEVE_OVERHEAD, Invalid, host_interface  # noqa: E402
 
 def patch_kube_ovn(text, iface, mtu):
     old = "          - --iface=\n"
@@ -44,20 +41,6 @@ def patch_ceph(text, storage):
     return yaml.safe_dump_all(docs, sort_keys=False, default_flow_style=False)
 
 
-def gw_config(external):
-    return yaml.safe_dump({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": "ovn-external-gw-config", "namespace": "kube-system"},
-        "data": {
-            "enable-external-gw": "true",
-            "type": "distributed",
-            "external-gw-switch": EXTERNAL_SUBNET,
-            "external-gw-nic": external["nic"],
-        },
-    }, sort_keys=True)
-
-
 def build(cr, bundle, out):
     nodes = ((cr.get("spec") or {}).get("network") or {}).get("nodes")
     files = sorted(bundle.glob("*.yaml"))
@@ -71,8 +54,6 @@ def build(cr, bundle, out):
             elif "\nkind: CephCluster\n" in text and "storage" in nodes:
                 text = patch_ceph(text, nodes["storage"])
         (out / f.name).write_text(text)
-    if nodes and "external" in nodes:
-        (out / GW_CONFIG).write_text(gw_config(nodes["external"]))
 
 
 def main(argv):
