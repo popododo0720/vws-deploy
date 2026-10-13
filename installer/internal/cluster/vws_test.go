@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeBin writes an executable shell script that stands in for kubectl or vws.
@@ -110,5 +111,24 @@ func TestInstallFailsWithApply(t *testing.T) {
 	vws := fakeBin(t, dir, "vws", "exit 2\n")
 	if _, err := (VWS{VWS: vws, WorkDir: dir}).Install(context.Background(), []byte(`{}`), func(string) {}); err == nil {
 		t.Fatal("a failed apply did not fail the install")
+	}
+}
+
+func TestInstallSurvivesALineLongerThanTheScanner(t *testing.T) {
+	dir := t.TempDir()
+	// 2 MiB on one line, over maxLogLine, then more output: a stopped reader would block the child on the pipe.
+	vws := fakeBin(t, dir, "vws", `head -c 2097152 /dev/zero | tr '\0' x; echo; echo after; i=0; while [ $i -lt 2000 ]; do echo line $i; i=$((i+1)); done
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var lines []string
+	if _, err := (VWS{VWS: vws, WorkDir: dir}).Install(ctx, []byte(`{}`), func(l string) { lines = append(lines, l) }); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("install hung on a long output line")
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "output not shown") {
+		t.Fatalf("want one notice about the dropped output, got %d lines", len(lines))
 	}
 }
