@@ -48,13 +48,13 @@ vws_verify_snapshot() {
 # network goes down before the unmap (libceph error -101, vws-deploy#116). WARN per such node so it
 # is drained first (docs/platform-bundle.md "노드 재부팅 절차"). Read only.
 vws_verify_krbd() {
-  local node count
+  local attached node count
+  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' \
+    <<<"$(vws_verify_get volumeattachments)") || vws_die_env "cannot read volumeattachments"
   while IFS=$'\t' read -r node count; do
-    [[ -n $node ]] && vws_emit WARN krbd "${node}: ${count} RBD volumes attached; drain it before rebooting (kubectl drain ${node} --ignore-daemonsets --delete-emptydir-data), krbd can hang the shutdown"
-  done < <(jq -r '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]
-    | group_by(.) | .[] | [.[0], (length | tostring)] | @tsv' <<<"$(vws_verify_get volumeattachments)")
-  count=$(jq -r '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)] | length' <<<"$(vws_verify_get volumeattachments)")
-  ((count > 0)) || vws_emit OK krbd "no RBD volume attached"
+    [[ -n $node ]] && vws_emit WARN krbd "${node}: ${count} RBD volumes attached; drain it before rebooting with: kubectl drain ${node} --ignore-daemonsets --delete-emptydir-data, krbd can hang the shutdown"
+  done < <(jq -r 'group_by(.) | .[] | [.[0], (length | tostring)] | @tsv' <<<"$attached")
+  [[ $attached != "[]" ]] || vws_emit OK krbd "no RBD volume attached"
 }
 
 # Each gate prints "pass", "wait <reason>" or "fail <reason>".
