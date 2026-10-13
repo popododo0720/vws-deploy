@@ -63,11 +63,29 @@ spec:
                   properties:
                     driver:
                       type: string
-                      enum: [rook-ceph, existing]
+                      description: rook-ceph (default), existing (any CSI StorageClass the cluster already has), or nfs (an existing NFS export through csi-driver-nfs, vws-storage#72).
+                      enum: [rook-ceph, existing, nfs]
                     storageClass:
                       description: The StorageClass to use when driver is existing.
                       type: string
                       pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                    volumeMode:
+                      description: volumeMode of new volumes when driver is existing. Block (default), or Filesystem for a provisioner without block volumes (needs CDI). nfs is always Filesystem.
+                      type: string
+                      enum: [Block, Filesystem]
+                    nfs:
+                      description: The NFS export when driver is nfs. It must already exist and be mountable from every node.
+                      type: object
+                      required: [server, share]
+                      properties:
+                        server:
+                          description: Host name or IP address of the NFS server.
+                          type: string
+                          pattern: '^[A-Za-z0-9]([A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$'
+                        share:
+                          description: Exported path, for example /export/vws.
+                          type: string
+                          pattern: '^/[^\s]*$'
                     s3:
                       type: object
                       properties:
