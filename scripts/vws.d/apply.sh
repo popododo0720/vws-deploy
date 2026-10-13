@@ -55,6 +55,7 @@ vws_cmd_main() {
   applied=$(jq -r '.status.appliedValuesHash // ""' <<<"$cr")
   observed=$(jq -r '.status.observedGeneration // -1' <<<"$cr")
   profile=$(jq -r '.spec.profile' <<<"$cr")
+  vws_apply_drop_extgw
   if [[ $applied == "$hash" && $observed == "$generation" ]]; then
     rm -rf "$tmp"
     vws_emit OK apply "unchanged: generation ${generation} is applied (values ${hash:0:12})"
@@ -106,4 +107,23 @@ vws_cmd_main() {
     vws_die_env "cannot write VWSCluster status"
   rm -rf "$tmp"
   vws_emit OK apply "applied generation ${generation} (values ${hash:0:12})"
+}
+
+# vws_apply_drop_extgw deletes the ovn-external-gw-config ConfigMap that an apply before #165 wrote
+# (field manager vws). With it, kube-ovn deletes the OVS bridge the external NIC is on (br-vwsul)
+# and wants a Subnet named external (#171, vws-test evidence 53). It runs before the unchanged
+# check, so an apply of an unchanged CR also removes it. A ConfigMap that vws did not write is left
+# alone with a WARN.
+vws_apply_drop_extgw() {
+  local cm
+  cm=$(VWS_NAMESPACE=kube-system vws_kubectl get configmap ovn-external-gw-config -o json --ignore-not-found) ||
+    vws_die_env "cannot read kube-system/ovn-external-gw-config"
+  [[ -n $cm ]] || return 0
+  if ! jq -e 'any(.metadata.managedFields[]?; .manager == "vws")' <<<"$cm" >/dev/null; then
+    vws_emit WARN extgw "kube-system/ovn-external-gw-config exists but vws did not write it; left as is (it breaks the underlay bridge, #171)"
+    return 0
+  fi
+  VWS_NAMESPACE=kube-system vws_kubectl delete configmap ovn-external-gw-config --ignore-not-found >/dev/null ||
+    vws_die_env "cannot delete kube-system/ovn-external-gw-config"
+  vws_emit OK extgw "deleted kube-system/ovn-external-gw-config from an earlier apply (#171)"
 }
