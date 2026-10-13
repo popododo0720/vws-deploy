@@ -41,6 +41,20 @@ vws_verify_snapshot() {
       alwaysVMs: [$vm.items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
     }' >"$file" || vws_die_env "cannot write ${file}"
   vws_emit OK snapshot "wrote ${file}: $(jq -r '"\(.nodes | length) nodes, \(.services | length) services, \(.statefulPVCs | length) PVCs, \(.alwaysVMs | length) VMs"' "$file")"
+  vws_verify_krbd
+}
+
+# vws_verify_krbd: a node with RBD volumes mapped by ceph-csi (krbd) can hang in shutdown when the
+# network goes down before the unmap (libceph error -101, vws-deploy#116). WARN per such node so it
+# is drained first (docs/platform-bundle.md "노드 재부팅 절차"). Read only.
+vws_verify_krbd() {
+  local attached node count
+  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' \
+    <<<"$(vws_verify_get volumeattachments)") || vws_die_env "cannot read volumeattachments"
+  while IFS=$'\t' read -r node count; do
+    [[ -n $node ]] && vws_emit WARN krbd "${node}: ${count} RBD volumes attached; drain it before rebooting with: kubectl drain ${node} --ignore-daemonsets --delete-emptydir-data, krbd can hang the shutdown"
+  done < <(jq -r 'group_by(.) | .[] | [.[0], (length | tostring)] | @tsv' <<<"$attached")
+  [[ $attached != "[]" ]] || vws_emit OK krbd "no RBD volume attached"
 }
 
 # Each gate prints "pass", "wait <reason>" or "fail <reason>".

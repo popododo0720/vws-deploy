@@ -28,6 +28,19 @@ if jq -e '.configMapKeys == [{name: "vws-compute-store", keys: 2}] and .podCount
   ok "the snapshot has counts and names"; else bad "snapshot shape" "$snap"; fi
 mode=$(stat -c %a "${WORK}/snap.json")
 if [[ $mode == 600 ]]; then ok "the snapshot is 0600"; else bad "mode" "$mode"; fi
+expect_text "no RBD attachment is OK" "$OUT" "OK    krbd  no RBD volume attached"
+
+# #116: a node with RBD volumes attached gets a drain WARN before the reboot.
+scenario krbd
+jq -n '{items: [
+  {spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com"}, status: {attached: true}},
+  {spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com"}, status: {attached: true}},
+  {spec: {nodeName: "node-b", attacher: "other.csi"}, status: {attached: true}},
+  {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com"}, status: {attached: false}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+run_vws_real verify-reboot --snapshot "${WORK}/snap2.json"; expect_rc "snapshot with RBD attachments exits 0" 0
+expect_text "the node with RBD volumes is warned" "$OUT" "WARN  krbd  node-a: 2 RBD volumes attached; drain it before rebooting"
+if ! grep -q "node-b" <<<"$OUT"; then ok "other attachers and detached volumes are not warned"; else bad "node-b warned" "$OUT"; fi
+assert_no_changes "the krbd check changes nothing"
 run_vws_real verify-reboot --snapshot "${WORK}/snap.json"; expect_rc "an existing snapshot is not overwritten (2)" 2
 
 scenario recovered
