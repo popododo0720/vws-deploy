@@ -88,8 +88,6 @@ def secret_shaped(value, path):
 
 
 GENEVE_OVERHEAD = 100
-# The Kube-OVN Subnet of the external network. vws-network creates it (-kube-external-subnet).
-EXTERNAL_SUBNET = "vws-external"
 
 
 def host_interface(link):
