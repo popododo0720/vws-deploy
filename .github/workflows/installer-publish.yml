@@ -39,6 +39,7 @@ jobs:
           {
             echo "build-args<<ARGS"
             echo "BASE=${INSTALLER_BASE_IMAGE}"
+            echo "GO_IMAGE=${INSTALLER_GO_IMAGE}"
             echo "HELM_VERSION=${HELM_VERSION}"
             echo "HELM_SHA256=${HELM_SHA256}"
             echo "KUBERNETES_VERSION=${KUBERNETES_VERSION}"
