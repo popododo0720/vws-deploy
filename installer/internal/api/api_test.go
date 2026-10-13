@@ -24,6 +24,8 @@ type fakeCluster struct {
 	nodes   []cluster.Node
 	release chan error
 	crs     [][]byte
+	// lines are logged after "installing" (#145).
+	lines []string
 }
 
 func (f *fakeCluster) Nodes(context.Context) ([]cluster.Node, error) { return f.nodes, nil }
@@ -33,6 +35,9 @@ func (f *fakeCluster) Install(_ context.Context, cr []byte, log func(string)) (c
 	f.crs = append(f.crs, cr)
 	f.mu.Unlock()
 	log("installing")
+	for _, l := range f.lines {
+		log(l)
+	}
 	if err := <-f.release; err != nil {
 		return cluster.Result{}, err
 	}
@@ -617,12 +622,8 @@ func TestBadRequests(t *testing.T) {
 	h.wantError(status, body, 404, ReasonNotFound)
 	status, body = h.do("GET", "/api/v1/nothing", nil)
 	h.wantError(status, body, 404, ReasonNotFound)
-	for _, e := range []struct{ method, path string }{
-		{"GET", "/api/v1/install/events"}, {"POST", "/api/v1/result/credential"},
-	} {
-		status, body := h.do(e.method, e.path, nil)
-		h.wantError(status, body, 501, ReasonNotImplemented)
-	}
+	status, body = h.do("POST", "/api/v1/result/credential", nil)
+	h.wantError(status, body, 501, ReasonNotImplemented)
 }
 
 func TestEveryReasonHasAStatus(t *testing.T) {
