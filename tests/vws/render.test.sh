@@ -28,7 +28,7 @@ bad_cr() {
   if [[ -e ${WORK}/bad.out ]]; then bad "invalid CR: ${name} writes nothing" "output exists"; rm -f "${WORK}/bad.out"; fi
 }
 bad_cr "unknown network driver" 's/driver: kube-ovn/driver: calico/'
-bad_cr "unknown storage driver" 's/driver: rook-ceph/driver: nfs/'
+bad_cr "unknown storage driver" 's/driver: rook-ceph/driver: gluster/'
 bad_cr "unknown profile" 's/profile: ha/profile: huge/'
 bad_cr "unknown field" 's/^  version: 0.1.0/  version: 0.1.0\n  colour: blue/'
 bad_cr "unknown service field" 's/      replicas: 4/      replicas: 4\n      image: x/'
@@ -57,6 +57,43 @@ for prefix in abcdefghij123456789 Acme -acme; do
 done
 sed -e 's/        existingSecret: ceph-rgw-s3/        existingSecret: ceph-rgw-s3\n        secretKey: x/' "${WORK}/rgw.yaml" >"${WORK}/rgwkey.yaml"
 run_vws_real render "${WORK}/rgwkey.yaml" "${WORK}/rgwkey.out"; expect_rc "a key under s3.rgw exits 2" 2
+
+# spec.storage.driver nfs and existing volumeMode (vws-storage#72, #73).
+storage_cr() { # NAME PYTHON: edit spec.storage of small.yaml as s, render to ${WORK}/NAME.out
+  python3 - "${EX}/small.yaml" "$2" >"${WORK}/$1.yaml" <<'PY'
+import sys, yaml
+cr = yaml.safe_load(open(sys.argv[1]))
+s = cr["spec"]["storage"]
+exec(sys.argv[2], {"s": s})
+yaml.safe_dump(cr, sys.stdout)
+PY
+  run_vws_real render "${WORK}/$1.yaml" "${WORK}/$1.out"
+}
+storage_values() { # NAME PYTHON-EXPR on v (the storage service values): exit 0 when true
+  python3 -c 'import sys,yaml; v=yaml.safe_load(open(sys.argv[1]))["services"]["storage"]; sys.exit(0 if eval(sys.argv[2]) else 1)' "${WORK}/$1.out" "$2"
+}
+DV='{"namespace": "vms", "apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes"], "verbs": ["get", "list", "create", "delete"]}'
+storage_cr nfs 's.clear(); s.update(driver="nfs", nfs={"server": "nas.example.internal", "share": "/export/vws"})'
+expect_rc "driver nfs renders" 0
+if storage_values nfs 'v["flags"] == {"kube-class-standard": "vws-nfs", "kube-class-ssd": "vws-nfs", "kube-volume-mode": "Filesystem", "kube-snapshot-class": ""}'; then
+  ok "nfs sets the class, Filesystem mode and no snapshot class"; else bad "nfs flags" "$(cat "${WORK}/nfs.out")"; fi
+if storage_values nfs "${DV} in v['rbac'] and len(v['rbac']) > 1"; then ok "nfs adds datavolumes to the storage RBAC"; else bad "nfs rbac" "$(cat "${WORK}/nfs.out")"; fi
+if ! grep -q 'storageClass: vws-nfs' "${WORK}/nfs.out"; then ok "nfs leaves the state volumes on the default class"; else bad "nfs global class" "$(cat "${WORK}/nfs.out")"; fi
+storage_cr existing-fs 's["volumeMode"] = "Filesystem"'
+expect_rc "existing with Filesystem renders" 0
+if storage_values existing-fs "v['flags']['kube-volume-mode'] == 'Filesystem' and ${DV} in v['rbac']"; then ok "existing Filesystem sets the mode and the datavolumes rule"; else bad "existing fs" "$(cat "${WORK}/existing-fs.out")"; fi
+if ! grep -q 'kube-volume-mode\|datavolumes' "${WORK}/small.yaml"; then ok "Block (the default) renders no volume mode and no datavolumes rule"; else bad "block default" "$(cat "${WORK}/small.yaml")"; fi
+for case in \
+  'nfs-no-export|s.clear(); s["driver"] = "nfs"' \
+  'nfs-no-share|s.clear(); s.update(driver="nfs", nfs={"server": "nas"})' \
+  'nfs-relative-share|s.clear(); s.update(driver="nfs", nfs={"server": "nas", "share": "export"})' \
+  'nfs-with-class|s.update(driver="nfs", nfs={"server": "nas", "share": "/e"})' \
+  'nfs-with-mode|s.clear(); s.update(driver="nfs", volumeMode="Block", nfs={"server": "nas", "share": "/e"})' \
+  'nfs-fields-on-existing|s["nfs"] = {"server": "nas", "share": "/e"}' \
+  'mode-on-rook|s.clear(); s.update(driver="rook-ceph", volumeMode="Filesystem")' \
+  'bad-mode|s["volumeMode"] = "Raw"'; do
+  storage_cr "${case%%|*}" "${case#*|}"; expect_rc "invalid storage: ${case%%|*} exits 2" 2
+done
 
 # spec.network.nodes and spec.network.direct (vws-deploy#125). nodes.external gives the pool, so the
 # CR drops the pool of ha.yaml.
