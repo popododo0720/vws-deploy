@@ -173,6 +173,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 `--snapshot`은 `rbd.csi.ceph.com` VolumeAttachment가 붙은 노드마다 `WARN krbd`를 낸다. 그 노드는 재부팅 전에 drain한다(krbd shutdown 멈춤, #116, 절차는 [platform-bundle.md](platform-bundle.md)).
 
 - `--drained NODE`: 노드가 cordon되어 있고 `rbd.csi.ceph.com` VolumeAttachment가 붙어 있지 않으면 0, drain이 안 됐거나 덜 끝났으면 1, 읽지 못하면 3. 0이 아니면 재부팅하지 않는다(#150).
+- `--snapshot`은 KubeVirt infra 파드(virt-api, virt-controller, virt-exportproxy)가 갈 수 있는 노드가 하나 이하이면 `WARN infra`를 낸다. nodeSelector의 레이블을 모두 가진 스케줄 가능 노드를 세고, nodePlacement가 없으면 control-plane 노드를 센다. 그 노드를 drain하면 PDB 때문에 멈춘다(#168). 읽기만 하고 실패로 치지 않는다.
 - 스냅샷의 목록 하나라도 읽지 못하면 3으로 끝나고 파일을 남기지 않는다(`snapshot failed: ...; do not reboot`). krbd 확인 없이 재부팅하지 않게 하려는 것이다(#150).
 - 스냅샷(0600, 덮어쓰지 않음): 노드 이름과 boot ID, 서비스별 ready/desired, 네임스페이스별 파드 **개수**, 릴리스 네임스페이스 PVC 이름과 phase, VWS ConfigMap의 키 **개수**, `runStrategy: Always` VM 이름과 상태. 파드 UID, ConfigMap 데이터, Secret은 없다.
 - 확인 게이트(기동 순서, 각 소요 시간 출력): `api` → `nodes`(스냅샷의 노드가 모두 Ready) → `cni`(kube-ovn 파드 Ready) → `csi`(Ceph `HEALTH_OK`, 또는 활성 check 코드가 모두 `--allow-health-check`에 있는 `HEALTH_WARN`. single-node를 포함해 모든 프로필이 같다) → `bundle`(KubeVirt, CDI CR `Deployed`) → `services`(스냅샷 서비스가 ready == desired). 기다리면 되는 상태는 `VWS_VERIFY_INTERVAL`(기본 10초)마다 다시 본다.
