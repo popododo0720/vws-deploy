@@ -868,6 +868,16 @@ if dep is None or dep["spec"].get("replicas") != 1 or (dep["spec"].get("strategy
 tpl = dep["spec"]["template"]
 if "activeDeadlineSeconds" in tpl["spec"] or tpl["spec"].get("restartPolicy", "Always") != "Always":
     fail("a Deployment pod cannot set activeDeadlineSeconds or restartPolicy; the reaper bounds the rights")
+crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
+want_version = f"{crd['spec']['group']}/{crd['spec']['versions'][0]['name']}"
+installer = tpl["spec"]["containers"][0]
+want_cmd = ["/opt/vws/bin/vws-installer", f"-api-version={want_version}", "-listen=0.0.0.0:8443",
+            "-state-dir=/tmp/vws-installer", "-vws=/opt/vws/scripts/vws"]
+if installer.get("command") != want_cmd or installer.get("args"):
+    fail(f"the installer container runs {installer.get('command')} {installer.get('args') or ''}; want {want_cmd} (#191)")
+for kind in ("readinessProbe", "livenessProbe"):
+    if ((installer.get(kind) or {}).get("tcpSocket") or {}).get("port") != "api":
+        fail(f"the installer container needs a tcpSocket {kind} on port api")
 svc = by.get(("Service", "vws-installer"))
 if svc is None or svc["spec"].get("type", "ClusterIP") != "ClusterIP":
     fail("the installer Service vws-installer must be type ClusterIP")
@@ -927,7 +937,12 @@ PY
 }
 
 cmd_bootstrap() {
-  local tmp ttl
+  local tmp ttl gomod goimage
+  gomod=$(sed -n 's/^go //p' installer/go.mod)
+  goimage=$(sed -n 's/^INSTALLER_GO_IMAGE=//p' scripts/versions.env)
+  [[ $goimage == *"/golang:${gomod}-"*"@sha256:"* ]] || die "R20: INSTALLER_GO_IMAGE ${goimage} must be golang:${gomod} (installer/go.mod) pinned by digest"
+  grep -q '^FROM ${GO_IMAGE} AS build$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must build vws-installer from GO_IMAGE"
+  grep -q '^COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must copy vws-installer to /opt/vws/bin"
   scripts/bootstrap.sh >/dev/null || die "R20: scripts/bootstrap.sh fails"
   ttl=$(sed -n 's/^INSTALLER_TTL_SECONDS=//p' scripts/versions.env)
   bootstrap_check build/bootstrap.yaml "$ttl" || die "R20: bootstrap rules"
@@ -948,6 +963,10 @@ cmd_bootstrap() {
   bad_bootstrap "a Service that selects nothing" '/^  selector:$/{n;s/name: vws-installer/name: other/}'
   bad_bootstrap "a Service on an unnamed port" 's/targetPort: api/targetPort: web/'
   bad_bootstrap "a bare installer Pod" 's/^kind: Deployment$/kind: Pod/'
+  bad_bootstrap "an idle installer" 's#^\( *\)- /opt/vws/bin/vws-installer$#\1- sleep\n\1- infinity#'
+  bad_bootstrap "a hard-coded API version" 's#-api-version=[^ ]*#-api-version=example.com/v1#'
+  bad_bootstrap "an API on another port" 's#-listen=0.0.0.0:8443#-listen=0.0.0.0:9443#'
+  bad_bootstrap "no readiness probe" 's/^          readinessProbe:$/          startupProbe:/'
   bad_bootstrap "no reaper" 's/name: vws-installer-reaper/name: something-else/'
   bad_bootstrap "a reaper deadline equal to the TTL" "s/activeDeadlineSeconds: $((ttl + 600))/activeDeadlineSeconds: ${ttl}/"
   bad_bootstrap "a second cluster-admin binding" 's/name: vws-operator-read$/name: cluster-admin/'
