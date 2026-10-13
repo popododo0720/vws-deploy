@@ -205,6 +205,26 @@ vws_check_kernel_indirect() {
   fi
 }
 
+# spec.network.nodes against the nodes (#128): node IPs in management, NICs and MTUs from talosctl links.
+vws_check_node_network() {
+  local links=$1 tmp level name message
+  [[ -z $links || -f $links ]] || vws_usage "--links ${links} does not exist"
+  tmp=$(mktemp -d)
+  if ! vws_kubectl get vwsclusters vws -o json >"${tmp}/cr.json" 2>/dev/null; then
+    rm -rf "$tmp"
+    vws_emit OK node-network "no VWSCluster vws yet; vws init then preflight again checks spec.network.nodes"
+    return 0
+  fi
+  vws_kubectl get nodes -o json >"${tmp}/nodes.json" 2>/dev/null || { rm -rf "$tmp"; vws_die_env "cannot list nodes"; }
+  local args=("${tmp}/cr.json" "${tmp}/nodes.json")
+  [[ -z $links ]] || args+=("$links")
+  python3 "${VWS_ROOT}/scripts/vws.d/lib/nodenet.py" "${args[@]}" >"${tmp}/out" || { rm -rf "$tmp"; vws_die_env "cannot evaluate spec.network.nodes"; }
+  while IFS=$'\t' read -r level name message; do
+    vws_emit "$level" "$name" "$message"
+  done <"${tmp}/out"
+  rm -rf "$tmp"
+}
+
 vws_check_release() {
   local json status release=vws
   json=$(vws_helm list -a -o json 2>/dev/null) || vws_die_env "helm list failed"

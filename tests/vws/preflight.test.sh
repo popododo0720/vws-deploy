@@ -110,6 +110,49 @@ echo '[{"name":"vws","namespace":"vws","status":"pending-upgrade","revision":"3"
 run_vws_real preflight --profile single-node;     expect_rc "a pending release exits 1" 1
 expect_line "release fails" FAIL release
 
+# spec.network.nodes (#128): node IPs in management, and NICs and MTUs from talosctl links.
+LINKS="${FIXTURES}/preflight/links"
+net_scenario() { # NAME: ok fixtures plus a CR with tests/fixtures/preflight/links/network.json and node-a at 10.77.0.11
+  scenario "$1"
+  jq -n --slurpfile n "${LINKS}/network.json" '{kind: "VWSCluster", metadata: {name: "vws"}, spec: {profile: "single-node", network: $n[0]}}' >"$(fx kubectl/get_vwsclusters.json)"
+  edit_json kubectl/get_nodes.json '.items[0].status.addresses = [{type: "InternalIP", address: "10.77.0.11"}, {type: "Hostname", address: "node-a"}]'
+}
+expect_line "no VWSCluster yet is OK" OK node-network
+
+net_scenario net-ok
+run_vws_real preflight --profile single-node --links "${LINKS}/links.json"; expect_rc "node networks that match exit 0" 0
+expect_line "the node IP is in management" OK node-ip/node-a
+if [[ $(line OK node-links/node-a | wc -l) == 3 ]]; then ok "three interfaces are checked"; else bad "three interfaces" "$OUT"; fi
+expect_text "the tunnel VLAN interface is checked" "$OUT" "interface enp1s0.20 (tunnel) MTU 9000"
+assert_no_changes "the node network check changes nothing"
+
+net_scenario net-nolinks
+run_vws_real preflight --profile single-node;     expect_rc "without --links it is WARN only, exit 0" 0
+expect_line "without --links NICs are unverified" WARN node-links
+run_vws_real --strict preflight --profile single-node; expect_rc "unverified NICs fail --strict" 1
+
+net_scenario net-badip
+edit_json kubectl/get_nodes.json '.items[0].status.addresses[0].address = "192.168.5.5"'
+run_vws_real preflight --profile single-node --links "${LINKS}/links.json"; expect_rc "a node outside management exits 1" 1
+expect_line "node IP outside management fails" FAIL node-ip/node-a
+
+net_scenario net-nonic
+grep -v '"enp1s0.20"' "${LINKS}/links.json" >"${WORK}/links.json"
+run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "a missing VLAN interface exits 1" 1
+expect_text "the missing interface is named" "$OUT" "interface enp1s0.20 (tunnel) does not exist"
+
+net_scenario net-mtu
+sed 's/"enp1s0"},"spec":{"type":"ether","mtu":9000}/"enp1s0"},"spec":{"type":"ether","mtu":1500}/' "${LINKS}/links.json" >"${WORK}/links.json"
+run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "a small MTU exits 1" 1
+expect_text "the MTU gap is named" "$OUT" "interface enp1s0 (management) has MTU 1500, want at least 9000"
+
+net_scenario net-othernode
+sed 's/10.77.0.11/10.77.0.99/' "${LINKS}/links.json" >"${WORK}/links.json"
+run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "links without this node exit 1" 1
+expect_line "a node missing from --links fails" FAIL node-links/node-a
+
+run_vws_real preflight --profile single-node --links "${WORK}/nope.json"; expect_rc "a missing --links file exits 2" 2
+
 scenario api-down
 rm "$(fx kubectl/version_.json)"
 run_vws_real preflight --profile single-node;     expect_rc "an unreachable API exits 3" 3
