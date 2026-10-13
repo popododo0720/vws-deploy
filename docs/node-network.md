@@ -90,7 +90,7 @@ spec:
       - {name: lab, nic: enp4s0, cidr: 192.168.10.0/24, gateway: 192.168.10.1}
 ```
 
-이 예는 `tests/fixtures/render/node-network.yaml`과 같은 모양이고 render 테스트가 통과시킨다.
+이 문서의 세 예는 `vws render` 검증을 통과한다(PR 작성 때 직접 돌렸다).
 
 ## 운영 중 변경
 
