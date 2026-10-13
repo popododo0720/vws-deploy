@@ -30,3 +30,22 @@ jobs:
         env:
           VWS_BASE_REF: ${{ github.base_ref }}
         run: make check
+
+  installer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: installer/go.mod
+          cache-dependency-path: installer/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
