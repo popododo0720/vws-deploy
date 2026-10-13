@@ -6,3 +6,4 @@ ci .github/ Makefile .githooks/ AGENTS.md scripts/guard.sh scripts/guard-agents.
 docs README.md docs/
 repo .gitignore LICENSE
 platform platform/
+installer installer/
