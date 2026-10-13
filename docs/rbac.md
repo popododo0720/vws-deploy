@@ -40,8 +40,10 @@
 | `Create`, `Get`(이미 있을 때 `ensure`), `Delete` | `kubeovn.io` vpcs, subnets, ovn-eips, ovn-snat-rules | get, create, delete | 클러스터 |
 | `Get`, `Update`, `Create`, `Delete` | `kubeovn.io` security-groups | get, create, update, delete | 클러스터 |
 | `List`, `Create`, `Get`(`ensure`), `Delete` | `kubeovn.io` ovn-fips | get, list, create, delete | 클러스터 |
+| `List`(`rehomeGateway` → `firstOtherSubnet`, `dataplane_kubeovn_snat.go`) | `kubeovn.io` subnets | list | 클러스터. SNAT를 지울 때 같은 VPC의 다른 Subnet으로 NAT 게이트웨이를 옮기려고 전체를 한 번 나열한다. vws-test에서 이 권한이 없어 실패했다(#164). 캐시가 없어 watch는 주지 않는다 |
 | `Get`, `Create`, `Delete` | `kubeovn.io` vpc-nat-gateways | get, create, delete | 클러스터 |
 | `Get`, `Create` | `kubeovn.io` provider-networks, vlans | get, create | 클러스터 |
+| `Get`, `Patch`(게이트웨이 노드 레이블 reconcile) | nodes | get, patch | 클러스터. vws-network가 외부망 노드에 `ovn.kubernetes.io/external-gw=true`를 다시 붙인다. kube-ovn-controller가 재시작하면 손으로 붙인 레이블을 `false`로 되돌려 SNAT가 끊겼다(vws-test). 이 레이블은 vws-network 담당이다(#164) |
 | `Create`, `Get`(`ensure`), `Delete` | `k8s.cni.cncf.io` network-attachment-definitions | get, create, delete | NAD 네임스페이스 `NADNamespace` |
 
 - **`get`의 근거(vws-network `72bbde9`, #27 머지 후)**: `ensureObject`가 `Create`(`internal/network/dataplane_kubeovn.go:69`) 뒤 `AlreadyExists`면 `Get`(`:74`)으로 id 어노테이션과 spec을 확인한다. `ensure`를 부르는 곳은 vpc `dataplane_kubeovn.go:107`, subnet `:124`, ovn-eip `dataplane_kubeovn_eip.go:18`, ovn-fip `dataplane_kubeovn_eip.go:41`, security-group `dataplane_kubeovn_sg.go:18`, vpc-nat-gateway `dataplane_kubeovn_snat.go:39`, SNAT용 ovn-eip `:47`, ovn-snat-rule `:53`이고, NAD는 `dataplane_kubeovn_nad.go:43`의 `ensureObject`다. security-groups와 vpc-nat-gateways의 `get`은 위 표에 이미 있다(`dataplane_kubeovn_sg.go:67`, `dataplane_kubeovn_snat.go:70`).
