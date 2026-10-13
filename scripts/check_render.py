@@ -39,6 +39,8 @@ CLUSTER_SCOPED = {
     ("kubeovn.io", "vpcs"),
     ("kubeovn.io", "subnets"),
     ("kubeovn.io", "security-groups"),
+    ("kubeovn.io", "provider-networks"),
+    ("kubeovn.io", "vlans"),
     ("kubeovn.io", "ovn-eips"),
     ("kubeovn.io", "ovn-fips"),
     ("kubeovn.io", "ovn-snat-rules"),
