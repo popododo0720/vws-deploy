@@ -35,6 +35,51 @@ echo '{"items":[{"metadata":{"name":"node1","labels":{"node-role.kubernetes.io/c
 	}
 }
 
+func TestNodesStatusAndLinks(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := fakeBin(t, dir, "kubectl", `case "$*" in
+"get nodes -o json") echo '{"items":[{"metadata":{"name":"node1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"addresses":[{"type":"InternalIP","address":"10.0.0.11"},{"type":"Hostname","address":"node1"}]}},{"metadata":{"name":"node2"},"status":{"conditions":[{"type":"Ready","status":"False"}],"addresses":[{"type":"InternalIP","address":"10.0.0.12"}]}},{"metadata":{"name":"node3"}}]}' ;;
+"get storageclasses -o jsonpath={.items[*].metadata.name}") printf 'ceph-block fast-rbd' ;;
+*) exit 9 ;;
+esac
+`)
+	links := filepath.Join(dir, "links.json")
+	// talosctl names a node by its address or its name; node3 has no links.
+	stream := `{"node":"10.0.0.11","metadata":{"id":"ens3"},"spec":{"mtu":1500}}
+{"node":"10.0.0.11","metadata":{"id":"ens8"},"spec":{"mtu":9000}}
+{"node":"node2","metadata":{"id":"ens3"},"spec":{"mtu":1500}}`
+	if err := os.WriteFile(links, []byte(stream), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v := VWS{Kubectl: kubectl, Links: links}
+	nodes, err := v.Nodes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nodes[0].Ready || nodes[1].Ready || nodes[2].Ready {
+		t.Fatalf("ready %+v", nodes)
+	}
+	if strings.Join(nodes[0].InternalIPs, ",") != "10.0.0.11" {
+		t.Fatalf("internal IPs %v", nodes[0].InternalIPs)
+	}
+	if !nodes[0].NICsKnown || len(nodes[0].NICs) != 2 || nodes[0].NICs[1] != (NIC{Name: "ens8", MTU: 9000}) {
+		t.Fatalf("node1 NICs %+v", nodes[0])
+	}
+	if !nodes[1].NICsKnown || len(nodes[1].NICs) != 1 || nodes[2].NICsKnown {
+		t.Fatalf("node2/node3 NICs %+v %+v", nodes[1], nodes[2])
+	}
+	classes, err := v.StorageClasses(context.Background())
+	if err != nil || strings.Join(classes, ",") != "ceph-block,fast-rbd" {
+		t.Fatalf("classes %v %v", classes, err)
+	}
+	if err := os.WriteFile(links, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Nodes(context.Background()); err == nil {
+		t.Fatal("a broken links file was accepted")
+	}
+}
+
 func TestInstallRunsInitThenApply(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
