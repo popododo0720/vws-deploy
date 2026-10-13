@@ -80,12 +80,12 @@ esac
 	}
 }
 
-func TestInstallRunsInitThenApply(t *testing.T) {
+func TestInstallRunsApplyWithTheFile(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
 	vws := fakeBin(t, dir, "vws", `echo "$*" >> `+calls+`
 echo "step $1"
-[ "$1" = init ] && cat "$3" >> `+calls+`
+cat "$4" >> `+calls+`
 exit 0
 `)
 	var lines []string
@@ -93,11 +93,11 @@ exit 0
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(calls)
-	want := "init --from " + filepath.Join(dir, "vwscluster.json") + "\n{\"kind\":\"VWSCluster\"}apply --unattended\n"
+	want := "apply --unattended -f " + filepath.Join(dir, "vwscluster.json") + "\n{\"kind\":\"VWSCluster\"}"
 	if string(got) != want {
 		t.Fatalf("calls %q, want %q", got, want)
 	}
-	if strings.Join(lines, ",") != "step init,step apply" {
+	if strings.Join(lines, ",") != "step apply" {
 		t.Fatalf("log lines %v", lines)
 	}
 	if fi, _ := os.Stat(filepath.Join(dir, "vwscluster.json")); fi.Mode().Perm() != 0o600 {
@@ -105,17 +105,10 @@ exit 0
 	}
 }
 
-func TestInstallStopsAtAFailedInit(t *testing.T) {
+func TestInstallFailsWithApply(t *testing.T) {
 	dir := t.TempDir()
-	calls := filepath.Join(dir, "calls")
-	vws := fakeBin(t, dir, "vws", `echo "$1" >> `+calls+`
-[ "$1" = init ] && exit 1
-exit 0
-`)
+	vws := fakeBin(t, dir, "vws", "exit 2\n")
 	if _, err := (VWS{VWS: vws, WorkDir: dir}).Install(context.Background(), []byte(`{}`), func(string) {}); err == nil {
-		t.Fatal("a failed init did not fail the install")
-	}
-	if got, _ := os.ReadFile(calls); string(got) != "init\n" {
-		t.Fatalf("apply ran after a failed init: %q", got)
+		t.Fatal("a failed apply did not fail the install")
 	}
 }
