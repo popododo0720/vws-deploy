@@ -113,6 +113,9 @@ spec:
 | `kube-underlay-vlan` | `external.vlan`(0은 flat) |
 | `kube-underlay-cidr`, `kube-underlay-gateway` | `external.cidr`, `external.gateway` |
 | `kube-underlay-exclude` | `external.excludeIPs`를 쉼표로 이은 값. 게이트웨이는 vws-network가 늘 넣는다 |
+| `kube-gateway-nodes` | `external.gatewayNodes`(노드 이름, 하나 이상, 중복 없음)를 쉼표로 이은 값. vws-network가 VPC가 있는 동안 이 노드들의 `ovn.kubernetes.io/external-gw=true`를 `-kube-gateway-recheck`(기본 30s)마다 되살린다. kube-ovn-controller가 재시작하면 라벨을 false로 되돌리기 때문이다(#197). 없으면 차트 기본값 빈 값이라 라벨을 건드리지 않는다 |
+
+`kube-gateway-nodes`는 Kube-OVN 데이터플레인일 때만 쓰이고, 그 조건인 `kube-external-subnet`은 `nodes.external`이 이미 넣는다. `kubeconfig`는 더 필요 없다(vws-network main c640ea9 `internal/network/dataplane_kubeovn_open.go`).
 
 `kube-external-subnet`만 있고 `kubeconfig`가 없으면 vws-network는 클러스터 안 ServiceAccount로 Kube-OVN 데이터플레인을 쓴다.
 
