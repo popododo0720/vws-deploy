@@ -127,10 +127,13 @@ subjects:
     name: vws-installer
     namespace: vws
 ---
-# The installer pod waits for kubectl exec (vws init, vws apply, vws installer finish) and ends when
-# its temporary rights are gone or at activeDeadlineSeconds, whichever is first.
-apiVersion: v1
-kind: Pod
+# The installer Deployment and its Service (vws-deploy#139 (a), #140). The pod waits for kubectl exec
+# (vws init, vws apply, vws installer finish); the installer API (#141) will listen on 8443 behind the
+# ClusterIP Service. A Deployment cannot carry activeDeadlineSeconds, so the time bound sits on the
+# rights instead: the reaper deletes vws-installer-temp at its TTL, and the pod keeps only the
+# operating rights below after that.
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: vws-installer
   namespace: vws
@@ -138,43 +141,75 @@ metadata:
     app.kubernetes.io/part-of: vws
     app.kubernetes.io/name: vws-installer
 spec:
-  serviceAccountName: vws-installer
-  restartPolicy: Never
-  activeDeadlineSeconds: INSTALLER_TTL_SECONDS
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
-  containers:
-    - name: installer
-      image: INSTALLER_IMAGE
-      imagePullPolicy: IfNotPresent
-      env:
-        - name: VWS_INSTALLER_POD
-          value: "1"
-        - name: VWS_NAMESPACE
-          value: vws
-        - name: HOME
-          value: /tmp
-      command: [/bin/sh, -c]
-      args:
-        - while [ "$(kubectl auth can-i create clusterrolebindings 2>/dev/null)" = yes ]; do sleep 30; done
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vws-installer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: vws
+        app.kubernetes.io/name: vws-installer
+    spec:
+      serviceAccountName: vws-installer
       securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: [ALL]
-      resources:
-        requests: {cpu: 100m, memory: 256Mi}
-        limits: {cpu: "1", memory: 512Mi}
-      volumeMounts:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: installer
+          image: INSTALLER_IMAGE
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VWS_INSTALLER_POD
+              value: "1"
+            - name: VWS_NAMESPACE
+              value: vws
+            - name: HOME
+              value: /tmp
+          command: [sleep, infinity]
+          ports:
+            - name: api
+              containerPort: 8443
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
         - name: tmp
-          mountPath: /tmp
-  volumes:
-    - name: tmp
-      emptyDir: {}
+          emptyDir: {}
+---
+# ClusterIP only: reach it with kubectl port-forward svc/vws-installer 8443. No NodePort, LoadBalancer,
+# externalIPs or Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vws-installer
+  namespace: vws
+  labels:
+    app.kubernetes.io/part-of: vws
+    app.kubernetes.io/name: vws-installer
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vws-installer
+  ports:
+    - name: api
+      port: 8443
+      targetPort: api
+      protocol: TCP
 ---
 # The reaper deletes vws-installer-temp at its creationTimestamp + TTL. A restarted reaper pod
 # recomputes the deadline from the binding, so a crash cannot extend it. After finish the binding
