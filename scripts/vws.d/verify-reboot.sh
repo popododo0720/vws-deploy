@@ -20,37 +20,56 @@ vws_verify_get() { # RESOURCE [ARGS...]: json, or {"items":[]} when it cannot be
   vws_kubectl get "$@" -o json 2>/dev/null || echo '{"items":[]}'
 }
 
+# vws_verify_snapshot FILE RELEASE: every read must succeed, or exit 3 and leave no FILE, so no caller
+# reboots without the krbd check. The lists go to jq as files: a real cluster's pods -A JSON is larger
+# than the kernel's argument limit (vws-deploy#150).
 vws_verify_snapshot() {
-  local file=$1 release=$2 nodes pods workloads pvcs cms vms
+  local file=$1 release=$2 dir
   vws_kubectl version -o json >/dev/null 2>&1 || vws_die_env "the Kubernetes API does not answer"
-  nodes=$(vws_kubectl get nodes -o json 2>/dev/null) || vws_die_env "cannot list nodes"
-  pods=$(vws_verify_get pods -A)
-  workloads=$(vws_verify_get deployments,statefulsets -n "$release" -l "$VWS_VERIFY_SELECTOR")
-  pvcs=$(vws_verify_get pvc -n "$release")
-  cms=$(vws_verify_get configmaps -n "$release" -l "$VWS_VERIFY_SELECTOR")
-  vms=$(vws_verify_get virtualmachines -A)
+  vws_verify_tmp=$(mktemp -d)
+  # shellcheck disable=SC2154 # vws_results is set by lib/common.sh
+  trap 'rm -rf "${vws_verify_tmp:-}"; rm -f "$vws_results"' EXIT
+  dir=$vws_verify_tmp
+  vws_verify_save "${dir}/nodes" nodes
+  vws_verify_save "${dir}/pods" pods -A
+  vws_verify_save "${dir}/w" deployments,statefulsets -n "$release" -l "$VWS_VERIFY_SELECTOR"
+  vws_verify_save "${dir}/pvc" pvc -n "$release"
+  vws_verify_save "${dir}/cm" configmaps -n "$release" -l "$VWS_VERIFY_SELECTOR"
+  vws_verify_save "${dir}/vm" virtualmachines -A
+  vws_verify_save "${dir}/va" volumeattachments
   umask 077
-  jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ns "$release" \
-    --argjson nodes "$nodes" --argjson pods "$pods" --argjson w "$workloads" --argjson pvc "$pvcs" --argjson cm "$cms" --argjson vm "$vms" '{
+  if ! jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ns "$release" \
+    --slurpfile nodes "${dir}/nodes" --slurpfile pods "${dir}/pods" --slurpfile w "${dir}/w" \
+    --slurpfile pvc "${dir}/pvc" --slurpfile cm "${dir}/cm" --slurpfile vm "${dir}/vm" '{
       takenAt: $at, namespace: $ns,
-      nodes: [$nodes.items[] | {name: .metadata.name, bootID: (.status.nodeInfo.bootID // "")}],
-      services: [$w.items[] | {name: .metadata.name, kind, desired: (.spec.replicas // 1), ready: (.status.readyReplicas // 0)}],
-      podCounts: ([$pods.items[] | .metadata.namespace] | group_by(.) | map({key: .[0], value: length}) | from_entries),
-      statefulPVCs: [$pvc.items[] | {name: .metadata.name, phase: .status.phase}],
-      configMapKeys: [$cm.items[] | {name: .metadata.name, keys: ((.data // {}) | length)}],
-      alwaysVMs: [$vm.items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
-    }' >"$file" || vws_die_env "cannot write ${file}"
+      nodes: [$nodes[0].items[] | {name: .metadata.name, bootID: (.status.nodeInfo.bootID // "")}],
+      services: [$w[0].items[] | {name: .metadata.name, kind, desired: (.spec.replicas // 1), ready: (.status.readyReplicas // 0)}],
+      podCounts: ([$pods[0].items[] | .metadata.namespace] | group_by(.) | map({key: .[0], value: length}) | from_entries),
+      statefulPVCs: [$pvc[0].items[] | {name: .metadata.name, phase: .status.phase}],
+      configMapKeys: [$cm[0].items[] | {name: .metadata.name, keys: ((.data // {}) | length)}],
+      alwaysVMs: [$vm[0].items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
+    }' >"${dir}/snap" || ! mv "${dir}/snap" "$file"; then
+    vws_die_env "snapshot failed: cannot write ${file}; do not reboot"
+  fi
   vws_emit OK snapshot "wrote ${file}: $(jq -r '"\(.nodes | length) nodes, \(.services | length) services, \(.statefulPVCs | length) PVCs, \(.alwaysVMs | length) VMs"' "$file")"
-  vws_verify_krbd
+  vws_verify_krbd "${dir}/va"
+}
+
+# vws_verify_save FILE RESOURCE [ARGS...]: the list as JSON in FILE, or exit 3.
+vws_verify_save() {
+  local out=$1
+  shift
+  vws_kubectl get "$@" -o json >"$out" 2>/dev/null && jq -e '.items | type == "array"' "$out" >/dev/null 2>&1 ||
+    vws_die_env "snapshot failed: cannot list ${*}; do not reboot (the krbd check did not run)"
 }
 
 # vws_verify_krbd: a node with RBD volumes mapped by ceph-csi (krbd) can hang in shutdown when the
 # network goes down before the unmap (libceph error -101, vws-deploy#116). WARN per such node so it
 # is drained first (docs/platform-bundle.md "노드 재부팅 절차"). Read only.
-vws_verify_krbd() {
+vws_verify_krbd() { # VOLUMEATTACHMENTS_FILE
   local attached node count
-  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' \
-    <<<"$(vws_verify_get volumeattachments)") || vws_die_env "cannot read volumeattachments"
+  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' "$1") ||
+    vws_die_env "snapshot failed: cannot read volumeattachments; do not reboot"
   while IFS=$'\t' read -r node count; do
     [[ -n $node ]] && vws_emit WARN krbd "${node}: ${count} RBD volumes attached; drain it before rebooting with: kubectl drain ${node} --ignore-daemonsets --delete-emptydir-data, krbd can hang the shutdown"
   done < <(jq -r 'group_by(.) | .[] | [.[0], (length | tostring)] | @tsv' <<<"$attached")

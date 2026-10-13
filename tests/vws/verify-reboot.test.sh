@@ -43,6 +43,26 @@ if ! grep -q "node-b" <<<"$OUT"; then ok "other attachers and detached volumes a
 assert_no_changes "the krbd check changes nothing"
 run_vws_real verify-reboot --snapshot "${WORK}/snap.json"; expect_rc "an existing snapshot is not overwritten (2)" 2
 
+# A real cluster's pods -A JSON is larger than the argument limit; the snapshot must still work.
+scenario big-pods
+jq '.items as $p | .items = [range(3000) as $i | $p[0] | .metadata.name = "pod-\($i)" | .metadata.annotations.pad = ("x" * 800)]' \
+  "${VWS_FAKE_DIR}/kubectl/get_pods.json" >"${WORK}/pods.big" && mv "${WORK}/pods.big" "${VWS_FAKE_DIR}/kubectl/get_pods.json"
+size=$(stat -c %s "${VWS_FAKE_DIR}/kubectl/get_pods.json")
+if ((size > 2 * 1024 * 1024)); then ok "the pods fixture is over 2MB"; else bad "pods fixture size" "$size"; fi
+run_vws_real verify-reboot --snapshot "${WORK}/snap-big.json"; expect_rc "a snapshot with a >2MB pods list exits 0" 0
+if jq -e '[.podCounts[]] | add == 3000' "${WORK}/snap-big.json" >/dev/null 2>&1; then ok "every pod is counted"; else bad "big pod count" "$(cat "${WORK}/snap-big.json" 2>&1)"; fi
+expect_text "the krbd check still runs" "$OUT" "OK    krbd  no RBD volume attached"
+
+# A list that cannot be read makes the snapshot fail (3) without a file, so nobody reboots unchecked.
+for resource in pods volumeattachments; do
+  scenario "unreadable-${resource}"
+  rm "${VWS_FAKE_DIR}/kubectl/get_${resource}.json"
+  run_vws_real verify-reboot --snapshot "${WORK}/snap-${resource}.json"; expect_rc "unreadable ${resource} exits 3" 3
+  expect_text "unreadable ${resource} says why" "$ERR" "snapshot failed: cannot list ${resource}"
+  expect_text "unreadable ${resource} says do not reboot" "$ERR" "do not reboot"
+  if [[ ! -e ${WORK}/snap-${resource}.json ]]; then ok "unreadable ${resource} leaves no snapshot"; else bad "snapshot left" "${resource}"; fi
+done
+
 scenario recovered
 rebooted
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "a full recovery exits 0" 0
