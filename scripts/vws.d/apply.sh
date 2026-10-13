@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # summary: install or update VWS from the VWSCluster CR (bundle in order, then the chart)
-# Sourced by scripts/vws. Usage: vws apply [--unattended]
+# Sourced by scripts/vws. Usage: vws apply [--unattended] [-f FILE]
+# -f FILE saves FILE as the VWSCluster first (vws init --from FILE: invalid exits 2, the same spec is
+# unchanged), then applies it; the unattended path of the installer (#144).
 # Steps: TTL guard -> read CR -> render -> unchanged if status matches -> preflight -> secrets ->
 # platform bundle in build/platform file order with waits -> vws_helm upgrade --atomic --wait
 # -> CR status. --dry-run prints the changing calls and changes nothing. --unattended asks nothing
@@ -27,13 +29,20 @@ vws_apply_preflight() {
 }
 
 vws_cmd_main() {
-  local cr tmp values hash generation applied observed profile file
+  local cr tmp values hash generation applied observed profile file from=''
   while (($#)); do
     case $1 in
       --unattended) shift ;;
-      *) vws_usage "usage: vws apply [--unattended]" ;;
+      -f | --file) (($# >= 2)) || vws_usage "-f needs a file"; from=$2; shift 2 ;;
+      -f=* | --file=*) from=${1#*=}; shift ;;
+      *) vws_usage "usage: vws apply [--unattended] [-f FILE]" ;;
     esac
   done
+  if [[ -n $from ]]; then
+    local rc=0
+    "${VWS_ROOT}/scripts/vws" init --from "$from" || rc=$?
+    ((rc == 0)) || exit "$rc"
+  fi
   vws_installer_namespace
   vws_installer_guard_ttl
   # The CRD before the CR is read: an older CRD prunes fields a newer chart added (spec.storage.s3),
