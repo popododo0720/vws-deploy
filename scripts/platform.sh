@@ -44,6 +44,9 @@ for profile in single-node ha; do
     --namespace rook-ceph -f platform/rook-ceph-cluster.values.yaml -f "platform/rook-ceph-cluster.${profile}.values.yaml" \
     > "build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml"
 done
+# csi-driver-nfs: in the bundle always; vws apply installs it only for spec.storage.driver nfs (platform.py).
+helm template csi-driver-nfs csi-driver-nfs --repo https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts \
+  --version "$CSI_DRIVER_NFS_VERSION" --namespace kube-system -f platform/csi-driver-nfs.values.yaml > "$out/35-csi-driver-nfs.yaml"
 cp .cache/platform/kubevirt-operator.yaml "$out/40-kubevirt-operator.yaml"
 cp platform/kubevirt-cr.yaml "$out/41-kubevirt-cr.yaml"
 cp .cache/platform/cdi-operator.yaml "$out/42-cdi-operator.yaml"
