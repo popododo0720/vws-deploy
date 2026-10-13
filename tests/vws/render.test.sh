@@ -98,6 +98,31 @@ bad_net "unknown network field" 'n["nodes"]["management"]["bond"] = "x"'
 net_cr 'n["nodes"]["tunnel"]["nic"] = "enp4s0"; n["nodes"]["tunnel"]["vlan"] = 0; n["direct"][1]["vlan"] = 10'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "an untagged host network may share an underlay nic" 0
 
+# The platform bundle for spec.network.nodes (#127).
+# shellcheck source=tests/vws/platform_lib.sh
+source "${VWS_TEST_ROOT}/tests/vws/platform_lib.sh"
+platform_cr 'n.pop("nodes"); n.pop("direct")'
+run_platform "$PLATFORM_BUNDLE"
+if ((PRC == 0)) && diff -r "$PLATFORM_BUNDLE" "${WORK}/pout" >/dev/null; then ok "without nodes the bundle is a byte copy"; else bad "bundle copy" "rc ${PRC} $(cat "${WORK}/perr")"; fi
+platform_cr pass
+run_platform "$PLATFORM_BUNDLE"
+if ((PRC == 0)); then ok "platform with 4 NICs exits 0"; else bad "platform 4 NICs" "$(cat "${WORK}/perr")"; fi
+args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
+expect_text "kube-ovn-cni uses the tunnel VLAN interface" "$args" "--iface=enp2s0.20 --mtu=8900 --network-type=geneve"
+ceph=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["spec"]["network"], sort_keys=True))' "${WORK}/pout/31-rook-ceph-cluster.yaml")
+expect_text "Ceph gets the public and cluster networks" "$ceph" '{"addressRanges": {"cluster": ["10.31.0.0/24"], "public": ["10.30.0.0/24"]}, "connections": {"requireMsgr2": true}, "provider": "host"}'
+gw=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1])), sort_keys=True))' "${WORK}/pout/21-ovn-external-gw-config.yaml")
+expect_text "the external gateway uses the vws-external Subnet" "$gw" '{"apiVersion": "v1", "data": {"enable-external-gw": "true", "external-gw-nic": "enp4s0", "external-gw-switch": "vws-external", "type": "distributed"}, "kind": "ConfigMap", "metadata": {"name": "ovn-external-gw-config", "namespace": "kube-system"}}'
+platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct")'
+run_platform "$PLATFORM_BUNDLE"
+args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
+expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
+if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]] && cmp -s "$PLATFORM_BUNDLE/31-rook-ceph-cluster.yaml" "${WORK}/pout/31-rook-ceph-cluster.yaml"; then ok "no external gateway and no Ceph network without them"; else bad "optional parts" "$(ls "${WORK}/pout")"; fi
+mkdir -p "${WORK}/oldovn" && sed 's/--iface=$/--iface=eth9/' "$PLATFORM_BUNDLE/20-kube-ovn.yaml" >"${WORK}/oldovn/20-kube-ovn.yaml"
+platform_cr pass
+run_platform "${WORK}/oldovn"
+if ((PRC == 2)) && [[ ! -e ${WORK}/pout ]]; then ok "a changed Kube-OVN chart exits 2 and writes nothing"; else bad "changed chart" "rc ${PRC}"; fi
+
 printf -- '---\na: 1\n---\nb: 2\n' >"${WORK}/two.yaml"
 run_vws_real render "${WORK}/two.yaml" "${WORK}/x.yaml"; expect_rc "two documents exit 2" 2
 run_vws_real render "${WORK}/missing.yaml" "${WORK}/x.yaml"; expect_rc "a missing file exits 2" 2

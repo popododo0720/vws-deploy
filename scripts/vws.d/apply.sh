@@ -67,6 +67,10 @@ vws_cmd_main() {
   # VWS_BUNDLE_DIR: the rendered bundle, build/platform from scripts/platform.sh (the harness points it at fixtures).
   local bundle=${VWS_BUNDLE_DIR:-${VWS_ROOT}/build/platform}
   compgen -G "${bundle}/*.yaml" >/dev/null || vws_die_env "${bundle} has no bundle files; the installer image carries them (scripts/platform.sh)"
+  # spec.network.nodes picks the Kube-OVN interface and MTU, the Ceph networks and the external gateway (#127).
+  python3 "${VWS_ROOT}/scripts/vws.d/lib/platform.py" "${tmp}/cr.yaml" "$bundle" "${tmp}/bundle" ||
+    { rm -rf "$tmp"; vws_usage "the bundle does not fit spec.network.nodes (see above)"; }
+  bundle="${tmp}/bundle"
   for file in "${bundle}"/*.yaml; do
     # Bundle objects carry their own namespaces (kube-system, kubevirt, cdi, ...). Without -n, so
     # kubectl does not refuse them against the release namespace; the same for the -A wait (vws-deploy#81).

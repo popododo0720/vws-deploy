@@ -88,6 +88,13 @@ def secret_shaped(value, path):
 
 
 GENEVE_OVERHEAD = 100
+# The Kube-OVN Subnet of the external network. vws-network creates it (-kube-external-subnet).
+EXTERNAL_SUBNET = "vws-external"
+
+
+def host_interface(link):
+    """The host interface of a host network: the NIC, or its VLAN subinterface <nic>.<vlan>."""
+    return f"{link['nic']}.{link['vlan']}" if link.get("vlan") else link["nic"]
 MIN_MTU = 1280
 
 
