@@ -8,6 +8,7 @@ with helm.
 """
 import copy
 import ipaddress
+import json
 import re
 import sys
 from pathlib import Path
@@ -97,6 +98,11 @@ GENEVE_OVERHEAD = 100
 EXTERNAL_SUBNET = "vws-external"
 UNDERLAY_FLAGS = ("pool", "kube-external-subnet", "kube-provider-network", "kube-underlay-interface",
                   "kube-underlay-vlan", "kube-underlay-cidr", "kube-underlay-gateway", "kube-underlay-exclude")
+DIRECT_FLAGS = ("kube-direct-networks", "kube-direct-nad-namespace")
+# vws-network makes the NAD vws-direct-<name> of each direct network in the VM namespace at start and
+# never deletes it (vws-network docs/rbac.md "direct NAD Role").
+DIRECT_NAD_RULE = {"namespace": "vms", "apiGroups": ["k8s.cni.cncf.io"],
+                   "resources": ["network-attachment-definitions"], "verbs": ["get", "create"]}
 
 
 def host_interface(link):
@@ -198,6 +204,15 @@ def check_network(network):
                     raise Invalid(f"spec.network.nodes.external.eipPool: {pool} overlaps the gateway or excludeIPs")
 
 
+def underlay_nics(network):
+    """The sorted NICs of the external and direct networks; a NIC's place N names its ProviderNetwork vws-pn<N>."""
+    ext = (network.get("nodes") or {}).get("external")
+    nics = {d["nic"] for d in network.get("direct") or []}
+    if ext:
+        nics.add(ext["nic"])
+    return sorted(nics)
+
+
 def external_flags(network, services):
     """spec.network.nodes.external -> the underlay flags of vws-network (vws-network docs/underlay.md, #130).
 
@@ -212,7 +227,7 @@ def external_flags(network, services):
     taken = sorted(set(UNDERLAY_FLAGS) & set(flags))
     if taken:
         raise Invalid(f"spec.services.network.flags.{taken[0]}: comes from spec.network.nodes.external; remove it")
-    nics = sorted({ext["nic"]} | {d["nic"] for d in network.get("direct") or []})
+    nics = underlay_nics(network)
     flags.update({
         "pool": ext["eipPool"],
         "kube-external-subnet": EXTERNAL_SUBNET,
@@ -224,6 +239,38 @@ def external_flags(network, services):
     })
     if ext.get("excludeIPs"):
         flags["kube-underlay-exclude"] = ",".join(ext["excludeIPs"])
+
+
+def direct_flags(network, services, base):
+    """spec.network.direct -> -kube-direct-networks and -kube-direct-nad-namespace of vws-network (#131).
+
+    vws-network makes the Kube-OVN Subnet, the Vlan and the NAD vws-direct-<name> in the VM namespace
+    (vws-network cmd/vws-network/main.go:40-41). Nothing is rendered without direct networks.
+    """
+    direct = network.get("direct") or []
+    if not direct:
+        return
+    svc = services.setdefault("network", {})
+    flags = svc.setdefault("flags", {})
+    taken = sorted(set(DIRECT_FLAGS) & set(flags))
+    if taken:
+        raise Invalid(f"spec.services.network.flags.{taken[0]}: comes from spec.network.direct; remove it")
+    if not flags.get("kube-external-subnet"):
+        raise Invalid("spec.network.direct: needs spec.network.nodes.external or "
+                      "spec.services.network.flags.kube-external-subnet; vws-network refuses Kube-OVN without it")
+    nics = underlay_nics(network)
+    line = [{
+        "name": d["name"],
+        "providerNetwork": f"vws-pn{nics.index(d['nic'])}",
+        "interface": d["nic"],
+        "vlan": d.get("vlan", 0),
+        "cidr": d["cidr"],
+        "gateway": d["gateway"],
+        **({"exclude": list(d["excludeIPs"])} if d.get("excludeIPs") else {}),
+    } for d in direct]
+    flags["kube-direct-networks"] = json.dumps(line, separators=(",", ":"))
+    flags["kube-direct-nad-namespace"] = {"namespace": DIRECT_NAD_RULE["namespace"]}
+    svc["rbac"] = copy.deepcopy(svc.get("rbac") or base["services"]["network"]["rbac"]) + [copy.deepcopy(DIRECT_NAD_RULE)]
 
 
 def render(cr):
@@ -296,6 +343,7 @@ def render(cr):
         if "flags" in override:
             target.setdefault("flags", {}).update(override["flags"])
     external_flags(spec.get("network") or {}, services)
+    direct_flags(spec.get("network") or {}, services, base)
     pool = (((services.get("network") or {}).get("flags") or {}).get("pool")
              or base["services"]["network"].get("flags", {}).get("pool"))
     if not pool:

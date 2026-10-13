@@ -119,4 +119,20 @@ spec:
 남은 일:
 - EIP 풀은 Subnet `excludeIps`에 넣지 않는다. Kube-OVN이 VPC 외부 포트 주소를 풀 안에서 고를 수 있다. 넣을지는 excludeIps 안의 주소를 OvnEip `v4Ip`로 받는지 실측한 뒤 정한다(vws-network#52, 확인 필요).
 - `extraExternalSubnets`는 vws-network #53이 모든 Vpc에 넣는다. #53 이전에 만든 Vpc는 Conflict가 나며 vws-network `docs/kube-ovn-conflict-recovery.md`로 복구한다.
-- `direct[]`는 아직 렌더하지 않는다. vws-network#52의 `-kube-direct-networks`가 생기면 #131에서 한다.
+
+## direct 네트워크 플래그 (#131)
+
+`direct[]`가 비어 있지 않을 때만 `vws render`가 아래 두 플래그와 Role 하나를 더한다. 비어 있으면 아무것도 바뀌지 않는다. 두 플래그를 `spec.services.network.flags`에 직접 적으면 종료 코드 2다. vws-network는 Kube-OVN을 외부 Subnet 없이 시작하지 않으므로, `nodes.external`도 `kube-external-subnet` 플래그도 없으면 역시 종료 코드 2다.
+
+| 플래그 | 값 |
+| --- | --- |
+| `kube-direct-networks` | `direct[]`마다 `{"name","providerNetwork","interface","vlan","cidr","gateway","exclude"}`인 JSON 한 줄. `providerNetwork`는 위의 `vws-pn<N>`이라 같은 NIC의 external과 ProviderNetwork를 함께 쓴다. `exclude`는 `excludeIPs` 그대로이고 없으면 뺀다. `mtu`와 `mode`는 넘기지 않는다 |
+| `kube-direct-nad-namespace` | `{namespace: vms}`, 기본 values로 `vws-vms` |
+
+근거: vws-network `8ff82a7`(#67) `cmd/vws-network/main.go:40-41`, `cmd/vws-network/start.go:80`(모르는 키는 거절), `internal/network/dataplane_kubeovn_open.go:56`(direct가 있는데 네임스페이스가 비면 시작 거절).
+
+**VM 네임스페이스는 values `namespaces.vms`다.** #125는 direct NAD를 VM 네임스페이스에 둔다고만 했다. VM은 자기 네임스페이스의 NAD만 붙이므로 vws-compute의 `-vm-namespace`와 같은 키를 쓴다(`docs/service-config.md`). 테넌트 subnet NAD의 `nad` 네임스페이스와는 다르다.
+
+같은 때 network에 `vms` 네임스페이스 Role이 붙는다. `k8s.cni.cncf.io` network-attachment-definitions에 `get`, `create`다. vws-network가 시작 때 `vws-direct-<name>`을 만들고 지우지 않기 때문에 `delete`는 없다(vws-network `docs/rbac.md` "direct NAD Role"). 렌더는 `services.network.rbac`을 차트 기본 목록에 이 규칙을 더한 목록으로 쓴다.
+
+남은 일: 실제 클러스터에서 direct Subnet에 붙은 VM이 물리 게이트웨이에 닿는지는 확인 필요다(vws-network `docs/underlay.md`).

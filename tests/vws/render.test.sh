@@ -109,12 +109,26 @@ PY
 }
 net_cr "pass"
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "a 4-NIC CR with direct networks renders" 0
-flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
+flags=$(python3 -c 'import sys,yaml,json; f=yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]; print(json.dumps({k: v for k, v in f.items() if "direct" not in k}, sort_keys=True))' "${WORK}/net.out")
 expect_text "nodes.external becomes the vws-network underlay flags (#130)" "$flags" '{"kube-external-subnet": "vws-external", "kube-provider-network": "vws-pn0", "kube-underlay-cidr": "198.18.10.0/24", "kube-underlay-exclude": "198.18.10.1..198.18.10.9", "kube-underlay-gateway": "198.18.10.1", "kube-underlay-interface": "enp4s0", "kube-underlay-vlan": 100, "pool": "198.18.10.64/26"}'
+# spec.network.direct -> -kube-direct-networks, -kube-direct-nad-namespace and a vms Role (#131).
+direct=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]["kube-direct-networks"])' "${WORK}/net.out")
+expect_text "direct networks become one JSON line in the vws-network contract (#131)" "$direct" '[{"name":"prod","providerNetwork":"vws-pn0","interface":"enp4s0","vlan":200,"cidr":"192.168.200.0/24","gateway":"192.168.200.1"},{"name":"lab","providerNetwork":"vws-pn0","interface":"enp4s0","vlan":0,"cidr":"192.168.10.0/24","gateway":"192.168.10.1","exclude":["192.168.10.1..192.168.10.20"]}]'
+expect_text "the direct NADs go to the VM namespace" "$(cat "${WORK}/net.out")" "kube-direct-nad-namespace:
+        namespace: vms"
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/net.out")
+expect_text "the chart passes the VM namespace to vws-network" "$chart" "-kube-direct-nad-namespace=vws-vms"
+role=$(printf '%s\n' "$chart" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["namespace"] == "vws-vms" and "network" in d["metadata"]["name"]:
+        print([(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])')
+expect_text "network gets get/create on NADs in the VM namespace" "$role" "(['k8s.cni.cncf.io'], ['network-attachment-definitions'], ['get', 'create'])"
 net_cr 'n["nodes"].pop("external"); n.pop("direct"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "nodes without external renders" 0
 flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
 expect_text "without external only the pool is set" "$flags" '{"pool": "198.18.1.0/24"}'
+expect_text "without direct networks the network RBAC is the chart default" "$(python3 -c 'import sys,yaml; print("rbac" in yaml.safe_load(open(sys.argv[1]))["services"]["network"])' "${WORK}/net.out")" "False"
 net_cr 'n["direct"][0]["nic"] = "enp0s9"'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
 expect_text "the provider network index follows the sorted underlay NICs" "$(cat "${WORK}/net.out")" "kube-provider-network: vws-pn1"
@@ -125,6 +139,8 @@ bad_net() {
   rm -f "${WORK}/net.bad"
 }
 bad_net "a pool flag beside nodes.external" 'spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
+bad_net "a direct flag beside spec.network.direct" 'spec["services"]["network"] = {"flags": {"kube-direct-nad-namespace": "x"}}'
+bad_net "direct networks without an external subnet" 'n["nodes"].pop("external"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 bad_net "an underlay flag beside nodes.external" 'spec["services"]["network"] = {"flags": {"kube-underlay-vlan": 7}}'
 bad_net "an RFC 5737 eipPool" 'n["nodes"]["external"].update(cidr="203.0.113.0/24", gateway="203.0.113.1", excludeIPs=[], eipPool="203.0.113.64/26")'
 bad_net "nodes without management" 'del n["nodes"]["management"]'
