@@ -1,0 +1,15 @@
+# The kube-ovn-cni arguments of the real bundle (build/platform/20-kube-ovn.yaml), cut down.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-ovn-cni
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: cni-server
+        args:
+          - --node-switch=join
+          - --iface=
+          - --network-type=geneve

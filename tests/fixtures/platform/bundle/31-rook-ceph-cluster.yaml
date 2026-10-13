@@ -1,0 +1,10 @@
+# The CephCluster of the real bundle (build/platform/31-rook-ceph-cluster.yaml), cut down.
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  network:
+    connections:
+      requireMsgr2: true
