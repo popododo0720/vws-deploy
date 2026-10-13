@@ -63,6 +63,25 @@ for resource in pods volumeattachments; do
   if [[ ! -e ${WORK}/snap-${resource}.json ]]; then ok "unreadable ${resource} leaves no snapshot"; else bad "snapshot left" "${resource}"; fi
 done
 
+# #150: the drain gate. A reboot goes ahead only when the node is cordoned and has no RBD attachment.
+drain_case() { # NAME UNSCHEDULABLE ATTACHED WANT_RC TEXT
+  scenario "drain-$1"
+  jq -n --argjson u "$2" '{kind: "Node", metadata: {name: "node-a"}, spec: {unschedulable: $u}}' >"${VWS_FAKE_DIR}/kubectl/get_nodes.json"
+  jq -n --argjson a "$3" '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com"}, status: {attached: $a}},
+    {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com"}, status: {attached: true}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+  run_vws_real verify-reboot --drained node-a; expect_rc "drain $1 exits $4" "$4"
+  expect_text "drain $1 says why" "$OUT" "$5"
+  assert_no_changes "drain $1 changes nothing"
+}
+drain_case finished true false 0 "OK    drained  node-a is cordoned and has no RBD volume attached; safe to reboot"
+drain_case not-run false false 1 "FAIL  drained  node-a is not cordoned: the drain did not run or failed; do not reboot"
+drain_case unfinished true true 1 "FAIL  drained  node-a still has 1 RBD volumes attached: the drain did not finish; do not reboot"
+scenario drain-unreadable
+rm "${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+run_vws_real verify-reboot --drained node-a; expect_rc "unreadable volumeattachments at the drain gate exits 3" 3
+expect_text "the drain gate says do not reboot" "$ERR" "do not reboot node-a"
+run_vws_real verify-reboot --drained node-a --snapshot "${WORK}/x.json"; expect_rc "--drained with another mode exits 2" 2
+
 scenario recovered
 rebooted
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "a full recovery exits 0" 0
