@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # platform.py on a CR built from examples/vwscluster/ha.yaml and tests/fixtures/render/node-network.yaml.
 # Sourced by render.test.sh.
+# shellcheck disable=SC2034 # read by render.test.sh
 PLATFORM_BUNDLE="${VWS_TEST_ROOT}/tests/fixtures/platform/bundle"
 platform_cr() { # PYTHON_EDIT -> ${WORK}/pcr.yaml
   python3 - "${VWS_TEST_ROOT}/examples/vwscluster/ha.yaml" "${VWS_TEST_ROOT}/tests/fixtures/render/node-network.yaml" "$1" >"${WORK}/pcr.yaml" <<'PY'
