@@ -73,6 +73,17 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 각 code는 HTTP 상태와 vws-lib `errs.Code`를 하나씩 가진다. `retryable`은 `errs.Code.Retryable()`이다. #139 표에 더한 것: 404 `not_found`(모르는 경로나 단계), 409 `not_confirmed`, 501 `not_implemented`, 500 `internal`. 내부 오류의 원인은 로그에만 남고 응답에는 "internal error"만 간다. 설치 실패의 원인도 응답에 넣지 않는다.
 
+## TUI `vws init` (#142)
+
+설치 파드 안에서 `vws init`(인자 없음)은 `vws-installer tui`를 실행한다. state 디렉터리의 접속 코드로 로그인하고, 인증서를 `fingerprint`의 SHA-256으로 고정한다(CA 없음, 다른 인증서는 거절). 단계 순서대로 묻는다.
+
+- roles: 노드 목록(기본은 전부). network: NIC 목록(노드별)을 보여 주고 management(필수), tunnel·storage public·external(선택, `skip`)의 NIC, CIDR, VLAN, MTU, external은 gateway도. storage: 비활성 드라이버를 "준비 중"으로 보여 주고 고를 수 있는 것만 묻는다. eip, profile을 묻고 observability는 비운다.
+- `validation_failed`면 필드 오류를 보여 주고 그 단계를 다시 묻는다. preflight 중 `pass`가 아닌 검사를 보여 주고, 막히면 다시 묻는다.
+- summary의 CR과 경고를 보여 주고 `yes`일 때만 install한다. 진행률 스트림(#145) 전까지는 `/result`를 2초마다 읽는다. 끝나면 콘솔 URL과 관리자 이름을 보여 준다. 초기 비밀번호는 #146 전까지 없다고 알린다.
+- `no`나 입력 끝이면 아무것도 설치하지 않고 끝난다(draft는 설치기에 남는다).
+
+`vws init --print-url`은 `vws-installer print-url`이다. port-forward 주소, 접속 코드, 인증서 지문을 exec 터미널에만 출력한다. 코드는 1회용이라 로그인할 때마다 새 코드를 다시 읽어야 한다.
+
 ## 시험 (가짜 클러스터, T0)
 
 `cd installer && go vet ./... && go test -race ./...`. CI는 `installer` 잡이 돌린다. 시험 범위:
@@ -80,6 +91,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 - 인증: 코드 모양, 반복 없음, 1회용, 새 로그인이 옛 세션을 끊음, 5회 실패 시 403과 새 코드, 30분 유휴 만료와 갱신, 쿠키 속성, 모든 경로가 세션 없이 401, 응답 본문에 코드 없음.
 - 상태 기계: 처음부터 끝까지, 순서 위반, `spec_changed`, `not_confirmed`, 설치 중 409, 설치 후 409, 실패 뒤 재시도.
 - 단계 검증 16가지, 비활성 드라이버, network 변경 뒤 eip 재검사, preflight 차단과 경고, 잘못된 본문, 404, 501, CR의 apiVersion이 차트 CRD와 같음.
+- TUI(`internal/tui`): 실제 API를 TLS로 띄워 처음부터 설치까지, 필드 오류 뒤 재질문, preflight 표시, 거절과 입력 끝, 설치 실패, 다른 인증서 거절, 클라이언트 오류 모델. `print-url` 출력. `tests/vws/init.test.sh`: 파드 안 `vws init`이 TUI를, `--print-url`이 print-url을 실행하고 `--from`은 그대로 저장.
 - `cluster.VWS`: 가짜 `kubectl`, `vws` 스크립트로 노드 목록, init 다음 apply 순서, init 실패 시 apply 안 함, CR 파일 0600.
 
 ## 남은 일 (이 PR 밖)
