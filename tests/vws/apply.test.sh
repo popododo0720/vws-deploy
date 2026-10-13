@@ -103,8 +103,6 @@ temp_binding 20000 14400
 run_vws_real apply;                              expect_rc "past the TTL apply revokes and exits 1" 1
 if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "no install past the TTL" "$(calls)"; else ok "no install past the TTL"; fi
 
-finish_tests
-
 # #114: an older CRD (no spec.storage.s3) is applied before the CR is read, so the CR keeps the field.
 installer_scenario oldcrd
 jq 'del(.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.storage.properties.s3)' \
@@ -115,3 +113,5 @@ crd_line=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
 cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
 if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRD is applied before the CR is read"; else bad "CRD apply before CR read" "$(calls)"; fi
 if sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -q '^kind: CustomResourceDefinition'; then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+
+finish_tests
