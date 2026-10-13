@@ -513,7 +513,7 @@ PY
   ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
-  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws <(printf 'global:\n  probe: grpc\n')
+  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
   grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
   ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: the default render lacks storage gRPC readiness (#110)"
@@ -526,7 +526,7 @@ ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-sto
          for d in yaml.safe_load_all(open(sys.argv[1])))
 sys.exit(0 if ok else 1)
 PY
-  python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws <(printf 'global:\n  pendingFlags: true\n')
+  python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  pendingFlags: true\n')
 
   cat > "$tmp/override.yaml" <<'YAML'
 global:
@@ -548,7 +548,7 @@ services:
       rgw: {enabled: true, endpoint: "http://rgw.acme:8080", bucketPrefix: acme, existingSecret: acme-rgw-s3}
 YAML
   helm template acme charts/vws -f "$SITE_VALUES" --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
-  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$tmp/override.yaml"
+  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$SITE_VALUES" "$tmp/override.yaml"
   local want
   for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
     -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt \
@@ -790,7 +790,7 @@ cmd_profiles() {
     helm lint charts/vws --strict -f "$SITE_VALUES" -f "profiles/${profile}.yaml" >/dev/null || die "R19: helm lint fails with ${profile}"
     helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
     kubeconform -strict -kubernetes-version "$version" -cache .cache/kubeconform "$tmp/${profile}.yaml" || die "R19: kubeconform rejects ${profile}"
-    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
+    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
     # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.values.yaml" >/dev/null || die "R19: vws render fails on examples/vwscluster/${profile}.yaml"
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.again.yaml" >/dev/null
