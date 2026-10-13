@@ -153,6 +153,61 @@ run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --allow-heal
 expect_rc "single-node HEALTH_WARN fully allowlisted exits 0" 0
 expect_text "single-node allowlisted HEALTH_WARN passes csi" "$OUT" "OK    gate-csi"
 
+# #166: external Ceph (no CephCluster CRD) never passes the csi gate silently.
+external_ceph() { # NAME
+  scenario "$1"
+  rebooted
+  echo '{"items": []}' >"${VWS_FAKE_DIR}/kubectl/get_cephcluster.json"
+}
+health_file() { # STATUS CODE...: write ceph health detail -f json to ${WORK}/health.json, newer than the snapshot
+  local status=$1
+  shift
+  printf '%s\n' "$@" | jq -R 'select(. != "")' | jq -s --arg s "$status" '{status: $s, checks: (map({key: ., value: {severity: $s, summary: {message: "m"}}}) | from_entries), mutes: []}' >"${WORK}/health.json"
+  touch -d '+2 seconds' "${WORK}/health.json"
+}
+external_ceph xceph-none
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "external Ceph without a source exits 1" 1
+expect_text "external Ceph says what to give" "$(first_line)" "FAIL  gate-csi  blocked at gate csi: no CephCluster CRD (external Ceph?): give --ceph-health-file"
+
+external_ceph xceph-skip
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --skip-ceph-gate; expect_rc "--skip-ceph-gate exits 0" 0
+expect_text "the skip is a loud WARN" "$OUT" "WARN  gate-csi  SKIPPED by --skip-ceph-gate: no CephCluster and no --ceph-health-file, Ceph health was NOT checked"
+if ! grep -q "OK    gate-csi" <<<"$OUT"; then ok "a skipped gate is not reported as passed"; else bad "skip as OK" "$OUT"; fi
+
+external_ceph xceph-ok
+health_file HEALTH_OK
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --ceph-health-file "${WORK}/health.json"; expect_rc "a HEALTH_OK file exits 0" 0
+expect_text "a HEALTH_OK file passes csi" "$OUT" "OK    gate-csi"
+
+external_ceph xceph-warn
+health_file HEALTH_WARN AUTH_INSECURE_KEYS_ALLOWED
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --ceph-health-file "${WORK}/health.json"; expect_rc "a WARN file without an allowlist exits 3" 3
+expect_text "the file's code is named" "$(first_line)" "with checks not allowed: AUTH_INSECURE_KEYS_ALLOWED"
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --ceph-health-file "${WORK}/health.json" --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "a WARN file with its code allowlisted exits 0" 0
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --ceph-health-file "${WORK}/health.json" --skip-ceph-gate
+expect_rc "a file wins over --skip-ceph-gate" 3
+
+external_ceph xceph-err
+health_file HEALTH_ERR MON_DOWN
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --ceph-health-file "${WORK}/health.json"; expect_rc "a HEALTH_ERR file exits 1" 1
+
+external_ceph xceph-stale
+health_file HEALTH_OK
+touch -d '-1 hour' "${WORK}/health.json"
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --ceph-health-file "${WORK}/health.json"; expect_rc "a file older than the snapshot exits 3" 3
+expect_text "a stale file says so" "$(first_line)" "is not newer than the snapshot"
+
+external_ceph xceph-garbage
+echo '{"foo": 1}' >"${WORK}/health.json"; touch -d '+2 seconds' "${WORK}/health.json"
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --ceph-health-file "${WORK}/health.json"; expect_rc "a file that is not ceph health JSON exits 3" 3
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --ceph-health-file "${WORK}/missing.json"; expect_rc "a missing health file exits 3" 3
+
+external_ceph rook-booting
+echo '{"metadata": {"name": "cephclusters.ceph.rook.io"}}' >"${VWS_FAKE_DIR}/kubectl/get_crd.json"
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --skip-ceph-gate; expect_rc "Rook without a CephCluster yet waits (3) even with --skip-ceph-gate" 3
+expect_text "Rook waits for the CephCluster" "$(first_line)" "no CephCluster yet"
+
 scenario cni-timeout
 rebooted
 edit_json get_pods.json '(.items[] | select(.metadata.name == "kube-ovn-cni-x1") | .status.containerStatuses[0].ready) = false'
