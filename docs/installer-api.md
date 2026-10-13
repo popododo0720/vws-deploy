@@ -63,7 +63,23 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 | profile | single-node, small, ha. 기본은 노드 1대면 single-node, 아니면 small | `spec.profile` |
 | observability | `{"otlpEndpoint": ""}`. vws render가 아직 엔드포인트를 받지 않아 비어 있어야 한다 | `spec.observability` |
 
-검증에 실패하면 값은 `invalid`로 저장되고 400 `validation_failed`와 `fields`가 온다. preflight는 `Preflight` 함수로 꽂는다. 엔진(#143) 전에는 검사가 없다. `fail`+`error`는 단계를 `invalid`로 만든다. 나머지 `pass`가 아닌 검사는 summary의 `warnings`로 간다.
+검증에 실패하면 값은 `invalid`로 저장되고 400 `validation_failed`와 `fields`가 온다. `fail`+`error`는 단계를 `invalid`로 만든다. 나머지 `pass`가 아닌 검사(`warning`, `unknown`)는 막지 않고 summary의 `warnings`로 간다.
+
+## preflight 엔진 (#143)
+
+`internal/preflight`가 단계 값으로 검사를 만든다. Kubernetes API와 선택적인 links 파일만 읽는다(R10). #128의 노드망 검사(`scripts/vws.d/lib/nodenet.py`)를 같은 규칙으로 옮겼다. `vws preflight`의 nodenet.py는 파드 밖 CLI용으로 그대로 둔다.
+
+| 단계 | id | 심각도 | 내용 |
+| --- | --- | --- | --- |
+| roles | `node.ready` | error | 고른 노드마다 Ready |
+| network | `node.ip` | error | 노드마다 InternalIP 하나가 management CIDR 안 |
+| network | `nic.exists`, `nic.mtu` | error | 노드마다 인터페이스가 있고 MTU가 CR 값(없으면 1500) 이상. 호스트 망은 `<nic>` 또는 `<nic>.<vlan>`, external과 direct(underlay)는 NIC 그대로. 한 인터페이스를 여러 망이 쓰면 큰 MTU |
+| network | `nic.links` | warning, unknown | 그 노드의 links가 없음. 막지 않는다 |
+| storage | `storage.class` | error(목록을 못 읽으면 warning, unknown) | existing의 StorageClass가 있음 |
+| storage | `storage.nfs` | info, unknown | NFS 서버에는 접속하지 않는다 |
+| profile | `profile.nodes` | error | Ready 노드 수 ≥ single-node 1, small 3, ha 6(`VWS_PROFILE_MIN_NODES`) |
+
+NIC과 MTU는 `vws-installer -links FILE`(`talosctl -n <모든 노드> get links -o json`, nodenet.py와 같은 입력)에서 읽는다. links의 `node`는 노드 이름이나 InternalIP다. links가 그 노드를 모르면 `nic.links`가 unknown이고 network 선택지 `options.nics`도 그 노드는 비어 있다. bootstrap Deployment는 아직 `-links`를 넘기지 않는다(파일을 넣을 방법은 확인 필요).
 
 ## 오류 모델
 
@@ -97,4 +113,4 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 ## 남은 일 (이 PR 밖)
 
 - 이미지: `bootstrap/Containerfile`의 빌드 단계(`INSTALLER_GO_IMAGE`, `installer/go.mod`의 Go 버전과 같아야 한다, R20)가 `CGO_ENABLED=0`으로 빌드해 `/opt/vws/bin/vws-installer`에 넣는다(#191). 발행과 digest 고정은 아직이다(`VWS_INSTALLER_IMAGE` digest 0).
-- 실제 클러스터에서 TLS, port-forward, 설치 경로(미실행). 노드 NIC 목록은 Node 객체에 없어서(R10) #143이 채운다. 그 전에는 `options.nics`가 비어 있다.
+- 실제 클러스터에서 TLS, port-forward, 설치 경로(미실행). 실제 links 파일로 NIC 검사(미실행).
