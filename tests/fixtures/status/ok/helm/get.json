@@ -1,39 +1,42 @@
 {
- "global": {
-  "profile": "single-node",
-  "topologySpread": "soft"
- },
- "services": {
-  "compute": {
-   "cpu": "100m",
-   "memory": "256Mi",
-   "state": {
-    "size": "20Gi"
-   }
+  "global": {
+    "profile": "single-node",
+    "topologySpread": "soft"
   },
-  "console": {
-   "cpu": "100m",
-   "memory": "256Mi",
-   "replicas": 2
-  },
-  "console-api": {
-   "cpu": "100m",
-   "memory": "256Mi",
-   "replicas": 2
-  },
-  "network": {
-   "cpu": "100m",
-   "memory": "256Mi",
-   "state": {
-    "size": "20Gi"
-   }
-  },
-  "storage": {
-   "cpu": "100m",
-   "memory": "256Mi",
-   "state": {
-    "size": "20Gi"
-   }
+  "services": {
+    "compute": {
+      "cpu": "100m",
+      "memory": "256Mi",
+      "state": {
+        "size": "20Gi"
+      }
+    },
+    "console": {
+      "cpu": "100m",
+      "memory": "256Mi",
+      "replicas": 2
+    },
+    "console-api": {
+      "cpu": "100m",
+      "memory": "256Mi",
+      "replicas": 2
+    },
+    "network": {
+      "cpu": "100m",
+      "memory": "256Mi",
+      "state": {
+        "size": "20Gi"
+      },
+      "flags": {
+        "pool": "198.18.0.0/24"
+      }
+    },
+    "storage": {
+      "cpu": "100m",
+      "memory": "256Mi",
+      "state": {
+        "size": "20Gi"
+      }
+    }
   }
- }
 }

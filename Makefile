@@ -27,11 +27,11 @@ hooks:
 	git config core.hooksPath .githooks
 
 lint:
-	helm lint $(CHART) --strict
+	helm lint $(CHART) --strict -f $(CHART)/ci/site.yaml
 
 render:
 	mkdir -p build
-	helm template $(RELEASE) $(CHART) --namespace $(NAMESPACE) > build/vws.yaml
+	helm template $(RELEASE) $(CHART) -f $(CHART)/ci/site.yaml --namespace $(NAMESPACE) > build/vws.yaml
 
 conform: render
 	mkdir -p .cache/kubeconform

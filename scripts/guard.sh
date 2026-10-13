@@ -4,6 +4,8 @@ set -euo pipefail
 export LC_ALL=C
 
 ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Site-only values (the elastic IP pool) that every helm call of these checks needs.
+SITE_VALUES=charts/vws/ci/site.yaml
 cd "$ROOT"
 
 die() {
@@ -196,7 +198,7 @@ for case in cases:
     yaml.safe_dump(case, handle)
     handle.close()
     proc = subprocess.run(
-        ["helm", "lint", "charts/vws", "--strict", "-f", handle.name],
+        ["helm", "lint", "charts/vws", "--strict", "-f", "charts/vws/ci/site.yaml", "-f", handle.name],
         capture_output=True,
         text=True,
     )
@@ -375,8 +377,8 @@ cmd_recovery() {
   local rendered
   rendered=$(mktemp)
   local release=${VWS_RELEASE:-vws}
-  helm template "$release" charts/vws --namespace "$release" > "$rendered"
-  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml "$release"
+  helm template "$release" charts/vws -f "$SITE_VALUES" --namespace "$release" > "$rendered"
+  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml "$release" "$SITE_VALUES"
   rm -f "$rendered"
 }
 
@@ -487,7 +489,7 @@ cmd_config() {
     fi
   done < <(python3 -c 'import yaml;print(*yaml.safe_load(open("charts/vws/values.yaml"))["namespaces"].values(), sep="\n")')
 
-  helm template vws charts/vws --namespace vws > "$tmp/default.yaml"
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/default.yaml"
   grep -q -e '- -kube-namespace=vws-vms' "$tmp/default.yaml" || die "R14: storage does not get -kube-namespace from values"
   local f
   for f in -hypervisor=kubevirt -vm-namespace=vws-vms -image-namespace=vws-images -storage=storage:7400; do
@@ -510,12 +512,12 @@ PY
 
   ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
-  helm template vws charts/vws --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
-  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws <(printf 'global:\n  probe: grpc\n')
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
+  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
   grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
   ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: the default render lacks storage gRPC readiness (#110)"
-  helm template vws charts/vws --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/health.yaml" || die "R15: global.pendingFlags=true does not render storage gRPC readiness"
   python3 - "$tmp/default.yaml" <<'PY' || die "R14: storage has no virtualmachines list in the VM namespace (#123, vws-storage#68)"
 import sys, yaml
@@ -524,7 +526,7 @@ ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-sto
          for d in yaml.safe_load_all(open(sys.argv[1])))
 sys.exit(0 if ok else 1)
 PY
-  python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws <(printf 'global:\n  pendingFlags: true\n')
+  python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  pendingFlags: true\n')
 
   cat > "$tmp/override.yaml" <<'YAML'
 global:
@@ -545,8 +547,8 @@ services:
     s3:
       rgw: {enabled: true, endpoint: "http://rgw.acme:8080", bucketPrefix: acme, existingSecret: acme-rgw-s3}
 YAML
-  helm template acme charts/vws --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
-  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$tmp/override.yaml"
+  helm template acme charts/vws -f "$SITE_VALUES" --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
+  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$SITE_VALUES" "$tmp/override.yaml"
   local want
   for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
     -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt \
@@ -557,7 +559,7 @@ YAML
 
   grep -q -e 'secretName: acme-network-kubeconfig' "$tmp/override.rendered.yaml" || die "R16: kubeconfigSecret is not mounted"
   # -s3-bucket-prefix is not gated by global.pendingFlags since vws-storage#46 (#105).
-  helm template vws charts/vws --namespace vws --set services.storage.s3.rgw.enabled=true \
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.storage.s3.rgw.enabled=true \
     --set services.storage.s3.rgw.endpoint=http://r:8080 --set services.storage.s3.rgw.bucketPrefix=lab |
     grep -q -e '- -s3-bucket-prefix=lab$' || die "R14: bucketPrefix does not render without global.pendingFlags"
   ! grep -q -e '^kind: Secret' "$tmp/default.yaml" "$tmp/override.rendered.yaml" || die "R16: the chart renders a Secret"
@@ -566,7 +568,7 @@ YAML
   ! grep -q -e 'VWS_S3_\|object-backend' "$tmp/default.yaml" || die "R16: the default render enables the s3 object backend"
   # bucketPrefix: at most 18 characters, so <prefix>-vws-<40 hex> fits 63 (vws-storage#46, #103).
   printf '%s\n' 'global: {pendingFlags: true}' 'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: abcdefghij12345678}}}}' >"$tmp/prefix.yaml"
-  helm template vws charts/vws --namespace vws -f "$tmp/prefix.yaml" | grep -q -e '- -s3-bucket-prefix=abcdefghij12345678$' ||
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "$tmp/prefix.yaml" | grep -q -e '- -s3-bucket-prefix=abcdefghij12345678$' ||
     die "R16: an 18-character bucketPrefix does not render"
 
   local bad
@@ -589,7 +591,7 @@ YAML
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: -acme}}}}' \
     'global: {probe: http}'; do
     printf '%s\n' "$bad" > "$tmp/bad.yaml"
-    if helm template vws charts/vws --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
+    if helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
       rm -rf "$tmp"
       die "R14: chart accepted ${bad}"
     fi
@@ -785,10 +787,10 @@ cmd_profiles() {
   profile_keys profiles/*.yaml || die "R19: profiles must set the same keys"
   for profile in single-node small ha; do
     [[ -f profiles/${profile}.yaml ]] || die "R19: profiles/${profile}.yaml is missing"
-    helm lint charts/vws --strict -f "profiles/${profile}.yaml" >/dev/null || die "R19: helm lint fails with ${profile}"
-    helm template vws charts/vws --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
+    helm lint charts/vws --strict -f "$SITE_VALUES" -f "profiles/${profile}.yaml" >/dev/null || die "R19: helm lint fails with ${profile}"
+    helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
     kubeconform -strict -kubernetes-version "$version" -cache .cache/kubeconform "$tmp/${profile}.yaml" || die "R19: kubeconform rejects ${profile}"
-    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
+    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
     # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.values.yaml" >/dev/null || die "R19: vws render fails on examples/vwscluster/${profile}.yaml"
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.again.yaml" >/dev/null

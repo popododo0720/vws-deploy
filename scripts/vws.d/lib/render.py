@@ -233,6 +233,12 @@ def render(cr):
                 target[key] = override[key]
         if "flags" in override:
             target.setdefault("flags", {}).update(override["flags"])
+    pool = (((services.get("network") or {}).get("flags") or {}).get("pool")
+             or base["services"]["network"].get("flags", {}).get("pool"))
+    if not pool:
+        raise Invalid("spec.services.network.flags.pool: required; the elastic IP pool CIDR has no default (vws-deploy#148)")
+    if re.match(r"^(192\.0\.2|198\.51\.100|203\.0\.113)\.", str(pool)):
+        raise Invalid(f"spec.services.network.flags.pool: {pool} is an RFC 5737 documentation range; use the site's elastic IP range")
     return HEADER + yaml.safe_dump(out, sort_keys=True, default_flow_style=False)
 
 

@@ -1,1 +1,1 @@
-{"apiVersion":"FILLED_BY_TEST","kind":"VWSCluster","metadata":{"name":"vws","namespace":"vws","managedFields":[{"manager":"vws"}]},"spec":{"profile":"single-node"},"status":{"observedGeneration":2}}
+{"apiVersion": "FILLED_BY_TEST", "kind": "VWSCluster", "metadata": {"name": "vws", "namespace": "vws", "managedFields": [{"manager": "vws"}]}, "spec": {"profile": "single-node", "services": {"network": {"flags": {"pool": "198.18.0.0/24"}}}}, "status": {"observedGeneration": 2}}
