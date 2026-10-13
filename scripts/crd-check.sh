@@ -25,7 +25,7 @@ if (($#)); then files=("$@"); else files=("$ROOT"/charts/*/crds/*.yaml); fi
 work=$(mktemp -d)
 pids=()
 cleanup() {
-  local p
+  local i
   # Stop the apiserver before etcd (it blocks on a dead etcd), then force.
   for ((i = ${#pids[@]} - 1; i >= 0; i--)); do
     kill "${pids[i]}" 2>/dev/null || true
