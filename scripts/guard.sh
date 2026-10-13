@@ -848,7 +848,7 @@ text = open(sys.argv[1]).read()
 for bad in ("privileged: true", "hostPath:", "hostNetwork: true", "hostPID: true", "hostIPC: true"):
     if bad in text:
         fail(f"bootstrap.yaml has {bad}")
-pods = [d["spec"] for d in docs if d["kind"] == "Pod"] + [d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Job"]
+pods = [d["spec"] for d in docs if d["kind"] == "Pod"] + [d["spec"]["template"]["spec"] for d in docs if d["kind"] in ("Deployment", "Job")]
 for spec in pods:
     for c in spec["containers"]:
         if "@sha256:" not in c["image"]:
@@ -860,9 +860,29 @@ if [d["metadata"]["name"] for d in admin] != ["vws-installer-temp"]:
     fail("cluster-admin is bound only by vws-installer-temp")
 if int((admin[0]["metadata"].get("annotations") or {}).get("vws-installer-ttl-seconds", "0")) != ttl:
     fail("vws-installer-temp has no vws-installer-ttl-seconds annotation equal to INSTALLER_TTL_SECONDS")
-pod = by.get(("Pod", "vws-installer"))
-if pod is None or pod["spec"].get("activeDeadlineSeconds") != ttl:
-    fail("the installer pod must end at INSTALLER_TTL_SECONDS (activeDeadlineSeconds)")
+if [d["metadata"]["name"] for d in docs if d["kind"] == "Pod"]:
+    fail("the installer runs as the Deployment vws-installer, not a bare Pod")
+dep = by.get(("Deployment", "vws-installer"))
+if dep is None or dep["spec"].get("replicas") != 1 or (dep["spec"].get("strategy") or {}).get("type") != "Recreate":
+    fail("the installer is the Deployment vws-installer with replicas 1 and strategy Recreate (one draft session)")
+tpl = dep["spec"]["template"]
+if "activeDeadlineSeconds" in tpl["spec"] or tpl["spec"].get("restartPolicy", "Always") != "Always":
+    fail("a Deployment pod cannot set activeDeadlineSeconds or restartPolicy; the reaper bounds the rights")
+svc = by.get(("Service", "vws-installer"))
+if svc is None or svc["spec"].get("type", "ClusterIP") != "ClusterIP":
+    fail("the installer Service vws-installer must be type ClusterIP")
+for key in ("externalIPs", "loadBalancerIP", "externalName"):
+    if key in svc["spec"]:
+        fail(f"the installer Service sets {key}")
+if any("nodePort" in p for p in svc["spec"]["ports"]):
+    fail("the installer Service sets a nodePort")
+if not svc["spec"].get("selector") or any(tpl["metadata"]["labels"].get(k) != v for k, v in svc["spec"]["selector"].items()):
+    fail("the installer Service selector does not match the installer pod")
+names = {p["name"] for c in tpl["spec"]["containers"] for p in c.get("ports", [])}
+if any(p["targetPort"] not in names for p in svc["spec"]["ports"]):
+    fail("the installer Service targets a port the pod does not name")
+if [d["metadata"]["name"] for d in docs if d["kind"] in ("Ingress", "Service") and d["metadata"]["name"] != "vws-installer"]:
+    fail("bootstrap.yaml exposes the installer through a second Service or an Ingress")
 reaper = by.get(("Job", "vws-installer-reaper"))
 if reaper is None:
     fail("the reaper Job that deletes vws-installer-temp at its TTL is missing")
@@ -921,7 +941,13 @@ cmd_bootstrap() {
   bad_bootstrap "a privileged container" 's#^\( *\)allowPrivilegeEscalation: false#\1allowPrivilegeEscalation: false\n\1privileged: true#'
   bad_bootstrap "privilege escalation" '0,/allowPrivilegeEscalation: false/s//allowPrivilegeEscalation: true/'
   bad_bootstrap "a binding without a TTL" '/vws-installer-ttl-seconds: /d'
-  bad_bootstrap "a pod without a deadline" "0,/activeDeadlineSeconds: ${ttl}\$/s///"
+  bad_bootstrap "a NodePort Service" 's/^  type: ClusterIP$/  type: NodePort/'
+  bad_bootstrap "two installer replicas" 's/^  replicas: 1$/  replicas: 2/'
+  bad_bootstrap "a rolling update" 's/^    type: Recreate$/    type: RollingUpdate/'
+  bad_bootstrap "a deadline on the Deployment pod" 's/^      serviceAccountName: vws-installer$/&\n      activeDeadlineSeconds: 60/'
+  bad_bootstrap "a Service that selects nothing" '/^  selector:$/{n;s/name: vws-installer/name: other/}'
+  bad_bootstrap "a Service on an unnamed port" 's/targetPort: api/targetPort: web/'
+  bad_bootstrap "a bare installer Pod" 's/^kind: Deployment$/kind: Pod/'
   bad_bootstrap "no reaper" 's/name: vws-installer-reaper/name: something-else/'
   bad_bootstrap "a reaper deadline equal to the TTL" "s/activeDeadlineSeconds: $((ttl + 600))/activeDeadlineSeconds: ${ttl}/"
   bad_bootstrap "a second cluster-admin binding" 's/name: vws-operator-read$/name: cluster-admin/'
