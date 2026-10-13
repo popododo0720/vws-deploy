@@ -9,9 +9,10 @@
 | 호출 | 리소스 | 동사 | 네임스페이스 |
 | --- | --- | --- | --- |
 | `Get`, `Create`, `Delete`, `Patch`(merge), `List` | `kubevirt.io` virtualmachines | get, create, delete, patch, list | VM 네임스페이스 `Config.Namespace` |
-| `Delete`(재부팅 시) | `kubevirt.io` virtualmachineinstances | delete | VM 네임스페이스 |
+| `Get`(READY 판정, vws-compute#50), `Delete`(재부팅 시) | `kubevirt.io` virtualmachineinstances | get, delete | VM 네임스페이스 |
 | `Get`, `Create`, `Delete` | `cdi.kubevirt.io` datavolumes, datasources | get, create, delete | 이미지 네임스페이스 `Config.ImageNamespace` |
-| `Get`(용량 읽기) | persistentvolumeclaims | get | 이미지 네임스페이스 |
+| `Get`(`checkAttachable`, 헬스 프로브) | persistentvolumeclaims | get | VM 네임스페이스(#121) |
+| `Get`(용량 읽기, 헬스 프로브) | persistentvolumeclaims | get | 이미지 네임스페이스 |
 | `Get`, `List`, `Create`, `Update`, `Delete`(ConfigMap 저장소) | configmaps | get, list, create, update, delete | 저장소 네임스페이스 `-namespace`(값에서는 릴리스 네임스페이스, `release`) |
 
 - 시작과 정지는 `spec.runStrategy` 패치다. `virtualmachines/start` 같은 하위 리소스를 부르는 코드는 없다.
@@ -52,8 +53,9 @@
 ## 남은 확인 필요
 
 - 실제 API 서버에서의 권한(`kubectl auth can-i`)은 확인하지 못했다. UNVERIFIED.
-- **compute 에이전트와 새 플래그는 main에 없다.** `internal/hypervisor/kubevirt`의 코드는 있지만 `cmd/vws-compute/main.go:59`가 `fakeagent.New()`만 쓴다. vm, image 네임스페이스 규칙은 이 코드가 부르는 호출이고, `-vm-namespace`, `-image-namespace`, `-hypervisor` 플래그는 vws-compute#23에서 들어온다. 그래서 이 세 플래그는 `pendingFlags`에 있고 `global.pendingFlags: true`일 때만 렌더된다(`docs/service-config.md`).
-- vws-compute#23 표에는 PVC `get`이 VM 네임스페이스에도 있다(`checkAttachable`). 이 호출을 하는 코드는 main에서 확인하지 못해 규칙에 넣지 않았다. #23 머지 후 확인해서 추가한다.
+- **compute KubeVirt 에이전트는 기본으로 켜진다(#121).** vws-compute `62d90e7`의 `-hypervisor=kubevirt`와 네임스페이스 플래그가 기본 렌더에 있다(`docs/service-config.md`).
+- **VM 네임스페이스 PVC `get`(#121).** `internal/hypervisor/kubevirt/volumes.go:145` `checkAttachable`(부착과 볼륨 부팅 전에 claim의 access mode를 읽는다)과 `ping.go:23`(헬스, VM·이미지 네임스페이스의 프로브 claim get, NotFound가 정상). 이 규칙이 없으면 vws-test에서 compute 헬스가 forbidden으로 not serving이었다(#51 T1).
+- **VMI `get`(#121, vws-compute#50).** READY 판정이 VMI 단계를 읽는다. 없으면 실행 중인 인스턴스가 RECONCILING에 머문다. vws-compute#50 머지 전 이미지는 이 호출을 하지 않는다(읽기 권한만 늘어난다).
 - 클라이언트가 캐시를 쓰게 되면 `get`/`list`에 `watch`가 추가로 필요하다. 지금 main 코드는 캐시 없는 `client.New`(compute `internal/store/kubestore/cluster.go:20`, network `internal/network/dataplane_kubeovn_open.go:41`)나 `kubernetes.NewForConfig`(storage `internal/backend/kube/config.go:47`)를 쓴다.
 - **교차 네임스페이스 복제(`datavolumes/source`)는 T2 랩 항목이다.** VM의 `dataVolumeTemplates`가 `vws-images`의 DataSource를 `vws-vms`로 복제할 때 CDI가 호출자 권한(`datavolumes/source` create 등)을 요구하는지 코드나 문서로 확인하지 못했다. 실제 클러스터에서 VM을 만들어 보고, 거절되면 compute 규칙에 추가한다.
 - 네임스페이스 값 `vws-vms`, `vws-images`, `vws-nad`는 서비스가 같은 값을 받을 때만 의미가 있다. 값 한 곳에서 플래그로 넘기지만 서비스 이미지가 그 플래그를 받는지는 서비스 저장소 main의 `cmd`를 읽어 확인했다. compute의 세 플래그는 제외다(`docs/service-config.md`).

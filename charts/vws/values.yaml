@@ -55,22 +55,33 @@ services:
     # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
     # scripts/guard.sh config fails when they differ.
     port: 50051
+    # The KubeVirt agent and its flags are on vws-compute main (vws-compute#23, #44); the image
+    # default -hypervisor=fake keeps no VM anywhere (#121). -storage is the vws-storage address
+    # CreateInstance checks volumes against; empty answers DEPENDENCY_MISSING (cmd/vws-compute/config.go).
     flags:
       listen: 0.0.0.0:50051
       namespace: {namespace: release}
-    pendingFlags:
       hypervisor: kubevirt
       vm-namespace: {namespace: vms}
       image-namespace: {namespace: images}
+      storage: storage:7400
     rbac:
     - namespace: vms
       apiGroups: [kubevirt.io]
       resources: [virtualmachines]
       verbs: [get, list, create, patch, delete]
+    # get: the READY check reads the VMI phase (vws-compute#50); without it a running instance
+    # stays RECONCILING (#121). delete: agent.go update, reboot deletes the VMI.
     - namespace: vms
       apiGroups: [kubevirt.io]
       resources: [virtualmachineinstances]
-      verbs: [delete]
+      verbs: [get, delete]
+    # get: volumes.go checkAttachable reads a volume claim's access modes before attach and boot,
+    # and the health check gets a probe claim in the VM namespace (#121).
+    - namespace: vms
+      apiGroups: [""]
+      resources: [persistentvolumeclaims]
+      verbs: [get]
     - namespace: images
       apiGroups: [cdi.kubevirt.io]
       resources: [datavolumes, datasources]
