@@ -55,4 +55,4 @@ services:
 
 ## 검사
 
-`make check`가 로컬과 GitHub Actions에서 같은 검사를 돌린다. 렌더된 매니페스트는 `build/`에만 있고 커밋하지 않는다. 작업 규칙은 `AGENTS.md`에 있다.
+`make check`가 로컬과 GitHub Actions에서 같은 검사를 돌린다. CRD는 kubeconform이 못 잡는 apiserver 규칙(예: 구조 스키마의 `uniqueItems`)까지 보도록 `make crd`(`scripts/crd-check.sh`)가 envtest kube-apiserver에 `--dry-run=server`로 보내 본다(#210). 렌더된 매니페스트는 `build/`에만 있고 커밋하지 않는다. 작업 규칙은 `AGENTS.md`에 있다.
