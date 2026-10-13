@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary: record the state before a reboot and check recovery after it (read only, never reboots)
-# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]...
+# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
 # and boot IDs. No pod UID, no data, no Secret.
@@ -16,6 +16,8 @@ VWS_VERIFY_RESTARTS=${VWS_VERIFY_RESTARTS:-3}
 VWS_VERIFY_INTERVAL=${VWS_VERIFY_INTERVAL:-10}
 VWS_VERIFY_SELECTOR=app.kubernetes.io/part-of=vws
 VWS_VERIFY_ALLOW_HEALTH_CHECKS=
+VWS_VERIFY_CEPH_HEALTH_FILE=
+VWS_VERIFY_SKIP_CEPH=
 
 vws_verify_get() { # RESOURCE [ARGS...]: json, or {"items":[]} when it cannot be read
   vws_kubectl get "$@" -o json 2>/dev/null || echo '{"items":[]}'
@@ -119,22 +121,43 @@ vws_gate_cni() {
     <<<"$(vws_verify_get pods -A)"
 }
 
-# HEALTH_WARN passes only when every active check code (CephCluster .status.ceph.details) is in
-# VWS_VERIFY_ALLOW_HEALTH_CHECKS (comma separated, built from the repeatable --allow-health-check, empty by default). Nothing
-# is muted in Ceph. Every profile, single-node included, goes through the same list (#154).
+# HEALTH_WARN passes only when every active check code is in VWS_VERIFY_ALLOW_HEALTH_CHECKS (comma
+# separated, built from the repeatable --allow-health-check, empty by default). Nothing is muted in
+# Ceph. Every profile, single-node included, goes through the same list (#154).
+# The health comes from the Rook CephCluster (.status.ceph.health/.details). Without one, external
+# Ceph (#166): from --ceph-health-file (`ceph health detail -f json`: .status and .checks), which must
+# be newer than the snapshot, or the gate is skipped only with --skip-ceph-gate (a WARN). Otherwise
+# it fails: it never passes without a health reading or the explicit skip.
 vws_gate_csi() {
+  local clusters health
+  clusters=$(jq -c '[.items[] | {h: (.status.ceph.health // "unknown"), codes: ((.status.ceph.details // {}) | keys)}]' \
+    <<<"$(vws_verify_get cephcluster -A)")
+  if [[ $clusters == "[]" && -n $VWS_VERIFY_CEPH_HEALTH_FILE ]]; then
+    [[ -r $VWS_VERIFY_CEPH_HEALTH_FILE ]] || { echo "wait cannot read ${VWS_VERIFY_CEPH_HEALTH_FILE}"; return; }
+    [[ $VWS_VERIFY_CEPH_HEALTH_FILE -nt $VWS_VERIFY_FILE ]] ||
+      { echo "wait ${VWS_VERIFY_CEPH_HEALTH_FILE} is not newer than the snapshot; write it again after the reboot"; return; }
+    health=$(jq -c 'if (.status | type) == "string" then [{h: .status, codes: ((.checks // {}) | keys)}] else error("no status") end' \
+      "$VWS_VERIFY_CEPH_HEALTH_FILE" 2>/dev/null) ||
+      { echo "wait ${VWS_VERIFY_CEPH_HEALTH_FILE} is not ceph health detail -f json output"; return; }
+    clusters=$health
+  elif [[ $clusters == "[]" ]]; then
+    if vws_kubectl get crd cephclusters.ceph.rook.io -o name >/dev/null 2>&1; then echo "wait no CephCluster yet"
+    elif [[ -n $VWS_VERIFY_SKIP_CEPH ]]; then echo "pass skipped"
+    else echo "fail no CephCluster CRD (external Ceph?): give --ceph-health-file FILE with ceph health detail -f json from after the reboot, or --skip-ceph-gate"
+    fi
+    return
+  fi
   jq -r --arg allow "${VWS_VERIFY_ALLOW_HEALTH_CHECKS:-}" '
     ($allow | split(",") | map(select(. != ""))) as $ok
-    | [.items[] | {h: (.status.ceph.health // "unknown"), codes: ((.status.ceph.details // {}) | keys)}] as $c
+    | . as $c
     | [$c[].h] as $h
     | [$c[] | select(.h == "HEALTH_WARN") | .codes[] | select(. as $x | $ok | index($x) | not)] | unique as $other
-    | if ($h | length) == 0 then "wait no CephCluster yet"
-      elif all($h[]; . == "HEALTH_OK") then "pass"
+    | if all($h[]; . == "HEALTH_OK") then "pass"
       elif any($h[]; . == "HEALTH_ERR") then "fail Ceph \($h | join(","))"
       elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and ($ok | length) > 0
         and all($c[]; .h == "HEALTH_OK" or (.codes | length) > 0) and ($other | length) == 0 then "pass"
       elif ($other | length) > 0 then "wait Ceph \($h | join(",")) with checks not allowed: \($other | join(","))"
-      else "wait Ceph \($h | join(","))" end' <<<"$(vws_verify_get cephcluster -A)"
+      else "wait Ceph \($h | join(","))" end' <<<"$clusters"
 }
 
 vws_gate_bundle() {
@@ -186,7 +209,7 @@ vws_verify_check() {
         services) result=$(vws_gate_services "$release") ;;
         *) result=$("vws_gate_${gate}") ;;
       esac
-      [[ $result == pass || $result == fail* ]] && break
+      [[ $result == pass* || $result == fail* ]] && break
       if (($(date +%s) >= deadline)); then
         vws_emit FAIL "gate-${gate}" "blocked at gate ${gate} after ${timeout}s (timeout): ${result#wait }"
         for p in "${passed[@]}"; do vws_emit OK "${p%%=*}" "${p#*=}"; done
@@ -198,6 +221,10 @@ vws_verify_check() {
       vws_emit FAIL "gate-${gate}" "blocked at gate ${gate}: ${result#fail }"
       for p in "${passed[@]}"; do vws_emit OK "${p%%=*}" "${p#*=}"; done
       vws_verify_exit 1
+    fi
+    if [[ $result == "pass skipped" ]]; then
+      vws_emit WARN "gate-${gate}" "SKIPPED by --skip-ceph-gate: no CephCluster and no --ceph-health-file, Ceph health was NOT checked"
+      continue
     fi
     passed+=("gate-${gate}=passed in $(($(date +%s) - t0))s")
   done
@@ -227,14 +254,16 @@ vws_verify_check() {
 }
 
 vws_cmd_main() {
-  VWS_VERIFY_ALLOW_HEALTH_CHECKS=''
-  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]..."
+  VWS_VERIFY_ALLOW_HEALTH_CHECKS='' VWS_VERIFY_CEPH_HEALTH_FILE='' VWS_VERIFY_SKIP_CEPH=''
+  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]"
   while (($#)); do
     case $1 in
       --snapshot) (($# >= 2)) || vws_usage "--snapshot needs a file"; snapshot=$2; shift 2 ;;
       --check) (($# >= 2)) || vws_usage "--check needs a file"; check=$2; shift 2 ;;
       --allow-health-check) (($# >= 2)) && [[ $2 =~ ^[A-Z0-9_]+$ ]] || vws_usage "--allow-health-check needs a Ceph health check code such as AUTH_INSECURE_KEYS_ALLOWED"
         VWS_VERIFY_ALLOW_HEALTH_CHECKS+="${VWS_VERIFY_ALLOW_HEALTH_CHECKS:+,}$2"; shift 2 ;;
+      --ceph-health-file) (($# >= 2)) || vws_usage "--ceph-health-file needs a file"; VWS_VERIFY_CEPH_HEALTH_FILE=$2; shift 2 ;;
+      --skip-ceph-gate) VWS_VERIFY_SKIP_CEPH=1; shift ;;
       --drained) (($# >= 2)) || vws_usage "--drained needs a node"; drained=$2; shift 2 ;;
       --timeout) (($# >= 2)) || vws_usage "--timeout needs a duration"; timeout=$2; shift 2 ;;
       *) vws_usage "$usage" ;;
