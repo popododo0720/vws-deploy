@@ -1,10 +1,18 @@
-# The installer image: scripts/vws, the chart, the rendered platform bundle, helm and kubectl.
+# The installer image: vws-installer (installer/, #141, #191), scripts/vws, the chart, the rendered platform bundle, helm and kubectl.
 # Build from the repo root after scripts/platform.sh (build/platform must exist):
 #   source scripts/versions.env
-#   docker build -f bootstrap/Containerfile --build-arg BASE="$INSTALLER_BASE_IMAGE" \
+#   docker build -f bootstrap/Containerfile --build-arg BASE="$INSTALLER_BASE_IMAGE" --build-arg GO_IMAGE="$INSTALLER_GO_IMAGE" \
 #     --build-arg HELM_VERSION --build-arg HELM_SHA256 --build-arg KUBERNETES_VERSION --build-arg KUBECTL_SHA256 .
 # Nothing here pushes. A release build pushes and pins the digest in VWS_INSTALLER_IMAGE.
 ARG BASE
+ARG GO_IMAGE
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+COPY installer/go.mod installer/go.sum ./
+RUN go mod download
+COPY installer/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags=-s -o /out/vws-installer ./cmd/vws-installer
+
 FROM ${BASE}
 ARG HELM_VERSION
 ARG HELM_SHA256
@@ -17,6 +25,7 @@ RUN apk add --no-cache bash jq python3 py3-yaml curl ca-certificates \
  && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${KUBECTL_SHA256}  /usr/local/bin/kubectl" | sha256sum -c - && chmod 0755 /usr/local/bin/kubectl \
  && rm -rf /tmp/helm.tgz /tmp/linux-amd64 && apk del curl
+COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer
 COPY scripts /opt/vws/scripts
 COPY charts /opt/vws/charts
 COPY profiles /opt/vws/profiles

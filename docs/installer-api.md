@@ -8,7 +8,7 @@
 vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp/vws-installer] [-kubectl kubectl] [-vws vws]
 ```
 
-- `-api-version`은 필수이고 기본값이 없다. 그룹은 `charts/vws/crds/vwsclusters.yaml`에만 적는다(R18). bootstrap이 넘기게 하는 일은 아직 안 했다(아래 남은 일).
+- `-api-version`은 필수이고 기본값이 없다. 그룹은 `charts/vws/crds/vwsclusters.yaml`에만 적는다(R18). bootstrap Deployment는 `scripts/bootstrap.sh`가 CRD에서 읽은 group/version을 `-api-version=`으로 넘긴다(#191). R20이 명령줄 전체와 프로브를 검사한다.
 - `-state-dir`(0700)에 1회용 접속 코드 `access-code`와 인증서 SHA-256 지문 `fingerprint`(둘 다 0600)를 쓴다. 로그에는 둘 다 쓰지 않는다. `vws init --print-url`(#142)이 이 파일을 읽는다.
 - 설치는 `vws init --from <state-dir>/vwscluster.json` 다음 `vws apply --unattended`다(`docs/quickstart.md`와 같은 경로).
 
@@ -84,5 +84,5 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 ## 남은 일 (이 PR 밖)
 
-- 이미지와 bootstrap 연결: `bootstrap/Containerfile`이 바이너리를 빌드하고, Deployment가 `sleep infinity` 대신 `vws-installer -api-version ...`을 실행해야 한다. 아직 하지 않았다.
+- 이미지: `bootstrap/Containerfile`의 빌드 단계(`INSTALLER_GO_IMAGE`, `installer/go.mod`의 Go 버전과 같아야 한다, R20)가 `CGO_ENABLED=0`으로 빌드해 `/opt/vws/bin/vws-installer`에 넣는다(#191). 발행과 digest 고정은 아직이다(`VWS_INSTALLER_IMAGE` digest 0).
 - 실제 클러스터에서 TLS, port-forward, 설치 경로(미실행). 노드 NIC 목록은 Node 객체에 없어서(R10) #143이 채운다. 그 전에는 `options.nics`가 비어 있다.

@@ -128,8 +128,8 @@ subjects:
     namespace: vws
 ---
 # The installer Deployment and its Service (vws-deploy#139 (a), #140). The pod waits for kubectl exec
-# (vws init, vws apply, vws installer finish); the installer API (#141) will listen on 8443 behind the
-# ClusterIP Service. A Deployment cannot carry activeDeadlineSeconds, so the time bound sits on the
+# (vws init, vws apply, vws installer finish) and serves the installer API (#141, #191) on 8443
+# behind the ClusterIP Service. A Deployment cannot carry activeDeadlineSeconds, so the time bound sits on the
 # rights instead: the reaper deletes vws-installer-temp at its TTL, and the pod keeps only the
 # operating rights below after that.
 apiVersion: apps/v1
@@ -171,11 +171,25 @@ spec:
               value: vws
             - name: HOME
               value: /tmp
-          command: [sleep, infinity]
+          command:
+            - /opt/vws/bin/vws-installer
+            - -api-version=VWS_API_GROUP/VWS_CRD_VERSION
+            - -listen=0.0.0.0:8443
+            - -state-dir=/tmp/vws-installer
+            - -vws=/opt/vws/scripts/vws
           ports:
             - name: api
               containerPort: 8443
               protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: api
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 20
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
