@@ -168,7 +168,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 ### vws verify-reboot
 
-`vws verify-reboot --snapshot FILE` (재부팅 전), `vws verify-reboot --drained NODE` (drain 뒤, 재부팅 전), `vws verify-reboot --check FILE [--timeout 20m] [--allow-health-check CODE]...` (재부팅 뒤). 이 명령은 재부팅하지 않는다(사람이나 `talosctl`이 한다). 읽기 전용(#43 8절).
+`vws verify-reboot --snapshot FILE` (재부팅 전), `vws verify-reboot --drained NODE` (drain 뒤, 재부팅 전), `vws verify-reboot --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]` (재부팅 뒤). 이 명령은 재부팅하지 않는다(사람이나 `talosctl`이 한다). 읽기 전용(#43 8절).
 
 `--snapshot`은 `rbd.csi.ceph.com` VolumeAttachment가 붙은 노드마다 `WARN krbd`를 낸다. 그 노드는 재부팅 전에 drain한다(krbd shutdown 멈춤, #116, 절차는 [platform-bundle.md](platform-bundle.md)).
 
@@ -178,6 +178,11 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 - 확인 게이트(기동 순서, 각 소요 시간 출력): `api` → `nodes`(스냅샷의 노드가 모두 Ready) → `cni`(kube-ovn 파드 Ready) → `csi`(Ceph `HEALTH_OK`, 또는 활성 check 코드가 모두 `--allow-health-check`에 있는 `HEALTH_WARN`. single-node를 포함해 모든 프로필이 같다) → `bundle`(KubeVirt, CDI CR `Deployed`) → `services`(스냅샷 서비스가 ready == desired). 기다리면 되는 상태는 `VWS_VERIFY_INTERVAL`(기본 10초)마다 다시 본다.
 - `--allow-health-check CODE`(반복 가능, 기본은 빈 목록): `csi` 게이트는 `HEALTH_WARN`일 때 CephCluster `status.ceph.details`의 활성 check 코드가 **모두** 목록에 있어야 통과한다. 목록 밖 코드가 하나라도 있으면 그 코드를 이름으로 보여 주며 기다리고, `--timeout`에서 3으로 끝난다. 환경 변수로는 넓힐 수 없다. Ceph에서 아무것도 mute하지 않는다(#150). single-node 프로필도 예외가 없다(#154). 풀 size 1이라 뜨는 경고 코드도 `ceph health detail`로 확인한 뒤 직접 넘겨야 한다. `POOL_NO_REDUNDANCY`는 **예시일 뿐**이다. 실제 single-node 클러스터에서 실측하기 전까지는 이 코드가 뜬다고 가정하지 말고, 확인 없이 허용 목록에 넣지 않는다(#158).
   - vws-test 예: krbd 때문에 AES 키를 허용해 둔 상태라 `ceph health detail`에 `AUTH_INSECURE_CLIENT_KEY_TYPE`, `AUTH_INSECURE_KEYS_ALLOWED`, `AUTH_INSECURE_KEYS_CREATABLE` 세 코드가 뜬다(2026-10-13 실측). `vws verify-reboot --check before.json --allow-health-check AUTH_INSECURE_CLIENT_KEY_TYPE --allow-health-check AUTH_INSECURE_KEYS_ALLOWED --allow-health-check AUTH_INSECURE_KEYS_CREATABLE`.
+- 외부 Ceph(#166, storage driver `existing`, CephCluster CRD 없음, vws-test가 그렇다): `csi` 게이트는 조용히 통과하지 않는다.
+  - `--ceph-health-file FILE`: 재부팅 **뒤**에 `ceph health detail -f json > FILE`로 만든 파일을 읽는다(`.status`, `.checks`). 판정은 CephCluster와 같고 `--allow-health-check`도 check 코드에 똑같이 적용된다. 파일이 스냅숏보다 새것이 아니거나, 읽을 수 없거나, 형식이 맞지 않으면 기다린다(`--timeout`에서 3). 게이트는 기다리는 동안 파일을 다시 읽으므로 그사이에 다시 써도 된다.
+  - `--skip-ceph-gate`: CephCluster CRD가 아예 없을 때만 게이트를 건너뛰고 `WARN gate-csi SKIPPED ... Ceph health was NOT checked`를 낸다. OK로 세지 않는다. `--ceph-health-file`이 있으면 파일이 우선한다.
+  - 둘 다 없으면 1로 끝나며 두 옵션을 알려 준다. CRD는 있는데 CephCluster가 아직 없으면(Rook 기동 중) `--skip-ceph-gate`가 있어도 기다린다.
+  - CephCluster가 있으면 언제나 그것을 읽고 파일은 쓰지 않는다.
 - 막힌 게이트가 출력의 **첫 줄**이다. 통과할 수 없는 상태(노드 사라짐, Ceph `HEALTH_ERR`, operator `Failed`, 워크로드 없는 서비스)는 1, `--timeout`까지 기다려도 안 되면 3.
 - 게이트 뒤 비교(실패 시 1): 스냅샷의 Bound PVC가 같은 이름으로 Bound, ConfigMap 키 수가 같거나 많음, Always VM이 모두 Running, 재시작 횟수가 임계(`VWS_VERIFY_RESTARTS`, 기본 3)를 넘는 파드 없음. 어느 노드도 boot ID가 바뀌지 않았으면 `WARN reboot not observed`.
 - 부팅 시각 대신 노드의 `status.nodeInfo.bootID`로 재부팅 여부를 판단한다(재부팅마다 바뀐다).
