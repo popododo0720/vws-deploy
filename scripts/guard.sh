@@ -517,6 +517,13 @@ PY
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: the default render lacks storage gRPC readiness (#110)"
   helm template vws charts/vws --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
   grep -q -e 'service: vws.storage.v1.Ready' "$tmp/health.yaml" || die "R15: global.pendingFlags=true does not render storage gRPC readiness"
+  python3 - "$tmp/default.yaml" <<'PY' || die "R14: storage has no virtualmachines list in the VM namespace (#123, vws-storage#68)"
+import sys, yaml
+ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-storage" and d["metadata"].get("namespace") == "vws-vms"
+         and any("kubevirt.io" in r.get("apiGroups", []) and "virtualmachines" in r.get("resources", []) and r.get("verbs") == ["list"] for r in d.get("rules", []))
+         for d in yaml.safe_load_all(open(sys.argv[1])))
+sys.exit(0 if ok else 1)
+PY
   python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws <(printf 'global:\n  pendingFlags: true\n')
 
   cat > "$tmp/override.yaml" <<'YAML'
