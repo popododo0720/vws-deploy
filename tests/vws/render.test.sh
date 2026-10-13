@@ -58,25 +58,38 @@ done
 sed -e 's/        existingSecret: ceph-rgw-s3/        existingSecret: ceph-rgw-s3\n        secretKey: x/' "${WORK}/rgw.yaml" >"${WORK}/rgwkey.yaml"
 run_vws_real render "${WORK}/rgwkey.yaml" "${WORK}/rgwkey.out"; expect_rc "a key under s3.rgw exits 2" 2
 
-# spec.network.nodes and spec.network.direct (vws-deploy#125): validated, not rendered yet.
+# spec.network.nodes and spec.network.direct (vws-deploy#125). nodes.external gives the pool, so the
+# CR drops the pool of ha.yaml.
 net_cr() {
   python3 - "${EX}/ha.yaml" "${VWS_TEST_ROOT}/tests/fixtures/render/node-network.yaml" "$1" >"${WORK}/net.yaml" <<'PY'
 import sys, yaml
 cr = yaml.safe_load(open(sys.argv[1]))
 cr["spec"]["network"] = yaml.safe_load(open(sys.argv[2]))
-exec(sys.argv[3], {"n": cr["spec"]["network"]})
+del cr["spec"]["services"]["network"]
+exec(sys.argv[3], {"n": cr["spec"]["network"], "spec": cr["spec"]})
 yaml.safe_dump(cr, sys.stdout)
 PY
 }
 net_cr "pass"
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "a 4-NIC CR with direct networks renders" 0
-if cmp -s "${WORK}/ha.yaml" "${WORK}/net.out"; then ok "spec.network.nodes does not change the values overlay yet"; else bad "node networks change nothing" "$(diff "${WORK}/ha.yaml" "${WORK}/net.out")"; fi
+flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
+expect_text "nodes.external becomes the vws-network underlay flags (#130)" "$flags" '{"kube-external-subnet": "vws-external", "kube-provider-network": "vws-pn0", "kube-underlay-cidr": "198.18.10.0/24", "kube-underlay-exclude": "198.18.10.1..198.18.10.9", "kube-underlay-gateway": "198.18.10.1", "kube-underlay-interface": "enp4s0", "kube-underlay-vlan": 100, "pool": "198.18.10.64/26"}'
+net_cr 'n["nodes"].pop("external"); n.pop("direct"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "nodes without external renders" 0
+flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
+expect_text "without external only the pool is set" "$flags" '{"pool": "198.18.1.0/24"}'
+net_cr 'n["direct"][0]["nic"] = "enp0s9"'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "the provider network index follows the sorted underlay NICs" "$(cat "${WORK}/net.out")" "kube-provider-network: vws-pn1"
 bad_net() {
   net_cr "$2"
   run_vws_real render "${WORK}/net.yaml" "${WORK}/net.bad"
   expect_rc "invalid network: $1 exits 2" 2
   rm -f "${WORK}/net.bad"
 }
+bad_net "a pool flag beside nodes.external" 'spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
+bad_net "an underlay flag beside nodes.external" 'spec["services"]["network"] = {"flags": {"kube-underlay-vlan": 7}}'
+bad_net "an RFC 5737 eipPool" 'n["nodes"]["external"].update(cidr="203.0.113.0/24", gateway="203.0.113.1", excludeIPs=[], eipPool="203.0.113.64/26")'
 bad_net "nodes without management" 'del n["nodes"]["management"]'
 bad_net "vlan above 4094" 'n["nodes"]["tunnel"]["vlan"] = 4095'
 bad_net "mtu below 1280" 'n["nodes"]["tunnel"]["mtu"] = 1000'
@@ -91,7 +104,7 @@ bad_net "duplicate direct name" 'n["direct"][1]["name"] = "prod"'
 bad_net "gateway outside the cidr" 'n["direct"][0]["gateway"] = "10.0.0.1"'
 bad_net "external without eipPool" 'del n["nodes"]["external"]["eipPool"]'
 bad_net "eipPool outside the external cidr" 'n["nodes"]["external"]["eipPool"] = "198.51.100.0/26"'
-bad_net "eipPool over the excluded range" 'n["nodes"]["external"]["eipPool"] = "203.0.113.0/28"'
+bad_net "eipPool over the excluded range" 'n["nodes"]["external"]["eipPool"] = "198.18.10.0/28"'
 bad_net "sriov is a reserved mode" 'n["direct"][0]["mode"] = "sriov"'
 bad_net "nic name over 15 characters" 'n["nodes"]["management"]["nic"] = "enp1s0abcdefghij"'
 bad_net "unknown network field" 'n["nodes"]["management"]["bond"] = "x"'
