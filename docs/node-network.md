@@ -56,10 +56,10 @@ spec:
       external:
         nic: enp2s0
         vlan: 100
-        cidr: 203.0.113.0/24
-        gateway: 203.0.113.1
-        excludeIPs: [203.0.113.2..203.0.113.9]
-        eipPool: 203.0.113.64/26
+        cidr: 198.18.10.0/24
+        gateway: 198.18.10.1
+        excludeIPs: [198.18.10.2..198.18.10.9]
+        eipPool: 198.18.10.64/26
     direct:
       - {name: prod, nic: enp2s0, vlan: 200, cidr: 192.168.200.0/24, gateway: 192.168.200.1}
 ```
@@ -81,10 +81,10 @@ spec:
       external:
         nic: enp4s0
         vlan: 100
-        cidr: 203.0.113.0/24
-        gateway: 203.0.113.1
-        excludeIPs: [203.0.113.2..203.0.113.9]
-        eipPool: 203.0.113.64/26
+        cidr: 198.18.10.0/24
+        gateway: 198.18.10.1
+        excludeIPs: [198.18.10.2..198.18.10.9]
+        eipPool: 198.18.10.64/26
     direct:
       - {name: prod, nic: enp4s0, vlan: 200, cidr: 192.168.200.0/24, gateway: 192.168.200.1}
       - {name: lab, nic: enp4s0, cidr: 192.168.10.0/24, gateway: 192.168.10.1}
@@ -99,3 +99,24 @@ spec:
 ## 확장 지점 (구현 안 함)
 
 `direct[].mode`는 지금 `ovn-underlay` 하나다. SR-IOV(`sriov`)와 macvtap(`macvtap`)은 #125에 설계만 있다. 노드마다 다른 NIC 이름, IPv6, bond도 같다.
+
+## vws-network로 가는 플래그 (#130)
+
+`nodes.external`이 있으면 `vws render`가 vws-network의 underlay 플래그를 `services.network.flags`에 쓴다(vws-network `docs/underlay.md`). 이 플래그를 `spec.services.network.flags`에 직접 함께 적으면 종료 코드 2다.
+
+| 플래그 | 값 |
+| --- | --- |
+| `pool` | `external.eipPool` |
+| `kube-external-subnet` | `vws-external` |
+| `kube-provider-network` | `vws-pn<N>`. N은 external과 direct가 쓰는 NIC 이름을 정렬한 순서(0부터) |
+| `kube-underlay-interface` | `external.nic` |
+| `kube-underlay-vlan` | `external.vlan`(0은 flat) |
+| `kube-underlay-cidr`, `kube-underlay-gateway` | `external.cidr`, `external.gateway` |
+| `kube-underlay-exclude` | `external.excludeIPs`를 쉼표로 이은 값. 게이트웨이는 vws-network가 늘 넣는다 |
+
+`kube-external-subnet`만 있고 `kubeconfig`가 없으면 vws-network는 클러스터 안 ServiceAccount로 Kube-OVN 데이터플레인을 쓴다.
+
+남은 일:
+- EIP 풀은 Subnet `excludeIps`에 넣지 않는다. Kube-OVN이 VPC 외부 포트 주소를 풀 안에서 고를 수 있다. 넣을지는 excludeIps 안의 주소를 OvnEip `v4Ip`로 받는지 실측한 뒤 정한다(vws-network#52, 확인 필요).
+- `extraExternalSubnets`는 vws-network #53이 모든 Vpc에 넣는다. #53 이전에 만든 Vpc는 Conflict가 나며 vws-network `docs/kube-ovn-conflict-recovery.md`로 복구한다.
+- `direct[]`는 아직 렌더하지 않는다. vws-network#52의 `-kube-direct-networks`가 생기면 #131에서 한다.
