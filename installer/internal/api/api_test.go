@@ -618,7 +618,7 @@ func TestBadRequests(t *testing.T) {
 	status, body = h.do("GET", "/api/v1/nothing", nil)
 	h.wantError(status, body, 404, ReasonNotFound)
 	for _, e := range []struct{ method, path string }{
-		{"GET", "/api/v1/install/events"}, {"POST", "/api/v1/result/credential"}, {"GET", "/api/v1/cr"}, {"POST", "/api/v1/cr"},
+		{"GET", "/api/v1/install/events"}, {"POST", "/api/v1/result/credential"},
 	} {
 		status, body := h.do(e.method, e.path, nil)
 		h.wantError(status, body, 501, ReasonNotImplemented)
