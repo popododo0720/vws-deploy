@@ -5,6 +5,12 @@ metadata:
   namespace: kubevirt
 spec:
   imagePullPolicy: IfNotPresent
+  # Without this KubeVirt places virt-api, virt-controller and virt-exportproxy on control-plane
+  # nodes, so draining the only control-plane node deadlocks on their PDBs (vws-deploy#168).
+  infra:
+    nodePlacement:
+      nodeSelector:
+        kubernetes.io/os: linux
   configuration:
     developerConfiguration:
       useEmulation: false
