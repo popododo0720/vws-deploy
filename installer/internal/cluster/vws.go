@@ -14,7 +14,7 @@ import (
 )
 
 // VWS is the real cluster: kubectl for the nodes, and the vws CLI for the install
-// (vws init --from FILE, then vws apply --unattended), the same path as docs/quickstart.md.
+// (vws apply --unattended -f FILE, which saves the CR and applies it, #144).
 type VWS struct {
 	Kubectl string
 	VWS     string
@@ -116,18 +116,13 @@ func (v VWS) StorageClasses(ctx context.Context) ([]string, error) {
 	return strings.Fields(string(out)), nil
 }
 
-// Install writes cr to WorkDir and runs the two vws commands, streaming their output to log.
+// Install writes cr to WorkDir and runs vws apply --unattended -f, streaming its output to log.
 func (v VWS) Install(ctx context.Context, cr []byte, log func(string)) (Result, error) {
 	path := filepath.Join(v.WorkDir, "vwscluster.json")
 	if err := os.WriteFile(path, cr, 0o600); err != nil {
 		return Result{}, err
 	}
-	for _, args := range [][]string{{"init", "--from", path}, {"apply", "--unattended"}} {
-		if err := v.run(ctx, log, args...); err != nil {
-			return Result{}, err
-		}
-	}
-	return Result{}, nil
+	return Result{}, v.run(ctx, log, "apply", "--unattended", "-f", path)
 }
 
 func (v VWS) run(ctx context.Context, log func(string), args ...string) error {
