@@ -161,8 +161,7 @@ services:
       listen: 0.0.0.0:8080
       # The sqlite file lives on the retained state volume mounted at /var/lib/vws.
       db: /var/lib/vws/network.db
-      # Elastic IP pool CIDR. 192.0.2.0/24 is the documentation range: replace it per site.
-      pool: 192.0.2.0/24
+      # pool (the elastic IP pool CIDR) has no default: set it per site. vws render fails without it.
     rbac:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]

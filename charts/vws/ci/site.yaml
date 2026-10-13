@@ -1,0 +1,7 @@
+# Site values for repo checks only (scripts/guard.sh, make lint/render). The chart has no default
+# elastic IP pool (vws-deploy#148); a real install gets it from the VWSCluster CR through vws render.
+# 198.18.0.0/24 is the RFC 2544 benchmark range, not an RFC 5737 documentation range.
+services:
+  network:
+    flags:
+      pool: 198.18.0.0/24
