@@ -39,7 +39,7 @@ cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임�
 - **리퍼 Job** `vws-installer-reaper`: 바인딩의 `creationTimestamp` + `vws-installer-ttl-seconds`(= `INSTALLER_TTL_SECONDS`, 4시간)까지 자고 바인딩을 지운다. 파드가 죽어 다시 떠도 남은 시간을 바인딩에서 다시 계산하므로 시한이 늘지 않는다. Job 시한은 TTL + 10분이라 삭제 전에 끊기지 않는다. finish 뒤에는 바인딩을 읽을 수 없어 곧 끝난다.
 - **시작 시 상태 확인**: `vws init`, `vws apply`는 먼저 바인딩이 TTL을 넘겼는지 보고, 넘겼으면 지우고 종료 코드 1로 멈춘다(리퍼가 못 돈 경우의 두 번째 방어).
 - **설치 Deployment** `vws-installer`(#140): replicas 1, `Recreate`(draft 세션은 하나). Deployment 파드에는 `activeDeadlineSeconds`를 둘 수 없어 시한은 파드가 아니라 권한에 건다. 리퍼가 TTL에 바인딩을 지우면 파드는 운영 권한만 가진 채 남는다. 파드가 죽어도 다시 떠서 `kubectl exec`가 계속 된다.
-- **Service** `vws-installer`: ClusterIP만, 포트 `api` 8443(`kubectl port-forward svc/vws-installer 8443`). NodePort, LoadBalancer, externalIPs, Ingress 없음. installer API(#141)가 들어오기 전에는 이 포트에서 아무것도 듣지 않는다.
+- **Service** `vws-installer`: ClusterIP만, 포트 `api` 8443(`kubectl port-forward svc/vws-installer 8443`). NodePort, LoadBalancer, externalIPs, Ingress 없음. 설치 컨테이너는 `/opt/vws/bin/vws-installer`(#141, #191)를 실행하고 8443에 tcpSocket readiness/liveness 프로브를 둔다. 접속 코드는 `kubectl -n vws exec deploy/vws-installer -- cat /tmp/vws-installer/access-code`로 읽는다(`vws init --print-url`은 #142).
 - 남는 위험(확인 필요): 리퍼 Job이 완료된 뒤 bootstrap을 다시 apply하면 Job이 다시 돌지 않는다(같은 이름의 완료된 Job). `ttlSecondsAfterFinished: 600`이라 10분 뒤에는 지워져 다시 apply하면 새로 돈다. 그 사이 다시 apply하면 시작 시 상태 확인만 남는다.
 
 ## T0 수용 기준 (이 박스, 가짜 kubectl/helm)
