@@ -56,7 +56,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 | 단계 | 값 | CR |
 | --- | --- | --- |
-| roles | `{"nodes": [...]}`, 모두 클러스터에 있는 노드 | 넣지 않는다. CRD에 `spec.nodes`가 없다(확인 필요, #139는 `spec.nodes.roles`라고 적었다) |
+| roles | `{"nodes": [...]}`, 모두 클러스터에 있는 노드 | 넣지 않는다. 역할은 클러스터 준비 때 붙인 노드 레이블에서 읽는다(설치기는 `vws-operator-read`의 nodes get/list로 읽기만). CRD에 `spec.nodes`는 없다(#192, 안 B) |
 | network | `spec.network` 그대로(#125). driver는 kube-ovn만. CIDR, VLAN 0~4094, MTU 1280~9216, external·direct의 gateway가 CIDR 안 | `spec.network` |
 | storage | `spec.storage`. rook-ceph, existing(storageClass 필수), nfs(server, share 필수). minio, local은 선택지에 비활성 "준비 중"(vws-storage#70, #71) | `spec.storage` |
 | eip | CIDR 문자열. 기본값 없음, 필수. network의 external 안이어야 한다 | `spec.network.nodes.external.eipPool` |
