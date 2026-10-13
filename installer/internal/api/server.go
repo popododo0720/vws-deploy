@@ -91,11 +91,11 @@ func (srv *Server) Handler() http.Handler {
 	authed("GET /api/v1/summary", srv.getSummary)
 	authed("POST /api/v1/install", srv.postInstall)
 	authed("GET /api/v1/result", srv.getResult)
+	authed("GET /api/v1/cr", srv.getCR)
+	authed("POST /api/v1/cr", srv.postCR)
 	for pattern, issue := range map[string]string{
 		"GET /api/v1/install/events":     "#145",
 		"POST /api/v1/result/credential": "#146",
-		"GET /api/v1/cr":                 "#144",
-		"POST /api/v1/cr":                "#144",
 	} {
 		authed(pattern, func(http.ResponseWriter, *http.Request) error {
 			return fail(ReasonNotImplemented, "not implemented yet (vws-deploy"+issue+")")
@@ -174,12 +174,17 @@ type stateView struct {
 func (srv *Server) getState(w http.ResponseWriter, _ *http.Request) error {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
+	writeJSON(w, http.StatusOK, srv.stateView())
+	return nil
+}
+
+// stateView needs srv.mu.
+func (srv *Server) stateView() stateView {
 	v := stateView{State: srv.s.state, CR: srv.s.cr(srv.apiVersion)}
 	for i, st := range srv.s.steps {
 		v.Steps = append(v.Steps, stepSummary{Step: Steps[i].Name, Status: st.status})
 	}
-	writeJSON(w, http.StatusOK, v)
-	return nil
+	return v
 }
 
 // StepResult is the #139 StepResult.

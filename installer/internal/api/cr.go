@@ -1,0 +1,140 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"slices"
+	"sort"
+)
+
+// GET /cr exports the draft as the VWSCluster CR file for `vws apply --unattended -f` (#144).
+// Every step must be valid, so the file is the one the summary would install.
+func (srv *Server) getCR(w http.ResponseWriter, _ *http.Request) error {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if j := srv.s.blockedBy(len(Steps)); j >= 0 {
+		return fail(ReasonStepOutOfOrder, "step "+Steps[j].Name+" is not valid; every step must be valid to export the CR")
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="vwscluster.json"`)
+	writeJSON(w, http.StatusOK, srv.s.cr(srv.apiVersion))
+	return nil
+}
+
+// crSpecKeys are the spec fields the draft holds. version, services and secrets are not wizard
+// steps; a CR with them goes through `vws apply --unattended -f` directly.
+var crSpecKeys = []string{"profile", "storage", "network", "observability"}
+
+// splitCR turns a CR into one raw value per step: spec.network.nodes.external.eipPool becomes
+// the eip step, and roles keeps the saved value or defaults to every node (roles are not in the CR).
+func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMessage) (map[string]json.RawMessage, []FieldError) {
+	var errs []FieldError
+	var head struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	b, _ := json.Marshal(cr)
+	_ = json.Unmarshal(b, &head)
+	if head.APIVersion != apiVersion {
+		errs = append(errs, FieldError{Field: "apiVersion", Code: "invalid", Message: "want " + apiVersion})
+	}
+	if head.Kind != "VWSCluster" {
+		errs = append(errs, FieldError{Field: "kind", Code: "invalid", Message: "want VWSCluster"})
+	}
+	if head.Metadata.Name != "" && head.Metadata.Name != "vws" {
+		errs = append(errs, FieldError{Field: "metadata.name", Code: "invalid", Message: "the VWSCluster is named vws"})
+	}
+	var spec map[string]json.RawMessage
+	if err := json.Unmarshal(cr["spec"], &spec); err != nil || spec == nil {
+		return nil, append(errs, required("spec"))
+	}
+	var extra []string
+	for k := range spec {
+		if !slices.Contains(crSpecKeys, k) {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		errs = append(errs, FieldError{Field: "spec." + k, Code: "unsupported", Message: "the installer draft has no spec." + k + "; use vws apply --unattended -f for this CR"})
+	}
+	out := map[string]json.RawMessage{"roles": roles}
+	for _, k := range []string{"profile", "storage", "observability"} {
+		if v, ok := spec[k]; ok {
+			out[k] = v
+		}
+	}
+	if out["observability"] == nil {
+		out["observability"] = json.RawMessage(`{"otlpEndpoint":""}`)
+	}
+	if raw, ok := spec["network"]; ok {
+		var network map[string]any
+		if err := json.Unmarshal(raw, &network); err != nil {
+			errs = append(errs, FieldError{Field: "spec.network", Code: "invalid", Message: err.Error()})
+		} else {
+			if nodes, _ := network["nodes"].(map[string]any); nodes != nil {
+				if ext, _ := nodes["external"].(map[string]any); ext != nil {
+					if pool, ok := ext["eipPool"]; ok {
+						out["eip"], _ = json.Marshal(pool)
+						delete(ext, "eipPool")
+					}
+				}
+			}
+			out["network"], _ = json.Marshal(network)
+		}
+	}
+	return out, errs
+}
+
+// POST /cr fills every step from a CR file and checks them all (#144). Invalid steps keep their
+// value and status invalid; the answer lists every field error.
+func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
+	var cr map[string]json.RawMessage
+	if err := decode(r, &cr); err != nil {
+		return err
+	}
+	nodes, err := srv.nodes(r.Context())
+	if err != nil {
+		return err
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if err := srv.s.editable(); err != nil {
+		return err
+	}
+	roles := srv.s.steps[stepIndex("roles")].raw
+	if srv.s.steps[stepIndex("roles")].status != StepValid {
+		roles, _ = json.Marshal(defaultRoles(nodes))
+	}
+	raws, fields := splitCR(cr, srv.apiVersion, roles)
+	if raws == nil {
+		return fail(ReasonValidationFailed, "the CR is not a VWSCluster", fields...)
+	}
+	for i, s := range Steps {
+		srv.s.steps[i] = step{status: StepPending, raw: raws[s.Name]}
+		if raws[s.Name] == nil {
+			fields = append(fields, required(stepField(s.Name)))
+		}
+	}
+	for i := range Steps {
+		srv.evaluate(r.Context(), i, nodes)
+		fields = append(fields, srv.s.steps[i].errors...)
+	}
+	if len(fields) > 0 {
+		return fail(ReasonValidationFailed, "the CR has invalid or missing fields", fields...)
+	}
+	writeJSON(w, http.StatusOK, srv.stateView())
+	return nil
+}
+
+func stepField(step string) string {
+	switch step {
+	case "eip":
+		return "spec.network.nodes.external.eipPool"
+	case "roles":
+		return "roles.nodes"
+	}
+	return "spec." + step
+}
