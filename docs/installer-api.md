@@ -22,9 +22,9 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 | POST | /steps/{step}/preflight | 구현(저장된 값을 다시 검사) |
 | GET | /summary | 구현. `editing`/`failed` → `confirming` |
 | POST | /install | 구현. 202, 설치는 백그라운드 |
-| GET | /result | 구현. `credentialAvailable`은 #146 전까지 항상 false |
+| GET | /result | 구현. `credentialAvailable`은 succeeded이고 자격 증명 저장소가 있을 때 true |
 | GET | /install/events | 구현(#145). 설치 진행 SSE, `Last-Event-ID` 재개 |
-| POST | /result/credential | 501 `not_implemented` (#146) |
+| POST | /result/credential | 구현(#146). 초기 관리자 비밀번호를 한 번 준다. 그 뒤 410 `credential_consumed` |
 | GET | /cr | 구현(#144). 모든 단계가 valid일 때 CR 파일(`vwscluster.json`) |
 | POST | /cr | 구현(#144). CR 파일로 모든 단계를 채우고 검사 |
 
@@ -39,7 +39,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 ## 상태 기계
 
-세션은 하나(싱글턴)다. `editing → confirming → installing → succeeded | failed`. `confirming`이나 `failed`에서 단계를 저장하면 `editing`으로 돌아간다. `finished`(자격 증명 전달 후)는 #146이다.
+세션은 하나(싱글턴)다. `editing → confirming → installing → succeeded | failed`. `confirming`이나 `failed`에서 단계를 저장하면 `editing`으로 돌아간다. `succeeded`에서 `POST /result/credential`이 비밀번호를 주면 `finished`다(#146).
 
 | 요청 | 거절 |
 | --- | --- |
@@ -96,6 +96,13 @@ NIC과 MTU는 `vws-installer -links FILE`(`talosctl -n <모든 노드> get links
 - 설치가 돌지 않고 보낼 것이 없으면 스트림이 끝난다. EventSource는 retry 뒤 다시 붙어 이어 받는다.
 - 로그 줄은 링에 넣기 전에 마스킹하고 파드 로그로는 보내지 않는다. 마스킹 대상: 현재 접속 코드와 세션 토큰(값 그대로), `password|secret|token|api_key|access_code|credential|private_key…` 이름의 `key=value`, `key: value`, `"key": "value"`의 값, `Bearer` 뒤 값, URL의 `user:password@`의 비밀번호, PEM private key 블록 전체. 모두 `***`이 된다. 이 모양에 맞지 않는 비밀은 걸러지지 않는다(예: 이름 없이 값만 찍는 로그). 그래서 `vws apply`의 로그에 비밀을 찍지 않는 것이 먼저다.
 
+## 초기 관리자 비밀번호 (#146)
+
+- 설치가 성공하면 설치기가 `crypto/rand`로 24자(영문 대소문자와 숫자, 편향 없음)를 만들어 `vws` 네임스페이스(`-namespace`)의 Secret `vws-initial-admin`(`username`, `password`)에만 만든다. kubectl에는 stdin으로 넘기고 인자, 오류, 로그, CR, status, state-dir 파일에는 넣지 않는다. 설치기 메모리에도 남기지 않는다.
+- Secret이 이미 있으면 바꾸지 않는다(다시 설치해도 같은 비밀번호). Secret을 못 만들면 상태는 `failed`이고 다시 설치한다.
+- `POST /result/credential`은 Secret을 읽고, Secret에 `vws-initial-admin-consumed=true` 라벨을 붙인 다음에만 `{"adminUser","password"}`를 `Cache-Control: no-store`로 준다. 라벨을 못 붙이면 500이고 비밀번호는 주지 않는다(다시 부르면 된다). 그 뒤와 라벨이 이미 있을 때(설치기 재시작 포함)는 410 `credential_consumed`, 상태는 `finished`. succeeded 전에는 409.
+- 이 단계는 `vws installer finish` 전에 한다. finish가 임시 권한을 지우면 설치기가 Secret을 못 읽는다(확인 필요). 콘솔이 이 Secret으로 관리자 계정을 만드는지는 이 저장소 밖이다(확인 필요). TUI(#142)는 아직 이 엔드포인트를 부르지 않는다.
+
 ## 오류 모델
 
 ```json
@@ -125,6 +132,7 @@ NIC과 MTU는 `vws-installer -links FILE`(`talosctl -n <모든 노드> get links
 - TUI(`internal/tui`): 실제 API를 TLS로 띄워 처음부터 설치까지, 필드 오류 뒤 재질문, preflight 표시, 거절과 입력 끝, 설치 실패, 다른 인증서 거절, 클라이언트 오류 모델. `print-url` 출력. `tests/vws/init.test.sh`: 파드 안 `vws init`이 TUI를, `--print-url`이 print-url을 실행하고 `--from`은 그대로 저장.
 - CR(`cr_test.go`): 내보내기는 모든 단계 필요, 내보낸 CR을 새 설치기에 올리면 같은 summary 해시, 두 번 올려도 같음, apiVersion/kind/name/services/eipPool 없음/profile 없음/비활성 드라이버 거절, 설치 중·후 409. `tests/vws/apply.test.sh`: `apply -f`가 init 뒤 적용, 두 번째는 unchanged와 변경 0건, 잘못된 파일은 2이고 helm 호출 없음.
 - 이벤트(`events_test.go`, `mask_test.go`): 설치 중 붙은 클라이언트와 끝난 뒤 다시 읽은 것이 같음, 가짜 시크릿·접속 코드·토큰이 원본 스트림 어디에도 없음, `Last-Event-ID` 재개, 2000개 링과 gap, 잘못된 id 400, 설치 전 빈 스트림. 마스킹 모양별 표.
+- 자격 증명(`credential_test.go`): 1회 반환 뒤 410과 `finished`, 모양(24자, 알파벳), 반환 응답 말고 모든 응답·CR·코드 파일에 값이 없음, Secret 생성 실패는 failed, 라벨 실패는 500이고 값 없음, 이미 쓴 Secret은 410이고 바뀌지 않음. `cluster.KubeSecret`: 가짜 kubectl로 만들기, AlreadyExists, 읽기, 라벨, 값이 kubectl 인자에 없음. `credential_leak_test.go`: 라벨 실패(500, ERROR 로그)와 정상 반환을 거친 뒤 생성된 비밀번호가 `GET /install/events` 원본 스트림과 slog 로그(debug 레벨까지) 어디에도 없음.
 - `cluster.VWS`: 가짜 `kubectl`, `vws` 스크립트로 노드 목록, `apply --unattended -f` 한 번, apply 실패 전달, CR 파일 0600.
 
 ## 남은 일 (이 PR 밖)
