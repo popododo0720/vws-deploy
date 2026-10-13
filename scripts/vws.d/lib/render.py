@@ -25,6 +25,11 @@ HEADER = "# Rendered by scripts/vws render from VWSCluster vws. Do not edit: cha
 # A field or flag name that looks like it holds a secret value. spec.secrets.<x>.secretName is a
 # name reference and is allowed; nothing else may look like this (AGENTS.md R18).
 SECRET_NAME = re.compile(r"(?i)(passw|token|secret|credential|private|apikey|api-key|api_key|dsn|(^|[-_])key$)")
+# spec.storage.driver nfs (vws-storage#72): the StorageClass name the storage service uses. The class
+# itself (provisioner nfs.csi.k8s.io, server and share from the CR) belongs to the platform bundle.
+NFS_CLASS = "vws-nfs"
+# vws-storage#73 README: Filesystem mode creates, reads and deletes CDI DataVolumes in the VM namespace.
+DATAVOLUME_RULE = {"namespace": "vms", "apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes"], "verbs": ["get", "list", "create", "delete"]}
 REFERENCE_NAMES = {"secrets", "secretName", "existingSecret"}
 
 
@@ -242,16 +247,36 @@ def render(cr):
     if spec.get("version"):
         glob["tag"] = spec["version"]
     storage = spec.get("storage") or {}
-    if storage.get("driver", "rook-ceph") == "existing":
+    driver = storage.get("driver", "rook-ceph")
+    if storage.get("storageClass") and driver != "existing":
+        raise Invalid("spec.storage.storageClass: only for driver existing; rook-ceph makes ceph-block, nfs makes vws-nfs")
+    if storage.get("volumeMode") and driver != "existing":
+        raise Invalid("spec.storage.volumeMode: only for driver existing; rook-ceph is Block, nfs is Filesystem")
+    if storage.get("nfs") and driver != "nfs":
+        raise Invalid("spec.storage.nfs: only for driver nfs")
+    cls, mode = None, "Block"
+    if driver == "existing":
         cls = storage.get("storageClass", "")
         if not cls:
             raise Invalid("spec.storage.storageClass: required when driver is existing")
         glob["storageClass"] = cls
+        mode = storage.get("volumeMode", "Block")
+    elif driver == "nfs":
+        if not storage.get("nfs"):
+            raise Invalid("spec.storage.nfs: server and share are required when driver is nfs")
+        cls, mode = NFS_CLASS, "Filesystem"
+    if cls:
         flags = services.setdefault("storage", {}).setdefault("flags", {})
         flags["kube-class-standard"] = cls
         flags["kube-class-ssd"] = cls
-    elif storage.get("storageClass"):
-        raise Invalid("spec.storage.storageClass: only for driver existing; rook-ceph makes ceph-block")
+    if mode == "Filesystem":
+        # vws-storage#73: a Filesystem volume is a CDI blank DataVolume (CDI writes disk.img).
+        storage_svc = services.setdefault("storage", {})
+        storage_svc.setdefault("flags", {})["kube-volume-mode"] = "Filesystem"
+        storage_svc["rbac"] = copy.deepcopy(base["services"]["storage"]["rbac"]) + [DATAVOLUME_RULE]
+    if driver == "nfs":
+        # csi-driver-nfs takes no snapshots of a plain export: an empty class disables CreateSnapshot.
+        services["storage"]["flags"]["kube-snapshot-class"] = ""
     # spec.storage.s3.rgw -> services.storage.s3.rgw, so vws apply keeps RGW on (#108).
     rgw = (storage.get("s3") or {}).get("rgw")
     if rgw is not None:
