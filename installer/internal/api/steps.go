@@ -65,8 +65,9 @@ func required(field string) FieldError {
 	return FieldError{Field: field, Code: "required", Message: field + " is required"}
 }
 
-// Roles confirms the nodes the install uses. The CRD has no spec.nodes (확인 필요, #139), so the
-// value does not go into the CR; it only checks that every named node exists.
+// Roles confirms the nodes the install uses. Roles are read from the node labels the cluster
+// already has and are not stored in the CR (#192, option B); the step only checks that every
+// named node exists.
 type Roles struct {
 	Nodes []string `json:"nodes"`
 }
