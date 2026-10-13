@@ -10,7 +10,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 - `-api-version`은 필수이고 기본값이 없다. 그룹은 `charts/vws/crds/vwsclusters.yaml`에만 적는다(R18). bootstrap Deployment는 `scripts/bootstrap.sh`가 CRD에서 읽은 group/version을 `-api-version=`으로 넘긴다(#191). R20이 명령줄 전체와 프로브를 검사한다.
 - `-state-dir`(0700)에 1회용 접속 코드 `access-code`와 인증서 SHA-256 지문 `fingerprint`(둘 다 0600)를 쓴다. 로그에는 둘 다 쓰지 않는다. `vws init --print-url`(#142)이 이 파일을 읽는다.
-- 설치는 `vws init --from <state-dir>/vwscluster.json` 다음 `vws apply --unattended`다(`docs/quickstart.md`와 같은 경로).
+- 설치는 `vws apply --unattended -f <state-dir>/vwscluster.json`이다. 이 명령이 CR을 저장(`vws init --from`)하고 적용한다(#144).
 
 ## 엔드포인트 (base `/api/v1`, JSON)
 
@@ -25,7 +25,8 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 | GET | /result | 구현. `credentialAvailable`은 #146 전까지 항상 false |
 | GET | /install/events | 501 `not_implemented` (#145) |
 | POST | /result/credential | 501 `not_implemented` (#146) |
-| GET, POST | /cr | 501 `not_implemented` (#144) |
+| GET | /cr | 구현(#144). 모든 단계가 valid일 때 CR 파일(`vwscluster.json`) |
+| POST | /cr | 구현(#144). CR 파일로 모든 단계를 채우고 검사 |
 
 `/session` 밖의 모든 경로는 세션이 필요하다(`Authorization: Bearer <token>` 또는 쿠키 `vws_installer_session`, HttpOnly·Secure·SameSite=Strict). 본문은 1 MiB까지이고, 모르는 필드와 JSON 뒤의 데이터는 400 `bad_request`다.
 
@@ -65,6 +66,13 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 
 검증에 실패하면 값은 `invalid`로 저장되고 400 `validation_failed`와 `fields`가 온다. preflight는 `Preflight` 함수로 꽂는다. 엔진(#143) 전에는 검사가 없다. `fail`+`error`는 단계를 `invalid`로 만든다. 나머지 `pass`가 아닌 검사는 summary의 `warnings`로 간다.
 
+## CR 저장과 무인 설치 (#144)
+
+- `GET /cr`은 summary가 설치할 CR과 같은 파일을 준다(모든 단계 valid, 아니면 409 `step_out_of_order`). `vws apply --unattended -f vwscluster.json`으로 마법사 없이 같은 설치를 한다.
+- `POST /cr`은 CR 본문을 단계로 나눈다. `spec.network.nodes.external.eipPool`은 eip 단계, 나머지 spec 필드는 같은 이름의 단계로 간다. roles는 CR에 없으므로 저장된 값이 valid면 그대로, 아니면 모든 노드다. observability가 없으면 비운다. 모든 단계를 다시 검사하고 오류가 하나라도 있으면 400 `validation_failed`에 필드를 모두 담는다(값은 `invalid`로 남는다). 편집할 수 있는 상태에서만 된다(설치 중 409 `install_in_progress`, 설치 뒤 409 `already_installed`).
+- draft에 없는 `spec.version`, `spec.services`, `spec.secrets`는 `unsupported`로 거절한다. 그런 CR은 설치기를 거치지 않고 `vws apply --unattended -f`로 쓴다. `apiVersion`, `kind: VWSCluster`, `metadata.name: vws`도 확인한다.
+- 같은 CR을 두 번 올리면 같은 단계와 같은 `specHash`다. `vws apply --unattended -f`를 두 번 돌리면 두 번째는 init도 apply도 `unchanged`다.
+
 ## 오류 모델
 
 ```json
@@ -80,6 +88,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 - 인증: 코드 모양, 반복 없음, 1회용, 새 로그인이 옛 세션을 끊음, 5회 실패 시 403과 새 코드, 30분 유휴 만료와 갱신, 쿠키 속성, 모든 경로가 세션 없이 401, 응답 본문에 코드 없음.
 - 상태 기계: 처음부터 끝까지, 순서 위반, `spec_changed`, `not_confirmed`, 설치 중 409, 설치 후 409, 실패 뒤 재시도.
 - 단계 검증 16가지, 비활성 드라이버, network 변경 뒤 eip 재검사, preflight 차단과 경고, 잘못된 본문, 404, 501, CR의 apiVersion이 차트 CRD와 같음.
+- CR(`cr_test.go`): 내보내기는 모든 단계 필요, 내보낸 CR을 새 설치기에 올리면 같은 summary 해시, 두 번 올려도 같음, apiVersion/kind/name/services/eipPool 없음/profile 없음/비활성 드라이버 거절, 설치 중·후 409. `tests/vws/apply.test.sh`: `apply -f`가 init 뒤 적용, 두 번째는 unchanged와 변경 0건, 잘못된 파일은 2이고 helm 호출 없음.
 - `cluster.VWS`: 가짜 `kubectl`, `vws` 스크립트로 노드 목록, init 다음 apply 순서, init 실패 시 apply 안 함, CR 파일 0600.
 
 ## 남은 일 (이 PR 밖)
