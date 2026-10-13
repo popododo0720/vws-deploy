@@ -2,6 +2,8 @@
 
 **클러스터 준비는 범위 밖이다.** 쿠버네티스 1개 이상의 노드, `kubectl`로 cluster-admin 접근이 이미 있어야 한다(vws-deploy#43 10절).
 
+**노드 주소는 고정이어야 한다(#118).** DHCP로 노드 IP가 바뀌면 노드 등록, CNI 터널(Kube-OVN geneve), 인증서 SAN이 모두 옛 주소를 가리켜 노드가 돌아오지 않는다(vws-test에서 node1 재부팅 뒤 실제로 일어났다). 고정 IP나 DHCP 예약을 쓰고, k3s는 `--node-ip`를 그 주소로 지정한다. `vws preflight`의 `node-ip` 검사가 k3s 노드의 `--node-ip`(주석 `k3s.io/node-args`)와 InternalIP를 비교해 다르거나 없으면 WARN을 낸다. 다른 배포판은 검사하지 않는다.
+
 1. `scripts/bootstrap.sh`로 `build/bootstrap.yaml`을 만든다(VWSCluster CRD, 네임스페이스 `vws`, 설치용 ServiceAccount와 임시 권한, 설치 파드, 리퍼 Job). 설치 이미지는 아직 발행되지 않았다: `VWS_INSTALLER_IMAGE`의 digest가 0이다. 발행 전에는 이 절차가 동작하지 않는다(확인 필요).
 2. `kubectl apply -f build/bootstrap.yaml`
 3. 대화형: `kubectl -n vws exec -it vws-installer -- vws init`. 무인: `kubectl -n vws exec -i vws-installer -- vws init --from /dev/stdin < my-vwscluster.yaml`(예제는 `examples/vwscluster/`).
