@@ -41,6 +41,8 @@ bad_cr "unknown service" 's/console-api:/billing:/'
 bad_cr "replicas below one" 's/replicas: 4/replicas: 0/'
 bad_cr "otlp endpoint the chart cannot take yet" 's/otlpEndpoint: ""/otlpEndpoint: http:\/\/collector:4317/'
 bad_cr "existing driver without a class" 's/driver: rook-ceph/driver: existing/'
+bad_cr "no elastic IP pool" '/^    network:$/,/pool:/d'
+bad_cr "an RFC 5737 pool" 's/pool: 198.18.1.0\/24/pool: 192.0.2.0\/24/'
 bad_cr "version with a slash" 's/version: 0.1.0/version: a\/b/'
 
 # spec.storage.s3.rgw goes to services.storage.s3.rgw so vws apply keeps RGW on (#108).

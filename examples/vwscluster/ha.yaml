@@ -16,3 +16,6 @@ spec:
   services:
     console-api:
       replicas: 4
+    network:
+      flags:
+        pool: 198.18.1.0/24
