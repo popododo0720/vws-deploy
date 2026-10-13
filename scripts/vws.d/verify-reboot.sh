@@ -121,17 +121,15 @@ vws_gate_cni() {
 
 # HEALTH_WARN passes only when every active check code (CephCluster .status.ceph.details) is in
 # VWS_VERIFY_ALLOW_HEALTH_CHECKS (comma separated, built from the repeatable --allow-health-check, empty by default). Nothing
-# is muted in Ceph.
+# is muted in Ceph. Every profile, single-node included, goes through the same list (#154).
 vws_gate_csi() {
-  local profile=$1
-  jq -r --arg p "$profile" --arg allow "${VWS_VERIFY_ALLOW_HEALTH_CHECKS:-}" '
+  jq -r --arg allow "${VWS_VERIFY_ALLOW_HEALTH_CHECKS:-}" '
     ($allow | split(",") | map(select(. != ""))) as $ok
     | [.items[] | {h: (.status.ceph.health // "unknown"), codes: ((.status.ceph.details // {}) | keys)}] as $c
     | [$c[].h] as $h
     | [$c[] | select(.h == "HEALTH_WARN") | .codes[] | select(. as $x | $ok | index($x) | not)] | unique as $other
     | if ($h | length) == 0 then "wait no CephCluster yet"
       elif all($h[]; . == "HEALTH_OK") then "pass"
-      elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and $p == "single-node" then "pass"
       elif any($h[]; . == "HEALTH_ERR") then "fail Ceph \($h | join(","))"
       elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and ($ok | length) > 0
         and all($c[]; .h == "HEALTH_OK" or (.codes | length) > 0) and ($other | length) == 0 then "pass"
@@ -175,18 +173,16 @@ vws_verify_exit() {
 }
 
 vws_verify_check() {
-  local file=$1 release=$2 timeout=$3 deadline start gate result t0 profile passed=() nodes pods pvcs cms vms
+  local file=$1 release=$2 timeout=$3 deadline start gate result t0 passed=() nodes pods pvcs cms vms
   [[ -f $file ]] || vws_usage "${file} does not exist"
   jq -e '.nodes and .services' "$file" >/dev/null 2>&1 || vws_usage "${file} is not a vws verify-reboot snapshot"
   VWS_VERIFY_FILE=$file
-  profile=$(vws_kubectl get vwsclusters vws -n "$release" -o json 2>/dev/null | jq -r '.spec.profile // "unknown"') || profile=unknown
   start=$(date +%s)
   deadline=$((start + timeout))
   for gate in api nodes cni csi bundle services; do
     t0=$(date +%s)
     while :; do
       case $gate in
-        csi) result=$(vws_gate_csi "$profile") ;;
         services) result=$(vws_gate_services "$release") ;;
         *) result=$("vws_gate_${gate}") ;;
       esac

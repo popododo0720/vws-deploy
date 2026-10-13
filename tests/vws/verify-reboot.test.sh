@@ -113,7 +113,6 @@ ceph_warn() { # CODE...
   local codes
   codes=$(printf '%s\n' "$@" | jq -R . | jq -s 'map({key: ., value: {severity: "HEALTH_WARN", message: "m"}}) | from_entries')
   edit_json get_cephcluster.json ".items[0].status.ceph = {health: \"HEALTH_WARN\", details: ${codes}}"
-  edit_json get_vwsclusters.json '.spec.profile = "ha"' # single-node passes any HEALTH_WARN
 }
 scenario ceph-warn-empty
 rebooted
@@ -138,6 +137,21 @@ expect_text "the code not allowlisted is named" "$(first_line)" "with checks not
 VWS_VERIFY_ALLOW_HEALTH_CHECKS=OSD_DOWN run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
 expect_rc "the environment cannot widen the allowlist" 3
 run_vws_real verify-reboot --check "${WORK}/snap.json" --allow-health-check 'bad code'; expect_rc "a bad health check code exits 2" 2
+
+# #154: single-node has no HEALTH_WARN exception; it uses the same allowlist.
+scenario single-node-warn-empty
+rebooted
+ceph_warn POOL_NO_REDUNDANCY
+if jq -e '(.items[0] // .).spec.profile == "single-node"' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >/dev/null; then ok "the fixture is single-node"; else bad "profile" "not single-node"; fi
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s; expect_rc "single-node HEALTH_WARN with no allowlist exits 3" 3
+expect_text "single-node HEALTH_WARN names the code" "$(first_line)" "FAIL  gate-csi  blocked at gate csi after 2s (timeout): Ceph HEALTH_WARN with checks not allowed: POOL_NO_REDUNDANCY"
+
+scenario single-node-warn-allowed
+rebooted
+ceph_warn POOL_NO_REDUNDANCY
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s --allow-health-check POOL_NO_REDUNDANCY
+expect_rc "single-node HEALTH_WARN fully allowlisted exits 0" 0
+expect_text "single-node allowlisted HEALTH_WARN passes csi" "$OUT" "OK    gate-csi"
 
 scenario cni-timeout
 rebooted
