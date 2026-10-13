@@ -34,6 +34,8 @@ type Server struct {
 	installCtx context.Context
 	installed  chan struct{}
 	apiVersion string
+	// credentials is where the initial admin password lives (#146); nil hands none out.
+	credentials cluster.Credentials
 }
 
 // Config wires a Server.
@@ -47,6 +49,8 @@ type Config struct {
 	// APIVersion is the VWSCluster group/version. It comes from the CRD (R18: the group is
 	// written only in charts/vws/crds/vwsclusters.yaml), never from a constant here.
 	APIVersion string
+	// Credentials stores the initial admin password (#146). Nil: none is made.
+	Credentials cluster.Credentials
 }
 
 // New returns a Server with an empty draft.
@@ -60,7 +64,7 @@ func New(c Config) *Server {
 	if c.Context == nil {
 		c.Context = context.Background()
 	}
-	return &Server{s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now, installCtx: c.Context, apiVersion: c.APIVersion}
+	return &Server{s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now, installCtx: c.Context, apiVersion: c.APIVersion, credentials: c.Credentials}
 }
 
 // SessionCookie carries the session token for browsers.
@@ -93,9 +97,9 @@ func (srv *Server) Handler() http.Handler {
 	authed("GET /api/v1/result", srv.getResult)
 	authed("GET /api/v1/cr", srv.getCR)
 	authed("POST /api/v1/cr", srv.postCR)
+	authed("POST /api/v1/result/credential", srv.postCredential)
 	for pattern, issue := range map[string]string{
-		"GET /api/v1/install/events":     "#145",
-		"POST /api/v1/result/credential": "#146",
+		"GET /api/v1/install/events": "#145",
 	} {
 		authed(pattern, func(http.ResponseWriter, *http.Request) error {
 			return fail(ReasonNotImplemented, "not implemented yet (vws-deploy"+issue+")")
@@ -404,6 +408,14 @@ func (srv *Server) postInstall(w http.ResponseWriter, r *http.Request) error {
 func (srv *Server) install(cr []byte, done chan struct{}) {
 	defer close(done)
 	res, err := srv.cluster.Install(srv.installCtx, cr, func(string) {})
+	if err == nil && srv.credentials != nil {
+		if cerr := srv.storeCredential(res.AdminUser); cerr != nil {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			srv.s.state, srv.s.lastErr = StateFailed, "the install ran but the initial admin Secret "+cluster.InitialAdminSecret+" could not be created; install again"
+			return
+		}
+	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if err != nil {
@@ -437,8 +449,7 @@ func (srv *Server) getResult(w http.ResponseWriter, _ *http.Request) error {
 	defer srv.mu.Unlock()
 	v := srv.s.result
 	v.State, v.Error = srv.s.state, srv.s.lastErr
-	// The credential hand-off is #146; until then nothing is available.
-	v.CredentialAvailable = false
+	v.CredentialAvailable = srv.credentials != nil && srv.s.state == StateSucceeded
 	writeJSON(w, http.StatusOK, v)
 	return nil
 }

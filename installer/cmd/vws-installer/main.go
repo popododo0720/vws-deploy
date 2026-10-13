@@ -61,6 +61,7 @@ func serve(args []string) error {
 	kubectl := fs.String("kubectl", "kubectl", "kubectl binary")
 	vws := fs.String("vws", "vws", "vws CLI binary")
 	links := fs.String("links", "", "optional talosctl get links -o json file for the NIC checks (#128, #143)")
+	namespace := fs.String("namespace", "vws", "namespace of Secret vws-initial-admin (#146)")
 	apiVersion := fs.String("api-version", "", "VWSCluster apiVersion (group/version from the CRD); required")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -93,11 +94,12 @@ func serve(args []string) error {
 	}
 	cl := cluster.VWS{Kubectl: *kubectl, VWS: *vws, WorkDir: *dir, Links: *links}
 	srv := api.New(api.Config{
-		Auth:       auth,
-		Cluster:    cl,
-		Preflight:  preflight.Engine{StorageClasses: cl.StorageClasses}.Run,
-		Context:    ctx,
-		APIVersion: *apiVersion,
+		Auth:        auth,
+		Cluster:     cl,
+		Preflight:   preflight.Engine{StorageClasses: cl.StorageClasses}.Run,
+		Context:     ctx,
+		APIVersion:  *apiVersion,
+		Credentials: cluster.KubeSecret{Kubectl: *kubectl, Namespace: *namespace},
 	})
 	hs := &http.Server{
 		Addr:              *listen,
