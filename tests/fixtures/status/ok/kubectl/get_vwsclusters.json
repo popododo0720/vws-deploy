@@ -13,10 +13,17 @@
     },
     "network": {
       "driver": "kube-ovn"
+    },
+    "services": {
+      "network": {
+        "flags": {
+          "pool": "198.18.0.0/24"
+        }
+      }
     }
   },
   "status": {
     "observedGeneration": 2,
-    "appliedValuesHash": "2cc7c941facab4bf13616e04cf3fc4d2ca2e62cd64233e0b7038fc66924c9b15"
+    "appliedValuesHash": "64afad169214b2d944c9cb0dff6fcbee827cef1e004d46a9639e3d1742beba9f"
   }
 }

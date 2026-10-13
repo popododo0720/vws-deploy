@@ -13,6 +13,13 @@
     },
     "network": {
       "driver": "kube-ovn"
+    },
+    "services": {
+      "network": {
+        "flags": {
+          "pool": "198.18.0.0/24"
+        }
+      }
     }
   },
   "status": {

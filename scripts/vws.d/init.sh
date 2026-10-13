@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # summary: save the VWSCluster CR from questions or --from FILE (no workload change)
 # Sourced by scripts/vws. Usage: vws init [--from FILE]
-# Without --from it asks on stdin: profile, storage driver, StorageClass (existing only), image tag.
+# Without --from it asks on stdin: profile, storage driver, StorageClass (existing only), image tag,
+# elastic IP pool CIDR (required, no default; vws-deploy#148).
 # The CR is validated with the same code as vws render. Same CR as in the cluster: unchanged.
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl)
@@ -38,6 +39,7 @@ vws_cmd_main() {
     class=''
     [[ $driver != existing ]] || class=$(vws_init_ask "StorageClass to use" "")
     version=$(vws_init_ask "image tag (empty: chart appVersion)" "")
+    pool=$(vws_init_ask "elastic IP pool CIDR (required)" "")
     {
       printf 'apiVersion: %s/v1alpha1\nkind: VWSCluster\nmetadata:\n  name: vws\n  namespace: %s\nspec:\n' "$(vws_api_group)" "$VWS_NAMESPACE"
       printf '  profile: %s\n' "$profile"
@@ -45,6 +47,7 @@ vws_cmd_main() {
       printf '  storage:\n    driver: %s\n' "$driver"
       [[ -z $class ]] || printf '    storageClass: %s\n' "$class"
       printf '  network:\n    driver: kube-ovn\n'
+      [[ -z $pool ]] || printf '  services:\n    network:\n      flags:\n        pool: %s\n' "$pool"
     } >"$file"
   fi
   if ! python3 "${VWS_ROOT}/scripts/vws.d/lib/render.py" "$file" /dev/null; then
