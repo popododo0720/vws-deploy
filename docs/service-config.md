@@ -43,7 +43,7 @@ services:
 | compute | `image-namespace: {namespace: images}` | `-image-namespace=<images>` | `vws-images` | 같은 곳 |
 | compute | `storage: storage:7400` | `-storage=storage:7400` | 비면 CreateInstance가 DEPENDENCY_MISSING(#121) | 같은 곳 |
 | 세 서비스 | `listen: 0.0.0.0:<port>` | `-listen=0.0.0.0:<port>` | 코드 기본은 `127.0.0.1`. `port` 키와 같아야 한다 | compute `main.go:33`, storage `main.go:40`, network `main.go:22` |
-| console-api | `backend: grpc`, `console-addr: 0.0.0.0:8080`, `compute-addr`/`storage-addr`/`network-addr: <서비스>:<port>` | 같은 이름 | 코드 기본은 `fake`와 `127.0.0.1`(#84). EC2(`-ec2-addr`)와 S3(`-s3-addr`)는 아직 127.0.0.1이고 Service 포트가 없다. 자격 증명 플래그도 넘기지 않아 개발용 기본값이다(확인 필요, #84) | vws-console-api `cmd/vws-console-api/main.go:40-50` |
+| console-api | `backend: grpc`, `console-addr: 0.0.0.0:8080`, `compute-addr`/`storage-addr`/`network-addr: <서비스>:<port>` | 같은 이름 | 코드 기본은 `fake`와 `127.0.0.1`(#84). EC2(`-ec2-addr`)와 S3(`-s3-addr`)는 아직 127.0.0.1이고 Service 포트가 없다. 자격 증명 플래그도 넘기지 않아 개발용 기본값이다(확인 필요, #84). `scripts/check_render.py`(R15)가 `backend: grpc`, `console-addr: 0.0.0.0:<port>`, 세 백엔드 주소 = `<서비스>:<그 서비스 port>`를 강제한다 | vws-console-api `cmd/vws-console-api/main.go:40-50` |
 | network | `db: /var/lib/vws/network.db`, `pool: <CIDR>` | `-db`, `-pool` | 둘 다 필수. `pool`은 기본값이 없다(#148) | `main.go:23-24,33-34` |
 | network | (기본 없음) `kubeconfig`와 `kubeconfigSecret` | `-kubeconfig=<경로>`, Secret 볼륨 | 있으면 Kube-OVN 데이터플레인, 없으면 fake | `cmd/vws-network/main.go:25` |
 | network | `kube-external-subnet` | `-kube-external-subnet=<이름>` | `-kubeconfig`와 함께 필수 | `main.go:26` |

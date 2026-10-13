@@ -252,6 +252,28 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     return errors
 
 
+def check_console_api(name: str, spec: dict, values: dict) -> list[str]:
+    """console-api talks gRPC to the real services and serves the console on the Service port (#84).
+
+    The image defaults are -backend=fake and 127.0.0.1 listeners (vws-console-api
+    cmd/vws-console-api/main.go:41-51), so a missing flag silently serves a fake cloud.
+    """
+    if name != "console-api":
+        return []
+    errors: list[str] = []
+    flags = spec.get("flags") or {}
+    if flags.get("backend") != "grpc":
+        errors.append(f"R15: console-api -backend={flags.get('backend')} must be grpc")
+    port = int(spec.get("port", 8080))
+    if flags.get("console-addr") != f"0.0.0.0:{port}":
+        errors.append(f"R15: console-api -console-addr={flags.get('console-addr')} must be 0.0.0.0:{port}, the service port")
+    for target in ("compute", "storage", "network"):
+        want = f"{target}:{int((values['services'].get(target) or {}).get('port', 8080))}"
+        if flags.get(f"{target}-addr") != want:
+            errors.append(f"R15: console-api -{target}-addr={flags.get(f'{target}-addr')} must be {want}")
+    return errors
+
+
 # Cluster-scoped objects a service's readiness reads (vws-storage#39 internal/backend/kube/ready.go:20,29,33).
 READY_NEEDS_GET = {
     "storage": [
@@ -406,6 +428,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_flags(name, spec, container, values, nsmap))
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
+        errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
         if stateful:
@@ -586,6 +609,18 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         wide = [err for err in check(docs, broken_values, release) if "every namespace" in err]
         if not wide:
             return ["R11: a namespaced resource without a namespace did not fail"]
+
+    # console-api keeps the gRPC backend, the open console address and the real service ports (#84).
+    if (values["services"].get("console-api") or {}).get("flags"):
+        for key, value in (("backend", "fake"), ("console-addr", "127.0.0.1:8080"), ("compute-addr", "compute:1"), ("network-addr", None)):
+            broken_values = copy.deepcopy(values)
+            flags = broken_values["services"]["console-api"]["flags"]
+            if value is None:
+                flags.pop(key)
+            else:
+                flags[key] = value
+            if not any("R15: console-api" in err for err in check(docs, broken_values, release)):
+                return [f"R15: console-api -{key}={value} did not fail"]
 
     # Flags come from values, and a namespace flag needs a Role in that namespace.
     with_flags = next(
