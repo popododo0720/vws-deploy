@@ -1,0 +1,3 @@
+{"node":"10.77.0.11","metadata":{"namespace":"network","type":"LinkStatuses.net.talos.dev","id":"enp1s0"},"spec":{"type":"ether","mtu":9000}}
+{"node":"10.77.0.11","metadata":{"namespace":"network","type":"LinkStatuses.net.talos.dev","id":"enp1s0.20"},"spec":{"type":"ether","kind":"vlan","mtu":9000}}
+{"node":"10.77.0.11","metadata":{"namespace":"network","type":"LinkStatuses.net.talos.dev","id":"enp2s0"},"spec":{"type":"ether","mtu":1500}}

@@ -1,0 +1,4 @@
+{"driver": "kube-ovn",
+ "nodes": {"management": {"nic": "enp1s0", "cidr": "10.77.0.0/24", "mtu": 9000},
+           "tunnel": {"nic": "enp1s0", "vlan": 20, "cidr": "10.20.0.0/24", "mtu": 9000},
+           "external": {"nic": "enp2s0", "vlan": 100, "cidr": "198.18.10.0/24", "gateway": "198.18.10.1", "eipPool": "198.18.10.64/26"}}}
