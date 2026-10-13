@@ -43,4 +43,18 @@ run_vws_real init --from "${EX}/small.yaml";     expect_rc "past the TTL init re
 expect_text "the TTL failure says so" "$OUT" "past its TTL and is revoked"
 expect_text "the expired binding is deleted" "$(calls)" "delete clusterrolebinding vws-installer-temp"
 
+# In the installer pod plain vws init is the API TUI and --print-url prints the access (#142).
+fakebin="${WORK}/vws-installer"
+printf '#!/bin/sh\necho "installer $*"\n' >"$fakebin"; chmod +x "$fakebin"
+installer_scenario fresh
+VWS_INSTALLER_POD=1 VWS_INSTALLER_BIN="$fakebin" run_vws_real init </dev/null; expect_rc "init in the pod runs the TUI" 0
+expect_text "init in the pod execs vws-installer tui" "$OUT" "installer tui"
+assert_no_changes "the TUI path changes nothing by itself"
+VWS_INSTALLER_POD=1 VWS_INSTALLER_BIN="$fakebin" run_vws_real init --print-url; expect_rc "--print-url exits 0" 0
+expect_text "--print-url execs vws-installer print-url" "$OUT" "installer print-url"
+VWS_INSTALLER_BIN="${WORK}/none" run_vws_real init --print-url; expect_rc "--print-url without the binary exits 2" 2
+rm -f "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+VWS_INSTALLER_POD=1 VWS_INSTALLER_BIN="$fakebin" run_vws_real init --from "${EX}/small.yaml"; expect_rc "init --from in the pod still saves" 0
+expect_text "init --from in the pod does not start the TUI" "$OUT" "saved VWSCluster vws"
+
 finish_tests

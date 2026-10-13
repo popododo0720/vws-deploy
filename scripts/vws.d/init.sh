@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # summary: save the VWSCluster CR from questions or --from FILE (no workload change)
-# Sourced by scripts/vws. Usage: vws init [--from FILE]
+# Sourced by scripts/vws. Usage: vws init [--from FILE | --print-url]
+# In the installer pod (VWS_INSTALLER_POD=1) plain vws init is the installer API TUI (#142) and
+# --print-url prints the port-forward URL, the one-time access code and the certificate fingerprint.
 # Without --from it asks on stdin: profile, storage driver, StorageClass (existing only), image tag,
 # elastic IP pool CIDR (required, no default; vws-deploy#148).
 # The CR is validated with the same code as vws render. Same CR as in the cluster: unchanged.
@@ -19,14 +21,20 @@ vws_init_ask() { # PROMPT DEFAULT -> answer
 }
 
 vws_cmd_main() {
-  local from='' file profile driver class version current
+  local from='' file profile driver class version current bin=${VWS_INSTALLER_BIN:-/opt/vws/bin/vws-installer}
   while (($#)); do
     case $1 in
       --from) (($# >= 2)) || vws_usage "--from needs a file"; from=$2; shift 2 ;;
       --from=*) from=${1#*=}; shift ;;
-      *) vws_usage "usage: vws init [--from FILE]" ;;
+      --print-url)
+        [[ -x $bin ]] || vws_usage "--print-url runs in the installer pod (no ${bin})"
+        exec "$bin" print-url ;;
+      *) vws_usage "usage: vws init [--from FILE | --print-url]" ;;
     esac
   done
+  if [[ -z $from && ${VWS_INSTALLER_POD:-} == 1 && -x $bin ]]; then
+    exec "$bin" tui
+  fi
   vws_installer_namespace
   vws_installer_guard_ttl
   file=$(mktemp)

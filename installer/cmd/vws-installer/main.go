@@ -41,6 +41,19 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "tui":
+			return runTUI(args[1:])
+		case "print-url":
+			return runPrintURL(args[1:], os.Stdout)
+		}
+	}
+	return serve(args)
+}
+
+// serve runs the installer API. vws-installer [flags] with no subcommand.
+func serve(args []string) error {
 	fs := flag.NewFlagSet("vws-installer", flag.ContinueOnError)
 	listen := fs.String("listen", "0.0.0.0:8443", "API listen address (the Service port api)")
 	dir := fs.String("state-dir", "/tmp/vws-installer", "directory for the access code, the fingerprint and the CR file")
