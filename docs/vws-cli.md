@@ -63,7 +63,7 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 
 ### vws preflight
 
-`vws preflight --profile single-node|small|ha`: 설치 전 검사. 클러스터에 쓰지 않는다(읽기 동사만). 검사 함수는 `scripts/vws.d/lib/checks.sh`에 하나씩 있고 status, doctor가 같은 함수를 쓴다(#43 4절).
+`vws preflight --profile single-node|small|ha [--links FILE]`: 설치 전 검사. 클러스터에 쓰지 않는다(읽기 동사만). 검사 함수는 `scripts/vws.d/lib/checks.sh`에 하나씩 있고 status, doctor가 같은 함수를 쓴다(#43 4절).
 
 | 검사 이름 | 방법 | 실패 |
 | --- | --- | --- |
@@ -80,6 +80,7 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 | `kernel-indirect` | `kubevirt.io/schedulable` 노드 존재로 간접 확인(`--node-probe` 없음, 결정 3) | WARN |
 | `release` | helm 릴리스 `vws`가 `pending-*`/`failed`면 | FAIL |
 | `source` | 체크아웃이면 `guard.sh bundle`, `recovery`, `config` | FAIL. `VWS_SOURCE_CHECKS=0`이면 건너뜀(하네스) |
+| `node-network`, `node-ip/<노드>`, `node-links/<노드>` | 클러스터의 VWSCluster `spec.network.nodes`(#128, `lib/nodenet.py`). 노드 InternalIP가 management CIDR 안인지. `--links FILE`(`talosctl -n <모든 노드> get links -o json`)이 있으면 노드마다 호스트 망 인터페이스(`<nic>` 또는 `<nic>.<vlan>`)와 underlay NIC이 있고 MTU가 CR 값 이상인지 | IP 밖, 인터페이스 없음, MTU 부족, 노드가 links에 없음은 FAIL. `--links`가 없으면 `node-links` WARN(미확인). CR이 없거나 `nodes`가 없으면 OK |
 
 FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3. 하네스 `tests/vws/preflight.test.sh`는 `tests/fixtures/preflight/ok`를 시나리오마다 한 파일씩 바꿔 검사별 통과/실패를 본다.
 
