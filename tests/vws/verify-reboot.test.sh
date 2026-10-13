@@ -82,6 +82,25 @@ run_vws_real verify-reboot --drained node-a; expect_rc "unreadable volumeattachm
 expect_text "the drain gate says do not reboot" "$ERR" "do not reboot node-a"
 run_vws_real verify-reboot --drained node-a --snapshot "${WORK}/x.json"; expect_rc "--drained with another mode exits 2" 2
 
+# #168: WARN when the KubeVirt infra pods can run on one node or fewer.
+infra_case() { # NAME KUBEVIRT_SPEC NODES_FILTER WANT
+  scenario "infra-$1"
+  edit_json get_kubevirt.json ".items[0].spec = $2"
+  edit_json get_nodes.json "$3"
+  run_vws_real verify-reboot --snapshot "${WORK}/snap-infra-$1.json"; expect_rc "infra $1 exits 0" 0
+  expect_text "infra $1" "$OUT" "$4"
+}
+infra_case default-one-cp '{}' '.items[0].metadata.labels = {"node-role.kubernetes.io/control-plane": "true"}' \
+  "WARN  infra  KubeVirt infra pods (virt-api, virt-controller, virt-exportproxy) can run on 1 node(s) (control-plane placement)"
+infra_case selector-all '{infra: {nodePlacement: {nodeSelector: {"kubernetes.io/os": "linux"}}}}' '.items[].metadata.labels = {"kubernetes.io/os": "linux"}' \
+  "OK    infra  KubeVirt infra pods can run on 2 nodes (selected placement)"
+infra_case selector-cordoned '{infra: {nodePlacement: {nodeSelector: {"kubernetes.io/os": "linux"}}}}' '.items[].metadata.labels = {"kubernetes.io/os": "linux"} | .items[1].spec.unschedulable = true' \
+  "WARN  infra  KubeVirt infra pods (virt-api, virt-controller, virt-exportproxy) can run on 1 node(s) (selected placement)"
+scenario infra-unreadable
+rm "${VWS_FAKE_DIR}/kubectl/get_kubevirt.json"
+run_vws_real verify-reboot --snapshot "${WORK}/snap-infra-x.json"; expect_rc "an unreadable KubeVirt CR does not fail the snapshot" 0
+expect_text "an unreadable KubeVirt CR is a WARN" "$OUT" "WARN  infra  cannot read the KubeVirt CR"
+
 scenario recovered
 rebooted
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "a full recovery exits 0" 0

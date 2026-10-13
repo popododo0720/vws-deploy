@@ -12,7 +12,7 @@ VWS 제어부가 올라가기 전에 클러스터에 있어야 하는 구성 요
 | Kube-OVN | `KUBEOVN_VERSION` | Helm 차트 `kube-ovn`, 값 `platform/kube-ovn.values.yaml` |
 | Rook operator | `ROOK_VERSION` | Helm 차트 `rook-ceph`, 값 `platform/rook-ceph.values.yaml` |
 | Rook Ceph 클러스터 | `ROOK_VERSION` | Helm 차트 `rook-ceph-cluster`, 값 `platform/rook-ceph-cluster.values.yaml` |
-| KubeVirt | `KUBEVIRT_VERSION` | 업스트림 operator 매니페스트, CR `platform/kubevirt-cr.yaml` |
+| KubeVirt | `KUBEVIRT_VERSION` | 업스트림 operator 매니페스트, CR `platform/kubevirt-cr.yaml`. `spec.infra.nodePlacement.nodeSelector: kubernetes.io/os: linux`로 virt-api, virt-controller, virt-exportproxy를 control-plane에 묶지 않는다. 기본 배치에서는 control-plane이 하나인 클러스터에서 그 노드를 drain하면 PDB 때문에 멈춘다(#168) |
 | CDI | `CDI_VERSION` | 업스트림 operator 매니페스트, CR `platform/cdi-cr.yaml` |
 
 `scripts/platform.sh`는 위를 `build/platform/`에 렌더하고 kubeconform으로 검사한다. 내려받는 매니페스트는 sha256을 확인한다. 이 스크립트가 만드는 파일 이름의 번호가 아래 설치 순서의 부분 순서다.

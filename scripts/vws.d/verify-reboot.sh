@@ -56,6 +56,27 @@ vws_verify_snapshot() {
   fi
   vws_emit OK snapshot "wrote ${file}: $(jq -r '"\(.nodes | length) nodes, \(.services | length) services, \(.statefulPVCs | length) PVCs, \(.alwaysVMs | length) VMs"' "$file")"
   vws_verify_krbd "${dir}/va"
+  vws_verify_infra "${dir}/nodes"
+}
+
+# vws_verify_infra NODES_FILE: WARN when the KubeVirt infra pods (virt-api, virt-controller,
+# virt-exportproxy) can run on one node or fewer: draining that node then deadlocks on their PDBs
+# (#168). Without spec.infra.nodePlacement KubeVirt keeps them on control-plane nodes; with a
+# nodeSelector they go to the schedulable nodes that carry every label. Read only, never fatal.
+vws_verify_infra() {
+  local kv count
+  kv=$(vws_kubectl get kubevirt -A -o json 2>/dev/null) || { vws_emit WARN infra "cannot read the KubeVirt CR; infra placement not checked"; return 0; }
+  [[ $(jq '.items | length' <<<"$kv") -gt 0 ]] || return 0
+  count=$(jq -r --slurpfile n "$1" '(.items[0].spec.infra.nodePlacement.nodeSelector // null) as $sel
+    | [$n[0].items[] | select((.spec.unschedulable // false) | not) | (.metadata.labels // {}) as $l
+      | select(if $sel == null then ($l | has("node-role.kubernetes.io/control-plane"))
+               else all($sel | to_entries[]; $l[.key] == .value) end)] | length
+    | if $sel == null then "\(.) control-plane" else "\(.) selected" end' <<<"$kv")
+  if ((${count%% *} <= 1)); then
+    vws_emit WARN infra "KubeVirt infra pods (virt-api, virt-controller, virt-exportproxy) can run on ${count%% *} node(s) (${count#* } placement); draining it deadlocks on their PDBs. Set spec.infra.nodePlacement in the KubeVirt CR"
+  else
+    vws_emit OK infra "KubeVirt infra pods can run on ${count%% *} nodes (${count#* } placement)"
+  fi
 }
 
 # vws_verify_save FILE RESOURCE [ARGS...]: the list as JSON in FILE, or exit 3.
