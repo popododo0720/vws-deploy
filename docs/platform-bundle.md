@@ -84,6 +84,5 @@ k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다�
 | kube-ovn-cni `--iface` | tunnel 망의 호스트 인터페이스(`<nic>` 또는 `<nic>.<vlan>`). tunnel이 없으면 management |
 | kube-ovn-cni `--mtu` | tunnel `mtu` − 100(geneve 오버헤드) |
 | CephCluster `spec.network` | `provider: host`, `addressRanges.public`/`cluster`(storage가 있을 때만) |
-| `21-ovn-external-gw-config.yaml` | `nodes.external`이 있을 때만. ConfigMap `kube-system/ovn-external-gw-config`: `enable-external-gw: "true"`, `type: distributed`, `external-gw-switch: vws-external`(vws-network가 만드는 underlay Subnet), `external-gw-nic: <external.nic>` |
 
-번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. 확인 필요: 고정된 Kube-OVN 버전에서 `external-gw-switch`로 기존 underlay Subnet을 쓰는 동작, `distributed` 모드, 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
+번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. `ovn-external-gw-config`는 만들지 않는다(#164). vws-test 증거 53: 이 ConfigMap을 켜면 kube-ovn-controller가 underlay 브리지 `br-vwsul`을 지우고, 이름이 `external`인 Subnet을 요구한다. 사용자 VPC와 `extraExternalSubnets` 조합의 EIP/SNAT에는 필요 없었다. 게이트웨이 노드 레이블 `ovn.kubernetes.io/external-gw`는 vws-network가 reconcile로 다시 붙인다(vws-network 담당, RBAC은 [rbac.md](rbac.md)). 이전 apply가 이미 만든 ConfigMap은 `vws apply`가 지우지 않는다(확인 필요: 지울 때 영향). 확인 필요: 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
