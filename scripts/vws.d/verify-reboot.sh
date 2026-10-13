@@ -3,7 +3,7 @@
 # Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
-# and boot IDs. No pod UID, no data, no Secret.
+# and boot IDs, restartCount per container of the release's pods. No pod UID, no data, no Secret.
 # --check passes the gates in boot order, each with its time: api, nodes, cni, csi, bundle, services.
 # A gate that cannot pass (a node gone, Ceph HEALTH_ERR, an operator Failed, a service without a
 # workload) exits 1; a gate still waiting at --timeout exits 3. Either way the blocked gate is the
@@ -48,6 +48,7 @@ vws_verify_snapshot() {
       nodes: [$nodes[0].items[] | {name: .metadata.name, bootID: (.status.nodeInfo.bootID // "")}],
       services: [$w[0].items[] | {name: .metadata.name, kind, desired: (.spec.replicas // 1), ready: (.status.readyReplicas // 0)}],
       podCounts: ([$pods[0].items[] | .metadata.namespace] | group_by(.) | map({key: .[0], value: length}) | from_entries),
+      restarts: ([$pods[0].items[] | select(.metadata.namespace == $ns) | {key: .metadata.name, value: ([.status.containerStatuses[]? | {key: .name, value: (.restartCount // 0)}] | from_entries)}] | from_entries),
       statefulPVCs: [$pvc[0].items[] | {name: .metadata.name, phase: .status.phase}],
       configMapKeys: [$cm[0].items[] | {name: .metadata.name, keys: ((.data // {}) | length)}],
       alwaysVMs: [$vm[0].items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
@@ -265,9 +266,12 @@ vws_verify_check() {
     | [$s[0].alwaysVMs[] | "\(.namespace)/\(.name)" | select($h[.] != "Running") | "\(.) \($h[.] // "gone")"] | join(", ")' <<<"$vms")
   if [[ -z $result ]]; then vws_emit OK vms "every runStrategy Always VM is Running"; else vws_emit FAIL vms "not Running: ${result}"; fi
   pods=$(vws_verify_get pods -A)
-  result=$(jq -r --arg ns "$release" --argjson max "$VWS_VERIFY_RESTARTS" '[.items[] | select(.metadata.namespace == $ns) | . as $p
-    | .status.containerStatuses[]? | select((.restartCount // 0) > $max) | "\($p.metadata.name) \(.restartCount)"] | unique | join(", ")' <<<"$pods")
-  if [[ -z $result ]]; then vws_emit OK restarts "no pod over ${VWS_VERIFY_RESTARTS} restarts"; else vws_emit FAIL restarts "over ${VWS_VERIFY_RESTARTS} restarts: ${result}"; fi
+  # Restarts since the snapshot: a pod or container missing from it (or an older snapshot) counts from 0.
+  result=$(jq -r --arg ns "$release" --argjson max "$VWS_VERIFY_RESTARTS" --slurpfile s "$file" '($s[0].restarts // {}) as $base
+    | [.items[] | select(.metadata.namespace == $ns) | . as $p
+    | .status.containerStatuses[]? | ((.restartCount // 0) - ($base[$p.metadata.name][.name] // 0)) as $d
+    | select($d > $max) | "\($p.metadata.name) \($d)"] | unique | join(", ")' <<<"$pods")
+  if [[ -z $result ]]; then vws_emit OK restarts "no pod over ${VWS_VERIFY_RESTARTS} restarts since the snapshot"; else vws_emit FAIL restarts "over ${VWS_VERIFY_RESTARTS} restarts since the snapshot: ${result}"; fi
   nodes=$(vws_kubectl get nodes -o json 2>/dev/null || echo '{"items":[]}')
   result=$(jq -r --slurpfile s "$file" '(.items | map({key: .metadata.name, value: (.status.nodeInfo.bootID // "")}) | from_entries) as $h
     | [$s[0].nodes[] | select($h[.name] != null and $h[.name] != .bootID) | .name] | join(",")' <<<"$nodes")
