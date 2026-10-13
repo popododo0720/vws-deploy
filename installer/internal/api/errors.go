@@ -27,25 +27,28 @@ const (
 	ReasonNotConfirmed      Reason = "not_confirmed"
 	ReasonNotImplemented    Reason = "not_implemented"
 	ReasonInternal          Reason = "internal"
+	// ReasonCredentialConsumed: POST /result/credential after the one hand-out (#146).
+	ReasonCredentialConsumed Reason = "credential_consumed"
 )
 
 var reasons = map[Reason]struct {
 	status int
 	code   errs.Code
 }{
-	ReasonValidationFailed:  {http.StatusBadRequest, errs.CodeInvalidArgument},
-	ReasonBadRequest:        {http.StatusBadRequest, errs.CodeInvalidArgument},
-	ReasonUnauthenticated:   {http.StatusUnauthorized, errs.CodeUnauthenticated},
-	ReasonSessionExpired:    {http.StatusUnauthorized, errs.CodeUnauthenticated},
-	ReasonForbidden:         {http.StatusForbidden, errs.CodePermissionDenied},
-	ReasonNotFound:          {http.StatusNotFound, errs.CodeNotFound},
-	ReasonStepOutOfOrder:    {http.StatusConflict, errs.CodeConflict},
-	ReasonSpecChanged:       {http.StatusConflict, errs.CodeConflict},
-	ReasonInstallInProgress: {http.StatusConflict, errs.CodeConflict},
-	ReasonAlreadyInstalled:  {http.StatusConflict, errs.CodeConflict},
-	ReasonNotConfirmed:      {http.StatusConflict, errs.CodeConflict},
-	ReasonNotImplemented:    {http.StatusNotImplemented, errs.CodeUnimplemented},
-	ReasonInternal:          {http.StatusInternalServerError, errs.CodeInternal},
+	ReasonValidationFailed:   {http.StatusBadRequest, errs.CodeInvalidArgument},
+	ReasonBadRequest:         {http.StatusBadRequest, errs.CodeInvalidArgument},
+	ReasonUnauthenticated:    {http.StatusUnauthorized, errs.CodeUnauthenticated},
+	ReasonSessionExpired:     {http.StatusUnauthorized, errs.CodeUnauthenticated},
+	ReasonForbidden:          {http.StatusForbidden, errs.CodePermissionDenied},
+	ReasonNotFound:           {http.StatusNotFound, errs.CodeNotFound},
+	ReasonStepOutOfOrder:     {http.StatusConflict, errs.CodeConflict},
+	ReasonSpecChanged:        {http.StatusConflict, errs.CodeConflict},
+	ReasonInstallInProgress:  {http.StatusConflict, errs.CodeConflict},
+	ReasonAlreadyInstalled:   {http.StatusConflict, errs.CodeConflict},
+	ReasonNotConfirmed:       {http.StatusConflict, errs.CodeConflict},
+	ReasonNotImplemented:     {http.StatusNotImplemented, errs.CodeUnimplemented},
+	ReasonInternal:           {http.StatusInternalServerError, errs.CodeInternal},
+	ReasonCredentialConsumed: {http.StatusGone, errs.CodeConflict},
 }
 
 // FieldError names one CR field that failed validation.
