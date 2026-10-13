@@ -125,17 +125,26 @@ func (v VWS) Install(ctx context.Context, cr []byte, log func(string)) (Result, 
 	return Result{}, v.run(ctx, log, "apply", "--unattended", "-f", path)
 }
 
+// maxLogLine is the longest output line of vws that is logged (1 MiB).
+const maxLogLine = 1 << 20
+
 func (v VWS) run(ctx context.Context, log func(string), args ...string) error {
 	cmd := exec.CommandContext(ctx, v.VWS, args...)
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		scan := bufio.NewScanner(pr)
+		scan.Buffer(make([]byte, 0, 64*1024), maxLogLine)
 		for scan.Scan() {
 			log(scan.Text())
 		}
-		close(done)
+		if err := scan.Err(); err != nil {
+			log(fmt.Sprintf("installer: output not shown from here on: %v", err))
+		}
+		// Keep reading: a reader that stopped would block vws on the pipe forever.
+		_, _ = io.Copy(io.Discard, pr) //nolint:errcheck // pr only fails once pw is closed
 	}()
 	err := cmd.Run()
 	pw.Close()
