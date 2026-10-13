@@ -93,6 +93,167 @@ spec:
                     driver:
                       type: string
                       enum: [kube-ovn]
+                    nodes:
+                      description: Node NICs per network (vws-deploy#125). Omitted means one NIC, the current behavior. It describes host networking the OS already set up.
+                      type: object
+                      required: [management]
+                      properties:
+                        management:
+                          type: object
+                          required: [nic, cidr]
+                          properties:
+                            nic:
+                              description: Node NIC name, the same on every node.
+                              type: string
+                              pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                            vlan:
+                              description: 802.1Q id, 0 is untagged.
+                              type: integer
+                              minimum: 0
+                              maximum: 4094
+                            cidr:
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                            mtu:
+                              type: integer
+                              minimum: 1280
+                              maximum: 9216
+                        tunnel:
+                          type: object
+                          required: [nic, cidr]
+                          properties:
+                            nic:
+                              description: Node NIC name, the same on every node.
+                              type: string
+                              pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                            vlan:
+                              description: 802.1Q id, 0 is untagged.
+                              type: integer
+                              minimum: 0
+                              maximum: 4094
+                            cidr:
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                            mtu:
+                              type: integer
+                              minimum: 1280
+                              maximum: 9216
+                        storage:
+                          type: object
+                          required: [public]
+                          properties:
+                            public:
+                              type: object
+                              required: [nic, cidr]
+                              properties:
+                                nic:
+                                  description: Node NIC name, the same on every node.
+                                  type: string
+                                  pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                                vlan:
+                                  description: 802.1Q id, 0 is untagged.
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 4094
+                                cidr:
+                                  type: string
+                                  pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                                mtu:
+                                  type: integer
+                                  minimum: 1280
+                                  maximum: 9216
+                            cluster:
+                              type: object
+                              required: [nic, cidr]
+                              properties:
+                                nic:
+                                  description: Node NIC name, the same on every node.
+                                  type: string
+                                  pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                                vlan:
+                                  description: 802.1Q id, 0 is untagged.
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 4094
+                                cidr:
+                                  type: string
+                                  pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                                mtu:
+                                  type: integer
+                                  minimum: 1280
+                                  maximum: 9216
+                        external:
+                          type: object
+                          required: [nic, cidr, gateway, eipPool]
+                          properties:
+                            nic:
+                              description: Node NIC name, the same on every node.
+                              type: string
+                              pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                            vlan:
+                              description: 802.1Q id, 0 is untagged.
+                              type: integer
+                              minimum: 0
+                              maximum: 4094
+                            cidr:
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                            mtu:
+                              type: integer
+                              minimum: 1280
+                              maximum: 9216
+                            gateway:
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+                            excludeIPs:
+                              description: Addresses or a..b ranges Kube-OVN never assigns.
+                              type: array
+                              items:
+                                type: string
+                                pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}(\.\.([0-9]{1,3}\.){3}[0-9]{1,3})?$'
+                            eipPool:
+                              description: Elastic IP pool inside cidr. Required, no default.
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                    direct:
+                      description: Provider networks that VM ports join directly through a Kube-OVN underlay (vws-deploy#125).
+                      type: array
+                      items:
+                        required: [name, nic, cidr, gateway]
+                        type: object
+                        properties:
+                          nic:
+                            description: Node NIC name, the same on every node.
+                            type: string
+                            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,14}$'
+                          vlan:
+                            description: 802.1Q id, 0 is untagged.
+                            type: integer
+                            minimum: 0
+                            maximum: 4094
+                          cidr:
+                            type: string
+                            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+                          mtu:
+                            type: integer
+                            minimum: 1280
+                            maximum: 9216
+                          name:
+                            type: string
+                            pattern: '^[a-z][a-z0-9-]{0,14}$'
+                          mode:
+                            description: Only ovn-underlay. sriov and macvtap are reserved extension points.
+                            type: string
+                            enum: [ovn-underlay]
+                          gateway:
+                            type: string
+                            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+                          excludeIPs:
+                            description: Addresses or a..b ranges Kube-OVN never assigns.
+                            type: array
+                            items:
+                              type: string
+                              pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}(\.\.([0-9]{1,3}\.){3}[0-9]{1,3})?$'
                 observability:
                   type: object
                   properties:
