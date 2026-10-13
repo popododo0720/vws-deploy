@@ -2,6 +2,17 @@
 
 VWS 프라이빗 클라우드의 배포 저장소다. Kubernetes 안에서 도는 제어부와 플랫폼 번들만 다룬다. 호스트에 우리가 설치하는 프로세스는 없다. 설계는 https://github.com/popododo0720/vws-deploy/issues/2 다. 이 저장소는 클러스터에 적용하지 않는다.
 
+## 누구를 위한 것인가
+
+같은 Terraform, aws-cli, SDK가 엔드포인트만 바꿔 그대로 돈다.
+
+- 홈랩
+- 실제 AWS에 배포하기 전 테스트 환경
+- AWS와 하이브리드로 쓰는 팀
+- AWS에서 온프레미스로 이전하는 팀
+
+1순위는 EC2/S3 API 호환 정확도다. 로드맵은 https://github.com/popododo0720/vws-deploy/issues/132 다.
+
 ## 제어부
 
 서비스 목록은 `charts/vws/values.yaml`의 `services` 맵이 유일하다. 서비스를 더하려면 키 하나를 추가한다.
