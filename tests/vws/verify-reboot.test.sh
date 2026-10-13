@@ -43,6 +43,45 @@ if ! grep -q "node-b" <<<"$OUT"; then ok "other attachers and detached volumes a
 assert_no_changes "the krbd check changes nothing"
 run_vws_real verify-reboot --snapshot "${WORK}/snap.json"; expect_rc "an existing snapshot is not overwritten (2)" 2
 
+# A real cluster's pods -A JSON is larger than the argument limit; the snapshot must still work.
+scenario big-pods
+jq '.items as $p | .items = [range(3000) as $i | $p[0] | .metadata.name = "pod-\($i)" | .metadata.annotations.pad = ("x" * 800)]' \
+  "${VWS_FAKE_DIR}/kubectl/get_pods.json" >"${WORK}/pods.big" && mv "${WORK}/pods.big" "${VWS_FAKE_DIR}/kubectl/get_pods.json"
+size=$(stat -c %s "${VWS_FAKE_DIR}/kubectl/get_pods.json")
+if ((size > 2 * 1024 * 1024)); then ok "the pods fixture is over 2MB"; else bad "pods fixture size" "$size"; fi
+run_vws_real verify-reboot --snapshot "${WORK}/snap-big.json"; expect_rc "a snapshot with a >2MB pods list exits 0" 0
+if jq -e '[.podCounts[]] | add == 3000' "${WORK}/snap-big.json" >/dev/null 2>&1; then ok "every pod is counted"; else bad "big pod count" "$(cat "${WORK}/snap-big.json" 2>&1)"; fi
+expect_text "the krbd check still runs" "$OUT" "OK    krbd  no RBD volume attached"
+
+# A list that cannot be read makes the snapshot fail (3) without a file, so nobody reboots unchecked.
+for resource in pods volumeattachments; do
+  scenario "unreadable-${resource}"
+  rm "${VWS_FAKE_DIR}/kubectl/get_${resource}.json"
+  run_vws_real verify-reboot --snapshot "${WORK}/snap-${resource}.json"; expect_rc "unreadable ${resource} exits 3" 3
+  expect_text "unreadable ${resource} says why" "$ERR" "snapshot failed: cannot list ${resource}"
+  expect_text "unreadable ${resource} says do not reboot" "$ERR" "do not reboot"
+  if [[ ! -e ${WORK}/snap-${resource}.json ]]; then ok "unreadable ${resource} leaves no snapshot"; else bad "snapshot left" "${resource}"; fi
+done
+
+# #150: the drain gate. A reboot goes ahead only when the node is cordoned and has no RBD attachment.
+drain_case() { # NAME UNSCHEDULABLE ATTACHED WANT_RC TEXT
+  scenario "drain-$1"
+  jq -n --argjson u "$2" '{kind: "Node", metadata: {name: "node-a"}, spec: {unschedulable: $u}}' >"${VWS_FAKE_DIR}/kubectl/get_nodes.json"
+  jq -n --argjson a "$3" '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com"}, status: {attached: $a}},
+    {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com"}, status: {attached: true}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+  run_vws_real verify-reboot --drained node-a; expect_rc "drain $1 exits $4" "$4"
+  expect_text "drain $1 says why" "$OUT" "$5"
+  assert_no_changes "drain $1 changes nothing"
+}
+drain_case finished true false 0 "OK    drained  node-a is cordoned and has no RBD volume attached; safe to reboot"
+drain_case not-run false false 1 "FAIL  drained  node-a is not cordoned: the drain did not run or failed; do not reboot"
+drain_case unfinished true true 1 "FAIL  drained  node-a still has 1 RBD volumes attached: the drain did not finish; do not reboot"
+scenario drain-unreadable
+rm "${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+run_vws_real verify-reboot --drained node-a; expect_rc "unreadable volumeattachments at the drain gate exits 3" 3
+expect_text "the drain gate says do not reboot" "$ERR" "do not reboot node-a"
+run_vws_real verify-reboot --drained node-a --snapshot "${WORK}/x.json"; expect_rc "--drained with another mode exits 2" 2
+
 scenario recovered
 rebooted
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "a full recovery exits 0" 0
@@ -68,6 +107,37 @@ edit_json get_cephcluster.json '.items[0].status.ceph.health = "HEALTH_ERR"'
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "Ceph HEALTH_ERR exits 1" 1
 expect_text "csi is the first line" "$(first_line)" "FAIL  gate-csi"
 expect_text "earlier gates are still listed" "$OUT" "OK    gate-cni"
+
+# #150: HEALTH_WARN passes only when every active check code is allowlisted with --allow-health-check.
+ceph_warn() { # CODE...
+  local codes
+  codes=$(printf '%s\n' "$@" | jq -R . | jq -s 'map({key: ., value: {severity: "HEALTH_WARN", message: "m"}}) | from_entries')
+  edit_json get_cephcluster.json ".items[0].status.ceph = {health: \"HEALTH_WARN\", details: ${codes}}"
+  edit_json get_vwsclusters.json '.spec.profile = "ha"' # single-node passes any HEALTH_WARN
+}
+scenario ceph-warn-empty
+rebooted
+ceph_warn AUTH_INSECURE_KEYS_ALLOWED
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s; expect_rc "HEALTH_WARN with no allowlist exits 3" 3
+expect_text "HEALTH_WARN with no allowlist blocks csi" "$(first_line)" "FAIL  gate-csi  blocked at gate csi after 2s (timeout): Ceph HEALTH_WARN with checks not allowed: AUTH_INSECURE_KEYS_ALLOWED"
+
+scenario ceph-warn-allowed
+rebooted
+ceph_warn AUTH_INSECURE_CLIENT_KEY_TYPE AUTH_INSECURE_KEYS_ALLOWED
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s \
+  --allow-health-check AUTH_INSECURE_CLIENT_KEY_TYPE --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "HEALTH_WARN with every code allowlisted exits 0" 0
+expect_text "allowlisted HEALTH_WARN passes csi" "$OUT" "OK    gate-csi"
+
+scenario ceph-warn-mixed
+rebooted
+ceph_warn AUTH_INSECURE_KEYS_ALLOWED OSD_DOWN
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "HEALTH_WARN with one code not allowlisted exits 3" 3
+expect_text "the code not allowlisted is named" "$(first_line)" "with checks not allowed: OSD_DOWN"
+VWS_VERIFY_ALLOW_HEALTH_CHECKS=OSD_DOWN run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "the environment cannot widen the allowlist" 3
+run_vws_real verify-reboot --check "${WORK}/snap.json" --allow-health-check 'bad code'; expect_rc "a bad health check code exits 2" 2
 
 scenario cni-timeout
 rebooted

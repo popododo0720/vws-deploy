@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary: record the state before a reboot and check recovery after it (read only, never reboots)
-# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --check FILE [--timeout 20m]
+# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]...
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
 # and boot IDs. No pod UID, no data, no Secret.
@@ -15,46 +15,84 @@ VWS_NEED=(jq python3 kubectl)
 VWS_VERIFY_RESTARTS=${VWS_VERIFY_RESTARTS:-3}
 VWS_VERIFY_INTERVAL=${VWS_VERIFY_INTERVAL:-10}
 VWS_VERIFY_SELECTOR=app.kubernetes.io/part-of=vws
+VWS_VERIFY_ALLOW_HEALTH_CHECKS=
 
 vws_verify_get() { # RESOURCE [ARGS...]: json, or {"items":[]} when it cannot be read
   vws_kubectl get "$@" -o json 2>/dev/null || echo '{"items":[]}'
 }
 
+# vws_verify_snapshot FILE RELEASE: every read must succeed, or exit 3 and leave no FILE, so no caller
+# reboots without the krbd check. The lists go to jq as files: a real cluster's pods -A JSON is larger
+# than the kernel's argument limit (vws-deploy#150).
 vws_verify_snapshot() {
-  local file=$1 release=$2 nodes pods workloads pvcs cms vms
+  local file=$1 release=$2 dir
   vws_kubectl version -o json >/dev/null 2>&1 || vws_die_env "the Kubernetes API does not answer"
-  nodes=$(vws_kubectl get nodes -o json 2>/dev/null) || vws_die_env "cannot list nodes"
-  pods=$(vws_verify_get pods -A)
-  workloads=$(vws_verify_get deployments,statefulsets -n "$release" -l "$VWS_VERIFY_SELECTOR")
-  pvcs=$(vws_verify_get pvc -n "$release")
-  cms=$(vws_verify_get configmaps -n "$release" -l "$VWS_VERIFY_SELECTOR")
-  vms=$(vws_verify_get virtualmachines -A)
+  vws_verify_tmp=$(mktemp -d)
+  # shellcheck disable=SC2154 # vws_results is set by lib/common.sh
+  trap 'rm -rf "${vws_verify_tmp:-}"; rm -f "$vws_results"' EXIT
+  dir=$vws_verify_tmp
+  vws_verify_save "${dir}/nodes" nodes
+  vws_verify_save "${dir}/pods" pods -A
+  vws_verify_save "${dir}/w" deployments,statefulsets -n "$release" -l "$VWS_VERIFY_SELECTOR"
+  vws_verify_save "${dir}/pvc" pvc -n "$release"
+  vws_verify_save "${dir}/cm" configmaps -n "$release" -l "$VWS_VERIFY_SELECTOR"
+  vws_verify_save "${dir}/vm" virtualmachines -A
+  vws_verify_save "${dir}/va" volumeattachments
   umask 077
-  jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ns "$release" \
-    --argjson nodes "$nodes" --argjson pods "$pods" --argjson w "$workloads" --argjson pvc "$pvcs" --argjson cm "$cms" --argjson vm "$vms" '{
+  if ! jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ns "$release" \
+    --slurpfile nodes "${dir}/nodes" --slurpfile pods "${dir}/pods" --slurpfile w "${dir}/w" \
+    --slurpfile pvc "${dir}/pvc" --slurpfile cm "${dir}/cm" --slurpfile vm "${dir}/vm" '{
       takenAt: $at, namespace: $ns,
-      nodes: [$nodes.items[] | {name: .metadata.name, bootID: (.status.nodeInfo.bootID // "")}],
-      services: [$w.items[] | {name: .metadata.name, kind, desired: (.spec.replicas // 1), ready: (.status.readyReplicas // 0)}],
-      podCounts: ([$pods.items[] | .metadata.namespace] | group_by(.) | map({key: .[0], value: length}) | from_entries),
-      statefulPVCs: [$pvc.items[] | {name: .metadata.name, phase: .status.phase}],
-      configMapKeys: [$cm.items[] | {name: .metadata.name, keys: ((.data // {}) | length)}],
-      alwaysVMs: [$vm.items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
-    }' >"$file" || vws_die_env "cannot write ${file}"
+      nodes: [$nodes[0].items[] | {name: .metadata.name, bootID: (.status.nodeInfo.bootID // "")}],
+      services: [$w[0].items[] | {name: .metadata.name, kind, desired: (.spec.replicas // 1), ready: (.status.readyReplicas // 0)}],
+      podCounts: ([$pods[0].items[] | .metadata.namespace] | group_by(.) | map({key: .[0], value: length}) | from_entries),
+      statefulPVCs: [$pvc[0].items[] | {name: .metadata.name, phase: .status.phase}],
+      configMapKeys: [$cm[0].items[] | {name: .metadata.name, keys: ((.data // {}) | length)}],
+      alwaysVMs: [$vm[0].items[] | select(.spec.runStrategy == "Always" or .spec.running == true) | {namespace: .metadata.namespace, name: .metadata.name, status: (.status.printableStatus // "unknown")}]
+    }' >"${dir}/snap" || ! mv "${dir}/snap" "$file"; then
+    vws_die_env "snapshot failed: cannot write ${file}; do not reboot"
+  fi
   vws_emit OK snapshot "wrote ${file}: $(jq -r '"\(.nodes | length) nodes, \(.services | length) services, \(.statefulPVCs | length) PVCs, \(.alwaysVMs | length) VMs"' "$file")"
-  vws_verify_krbd
+  vws_verify_krbd "${dir}/va"
+}
+
+# vws_verify_save FILE RESOURCE [ARGS...]: the list as JSON in FILE, or exit 3.
+vws_verify_save() {
+  local out=$1
+  shift
+  vws_kubectl get "$@" -o json >"$out" 2>/dev/null && jq -e '.items | type == "array"' "$out" >/dev/null 2>&1 ||
+    vws_die_env "snapshot failed: cannot list ${*}; do not reboot (the krbd check did not run)"
 }
 
 # vws_verify_krbd: a node with RBD volumes mapped by ceph-csi (krbd) can hang in shutdown when the
 # network goes down before the unmap (libceph error -101, vws-deploy#116). WARN per such node so it
 # is drained first (docs/platform-bundle.md "노드 재부팅 절차"). Read only.
-vws_verify_krbd() {
+vws_verify_krbd() { # VOLUMEATTACHMENTS_FILE
   local attached node count
-  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' \
-    <<<"$(vws_verify_get volumeattachments)") || vws_die_env "cannot read volumeattachments"
+  attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' "$1") ||
+    vws_die_env "snapshot failed: cannot read volumeattachments; do not reboot"
   while IFS=$'\t' read -r node count; do
     [[ -n $node ]] && vws_emit WARN krbd "${node}: ${count} RBD volumes attached; drain it before rebooting with: kubectl drain ${node} --ignore-daemonsets --delete-emptydir-data, krbd can hang the shutdown"
   done < <(jq -r 'group_by(.) | .[] | [.[0], (length | tostring)] | @tsv' <<<"$attached")
   [[ $attached != "[]" ]] || vws_emit OK krbd "no RBD volume attached"
+}
+
+# vws_verify_drained NODE: the gate between drain and reboot. Exit 0 only when NODE is cordoned and no
+# rbd.csi.ceph.com VolumeAttachment is attached to it; 1 when the drain is not done; 3 when it cannot
+# be read. A reboot goes ahead only on 0 (vws-deploy#150). Read only.
+vws_verify_drained() {
+  local node=$1 json attached
+  json=$(vws_kubectl get nodes "$node" -o json 2>/dev/null) || vws_die_env "cannot read node ${node}; do not reboot"
+  attached=$(vws_kubectl get volumeattachments -o json 2>/dev/null |
+    jq -er --arg n "$node" '[.items[] | select(.spec.nodeName == $n and .spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)] | length') ||
+    vws_die_env "cannot read volumeattachments; do not reboot ${node}"
+  if [[ $(jq -r '.spec.unschedulable // false' <<<"$json") != true ]]; then
+    vws_emit FAIL drained "${node} is not cordoned: the drain did not run or failed; do not reboot"
+  elif ((attached > 0)); then
+    vws_emit FAIL drained "${node} still has ${attached} RBD volumes attached: the drain did not finish; do not reboot"
+  else
+    vws_emit OK drained "${node} is cordoned and has no RBD volume attached; safe to reboot"
+  fi
 }
 
 # Each gate prints "pass", "wait <reason>" or "fail <reason>".
@@ -81,13 +119,23 @@ vws_gate_cni() {
     <<<"$(vws_verify_get pods -A)"
 }
 
+# HEALTH_WARN passes only when every active check code (CephCluster .status.ceph.details) is in
+# VWS_VERIFY_ALLOW_HEALTH_CHECKS (comma separated, built from the repeatable --allow-health-check, empty by default). Nothing
+# is muted in Ceph.
 vws_gate_csi() {
   local profile=$1
-  jq -r --arg p "$profile" '[.items[] | .status.ceph.health // "unknown"] as $h
+  jq -r --arg p "$profile" --arg allow "${VWS_VERIFY_ALLOW_HEALTH_CHECKS:-}" '
+    ($allow | split(",") | map(select(. != ""))) as $ok
+    | [.items[] | {h: (.status.ceph.health // "unknown"), codes: ((.status.ceph.details // {}) | keys)}] as $c
+    | [$c[].h] as $h
+    | [$c[] | select(.h == "HEALTH_WARN") | .codes[] | select(. as $x | $ok | index($x) | not)] | unique as $other
     | if ($h | length) == 0 then "wait no CephCluster yet"
       elif all($h[]; . == "HEALTH_OK") then "pass"
       elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and $p == "single-node" then "pass"
       elif any($h[]; . == "HEALTH_ERR") then "fail Ceph \($h | join(","))"
+      elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and ($ok | length) > 0
+        and all($c[]; .h == "HEALTH_OK" or (.codes | length) > 0) and ($other | length) == 0 then "pass"
+      elif ($other | length) > 0 then "wait Ceph \($h | join(",")) with checks not allowed: \($other | join(","))"
       else "wait Ceph \($h | join(","))" end' <<<"$(vws_verify_get cephcluster -A)"
 }
 
@@ -183,21 +231,27 @@ vws_verify_check() {
 }
 
 vws_cmd_main() {
-  local snapshot='' check='' timeout=20m seconds release
+  VWS_VERIFY_ALLOW_HEALTH_CHECKS=''
+  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]..."
   while (($#)); do
     case $1 in
       --snapshot) (($# >= 2)) || vws_usage "--snapshot needs a file"; snapshot=$2; shift 2 ;;
       --check) (($# >= 2)) || vws_usage "--check needs a file"; check=$2; shift 2 ;;
+      --allow-health-check) (($# >= 2)) && [[ $2 =~ ^[A-Z0-9_]+$ ]] || vws_usage "--allow-health-check needs a Ceph health check code such as AUTH_INSECURE_KEYS_ALLOWED"
+        VWS_VERIFY_ALLOW_HEALTH_CHECKS+="${VWS_VERIFY_ALLOW_HEALTH_CHECKS:+,}$2"; shift 2 ;;
+      --drained) (($# >= 2)) || vws_usage "--drained needs a node"; drained=$2; shift 2 ;;
       --timeout) (($# >= 2)) || vws_usage "--timeout needs a duration"; timeout=$2; shift 2 ;;
-      *) vws_usage "usage: vws verify-reboot --snapshot FILE | --check FILE [--timeout 20m]" ;;
+      *) vws_usage "$usage" ;;
     esac
   done
-  [[ -n $snapshot || -n $check ]] && [[ -z $snapshot || -z $check ]] || vws_usage "usage: vws verify-reboot --snapshot FILE | --check FILE [--timeout 20m]"
+  [[ $(printf '%s' "${snapshot:+x}${check:+x}${drained:+x}") == x ]] || vws_usage "$usage"
   [[ $timeout =~ ^([0-9]+)([smh])$ ]] || vws_usage "--timeout must look like 90s, 20m or 1h"
   case ${BASH_REMATCH[2]} in s) seconds=${BASH_REMATCH[1]} ;; m) seconds=$((BASH_REMATCH[1] * 60)) ;; h) seconds=$((BASH_REMATCH[1] * 3600)) ;; esac
   release=${VWS_NAMESPACE:-vws}
   VWS_NAMESPACE=''
-  if [[ -n $snapshot ]]; then
+  if [[ -n $drained ]]; then
+    vws_verify_drained "$drained"
+  elif [[ -n $snapshot ]]; then
     [[ ! -e $snapshot ]] || vws_usage "${snapshot} exists; verify-reboot never overwrites"
     vws_verify_snapshot "$snapshot" "$release"
   else
