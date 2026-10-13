@@ -132,6 +132,17 @@ expect_text "without direct networks the network RBAC is the chart default" "$(p
 net_cr 'n["direct"][0]["nic"] = "enp0s9"'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
 expect_text "the provider network index follows the sorted underlay NICs" "$(cat "${WORK}/net.out")" "kube-provider-network: vws-pn1"
+# spec.network.nodes.external.gatewayNodes -> -kube-gateway-nodes (#197).
+net_cr 'n["nodes"]["external"]["gatewayNodes"] = ["gw-a", "gw-b.example"]'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "gatewayNodes renders" 0
+expect_text "gatewayNodes becomes one comma-separated flag" "$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]["kube-gateway-nodes"])' "${WORK}/net.out")" "gw-a,gw-b.example"
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/net.out")
+expect_text "the chart passes the gateway nodes to vws-network" "$chart" "-kube-gateway-nodes=gw-a,gw-b.example"
+net_cr 'pass'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "without gatewayNodes render sets no gateway flag" "$(python3 -c 'import sys,yaml; print("kube-gateway-nodes" in yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"])' "${WORK}/net.out")" "False"
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/net.out")
+expect_text "the chart default leaves the labels alone" "$chart" "-kube-gateway-nodes="
 bad_net() {
   net_cr "$2"
   run_vws_real render "${WORK}/net.yaml" "${WORK}/net.bad"
@@ -142,6 +153,10 @@ bad_net "a pool flag beside nodes.external" 'spec["services"]["network"] = {"fla
 bad_net "a direct flag beside spec.network.direct" 'spec["services"]["network"] = {"flags": {"kube-direct-nad-namespace": "x"}}'
 bad_net "direct networks without an external subnet" 'n["nodes"].pop("external"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 bad_net "an underlay flag beside nodes.external" 'spec["services"]["network"] = {"flags": {"kube-underlay-vlan": 7}}'
+bad_net "a gateway flag beside gatewayNodes" 'n["nodes"]["external"]["gatewayNodes"] = ["gw-a"]; spec["services"]["network"] = {"flags": {"kube-gateway-nodes": "x"}}'
+bad_net "an empty gatewayNodes list" 'n["nodes"]["external"]["gatewayNodes"] = []'
+bad_net "a gateway node name with a comma" 'n["nodes"]["external"]["gatewayNodes"] = ["a,b"]'
+bad_net "a duplicate gateway node" 'n["nodes"]["external"]["gatewayNodes"] = ["gw-a", "gw-a"]'
 bad_net "an RFC 5737 eipPool" 'n["nodes"]["external"].update(cidr="203.0.113.0/24", gateway="203.0.113.1", excludeIPs=[], eipPool="203.0.113.64/26")'
 bad_net "nodes without management" 'del n["nodes"]["management"]'
 bad_net "vlan above 4094" 'n["nodes"]["tunnel"]["vlan"] = 4095'

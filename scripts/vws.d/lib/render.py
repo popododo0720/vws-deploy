@@ -239,6 +239,16 @@ def external_flags(network, services):
     })
     if ext.get("excludeIPs"):
         flags["kube-underlay-exclude"] = ",".join(ext["excludeIPs"])
+    # gatewayNodes -> -kube-gateway-nodes: vws-network keeps these nodes at
+    # ovn.kubernetes.io/external-gw=true after kube-ovn-controller resets them (#197).
+    if "gatewayNodes" in ext:
+        gw = ext["gatewayNodes"]
+        if not gw or len(set(gw)) != len(gw):
+            raise Invalid("spec.network.nodes.external.gatewayNodes: needs one or more distinct node names")
+        if "kube-gateway-nodes" in flags:
+            raise Invalid("spec.services.network.flags.kube-gateway-nodes: comes from "
+                          "spec.network.nodes.external.gatewayNodes; remove it")
+        flags["kube-gateway-nodes"] = ",".join(gw)
 
 
 def direct_flags(network, services, base):

@@ -162,6 +162,10 @@ services:
       # The sqlite file lives on the retained state volume mounted at /var/lib/vws.
       db: /var/lib/vws/network.db
       # pool (the elastic IP pool CIDR) has no default: set it per site. vws render fails without it.
+      # Nodes kept at ovn.kubernetes.io/external-gw=true (vws-network -kube-gateway-nodes, comma
+      # separated). Empty leaves the labels alone. vws render fills it from
+      # spec.network.nodes.external.gatewayNodes (#197); no node name is written here.
+      kube-gateway-nodes: ""
     rbac:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]
