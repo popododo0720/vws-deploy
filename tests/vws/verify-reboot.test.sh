@@ -108,6 +108,37 @@ run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "
 expect_text "csi is the first line" "$(first_line)" "FAIL  gate-csi"
 expect_text "earlier gates are still listed" "$OUT" "OK    gate-cni"
 
+# #150: HEALTH_WARN passes only when every active check code is allowlisted with --allow-health-check.
+ceph_warn() { # CODE...
+  local codes
+  codes=$(printf '%s\n' "$@" | jq -R . | jq -s 'map({key: ., value: {severity: "HEALTH_WARN", message: "m"}}) | from_entries')
+  edit_json get_cephcluster.json ".items[0].status.ceph = {health: \"HEALTH_WARN\", details: ${codes}}"
+  edit_json get_vwsclusters.json '.spec.profile = "ha"' # single-node passes any HEALTH_WARN
+}
+scenario ceph-warn-empty
+rebooted
+ceph_warn AUTH_INSECURE_KEYS_ALLOWED
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s; expect_rc "HEALTH_WARN with no allowlist exits 3" 3
+expect_text "HEALTH_WARN with no allowlist blocks csi" "$(first_line)" "FAIL  gate-csi  blocked at gate csi after 2s (timeout): Ceph HEALTH_WARN with checks not allowed: AUTH_INSECURE_KEYS_ALLOWED"
+
+scenario ceph-warn-allowed
+rebooted
+ceph_warn AUTH_INSECURE_CLIENT_KEY_TYPE AUTH_INSECURE_KEYS_ALLOWED
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s \
+  --allow-health-check AUTH_INSECURE_CLIENT_KEY_TYPE --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "HEALTH_WARN with every code allowlisted exits 0" 0
+expect_text "allowlisted HEALTH_WARN passes csi" "$OUT" "OK    gate-csi"
+
+scenario ceph-warn-mixed
+rebooted
+ceph_warn AUTH_INSECURE_KEYS_ALLOWED OSD_DOWN
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "HEALTH_WARN with one code not allowlisted exits 3" 3
+expect_text "the code not allowlisted is named" "$(first_line)" "with checks not allowed: OSD_DOWN"
+VWS_VERIFY_ALLOW_HEALTH_CHECKS=OSD_DOWN run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s --allow-health-check AUTH_INSECURE_KEYS_ALLOWED
+expect_rc "the environment cannot widen the allowlist" 3
+run_vws_real verify-reboot --check "${WORK}/snap.json" --allow-health-check 'bad code'; expect_rc "a bad health check code exits 2" 2
+
 scenario cni-timeout
 rebooted
 edit_json get_pods.json '(.items[] | select(.metadata.name == "kube-ovn-cni-x1") | .status.containerStatuses[0].ready) = false'

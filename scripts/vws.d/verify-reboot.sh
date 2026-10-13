@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary: record the state before a reboot and check recovery after it (read only, never reboots)
-# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m]
+# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]...
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
 # and boot IDs. No pod UID, no data, no Secret.
@@ -15,6 +15,7 @@ VWS_NEED=(jq python3 kubectl)
 VWS_VERIFY_RESTARTS=${VWS_VERIFY_RESTARTS:-3}
 VWS_VERIFY_INTERVAL=${VWS_VERIFY_INTERVAL:-10}
 VWS_VERIFY_SELECTOR=app.kubernetes.io/part-of=vws
+VWS_VERIFY_ALLOW_HEALTH_CHECKS=
 
 vws_verify_get() { # RESOURCE [ARGS...]: json, or {"items":[]} when it cannot be read
   vws_kubectl get "$@" -o json 2>/dev/null || echo '{"items":[]}'
@@ -118,13 +119,23 @@ vws_gate_cni() {
     <<<"$(vws_verify_get pods -A)"
 }
 
+# HEALTH_WARN passes only when every active check code (CephCluster .status.ceph.details) is in
+# VWS_VERIFY_ALLOW_HEALTH_CHECKS (comma separated, built from the repeatable --allow-health-check, empty by default). Nothing
+# is muted in Ceph.
 vws_gate_csi() {
   local profile=$1
-  jq -r --arg p "$profile" '[.items[] | .status.ceph.health // "unknown"] as $h
+  jq -r --arg p "$profile" --arg allow "${VWS_VERIFY_ALLOW_HEALTH_CHECKS:-}" '
+    ($allow | split(",") | map(select(. != ""))) as $ok
+    | [.items[] | {h: (.status.ceph.health // "unknown"), codes: ((.status.ceph.details // {}) | keys)}] as $c
+    | [$c[].h] as $h
+    | [$c[] | select(.h == "HEALTH_WARN") | .codes[] | select(. as $x | $ok | index($x) | not)] | unique as $other
     | if ($h | length) == 0 then "wait no CephCluster yet"
       elif all($h[]; . == "HEALTH_OK") then "pass"
       elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and $p == "single-node" then "pass"
       elif any($h[]; . == "HEALTH_ERR") then "fail Ceph \($h | join(","))"
+      elif all($h[]; . == "HEALTH_OK" or . == "HEALTH_WARN") and ($ok | length) > 0
+        and all($c[]; .h == "HEALTH_OK" or (.codes | length) > 0) and ($other | length) == 0 then "pass"
+      elif ($other | length) > 0 then "wait Ceph \($h | join(",")) with checks not allowed: \($other | join(","))"
       else "wait Ceph \($h | join(","))" end' <<<"$(vws_verify_get cephcluster -A)"
 }
 
@@ -220,11 +231,14 @@ vws_verify_check() {
 }
 
 vws_cmd_main() {
-  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m]"
+  VWS_VERIFY_ALLOW_HEALTH_CHECKS=''
+  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]..."
   while (($#)); do
     case $1 in
       --snapshot) (($# >= 2)) || vws_usage "--snapshot needs a file"; snapshot=$2; shift 2 ;;
       --check) (($# >= 2)) || vws_usage "--check needs a file"; check=$2; shift 2 ;;
+      --allow-health-check) (($# >= 2)) && [[ $2 =~ ^[A-Z0-9_]+$ ]] || vws_usage "--allow-health-check needs a Ceph health check code such as AUTH_INSECURE_KEYS_ALLOWED"
+        VWS_VERIFY_ALLOW_HEALTH_CHECKS+="${VWS_VERIFY_ALLOW_HEALTH_CHECKS:+,}$2"; shift 2 ;;
       --drained) (($# >= 2)) || vws_usage "--drained needs a node"; drained=$2; shift 2 ;;
       --timeout) (($# >= 2)) || vws_usage "--timeout needs a duration"; timeout=$2; shift 2 ;;
       *) vws_usage "$usage" ;;
