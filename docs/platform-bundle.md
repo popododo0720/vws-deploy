@@ -14,6 +14,7 @@ VWS 제어부가 올라가기 전에 클러스터에 있어야 하는 구성 요
 | Rook Ceph 클러스터 | `ROOK_VERSION` | Helm 차트 `rook-ceph-cluster`, 값 `platform/rook-ceph-cluster.values.yaml` |
 | KubeVirt | `KUBEVIRT_VERSION` | 업스트림 operator 매니페스트, CR `platform/kubevirt-cr.yaml`. `spec.infra.nodePlacement.nodeSelector: kubernetes.io/os: linux`로 virt-api, virt-controller, virt-exportproxy를 control-plane에 묶지 않는다. 기본 배치에서는 control-plane이 하나인 클러스터에서 그 노드를 drain하면 PDB 때문에 멈춘다(#168) |
 | CDI | `CDI_VERSION` | 업스트림 operator 매니페스트, CR `platform/cdi-cr.yaml` |
+| csi-driver-nfs | `CSI_DRIVER_NFS_VERSION` | Helm 차트 `csi-driver-nfs`(kubernetes-csi), 값 `platform/csi-driver-nfs.values.yaml`. StorageClass, VolumeSnapshotClass, snapshot controller와 CRD는 만들지 않는다. `35-csi-driver-nfs.yaml`은 번들에 항상 있지만 `vws apply`는 `spec.storage.driver: nfs`일 때만 올린다(#170) |
 
 `scripts/platform.sh`는 위를 `build/platform/`에 렌더하고 kubeconform으로 검사한다. 내려받는 매니페스트는 sha256을 확인한다. 이 스크립트가 만드는 파일 이름의 번호가 아래 설치 순서의 부분 순서다.
 
@@ -24,6 +25,7 @@ VWS 제어부가 올라가기 전에 클러스터에 있어야 하는 구성 요
 1. **etcd와 API 서버.** 쿠버네티스 배포판이 제공한다. 운영은 Talos(#8), 로컬 랩은 k3s(#7)다. 백업과 복원은 #6의 런북을 따른다.
 2. **CNI.** 배포판의 기본 CNI 없이 시작하거나 Kube-OVN을 기본 CNI로 쓴다. Kube-OVN을 먼저 올리고(`20-kube-ovn.yaml`), 이어서 Multus(`10-multus.yaml`)를 올린다. VM 연결은 Multus의 NetworkAttachmentDefinition(provider kube-ovn)이다.
 3. **CSI.** Rook operator(`30-rook-ceph-operator.yaml`), 그다음 Ceph 클러스터(`31-rook-ceph-cluster.yaml`). 기본 StorageClass는 Ceph RBD다.
+   `spec.storage.driver: nfs`이면 csi-driver-nfs(`35-csi-driver-nfs.yaml`)와 StorageClass `vws-nfs`(`36-vws-nfs-storageclass.yaml`, `vws apply`가 CR에서 만든다)를 올린다. NFS export는 미리 있어야 하고 모든 노드에서 마운트할 수 있어야 한다.
 4. **KubeVirt와 CDI.** operator(`40-`, `42-`)가 Ready가 된 뒤 CR(`41-`, `43-`)을 올린다.
 5. **VWS.** `charts/vws`를 올린다. 컨트롤러 권한은 차트의 서비스별 `rbac`가 만든다.
 
@@ -35,6 +37,8 @@ Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과
 | --- | --- | --- |
 | StorageClass | `ceph-block` | 볼륨 타입 표(`kube.Classes`)의 값 |
 | VolumeSnapshotClass | `ceph-block` | `kube.NewBlock`의 `snapshotClass` 인자 |
+
+`spec.storage.driver: nfs`이면 StorageClass `vws-nfs`(provisioner `nfs.csi.k8s.io`, parameters `server`, `share`는 CR의 `spec.storage.nfs`, `reclaimPolicy: Delete`, `allowVolumeExpansion: true`)를 `scripts/vws.d/lib/platform.py`가 만든다. VolumeSnapshotClass는 없다(스냅숏 없음). vws-storage는 `-kube-volume-mode=Filesystem`으로 돌고 CDI blank DataVolume으로 `disk.img`를 만든다(vws-storage#73). 다른 driver면 csi-driver-nfs도 `vws-nfs`도 올리지 않는다. 실제 NAS에서 프로비저닝은 확인하지 않았다(확인 필요, vws-test).
 
 두 이름은 번들이 만드는 이름과 일치해야 한다. `scripts/guard.sh bundle`이 `build/platform/31-rook-ceph-cluster.yaml`(`scripts/platform.sh`가 만든다)에서 두 이름이 각각 한 번씩 있고 provisioner와 driver가 같은지 보고, 이 문서에 같은 이름이 적혀 있는지 본다. 실제 클러스터에서 PVC 바인딩과 VolumeSnapshot 생성은 확인하지 않았다(확인 필요, T1 이상).
 
@@ -51,6 +55,7 @@ Rook Ceph 클러스터 차트가 만드는 이름을 vws-storage의 설정값과
 | `rbd` | Ceph RBD CSI가 볼륨을 노드에 붙인다 |
 | `openvswitch` | Kube-OVN의 데이터 경로 |
 | `geneve` | Kube-OVN의 기본 터널(`platform/kube-ovn.values.yaml`의 `TUNNEL_TYPE`) |
+| `nfs` | `spec.storage.driver: nfs`일 때 csi-driver-nfs가 export를 노드에 마운트한다(NFS 클라이언트) |
 | `kvm`(`kvm_intel` 또는 `kvm_amd`) | KubeVirt의 VM 가속. 없으면 `platform/kubevirt-cr.yaml`의 `useEmulation`을 켜야 하고 매우 느리다 |
 
 ## 실제 클러스터에서 필요했던 것 (vws-test, #51)

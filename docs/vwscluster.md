@@ -25,7 +25,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | `spec.storage.driver` | `rook-ceph`(기본), `existing`, `nfs` | `existing`이면 `global.storageClass`와 storage의 `kube-class-standard`, `kube-class-ssd`. `nfs`이면 두 클래스가 `vws-nfs`, `kube-volume-mode=Filesystem`, `kube-snapshot-class=`(빈 값, 스냅숏 없음). 상태 볼륨은 기본 클래스에 남는다 |
 | `spec.storage.storageClass` | `existing`일 때 필수, 아니면 금지(범용 CSI 드라이버는 모두 `existing`이다) | 위와 같음 |
 | `spec.storage.volumeMode` | `existing`일 때만, `Block`(기본) 또는 `Filesystem` | `Filesystem`이면 `kube-volume-mode=Filesystem`과 storage의 `datavolumes.cdi.kubevirt.io` 권한(vws-storage#73) |
-| `spec.storage.nfs.{server,share}` | `nfs`일 때 둘 다 필수, 아니면 금지. `share`는 `/`로 시작 | StorageClass `vws-nfs`의 파라미터. 그 StorageClass와 csi-driver-nfs는 플랫폼 번들 몫이고 아직 없다(후속 이슈 필요, 확인 필요) |
+| `spec.storage.nfs.{server,share}` | `nfs`일 때 둘 다 필수, 아니면 금지. `share`는 `/`로 시작 | StorageClass `vws-nfs`의 파라미터. `vws apply`가 csi-driver-nfs와 그 StorageClass를 플랫폼 번들로 올린다(#170, `docs/platform-bundle.md`). 다른 driver면 둘 다 올리지 않는다 |
 | `spec.storage.s3.rgw.{enabled,endpoint,bucketPrefix,existingSecret}` | RGW 객체 백엔드(#108). `bucketPrefix`는 `^([a-z0-9][a-z0-9-]{0,17})?$`, `existingSecret`은 릴리스 네임스페이스의 Secret 이름(키 `access-key`, `secret-key`) | `services.storage.s3.rgw` 그대로. 없으면 객체 백엔드는 꺼진 채(기본 fake). `vws apply`가 RGW 설정을 지우지 않는다 |
 | `spec.network.driver` | `kube-ovn` 하나 | 바꾸는 값 없음 |
 | `spec.network.nodes`, `spec.network.direct` | 노드 NIC별 망과 direct provider network. 규칙과 예는 `docs/node-network.md`(#125) | Kube-OVN, Ceph 번들 설정과 `services.network.flags` |
