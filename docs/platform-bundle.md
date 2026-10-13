@@ -86,4 +86,4 @@ k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다�
 | CephCluster `spec.network` | `provider: host`, `addressRanges.public`/`cluster`(storage가 있을 때만) |
 | `21-ovn-external-gw-config.yaml` | `nodes.external`이 있을 때만. ConfigMap `kube-system/ovn-external-gw-config`: `enable-external-gw: "true"`, `type: distributed`, `external-gw-switch: vws-external`(vws-network가 만드는 underlay Subnet), `external-gw-nic: <external.nic>` |
 
-번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. 확인 필요: Kube-OVN v1.16.12에서 `external-gw-switch`로 기존 underlay Subnet을 쓰는 동작, `distributed` 모드, 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
+번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. 확인 필요: 고정된 Kube-OVN 버전에서 `external-gw-switch`로 기존 underlay Subnet을 쓰는 동작, `distributed` 모드, 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
