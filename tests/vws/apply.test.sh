@@ -144,4 +144,23 @@ cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head 
 if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRD is applied before the CR is read"; else bad "CRD apply before CR read" "$(calls)"; fi
 if sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -q '^kind: CustomResourceDefinition'; then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 
+# #144: apply -f FILE saves the file as the CR first (vws init --from), then applies; twice is unchanged.
+EX="${VWS_TEST_ROOT}/examples/vwscluster"
+installer_scenario same
+run_vws_real apply --unattended -f "${EX}/single-node.yaml"; expect_rc "apply -f exits 0" 0
+expect_text "apply -f runs init --from first" "$OUT" "OK    init"
+expect_text "apply -f then applies" "$(calls)" "upgrade --install vws"
+hash=$(grep -o '"appliedValuesHash":"[0-9a-f]*"' "$VWS_FAKE_LOG" | cut -d'"' -f4)
+jq --arg h "$hash" '.status = {observedGeneration: (.metadata.generation // 0), appliedValuesHash: $h}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real apply --unattended -f "${EX}/single-node.yaml"; expect_rc "a second apply -f exits 0" 0
+expect_text "the second apply -f leaves the CR unchanged" "$OUT" "unchanged: VWSCluster vws already has this spec"
+expect_text "the second apply -f applies nothing" "$OUT" "OK    apply"
+assert_no_changes "the second apply -f changes nothing"
+sed 's/driver: kube-ovn/driver: calico/' "${EX}/single-node.yaml" >"${WORK}/bad-f.yaml"
+run_vws_real apply --unattended -f "${WORK}/bad-f.yaml";   expect_rc "apply -f with an invalid file exits 2" 2
+assert_no_changes "an invalid -f file changes nothing"
+if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "an invalid -f file does not reach helm" "$(calls)"; else ok "an invalid -f file does not reach helm"; fi
+run_vws_real apply -f;                                      expect_rc "-f without a file exits 2" 2
+
 finish_tests
