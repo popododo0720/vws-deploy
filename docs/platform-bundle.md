@@ -74,3 +74,16 @@ k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다�
 - 렌더와 kubeconform까지만 확인했다. 실제 클러스터 설치, 기동 순서, 업그레이드는 미검증이다. 실측은 T2 랩에서 한다.
 - kubeconform은 CRD 기반 리소스(CephCluster, KubeVirt, CDI 등)의 스키마가 기본 카탈로그에 없어 건너뛴다. 이 리소스들은 문법만 확인한다.
 - `KUBERNETES_VERSION`(kubeconform 스키마)과 `K3S_VERSION`은 같은 쿠버네티스 마이너여야 하고 `scripts/guard.sh bundle`이 이를 검사한다. 그 마이너는 문서로 확인한 지원 범위(KubeVirt, Rook, Kube-OVN)의 교집합 안에서 골랐다. CDI와 Multus는 지원 범위를 문서에서 찾지 못했다(확인 필요). 실제 클러스터에서의 동작도 확인하지 않았다.
+
+## 노드망에 맞춘 번들 (#127)
+
+`vws apply`는 번들을 그대로 쓰지 않고 `scripts/vws.d/lib/platform.py`가 CR에 맞춘 사본을 쓴다. `spec.network.nodes`가 없으면 바이트 단위로 같은 사본이다. 있으면 다음만 바꾼다(설계 #125).
+
+| 대상 | 값 |
+| --- | --- |
+| kube-ovn-cni `--iface` | tunnel 망의 호스트 인터페이스(`<nic>` 또는 `<nic>.<vlan>`). tunnel이 없으면 management |
+| kube-ovn-cni `--mtu` | tunnel `mtu` − 100(geneve 오버헤드) |
+| CephCluster `spec.network` | `provider: host`, `addressRanges.public`/`cluster`(storage가 있을 때만) |
+| `21-ovn-external-gw-config.yaml` | `nodes.external`이 있을 때만. ConfigMap `kube-system/ovn-external-gw-config`: `enable-external-gw: "true"`, `type: distributed`, `external-gw-switch: vws-external`(vws-network가 만드는 underlay Subnet), `external-gw-nic: <external.nic>` |
+
+번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. 확인 필요: Kube-OVN v1.16.12에서 `external-gw-switch`로 기존 underlay Subnet을 쓰는 동작, `distributed` 모드, 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
