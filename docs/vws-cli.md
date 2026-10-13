@@ -90,7 +90,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 
 ### vws apply
 
-`vws apply [--unattended]`: CR → render → 상태 비교 → preflight → 비밀 → 번들 → helm → status. CR의 `status.appliedValuesHash`(렌더한 values의 sha256과 `charts/vws`의 모든 파일 경로·내용을 합친 해시, `lib/hash.sh`, #101. 차트만 바뀌어도 다시 적용한다)와 `observedGeneration`이 지금 값과 같으면 `unchanged`로 끝난다(변경 호출 0건). 번들은 `build/platform/*.yaml`을 파일 이름 순서(=`scripts/platform.sh`의 번호)대로 server-side apply하고 파일마다 CRD Established, Deployment Available을 기다린다. 이어 `helm upgrade --install vws --atomic --wait`, 끝으로 status 하위 리소스를 쓴다. helm이 실패하면 status를 쓰지 않고 1. `--dry-run`은 변경 호출을 출력만 한다. 비밀: 지금 차트는 설치기가 만들 Secret이 없어 이 단계는 아무것도 만들지 않는다. preflight: `lib/checks.sh`(#55)의 api, nodes, storage, release 검사를 돌리고 FAIL이면 아무것도 바꾸지 않고 1. 동시 실행 잠금(Lease `vws-operator-lock`)은 아직 없다(확인 필요, 후속).
+`vws apply [--unattended]`: CR → render → 상태 비교 → preflight → 비밀 → 번들 → helm → status. CR의 `status.appliedValuesHash`(렌더한 values의 sha256과 `charts/vws`의 모든 파일 경로·내용을 합친 해시, `lib/hash.sh`, #101. 차트만 바뀌어도 다시 적용한다)와 `observedGeneration`이 지금 값과 같으면 `unchanged`로 끝난다(변경 호출 0건. 예외: 아래 ConfigMap 삭제). 비교 전에 이전 apply가 만든 `kube-system/ovn-external-gw-config`(field manager `vws`)가 있으면 지우고 `OK extgw`를 낸다(#171). vws가 쓰지 않은 같은 이름의 ConfigMap은 두고 `WARN extgw`다. 번들은 `build/platform/*.yaml`을 파일 이름 순서(=`scripts/platform.sh`의 번호)대로 server-side apply하고 파일마다 CRD Established, Deployment Available을 기다린다. 이어 `helm upgrade --install vws --atomic --wait`, 끝으로 status 하위 리소스를 쓴다. helm이 실패하면 status를 쓰지 않고 1. `--dry-run`은 변경 호출을 출력만 한다. 비밀: 지금 차트는 설치기가 만들 Secret이 없어 이 단계는 아무것도 만들지 않는다. preflight: `lib/checks.sh`(#55)의 api, nodes, storage, release 검사를 돌리고 FAIL이면 아무것도 바꾸지 않고 1. 동시 실행 잠금(Lease `vws-operator-lock`)은 아직 없다(확인 필요, 후속).
 
 ### vws installer
 

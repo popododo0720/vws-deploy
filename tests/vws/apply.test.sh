@@ -103,6 +103,36 @@ temp_binding 20000 14400
 run_vws_real apply;                              expect_rc "past the TTL apply revokes and exits 1" 1
 if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "no install past the TTL" "$(calls)"; else ok "no install past the TTL"; fi
 
+# #171: an apply before #165 left ovn-external-gw-config; it breaks the underlay bridge.
+extgw_cm() { # MANAGER: the ConfigMap as kubectl get returns it, written by MANAGER
+  jq -n --arg m "$1" '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ovn-external-gw-config", namespace: "kube-system",
+    managedFields: [{manager: $m, operation: "Apply"}]}, data: {"enable-external-gw": "true", "external-gw-nic": "enp4s0"}}' \
+    >"${VWS_FAKE_DIR}/kubectl/get_configmap.json"
+}
+installer_scenario extgw
+run_vws_real apply --unattended;                 expect_rc "apply without the ConfigMap exits 0" 0
+if grep $'^kubectl\tdelete' "$VWS_FAKE_LOG" | grep -q 'delete configmap ovn-external-gw-config'; then bad "no ConfigMap, no delete" "$(calls)"; else ok "no ConfigMap, no delete"; fi
+expect_text "the ConfigMap is looked up in kube-system" "$(calls)" "--namespace=kube-system get configmap ovn-external-gw-config -o json --ignore-not-found"
+extgw_cm vws
+run_vws_real apply --unattended --dry-run;       expect_rc "dry-run with the ConfigMap exits 0" 0
+if grep -q $'^kubectl\tdelete' "$VWS_FAKE_LOG"; then bad "dry-run deletes nothing" "$(calls)"; else ok "dry-run deletes nothing"; fi
+run_vws_real apply --unattended;                 expect_rc "apply with the old ConfigMap exits 0" 0
+expect_text "the old ConfigMap is deleted in kube-system" "$(grep $'^kubectl\tdelete' "$VWS_FAKE_LOG")" "--namespace=kube-system delete configmap ovn-external-gw-config --ignore-not-found"
+expect_text "the delete is reported" "$OUT" "OK    extgw"
+del_line=$(grep -n $'^kubectl\tdelete' "$VWS_FAKE_LOG" | cut -d: -f1)
+helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
+if ((del_line < helm_line)); then ok "the ConfigMap goes before the release"; else bad "delete before helm" "$(calls)"; fi
+hash=$(grep -o '"appliedValuesHash":"[0-9a-f]*"' "$VWS_FAKE_LOG" | cut -d'"' -f4)
+jq --arg h "$hash" '.status = {observedGeneration: 2, appliedValuesHash: $h}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real apply --unattended;                 expect_rc "an unchanged apply with the old ConfigMap exits 0" 0
+expect_text "an unchanged apply is still unchanged" "$OUT" "unchanged"
+if grep $'^kubectl\tdelete' "$VWS_FAKE_LOG" | grep -q 'delete configmap ovn-external-gw-config'; then ok "an unchanged apply still deletes the old ConfigMap"; else bad "unchanged delete" "$(calls)"; fi
+extgw_cm someone-else
+run_vws_real apply --unattended;                 expect_rc "a ConfigMap vws did not write exits 0" 0
+if grep -q $'^kubectl\tdelete' "$VWS_FAKE_LOG"; then bad "a foreign ConfigMap is kept" "$(calls)"; else ok "a foreign ConfigMap is kept"; fi
+expect_text "a foreign ConfigMap is a WARN" "$OUT" "WARN  extgw"
+
 # #114: an older CRD (no spec.storage.s3) is applied before the CR is read, so the CR keeps the field.
 installer_scenario oldcrd
 jq 'del(.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.storage.properties.s3)' \
