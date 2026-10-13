@@ -23,7 +23,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 | GET | /summary | 구현. `editing`/`failed` → `confirming` |
 | POST | /install | 구현. 202, 설치는 백그라운드 |
 | GET | /result | 구현. `credentialAvailable`은 #146 전까지 항상 false |
-| GET | /install/events | 501 `not_implemented` (#145) |
+| GET | /install/events | 구현(#145). 설치 진행 SSE, `Last-Event-ID` 재개 |
 | POST | /result/credential | 501 `not_implemented` (#146) |
 | GET | /cr | 구현(#144). 모든 단계가 valid일 때 CR 파일(`vwscluster.json`) |
 | POST | /cr | 구현(#144). CR 파일로 모든 단계를 채우고 검사 |
@@ -89,6 +89,13 @@ NIC과 MTU는 `vws-installer -links FILE`(`talosctl -n <모든 노드> get links
 - draft에 없는 `spec.version`, `spec.services`, `spec.secrets`는 `unsupported`로 거절한다. 그런 CR은 설치기를 거치지 않고 `vws apply --unattended -f`로 쓴다. `apiVersion`, `kind: VWSCluster`, `metadata.name: vws`도 확인한다.
 - 같은 CR을 두 번 올리면 같은 단계와 같은 `specHash`다. `vws apply --unattended -f`를 두 번 돌리면 두 번째는 init도 apply도 `unchanged`다.
 
+## 설치 이벤트 스트림 (#145)
+
+- `GET /install/events`는 `text/event-stream`이다. 이벤트는 `state`(`installing`, `succeeded`, `failed`)와 `log`(설치 로그 한 줄)다. id는 1부터 늘고 재설치에도 다시 쓰지 않는다. 처음에 `retry: 5000`, 쉬는 동안 15초마다 `: keepalive`.
+- `Last-Event-ID` 헤더(헤더를 못 쓰는 클라이언트는 `?lastEventId=`) 다음부터 보낸다. 서버는 최근 2000개(`EventBuffer`)만 둔다. 그 id 다음 이벤트가 이미 버려졌으면 `event: gap`(버린 개수) 뒤 남은 가장 오래된 것부터 보낸다. 잘못된 id는 400 `bad_request`.
+- 설치가 돌지 않고 보낼 것이 없으면 스트림이 끝난다. EventSource는 retry 뒤 다시 붙어 이어 받는다.
+- 로그 줄은 링에 넣기 전에 마스킹하고 파드 로그로는 보내지 않는다. 마스킹 대상: 현재 접속 코드와 세션 토큰(값 그대로), `password|secret|token|api_key|access_code|credential|private_key…` 이름의 `key=value`, `key: value`, `"key": "value"`의 값, `Bearer` 뒤 값, URL의 `user:password@`의 비밀번호, PEM private key 블록 전체. 모두 `***`이 된다. 이 모양에 맞지 않는 비밀은 걸러지지 않는다(예: 이름 없이 값만 찍는 로그). 그래서 `vws apply`의 로그에 비밀을 찍지 않는 것이 먼저다.
+
 ## 오류 모델
 
 ```json
@@ -117,6 +124,7 @@ NIC과 MTU는 `vws-installer -links FILE`(`talosctl -n <모든 노드> get links
 - 단계 검증 16가지, 비활성 드라이버, network 변경 뒤 eip 재검사, preflight 차단과 경고, 잘못된 본문, 404, 501, CR의 apiVersion이 차트 CRD와 같음.
 - TUI(`internal/tui`): 실제 API를 TLS로 띄워 처음부터 설치까지, 필드 오류 뒤 재질문, preflight 표시, 거절과 입력 끝, 설치 실패, 다른 인증서 거절, 클라이언트 오류 모델. `print-url` 출력. `tests/vws/init.test.sh`: 파드 안 `vws init`이 TUI를, `--print-url`이 print-url을 실행하고 `--from`은 그대로 저장.
 - CR(`cr_test.go`): 내보내기는 모든 단계 필요, 내보낸 CR을 새 설치기에 올리면 같은 summary 해시, 두 번 올려도 같음, apiVersion/kind/name/services/eipPool 없음/profile 없음/비활성 드라이버 거절, 설치 중·후 409. `tests/vws/apply.test.sh`: `apply -f`가 init 뒤 적용, 두 번째는 unchanged와 변경 0건, 잘못된 파일은 2이고 helm 호출 없음.
+- 이벤트(`events_test.go`, `mask_test.go`): 설치 중 붙은 클라이언트와 끝난 뒤 다시 읽은 것이 같음, 가짜 시크릿·접속 코드·토큰이 원본 스트림 어디에도 없음, `Last-Event-ID` 재개, 2000개 링과 gap, 잘못된 id 400, 설치 전 빈 스트림. 마스킹 모양별 표.
 - `cluster.VWS`: 가짜 `kubectl`, `vws` 스크립트로 노드 목록, `apply --unattended -f` 한 번, apply 실패 전달, CR 파일 0600.
 
 ## 남은 일 (이 PR 밖)
