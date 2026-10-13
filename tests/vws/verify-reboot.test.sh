@@ -24,7 +24,7 @@ assert_no_changes "snapshot changes nothing"
 snap=$(cat "${WORK}/snap.json")
 if ! grep -qi 'uid' <<<"$snap"; then ok "no UID in the snapshot"; else bad "uid" "$snap"; fi
 if [[ $snap != *FAKE-CONFIGMAP-DATA* ]]; then ok "no ConfigMap data in the snapshot"; else bad "data" "$snap"; fi
-if jq -e '.configMapKeys == [{name: "vws-compute-store", keys: 2}] and .podCounts.vws == 2 and (.alwaysVMs | length) == 1 and (.nodes | length) == 2' <<<"$snap" >/dev/null; then
+if jq -e '.configMapKeys == [{name: "vws-compute-store", keys: 2}] and .podCounts.vws == 2 and .restarts == {"compute-0": {c: 1}, "storage-0": {c: 0}} and (.alwaysVMs | length) == 1 and (.nodes | length) == 2' <<<"$snap" >/dev/null; then
   ok "the snapshot has counts and names"; else bad "snapshot shape" "$snap"; fi
 mode=$(stat -c %a "${WORK}/snap.json")
 if [[ $mode == 600 ]]; then ok "the snapshot is 0600"; else bad "mode" "$mode"; fi
@@ -246,12 +246,26 @@ rebooted
 edit_json get_pvc.json '.items[1].status.phase = "Pending"'
 edit_json get_configmaps.json '.items[0].data = {"vm-1": "x"}'
 edit_json get_virtualmachines.json '.items[0].status.printableStatus = "Stopped"'
-edit_json get_pods.json '(.items[] | select(.metadata.name == "compute-0") | .status.containerStatuses[0].restartCount) = 4'
+edit_json get_pods.json '(.items[] | select(.metadata.name == "compute-0") | .status.containerStatuses[0].restartCount) = 5'
 run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 5s; expect_rc "failed comparisons exit 1" 1
 expect_text "PVC not Bound" "$OUT" "FAIL  pvcs  not Bound or gone: data-network-0"
 expect_text "fewer ConfigMap entries" "$OUT" "FAIL  configmaps  fewer entries: vws-compute-store 1/2"
 expect_text "VM not Running" "$OUT" "FAIL  vms  not Running: vws-vms/vm-a Stopped"
-expect_text "restarts over the threshold" "$OUT" "FAIL  restarts  over 3 restarts: compute-0 4"
+expect_text "restarts over the threshold" "$OUT" "FAIL  restarts  over 3 restarts since the snapshot: compute-0 4"
+
+# Restarts before the snapshot do not count; a pod missing from the snapshot counts from 0.
+scenario restarts-before
+rebooted
+edit_json get_pods.json '(.items[] | select(.metadata.name == "compute-0") | .status.containerStatuses[0].restartCount) = 5'
+jq '.restarts["compute-0"].c = 4' "${WORK}/snap.json" >"${WORK}/snap-old.json"
+run_vws_real verify-reboot --check "${WORK}/snap-old.json" --timeout 5s; expect_rc "old restarts only exit 0" 0
+expect_text "old restarts are not counted" "$OUT" "OK    restarts  no pod over 3 restarts since the snapshot"
+jq 'del(.restarts["compute-0"])' "${WORK}/snap.json" >"${WORK}/snap-new.json"
+run_vws_real verify-reboot --check "${WORK}/snap-new.json" --timeout 5s; expect_rc "a pod missing from the snapshot exits 1" 1
+expect_text "a missing pod counts from 0" "$OUT" "FAIL  restarts  over 3 restarts since the snapshot: compute-0 5"
+jq 'del(.restarts)' "${WORK}/snap.json" >"${WORK}/snap-pre.json"
+run_vws_real verify-reboot --check "${WORK}/snap-pre.json" --timeout 5s; expect_rc "a snapshot without restarts exits 1" 1
+expect_text "an older snapshot keeps the total" "$OUT" "FAIL  restarts  over 3 restarts since the snapshot: compute-0 5"
 
 scenario bad
 run_vws_real verify-reboot;                      expect_rc "no mode exits 2" 2
