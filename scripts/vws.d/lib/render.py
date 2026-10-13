@@ -90,6 +90,8 @@ def secret_shaped(value, path):
 GENEVE_OVERHEAD = 100
 # The Kube-OVN Subnet of the external network. vws-network creates it (-kube-external-subnet).
 EXTERNAL_SUBNET = "vws-external"
+UNDERLAY_FLAGS = ("pool", "kube-external-subnet", "kube-provider-network", "kube-underlay-interface",
+                  "kube-underlay-vlan", "kube-underlay-cidr", "kube-underlay-gateway", "kube-underlay-exclude")
 
 
 def host_interface(link):
@@ -191,6 +193,34 @@ def check_network(network):
                     raise Invalid(f"spec.network.nodes.external.eipPool: {pool} overlaps the gateway or excludeIPs")
 
 
+def external_flags(network, services):
+    """spec.network.nodes.external -> the underlay flags of vws-network (vws-network docs/underlay.md, #130).
+
+    vws-network creates the ProviderNetwork, the Vlan and the Subnet from them. The ProviderNetwork is
+    vws-pn<N>, N the place of its NIC among the sorted underlay NICs, so direct networks on the same
+    NIC share it (#131).
+    """
+    ext = (network.get("nodes") or {}).get("external")
+    if not ext:
+        return
+    flags = services.setdefault("network", {}).setdefault("flags", {})
+    taken = sorted(set(UNDERLAY_FLAGS) & set(flags))
+    if taken:
+        raise Invalid(f"spec.services.network.flags.{taken[0]}: comes from spec.network.nodes.external; remove it")
+    nics = sorted({ext["nic"]} | {d["nic"] for d in network.get("direct") or []})
+    flags.update({
+        "pool": ext["eipPool"],
+        "kube-external-subnet": EXTERNAL_SUBNET,
+        "kube-provider-network": f"vws-pn{nics.index(ext['nic'])}",
+        "kube-underlay-interface": ext["nic"],
+        "kube-underlay-vlan": ext.get("vlan", 0),
+        "kube-underlay-cidr": ext["cidr"],
+        "kube-underlay-gateway": ext["gateway"],
+    })
+    if ext.get("excludeIPs"):
+        flags["kube-underlay-exclude"] = ",".join(ext["excludeIPs"])
+
+
 def render(cr):
     group, schema = crd()
     if not isinstance(cr, dict):
@@ -240,6 +270,7 @@ def render(cr):
                 target[key] = override[key]
         if "flags" in override:
             target.setdefault("flags", {}).update(override["flags"])
+    external_flags(spec.get("network") or {}, services)
     pool = (((services.get("network") or {}).get("flags") or {}).get("pool")
              or base["services"]["network"].get("flags", {}).get("pool"))
     if not pool:
