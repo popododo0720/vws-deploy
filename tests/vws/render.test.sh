@@ -183,6 +183,35 @@ run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
 expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
 if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]] && cmp -s "$PLATFORM_BUNDLE/31-rook-ceph-cluster.yaml" "${WORK}/pout/31-rook-ceph-cluster.yaml"; then ok "no Ceph network without storage"; else bad "optional parts" "$(ls "${WORK}/pout")"; fi
+# #170: csi-driver-nfs is in the bundle; only driver nfs installs it, with the vws-nfs StorageClass.
+mkdir -p "${WORK}/nfsbundle" && cp "$PLATFORM_BUNDLE"/*.yaml "${WORK}/nfsbundle/"
+printf 'apiVersion: storage.k8s.io/v1\nkind: CSIDriver\nmetadata:\n  name: nfs.csi.k8s.io\n' >"${WORK}/nfsbundle/35-csi-driver-nfs.yaml"
+nfs_cr() { # PYTHON_EDIT of s = spec.storage -> ${WORK}/pcr.yaml
+  python3 - "${VWS_TEST_ROOT}/examples/vwscluster/ha.yaml" "$1" >"${WORK}/pcr.yaml" <<'PY'
+import sys, yaml
+cr = yaml.safe_load(open(sys.argv[1]))
+cr["spec"].pop("network", None)
+exec(sys.argv[2], {"s": cr["spec"].setdefault("storage", {})})
+yaml.safe_dump(cr, sys.stdout)
+PY
+}
+nfs_cr pass
+run_platform "${WORK}/nfsbundle"
+if ((PRC == 0)) && [[ ! -e ${WORK}/pout/35-csi-driver-nfs.yaml && ! -e ${WORK}/pout/36-vws-nfs-storageclass.yaml ]] && diff -r "$PLATFORM_BUNDLE" "${WORK}/pout" >/dev/null; then
+  ok "rook-ceph installs no csi-driver-nfs and no vws-nfs class"; else bad "non-nfs drops the driver" "rc ${PRC} $(ls "${WORK}/pout")"; fi
+nfs_cr 's.clear(); s.update(driver="nfs", nfs={"server": "nas.example.internal", "share": "/export/vws"})'
+run_platform "${WORK}/nfsbundle"
+if ((PRC == 0)) && cmp -s "${WORK}/nfsbundle/35-csi-driver-nfs.yaml" "${WORK}/pout/35-csi-driver-nfs.yaml"; then ok "nfs installs csi-driver-nfs as rendered"; else bad "nfs driver" "rc ${PRC} $(cat "${WORK}/perr")"; fi
+sc=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1])), sort_keys=True))' "${WORK}/pout/36-vws-nfs-storageclass.yaml")
+expect_text "nfs makes the vws-nfs StorageClass from the CR export" "$sc" '{"allowVolumeExpansion": true, "apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": {"name": "vws-nfs"}, "parameters": {"server": "nas.example.internal", "share": "/export/vws"}, "provisioner": "nfs.csi.k8s.io", "reclaimPolicy": "Delete", "volumeBindingMode": "Immediate"}'
+cp -r "${WORK}/pout" "${WORK}/pout1" && run_platform "${WORK}/nfsbundle"
+if diff -r "${WORK}/pout1" "${WORK}/pout" >/dev/null; then ok "the nfs bundle is the same bytes on a second run"; else bad "nfs idempotent" "$(diff -r "${WORK}/pout1" "${WORK}/pout")"; fi
+run_platform "$PLATFORM_BUNDLE"
+if ((PRC == 2)) && [[ ! -e ${WORK}/pout ]] && grep -q 'csi-driver-nfs' "${WORK}/perr"; then ok "nfs on a bundle without the driver exits 2 and writes nothing"; else bad "nfs without driver" "rc ${PRC}"; fi
+nfs_cr 's.clear(); s.update(driver="nfs", nfs={"server": "nas", "share": "export; rm -rf /"})'
+run_platform "${WORK}/nfsbundle"
+if ((PRC == 2)) && [[ ! -e ${WORK}/pout ]]; then ok "a relative nfs share exits 2"; else bad "relative share" "rc ${PRC}"; fi
+
 mkdir -p "${WORK}/oldovn" && sed 's/--iface=$/--iface=eth9/' "$PLATFORM_BUNDLE/20-kube-ovn.yaml" >"${WORK}/oldovn/20-kube-ovn.yaml"
 platform_cr pass
 run_platform "${WORK}/oldovn"

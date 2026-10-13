@@ -393,7 +393,7 @@ cmd_cursor() {
 
 cmd_bundle() {
   local name version hits
-  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK K3S; do
+  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK CSI_DRIVER_NFS K3S; do
     version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
     [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
     hits=$(grep -R -n -F -e "$version" . --exclude-dir=.git --exclude-dir=build --exclude-dir=.cache \
@@ -406,7 +406,7 @@ cmd_bundle() {
   [[ -n $k8s && -n $k3s ]] || die "R12: scripts/versions.env needs KUBERNETES_VERSION and K3S_VERSION as major.minor.patch"
   [[ $k8s == "$k3s" ]] || die "R12: KUBERNETES_VERSION is ${k8s} but K3S_VERSION is ${k3s}"
   cmd_cdi_cr
-  for name in rbd openvswitch geneve kvm; do
+  for name in rbd openvswitch geneve kvm nfs; do
     grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
   done
   cmd_storage_names
