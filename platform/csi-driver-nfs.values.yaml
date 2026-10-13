@@ -1,0 +1,11 @@
+# csi-driver-nfs (vws-deploy#170). Only the driver: the StorageClass vws-nfs comes from the CR
+# (scripts/vws.d/lib/platform.py). No snapshot controller or CRDs of its own; the VolumeSnapshot
+# CRDs and controller are the platform's, and driver nfs runs without snapshots (#163).
+storageClass:
+  create: false
+volumeSnapshotClass:
+  create: false
+externalSnapshotter:
+  enabled: false
+  customResourceDefinitions:
+    enabled: false
