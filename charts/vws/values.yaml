@@ -166,6 +166,17 @@ services:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]
       verbs: [get, create, delete]
+    # rehomeGateway lists the VPC's subnets to move the NAT gateway (vws-network
+    # internal/network/dataplane_kubeovn_snat.go firstOtherSubnet); its get/delete/create of
+    # vpc-nat-gateways are below. Missing list failed on vws-test (#164).
+    - apiGroups: [kubeovn.io]
+      resources: [subnets]
+      verbs: [list]
+    # External gateway node labels (ovn.kubernetes.io/external-gw): vws-network reconciles them
+    # and re-applies them after kube-ovn-controller resets them (#164).
+    - apiGroups: [""]
+      resources: [nodes]
+      verbs: [get, patch]
     - apiGroups: [kubeovn.io]
       resources: [security-groups]
       verbs: [get, create, update, delete]
