@@ -102,3 +102,10 @@ func (a *Auth) Check(token string) *Error {
 	a.lastSeen = a.now()
 	return nil
 }
+
+// Secrets returns the live code and session token, for the event stream's mask.
+func (a *Auth) Secrets() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return []string{a.code, a.token}
+}

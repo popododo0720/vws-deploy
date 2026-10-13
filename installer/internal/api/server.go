@@ -34,6 +34,7 @@ type Server struct {
 	installCtx context.Context
 	installed  chan struct{}
 	apiVersion string
+	events     *eventLog
 }
 
 // Config wires a Server.
@@ -60,7 +61,9 @@ func New(c Config) *Server {
 	if c.Context == nil {
 		c.Context = context.Background()
 	}
-	return &Server{s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now, installCtx: c.Context, apiVersion: c.APIVersion}
+	srv := &Server{s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now, installCtx: c.Context, apiVersion: c.APIVersion}
+	srv.events = newEventLog(srv.secrets)
+	return srv
 }
 
 // SessionCookie carries the session token for browsers.
@@ -91,10 +94,10 @@ func (srv *Server) Handler() http.Handler {
 	authed("GET /api/v1/summary", srv.getSummary)
 	authed("POST /api/v1/install", srv.postInstall)
 	authed("GET /api/v1/result", srv.getResult)
+	authed("GET /api/v1/install/events", srv.getEvents)
 	authed("GET /api/v1/cr", srv.getCR)
 	authed("POST /api/v1/cr", srv.postCR)
 	for pattern, issue := range map[string]string{
-		"GET /api/v1/install/events":     "#145",
 		"POST /api/v1/result/credential": "#146",
 	} {
 		authed(pattern, func(http.ResponseWriter, *http.Request) error {
@@ -399,18 +402,29 @@ func (srv *Server) postInstall(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// install runs the install. Its log lines are dropped: the masked stream is #145, and the pod
-// log must not carry them unmasked.
+// secrets are the literal values the event stream masks.
+func (srv *Server) secrets() []string {
+	if srv.auth == nil {
+		return nil
+	}
+	return srv.auth.Secrets()
+}
+
+// install runs the install. Its log lines go only to the masked event stream (#145), never to
+// the pod log.
 func (srv *Server) install(cr []byte, done chan struct{}) {
 	defer close(done)
-	res, err := srv.cluster.Install(srv.installCtx, cr, func(string) {})
+	srv.events.add("state", string(StateInstalling))
+	res, err := srv.cluster.Install(srv.installCtx, cr, func(line string) { srv.events.add("log", line) })
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if err != nil {
 		srv.s.state, srv.s.lastErr = StateFailed, "install failed; fix the draft or the cluster and install again"
+		srv.events.add("state", string(StateFailed))
 		return
 	}
 	srv.s.state = StateSucceeded
+	srv.events.add("state", string(StateSucceeded))
 	srv.s.result = resultView{ConsoleURL: res.ConsoleURL, AdminUser: res.AdminUser}
 }
 
