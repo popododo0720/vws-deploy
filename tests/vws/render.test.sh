@@ -56,6 +56,46 @@ done
 sed -e 's/        existingSecret: ceph-rgw-s3/        existingSecret: ceph-rgw-s3\n        secretKey: x/' "${WORK}/rgw.yaml" >"${WORK}/rgwkey.yaml"
 run_vws_real render "${WORK}/rgwkey.yaml" "${WORK}/rgwkey.out"; expect_rc "a key under s3.rgw exits 2" 2
 
+# spec.network.nodes and spec.network.direct (vws-deploy#125): validated, not rendered yet.
+net_cr() {
+  python3 - "${EX}/ha.yaml" "${VWS_TEST_ROOT}/tests/fixtures/render/node-network.yaml" "$1" >"${WORK}/net.yaml" <<'PY'
+import sys, yaml
+cr = yaml.safe_load(open(sys.argv[1]))
+cr["spec"]["network"] = yaml.safe_load(open(sys.argv[2]))
+exec(sys.argv[3], {"n": cr["spec"]["network"]})
+yaml.safe_dump(cr, sys.stdout)
+PY
+}
+net_cr "pass"
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "a 4-NIC CR with direct networks renders" 0
+if cmp -s "${WORK}/ha.yaml" "${WORK}/net.out"; then ok "spec.network.nodes does not change the values overlay yet"; else bad "node networks change nothing" "$(diff "${WORK}/ha.yaml" "${WORK}/net.out")"; fi
+bad_net() {
+  net_cr "$2"
+  run_vws_real render "${WORK}/net.yaml" "${WORK}/net.bad"
+  expect_rc "invalid network: $1 exits 2" 2
+  rm -f "${WORK}/net.bad"
+}
+bad_net "nodes without management" 'del n["nodes"]["management"]'
+bad_net "vlan above 4094" 'n["nodes"]["tunnel"]["vlan"] = 4095'
+bad_net "mtu below 1280" 'n["nodes"]["tunnel"]["mtu"] = 1000'
+bad_net "tunnel mtu too small for geneve" 'n["nodes"]["tunnel"]["mtu"] = 1300'
+bad_net "non-canonical cidr" 'n["nodes"]["tunnel"]["cidr"] = "10.20.0.1/24"'
+bad_net "overlapping cidrs" 'n["nodes"]["tunnel"]["cidr"] = "10.77.0.0/16"'
+bad_net "same nic and vlan, other cidr" 'n["nodes"]["storage"]["cluster"]["vlan"] = 0'
+bad_net "tagged host network on an underlay nic" 'n["nodes"]["tunnel"]["nic"] = "enp4s0"'
+bad_net "two untagged underlay networks on one nic" 'n["direct"][0].pop("vlan")'
+bad_net "underlay sharing a vlan" 'n["direct"][0]["vlan"] = 100'
+bad_net "duplicate direct name" 'n["direct"][1]["name"] = "prod"'
+bad_net "gateway outside the cidr" 'n["direct"][0]["gateway"] = "10.0.0.1"'
+bad_net "external without eipPool" 'del n["nodes"]["external"]["eipPool"]'
+bad_net "eipPool outside the external cidr" 'n["nodes"]["external"]["eipPool"] = "198.51.100.0/26"'
+bad_net "eipPool over the excluded range" 'n["nodes"]["external"]["eipPool"] = "203.0.113.0/28"'
+bad_net "sriov is a reserved mode" 'n["direct"][0]["mode"] = "sriov"'
+bad_net "nic name over 15 characters" 'n["nodes"]["management"]["nic"] = "enp1s0abcdefghij"'
+bad_net "unknown network field" 'n["nodes"]["management"]["bond"] = "x"'
+net_cr 'n["nodes"]["tunnel"]["nic"] = "enp4s0"; n["nodes"]["tunnel"]["vlan"] = 0; n["direct"][1]["vlan"] = 10'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "an untagged host network may share an underlay nic" 0
+
 printf -- '---\na: 1\n---\nb: 2\n' >"${WORK}/two.yaml"
 run_vws_real render "${WORK}/two.yaml" "${WORK}/x.yaml"; expect_rc "two documents exit 2" 2
 run_vws_real render "${WORK}/missing.yaml" "${WORK}/x.yaml"; expect_rc "a missing file exits 2" 2

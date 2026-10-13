@@ -7,6 +7,7 @@ missing. The caller (scripts/vws.d/render.sh) validates the result against value
 with helm.
 """
 import copy
+import ipaddress
 import re
 import sys
 from pathlib import Path
@@ -48,6 +49,8 @@ def check(value, schema, path):
             raise Invalid(f"{path}: want an integer")
         if "minimum" in schema and value < schema["minimum"]:
             raise Invalid(f"{path}: {value} is below {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise Invalid(f"{path}: {value} is above {schema['maximum']}")
         return
     if kind in types and not isinstance(value, types[kind]):
         raise Invalid(f"{path}: want {kind}")
@@ -84,6 +87,103 @@ def secret_shaped(value, path):
             secret_shaped(item, f"{path}[{i}]")
 
 
+GENEVE_OVERHEAD = 100
+MIN_MTU = 1280
+
+
+def prefix(text, path):
+    try:
+        net = ipaddress.IPv4Network(text)
+    except ValueError as err:
+        raise Invalid(f"{path}: {err}") from None
+    if str(net) != text:
+        raise Invalid(f"{path}: {text!r} is not canonical; write {net}")
+    return net
+
+
+def address(text, path):
+    try:
+        return ipaddress.IPv4Address(text)
+    except ValueError as err:
+        raise Invalid(f"{path}: {err}") from None
+
+
+def excluded(items, net, path):
+    out = []
+    for i, item in enumerate(items):
+        lo, _, hi = item.partition("..")
+        a, b = address(lo, f"{path}[{i}]"), address(hi or lo, f"{path}[{i}]")
+        if a > b or a not in net or b not in net:
+            raise Invalid(f"{path}[{i}]: {item} is not an ascending range inside {net}")
+        out.append((a, b))
+    return out
+
+
+def check_network(network):
+    """Cross-field rules of spec.network.nodes and spec.network.direct (vws-deploy#125)."""
+    nodes = network.get("nodes")
+    direct = network.get("direct") or []
+    links = []  # (path, link, underlay)
+    if nodes:
+        links.append(("spec.network.nodes.management", nodes["management"], False))
+        for key in ("tunnel", "external"):
+            if key in nodes:
+                links.append((f"spec.network.nodes.{key}", nodes[key], key == "external"))
+        for key in ("public", "cluster"):
+            if key in (nodes.get("storage") or {}):
+                links.append((f"spec.network.nodes.storage.{key}", nodes["storage"][key], False))
+    names = set()
+    for i, d in enumerate(direct):
+        if d["name"] in names:
+            raise Invalid(f"spec.network.direct[{i}].name: {d['name']} is used twice")
+        names.add(d["name"])
+        links.append((f"spec.network.direct[{i}]", d, True))
+
+    seen = {}  # (nic, vlan) -> (path, net, mtu)
+    for path, link, underlay in links:
+        net = prefix(link["cidr"], f"{path}.cidr")
+        key = (link["nic"], link.get("vlan", 0))
+        mtu = link.get("mtu", 1500)
+        if key in seen:
+            other, onet, omtu, ounder = seen[key]
+            if underlay or ounder:
+                raise Invalid(f"{path}: {key[0]} vlan {key[1]} is already {other}; an underlay network needs its own VLAN")
+            if (onet, omtu) != (net, mtu):
+                raise Invalid(f"{path}: same nic and vlan as {other} but a different cidr or mtu")
+            continue
+        for other, onet, _, _ in seen.values():
+            if net.overlaps(onet):
+                raise Invalid(f"{path}.cidr: {net} overlaps {other}")
+        seen[key] = (path, net, mtu, underlay)
+        if underlay:
+            gw = address(link["gateway"], f"{path}.gateway")
+            if gw not in net:
+                raise Invalid(f"{path}.gateway: {gw} is outside {net}")
+            excluded(link.get("excludeIPs") or [], net, f"{path}.excludeIPs")
+
+    under_nics = {link["nic"] for _, link, u in links if u}
+    for nic in sorted(under_nics):
+        host = [(p, l.get("vlan", 0)) for p, l, u in links if not u and l["nic"] == nic]
+        tagged = [p for p, v in host if v]
+        if tagged:
+            raise Invalid(f"{tagged[0]}: {nic} carries an underlay network, so host networks on it must be untagged")
+
+    if nodes:
+        tunnel = nodes.get("tunnel", nodes["management"])
+        if tunnel.get("mtu", 1500) - GENEVE_OVERHEAD < MIN_MTU:
+            raise Invalid(f"spec.network.nodes.tunnel.mtu: leaves under {MIN_MTU} after the {GENEVE_OVERHEAD}-byte geneve overhead")
+        ext = nodes.get("external")
+        if ext:
+            net = ipaddress.IPv4Network(ext["cidr"])
+            pool = prefix(ext["eipPool"], "spec.network.nodes.external.eipPool")
+            if not pool.subnet_of(net):
+                raise Invalid(f"spec.network.nodes.external.eipPool: {pool} is outside {net}")
+            taken = [(ipaddress.IPv4Address(ext["gateway"]),) * 2] + excluded(ext.get("excludeIPs") or [], net, "")
+            for a, b in taken:
+                if a <= pool[-1] and b >= pool[0]:
+                    raise Invalid(f"spec.network.nodes.external.eipPool: {pool} overlaps the gateway or excludeIPs")
+
+
 def render(cr):
     group, schema = crd()
     if not isinstance(cr, dict):
@@ -95,6 +195,7 @@ def render(cr):
     spec = cr.get("spec")
     check(spec, schema["properties"]["spec"], "spec")
     secret_shaped(spec, "spec")
+    check_network(spec.get("network") or {})
 
     out = copy.deepcopy(yaml.safe_load((PROFILES / f"{spec['profile']}.yaml").read_text()))
     base = yaml.safe_load(VALUES.read_text())
