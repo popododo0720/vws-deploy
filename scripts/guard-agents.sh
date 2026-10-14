@@ -94,7 +94,8 @@ cmd_correct() {
   labels="${dir}/.github/labels.yml"
   [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
   grep -q -x -F -- "$CORRECT_HEADING" "${dir}/AGENTS.md" || die "correct: AGENTS.md has no '${CORRECT_HEADING}' heading"
-  awk -v h="$CORRECT_HEADING" '$0 == h { s = 1; next } s && /^#/ { exit } s && /[^[:space:]]/ { f = 1; exit } END { exit !f }' \
+  # Empty: no non-blank line before the next # or ## heading; ### subheadings and code fences are content.
+  awk -v h="$CORRECT_HEADING" '$0 == h { s = 1; next } s && /^##?([[:space:]]|$)/ { exit } s && /[^[:space:]]/ { f = 1; exit } END { exit !f }' \
     "${dir}/AGENTS.md" || die "correct: AGENTS.md '${CORRECT_HEADING}' section is empty"
   [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
   grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
@@ -162,6 +163,14 @@ fixes acme/repo#7" bash "$0" pr-body
   expect_fail "no /correct section" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n## next\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_fail "/correct heading with an empty body" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n### 절차\n\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_pass "/correct body with only a ### subheading" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n```sh\n# gh issue create --template incident.yml\n```\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_pass "/correct body with a fenced '#' line" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n\n# top\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_fail "/correct body empty before a # heading" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/^labels:/d' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
+  expect_fail "template missing only the labels: line" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/id: catching-check/d' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
   expect_fail "template without the catching-check field" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i 's/^labels:.*/labels: [bug]/' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
