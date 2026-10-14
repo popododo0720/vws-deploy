@@ -91,9 +91,9 @@ S3 객체 백엔드는 vws-storage가 구현한다. `-object-backend=s3`, `-s3-p
 
 ## console-api 자격 증명과 콘솔 연결
 
-vws-console-api는 `-backend=grpc`일 때 `-console-token`, `-access-key`, `-secret`이 명시되지 않으면 시작하지 않는다(`cmd/vws-console-api/main.go` `requireExplicit`, console-api #80). 콘솔 표면은 `Authorization: Bearer <console-token>`, EC2/S3 표면은 SigV4(`access-key`/`secret`)로 인증한다.
+vws-console-api는 `-backend=grpc`일 때 자격 증명 세 개(`VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY`, 또는 각 `_FILE` 경로)가 주어지지 않으면 시작하지 않는다(`cmd/vws-console-api/main.go` `requireExplicit`, console-api #80). 읽는 순서는 플래그, `_FILE`, env이고 `-console-token`, `-access-key`, `-secret` 플래그는 deprecated다(S1). 콘솔 표면은 `Authorization: Bearer <console-token>`, EC2/S3 표면은 SigV4(`access-key`/`secret`)로 인증한다.
 
-- `services.console-api.apiCredentials.existingSecret`(기본 `vws-console-api-credentials`): 차트가 키 `console-token`, `access-key`, `secret-key`를 `secretKeyRef`로 `VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY` env에 넣고, 인자는 `-console-token=$(VWS_CONSOLE_TOKEN)`처럼 kubelet이 펼치는 참조만 쓴다. 값은 values, 인자 문자열, 파드 spec에 없다(컨테이너 안 프로세스 인자에는 펼쳐진 값이 보인다).
+- `services.console-api.apiCredentials.existingSecret`(기본 `vws-console-api-credentials`): 차트가 키 `console-token`, `access-key`, `secret-key`를 `secretKeyRef`로 `VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY` env에만 넣는다. 자격 증명 플래그는 인자에 없다(`$(VAR)` 참조도 없다). 값은 values, 인자, 파드 spec, 프로세스 인자 어디에도 없다. `scripts/check_render.py` R16이 인자에 자격 증명 플래그가 있으면 실패시킨다. env를 읽는 console-api 빌드가 필요하다.
 - `services.console.apiClient.service`(기본 `console-api`): `VWS_CONSOLE_API_URL=http://<service>.<릴리스 네임스페이스>.svc:<그 서비스의 port>`와, 같은 Secret의 `console-token`을 `VWS_CONSOLE_API_TOKEN`으로 준다. 콘솔에는 SigV4 키를 주지 않는다.
 - `services.console.portEnv`(기본 `PORT`): 콘솔 이미지(Next.js 서버)는 듣는 포트를 env `PORT`에서 읽는다. 차트는 그 env에 서비스의 `port`(기본 8080)를 넣어 containerPort, 프로브, Service와 같은 값 하나에서 나오게 한다. 없으면 이미지 기본 3000에서 들어 프로브와 Service가 닿지 않는다. `scripts/check_render.py`(R15)가 그 값이 containerPort와 같은지 확인하고, 다른 값으로 바꾼 렌더가 실패하는지도 본다.
 - Secret은 차트가 렌더하지 않는다(R16). `vws apply`가 helm 전에 `scripts/vws.d/lib/apisecret.py`(Python `secrets`, os.urandom)로 값을 만들어 kubectl create의 stdin으로만 넘긴다. 이미 있으면(AlreadyExists) 그대로 두어 회전하지 않고, Secret 읽기 권한도 필요 없다. 다른 이유로 실패하면 helm 전에 3으로 멈춘다. `--dry-run`은 값을 만들지 않는다. 회전은 Secret을 지우고 `vws apply`를 다시 실행한 뒤 두 Deployment를 재시작한다.
