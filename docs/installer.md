@@ -64,5 +64,5 @@ cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임�
 - CI는 저장소에 커밋하지 않는다. digest 고정은 사람이 한다.
   1. 발행된 실행의 잡 요약에서 `VWS_INSTALLER_IMAGE` 줄을 복사한다(또는 `crane digest ghcr.io/<owner>/vws/installer:<태그>`).
   2. 새 브랜치에서 `scripts/versions.env`의 `VWS_INSTALLER_IMAGE`와 "NOT PUBLISHED YET" 주석을 바꾼다. 커밋 제목은 `ci: 설치 이미지 digest를 고정한다`.
-  3. `scripts/bootstrap.sh`로 `bootstrap/bootstrap.yaml`을 다시 만들어 별도 `cli:` 커밋으로 넣고 PR을 연다(`Closes #N`).
+  3. `scripts/bootstrap.sh`로 `bootstrap/bootstrap.yaml`을 다시 만들어 별도 `cli:` 커밋으로 넣고 PR을 연다(`Part of #N`).
 - ghcr 패키지는 비공개로 만들어진다. 공개 여부와 클러스터의 pull 자격은 별도 결정이다(확인 필요).
