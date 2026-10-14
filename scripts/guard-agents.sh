@@ -171,7 +171,9 @@ cmd_pr_base() {
 # The reference is #N, owner/repo#N or a full issue or pull request URL (GitHub closes on all three).
 CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+(([A-Za-z0-9._/-]+)?#[0-9]+|(https?://)?[^[:space:]]*/(issues|pull)/[0-9]+)'
 # "Part of #N" or "Part of owner/repo#N". #TBD is allowed in commits only, until the issue exists.
-PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
+# Issue numbers start at 1: #0, #00 and #012 name no issue and are rejected wherever they appear.
+PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*'
+PART_OF_ZERO_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#0'
 
 # Work items are tracked on parent issues that a human closes. No PR or commit may close an
 # issue automatically, so closing keywords are banned outright. Telling a parent issue from a
@@ -210,6 +212,8 @@ cmd_pr_body() {
   if grep -q -i -E "$CLOSING_RE" <<<"$body" || grep -q -i -E "$CLOSING_RE" <<<"$seen"; then
     die "pr-body: do not close issues from a pull request (found Closes/Fixes/Resolves #N); write 'Part of #N'"
   fi
+  ! grep -q -i -E "$PART_OF_ZERO_RE" <<<"$body" ||
+    die "pr-body: 'Part of #0' names no issue; issue numbers start at 1"
   grep -q -i -E "$PART_OF_RE" <<<"$seen" ||
     die "pr-body: the pull request text needs 'Part of #N' outside HTML comments and code fences"
 }
@@ -222,6 +226,8 @@ cmd_commit_msg() {
   if grep -q -i -E "$CLOSING_RE" <<<"$msg" || grep -q -i -E "$CLOSING_RE" <<<"$(visible_text <<<"$msg")"; then
     die "commit-msg: do not close issues from a commit (found Closes/Fixes/Resolves #N); write 'Part of #N'"
   fi
+  ! grep -q -i -E "$PART_OF_ZERO_RE" <<<"$msg" ||
+    die "commit-msg: 'Part of #0' names no issue; issue numbers start at 1"
 }
 
 cmd_pr_commits() {
@@ -231,7 +237,7 @@ cmd_pr_commits() {
   trap 'rm -f "$tmp"' RETURN
   for sha in $(git rev-list --no-merges "${base}..${head}"); do
     git log -1 --format=%B "$sha" >"$tmp"
-    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue; write 'Part of #N'"
+    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue or names #0; write 'Part of #N'"
   done
 }
 
@@ -418,6 +424,17 @@ Closes #12
   expect_fail "Closes split around a comment" env PR_BODY="Part of #3 Closes<!-- x --> #12" bash "$0" pr-body
   printf 'ci: x\n\nPart of #3 Fixes<!-- --> #12\n' >"$tmp/msg-hidden"
   expect_fail "commit-msg Fixes split around a comment" cmd_commit_msg "$tmp/msg-hidden"
+  expect_fail "Part of #0" env PR_BODY="Part of #0" bash "$0" pr-body
+  expect_fail "Part of owner/repo#0" env PR_BODY="Part of acme/repo#0" bash "$0" pr-body
+  expect_fail "Part of #00" env PR_BODY="Part of #00" bash "$0" pr-body
+  expect_fail "Part of #012" env PR_BODY="Part of #012" bash "$0" pr-body
+  expect_fail "Part of #0 next to a valid Part of" env PR_BODY="Part of #3
+Part of #0" bash "$0" pr-body
+  expect_pass "Part of #10" env PR_BODY="Part of #10" bash "$0" pr-body
+  printf 'ci: x\n\nPart of #0\n' >"$tmp/msg-zero"
+  expect_fail "commit with Part of #0" cmd_commit_msg "$tmp/msg-zero"
+  printf 'ci: x\n\nPart of acme/repo#0\n' >"$tmp/msg-zero2"
+  expect_fail "commit with Part of owner/repo#0" cmd_commit_msg "$tmp/msg-zero2"
   printf 'ci: x\n\nPart of #12\n' >"$tmp/msg-ok"
   expect_pass "commit with Part of #N" cmd_commit_msg "$tmp/msg-ok"
   printf 'ci: x\n\nPart of #TBD\n' >"$tmp/msg-tbd"
