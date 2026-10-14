@@ -213,19 +213,20 @@ vws_seed_image_manifest() {
 # An existing Secret is kept as is (AlreadyExists), so an apply never rotates a credential and
 # needs no read access to Secrets. Only names reach the output.
 vws_apply_secrets() {
-  local values=$1 name err list
+  local values=$1 name kind err list
   list=$(python3 "${VWS_ROOT}/scripts/vws.d/lib/apisecret.py" names "$values") || vws_die_env "cannot list the Secrets the chart needs"
   if [[ -z $list ]]; then
-    vws_emit OK secrets "none required: no service has apiCredentials"
+    vws_emit OK secrets "none required: no enabled service has apiCredentials or kekSecret"
     return 0
   fi
   err=$(mktemp)
-  while IFS= read -r name; do
+  # A KEK (kind kek, vws-iam #243) follows the same rule: created once, never replaced or rotated here.
+  while IFS=$'\t' read -r name kind; do
     # --dry-run: print the call, make no values (vws_kubectl would not read them).
     if [[ -n $VWS_DRY_RUN ]]; then
       vws_kubectl create -f - </dev/null
       vws_emit OK secrets "would create Secret ${name} if it is missing"
-    elif python3 "${VWS_ROOT}/scripts/vws.d/lib/apisecret.py" manifest "$name" | vws_kubectl create -f - >/dev/null 2>"$err"; then
+    elif python3 "${VWS_ROOT}/scripts/vws.d/lib/apisecret.py" manifest "$name" "${kind:-api}" | vws_kubectl create -f - >/dev/null 2>"$err"; then
       vws_emit OK secrets "created Secret ${name} with fresh random values"
     elif grep -q -e 'AlreadyExists' -e 'already exists' "$err"; then
       vws_emit OK secrets "kept Secret ${name}: it exists, values unchanged"

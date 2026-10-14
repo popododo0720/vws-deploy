@@ -24,6 +24,7 @@ ALLOWED_KINDS = {
     "ClusterRoleBinding",
     "Role",
     "RoleBinding",
+    "NetworkPolicy",
 }
 
 
@@ -387,6 +388,41 @@ def check_api(name: str, spec: dict, container: dict, values: dict, release_ns: 
     return errors
 
 
+def check_kek(name: str, spec: dict, container: dict) -> list[str]:
+    """kekSecret: VWS_IAM_KEK and VWS_IAM_KEK_ID only by secretKeyRef of that Secret, nothing in args (#243)."""
+    env = {e.get("name"): e for e in container.get("env") or []}
+    secret = spec.get("kekSecret")
+    if not secret:
+        return [f"R16: {name} gets a KEK that values do not ask for"] if {"VWS_IAM_KEK", "VWS_IAM_KEK_ID"} & set(env) else []
+    errors = []
+    for key, secret_key in (("VWS_IAM_KEK", "kek"), ("VWS_IAM_KEK_ID", "key-id")):
+        ref = ((env.get(key) or {}).get("valueFrom") or {}).get("secretKeyRef") or {}
+        if "value" in (env.get(key) or {}) or ref != {"name": secret, "key": secret_key}:
+            errors.append(f"R16: {name} must read {key} from Secret {secret} key {secret_key}")
+    if any("kek" in str(a).lower() for a in container.get("args") or []):
+        errors.append(f"R16: {name} has the KEK in its args")
+    return errors
+
+
+def check_network_policy(name: str, spec: dict, by_kind: dict, release: str) -> list[str]:
+    """allowFrom: one NetworkPolicy selects the service and admits only those services' pods (#243)."""
+    allow = spec.get("allowFrom")
+    policy = by_kind.get("NetworkPolicy", {}).get(name)
+    if not allow:
+        return [f"R10: NetworkPolicy {name} without allowFrom in values"] if policy else []
+    if policy is None:
+        return [f"R10: {name} has allowFrom but no NetworkPolicy"]
+    pspec = policy.get("spec") or {}
+    want_pod = {"app.kubernetes.io/name": name, "app.kubernetes.io/instance": release}
+    got = sorted((p.get("podSelector") or {}).get("matchLabels", {}).get("app.kubernetes.io/name", "")
+                 for rule in pspec.get("ingress") or [] for p in rule.get("from") or [])
+    rules = pspec.get("ingress") or []
+    if ((pspec.get("podSelector") or {}).get("matchLabels") != want_pod or pspec.get("policyTypes") != ["Ingress"]
+            or len(rules) != 1 or got != sorted(allow) or "" in got):
+        return [f"R10: NetworkPolicy {name} must select {name} and admit only {sorted(allow)}"]
+    return []
+
+
 def check_port_env(name: str, spec: dict, container: dict) -> list[str]:
     """portEnv: the image listens on that env, so its value must be the containerPort (#231)."""
     want = spec.get("portEnv")
@@ -492,6 +528,8 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_s3(name, spec, container))
         errors.extend(check_api(name, spec, container, values, release_ns))
         errors.extend(check_port_env(name, spec, container))
+        errors.extend(check_kek(name, spec, container))
+        errors.extend(check_network_policy(name, spec, by_kind, release))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -908,6 +946,31 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not check(broken, values, release):
             return [f"R16: {svc} {label} did not fail"]
 
+    # kekSecret and allowFrom (#243): a literal KEK, another Secret, or a policy that admits more must fail.
+    for svc, spec in values["services"].items():
+        spec = spec or {}
+        if spec.get("kekSecret"):
+            for label, change in (
+                ("a literal KEK", lambda env: entry_of(env, "VWS_IAM_KEK").update(value="x")),
+                ("a KEK from another Secret", lambda env: entry_of(env, "VWS_IAM_KEK")["valueFrom"]["secretKeyRef"].update(name="other")),
+            ):
+                broken = copy.deepcopy(docs)
+                for doc in broken:
+                    if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == svc:
+                        change(doc["spec"]["template"]["spec"]["containers"][0]["env"])
+                if not check(broken, values, release):
+                    return [f"R16: {svc} {label} did not fail"]
+        if spec.get("allowFrom"):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                    doc["spec"]["ingress"][0]["from"].append({"podSelector": {"matchLabels": {"app.kubernetes.io/name": "console"}}})
+            if not check(broken, values, release):
+                return [f"R10: {svc} NetworkPolicy admitting another service did not fail"]
+            broken = [d for d in docs if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == svc)]
+            if not check(broken, values, release):
+                return [f"R10: {svc} without its NetworkPolicy did not fail"]
+
     broken = copy.deepcopy(docs)
     for doc in broken:
         if doc.get("kind") == "Namespace":
@@ -960,6 +1023,8 @@ def main(argv: list[str]) -> int:
     values = yaml.safe_load(Path(argv[2]).read_text())
     for override in argv[4:]:
         values = deep_merge(values, yaml.safe_load(Path(override).read_text()))
+    # enabled false: the chart renders nothing for the service, so nothing is checked (#243).
+    values["services"] = {n: s for n, s in values["services"].items() if (s or {}).get("enabled", True) is not False}
     errors = self_test(docs, values, argv[3])
     for error in errors:
         print(error, file=sys.stderr)

@@ -309,6 +309,9 @@ spec:
                   additionalProperties:
                     type: object
                     properties:
+                      enabled:
+                        description: false leaves the service out. vws-iam is false in the chart until its image is published (#243).
+                        type: boolean
                       replicas:
                         type: integer
                         minimum: 1

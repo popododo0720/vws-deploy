@@ -133,7 +133,7 @@ vws_check_services() {
   json=$(vws_kubectl get deployments,statefulsets -l "$VWS_PART_OF_SELECTOR" -o json 2>/dev/null) ||
     vws_die_env "cannot list deployments and statefulsets in ${VWS_NAMESPACE}"
   printf '%s\n' "$json" >"${vws_status_tmp}/workloads.json"
-  names=$(python3 -c 'import sys,yaml; print("\n".join(sorted(yaml.safe_load(open(sys.argv[1]))["services"])))' "${VWS_ROOT}/charts/vws/values.yaml")
+  names=$(python3 -c 'import sys,yaml; print("\n".join(sorted(n for n, s in yaml.safe_load(open(sys.argv[1]))["services"].items() if (s or {}).get("enabled", True) is not False)))' "${VWS_ROOT}/charts/vws/values.yaml")
   while IFS= read -r name; do
     read -r kind ready desired < <(jq -r --arg n "$name" '[.items[] | select(.metadata.name == $n)] | first
       | if . == null then "none 0 0" else "\(.kind) \(.status.readyReplicas // 0) \(.spec.replicas // 1)" end' <<<"$json")

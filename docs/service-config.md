@@ -51,6 +51,7 @@ services:
 | network | `kube-direct-networks`, `kube-direct-nad-namespace: {namespace: vms}` | `-kube-direct-networks=<JSON>`, `-kube-direct-nad-namespace=<vms>` | 기본값 없음. `spec.network.direct`가 있을 때만 `vws render`가 쓴다(#131, `docs/node-network.md`) | vws-network `8ff82a7` `main.go:40-41` |
 | network | `kube-vm-namespace: {namespace: vms}` | `-kube-vm-namespace=<vms>` | 코드 기본은 빈 값. 주소가 instance에 붙으면 그 VMI의 인터페이스 IP로 OvnFip을 만든다. 차트는 항상 넘기고 같은 네임스페이스에 VMI get/list/watch Role을 둔다 | vws-network `ac269d0`(#87) `main.go:42` |
 | network | `kube-snat` | `-kube-snat=true` | 꺼짐. 외부 서브넷 필요 | `main.go:28` |
+| iam | `enabled: false`, `listen: 0.0.0.0:7500`, `kekSecret`, `allowFrom` | `-listen=…`, env `VWS_IAM_KEK`/`VWS_IAM_KEK_ID`(secretKeyRef), NetworkPolicy | 이미지가 없어 기본 렌더에서 빠진다(#243, `docs/iam-install.md`) | vws-iam 코드 없음(확인 필요) |
 | network | `vm-mtu` | `-vm-mtu=<MTU>` | 코드 기본 9001, 68–9001. `vws render`가 `spec.network.vmMTU`에서 항상 쓴다(#236, `docs/vm-mtu.md`). VPC Subnet의 `spec.mtu`와 DHCP `mtu` 옵션이 된다 | vws-network main(#93, #94) `main.go:28` |
 
 - 스키마가 `kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`를, `kube-snat`이 있으면 `kube-external-subnet`을 요구한다(vws-deploy#30). 빠진 값으로 렌더하면 거절된다.

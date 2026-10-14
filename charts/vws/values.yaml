@@ -37,6 +37,19 @@ namespaces:
   nad: vws-nad
 
 services:
+  # vws-iam (vws-iam#1, #243): users, policies, SigV4 Authenticate and Authorize for console-api.
+  # enabled false: vws-iam has no published image yet, so the default render leaves it out
+  # (render-only; vws-iam#2). kekSecret: the key-encryption key of access-key secrets and TOTP seeds
+  # comes by secretKeyRef as env VWS_IAM_KEK / VWS_IAM_KEK_ID, never in args or values; vws apply
+  # creates the Secret once and never rotates it. allowFrom: a NetworkPolicy admits only console-api.
+  # No rbac and no CRDs yet: the IAM CRDs and their API group come with vws-iam#2 (AGENTS.md R18).
+  iam:
+    enabled: false
+    port: 7500
+    flags:
+      listen: 0.0.0.0:7500
+    kekSecret: vws-iam-kek
+    allowFrom: [console-api]
   console:
     external: true
     # portEnv names the env the image reads its listen port from (the Next.js server reads PORT). The

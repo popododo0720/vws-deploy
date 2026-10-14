@@ -181,6 +181,18 @@ spec:
               name: {{ . }}
               key: secret-key
         {{- end }}
+        {{- with .kekSecret }}
+        - name: VWS_IAM_KEK
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: kek
+        - name: VWS_IAM_KEK_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: key-id
+        {{- end }}
         {{- with .apiClient }}
         - name: VWS_CONSOLE_API_URL
           value: {{ .url | quote }}

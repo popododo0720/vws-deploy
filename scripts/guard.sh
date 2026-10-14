@@ -527,6 +527,11 @@ ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-sto
 sys.exit(0 if ok else 1)
 PY
   python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  pendingFlags: true\n')
+  # vws-iam (#243): off by default (no image yet); on, it gets the KEK by secretKeyRef and a NetworkPolicy.
+  ! grep -q 'name: iam$' "$tmp/default.yaml" || die "R16: the default render has vws-iam, which has no image yet"
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.iam.enabled=true > "$tmp/iam.yaml"
+  python3 scripts/check_render.py "$tmp/iam.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  iam:\n    enabled: true\n') ||
+    die "R16: check_render rejects the vws-iam render"
 
   cat > "$tmp/override.yaml" <<'YAML'
 global:
