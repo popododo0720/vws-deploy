@@ -7,7 +7,11 @@ Usage: feature_map.py update MAP RESULT.json...   (then renders MAP's .md siblin
 
 MAP is docs/feature-map.json, the only hand-edited source. lastPass and evidence are written only
 here, from a scenario result with result "pass" and cluster "vws-test" (vws-deploy#252). A result
-for an unknown scenario, another cluster, or an older time changes nothing. Output lines are
+for an unknown scenario, another cluster, or an older time changes nothing.
+Provenance: the result must also carry "clusterUID", the kube-system namespace UID of the cluster it
+ran on, equal to MAP's "vwsTest": {"kubeSystemUID": ...}. A missing, unconfigured or different UID is
+refused (FAIL). This stops results from another cluster or a typo'd file; it is not a signature, so a
+file written by hand with the committed UID copied in is still accepted. Output lines are
 "LEVEL<TAB>NAME<TAB>MESSAGE" for scripts/vws.d/verify.sh to emit.
 """
 import json
@@ -78,6 +82,7 @@ def write(path, text):
 def update(map_path, results):
     data = load(map_path)
     by_sc = {f["scenario"]: f for f in data["features"] if f.get("scenario")}
+    want_uid = (data.get("vwsTest") or {}).get("kubeSystemUID")
     out, failed = [], False
     for rpath in results:
         try:
@@ -92,6 +97,12 @@ def update(map_path, results):
             out.append(f"WARN\tfeature-map\t{sc}: no feature uses this scenario")
         elif r.get("cluster") != CLUSTER:
             out.append(f"WARN\tfeature-map\t{sc}: result is from {r.get('cluster')!r}, not {CLUSTER}; ignored")
+        elif not want_uid:
+            out.append(f"FAIL\tfeature-map\t{sc}: no vws-test fingerprint (vwsTest.kubeSystemUID) in {map_path}; refused")
+            failed = True
+        elif r.get("clusterUID") != want_uid:
+            out.append(f"FAIL\tfeature-map\t{sc}: clusterUID {r.get('clusterUID')!r} does not match the vws-test fingerprint; refused")
+            failed = True
         elif r.get("result") != "pass":
             out.append(f"WARN\tfeature-map\t{sc}: result {r.get('result')!r}; last pass kept")
         else:
