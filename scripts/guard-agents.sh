@@ -5,6 +5,8 @@
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Closes #N"
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
+#   guard-agents.sh correct [DIR]           DIR (default .) has the /correct section in AGENTS.md, the incident
+#                                           issue template with its required fields, and the incident label
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
@@ -83,6 +85,27 @@ cmd_push_watch() {
   [[ ${#bad[@]} -eq 0 ]] || die "push-watch: commits on '${MAIN}' without a pull request: ${bad[*]}"
 }
 
+CORRECT_HEADING="## /correct 교정 루프"
+CORRECT_FIELDS="what-happened impact detection root-cause catching-check follow-ups"
+
+cmd_correct() {
+  local dir=${1:-.} tpl labels id
+  tpl="${dir}/.github/ISSUE_TEMPLATE/incident.yml"
+  labels="${dir}/.github/labels.yml"
+  [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
+  grep -q -x -F -- "$CORRECT_HEADING" "${dir}/AGENTS.md" || die "correct: AGENTS.md has no '${CORRECT_HEADING}' heading"
+  # Empty: no non-blank line before the next # or ## heading; ### subheadings and code fences are content.
+  awk -v h="$CORRECT_HEADING" '$0 == h { s = 1; next } s && /^##?([[:space:]]|$)/ { exit } s && /[^[:space:]]/ { f = 1; exit } END { exit !f }' \
+    "${dir}/AGENTS.md" || die "correct: AGENTS.md '${CORRECT_HEADING}' section is empty"
+  [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
+  grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
+  for id in $CORRECT_FIELDS; do
+    grep -q -E "^[[:space:]]+id:[[:space:]]+${id}[[:space:]]*$" "$tpl" || die "correct: ${tpl} has no field '${id}'"
+  done
+  [[ -f $labels ]] || die "correct: ${labels} does not exist"
+  grep -q -E '^- name:[[:space:]]+incident[[:space:]]*$' "$labels" || die "correct: ${labels} does not define the incident label"
+}
+
 expect_fail() {
   local label=$1
   shift
@@ -127,6 +150,33 @@ fixes acme/repo#7" bash "$0" pr-body
   expect_fail "no closing keyword" env PR_BODY="mentions #12 only" bash "$0" pr-body
   expect_fail "empty body" env PR_BODY="" bash "$0" pr-body
   expect_fail "Closes without number" env PR_BODY="Closes the gap" bash "$0" pr-body
+
+  # correct: a complete repo passes; each missing piece fails.
+  local cr="$tmp/correct"
+  mkdir -p "$cr/.github/ISSUE_TEMPLATE"
+  printf '# t\n%s\n1. x\n' "$CORRECT_HEADING" >"$cr/AGENTS.md"
+  { echo "name: incident"; echo "labels: [incident]"; echo "body:"; for id in $CORRECT_FIELDS; do echo "  - type: textarea"; echo "    id: ${id}"; done; } >"$cr/.github/ISSUE_TEMPLATE/incident.yml"
+  printf -- '- name: incident\n  color: "b60205"\n' >"$cr/.github/labels.yml"
+  expect_pass "complete /correct loop" cmd_correct "$cr"
+  local cb="$tmp/correct-bad"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/correct/d' "$cb/AGENTS.md"
+  expect_fail "no /correct section" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n## next\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_fail "/correct heading with an empty body" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n### 절차\n\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_pass "/correct body with only a ### subheading" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n```sh\n# gh issue create --template incident.yml\n```\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_pass "/correct body with a fenced '#' line" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n\n# top\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_fail "/correct body empty before a # heading" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/^labels:/d' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
+  expect_fail "template missing only the labels: line" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/id: catching-check/d' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
+  expect_fail "template without the catching-check field" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i 's/^labels:.*/labels: [bug]/' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
+  expect_fail "template without the incident label" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; rm "$cb/.github/labels.yml"
+  expect_fail "no labels file" cmd_correct "$cb"
 
   # push-watch against a throwaway repository and a gh that answers from a file.
   local repo="$tmp/repo" bin="$tmp/bin" c1 c2 c3
@@ -173,6 +223,7 @@ case "$command_name" in
   pr-base) cmd_pr_base "$@" ;;
   pr-body) cmd_pr_body "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
+  correct) cmd_correct "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|pr-body [FILE]|push-watch BEFORE AFTER|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|pr-body [FILE]|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
 esac

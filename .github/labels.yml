@@ -1,0 +1,5 @@
+# Labels every vws-* repo must have. This file is the definition; creating the labels on GitHub is a
+# separate, manual step (gh label create NAME --color COLOR --description TEXT --force).
+- name: incident
+  color: "b60205"
+  description: "Corrected mistake, rule violation or outage; see the /correct loop in AGENTS.md"
