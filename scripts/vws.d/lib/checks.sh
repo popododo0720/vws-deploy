@@ -78,6 +78,8 @@ prof = yaml.safe_load(open(sys.argv[2]))["services"] if os.path.exists(sys.argv[
 cpu = mem = 0
 for name, spec in base.items():
     spec = {**spec, **prof.get(name, {})}
+    if spec.get("enabled", True) is False:
+        continue
     n = spec.get("replicas", 1 if "state" in spec else 2)
     c, m = spec.get("cpu", "100m"), spec.get("memory", "256Mi")
     cpu += n * int(c[:-1])

@@ -398,7 +398,7 @@ def render(cr):
         if name not in base["services"]:
             raise Invalid(f"spec.services.{name}: not a service in charts/vws/values.yaml")
         target = services.setdefault(name, {})
-        for key in ("replicas", "cpu", "memory"):
+        for key in ("enabled", "replicas", "cpu", "memory"):
             if key in override:
                 target[key] = override[key]
         if "flags" in override:
