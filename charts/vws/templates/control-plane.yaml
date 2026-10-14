@@ -52,7 +52,16 @@ implements grpc.health.v1 (vws-storage#39, merged), so no gate (#110). */}}
 {{- $grpcReady := $spec.grpcReadinessService | default "" }}
 {{- $rgw := ($spec.s3 | default dict).rgw | default dict }}
 {{- $rgwSecret := "" }}{{ if $rgw.enabled }}{{ $rgwSecret = $rgw.existingSecret }}{{ end }}
-{{- $ctx := dict "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $apiSecret := "" }}{{ with $spec.apiCredentials }}{{ $apiSecret = .existingSecret }}{{ end }}
+{{- /* apiClient: the URL and the token Secret come from the named service's own values, so a
+renamed service, release namespace or port moves with it. */}}
+{{- $apiClient := dict }}
+{{- with $spec.apiClient }}
+  {{- $target := required (printf "services.%s.apiClient.service %s is not a service" $name .service) (get $.Values.services .service) }}
+  {{- $targetSecret := required (printf "services.%s.apiClient.service %s has no apiCredentials.existingSecret" $name .service) (($target.apiCredentials | default dict).existingSecret) }}
+  {{- $apiClient = dict "url" (printf "http://%s.%s.svc:%d" .service $.Release.Namespace (int ($target.port | default 8080))) "secret" $targetSecret }}
+{{- end }}
+{{- $ctx := dict "apiSecret" $apiSecret "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount

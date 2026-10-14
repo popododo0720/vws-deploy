@@ -39,8 +39,20 @@ namespaces:
 services:
   console:
     external: true
+    # apiClient wires this service to another service's console surface: env VWS_CONSOLE_API_URL is
+    # http://<service>.<release namespace>.svc:<that service's port>, and VWS_CONSOLE_API_TOKEN comes by
+    # secretKeyRef from key console-token of that service's apiCredentials.existingSecret. The token
+    # is the only credential the client gets; the SigV4 keys stay with console-api.
+    apiClient:
+      service: console-api
   console-api:
     external: true
+    # apiCredentials: -console-token, -access-key and -secret are $(VAR) references to env
+    # from secretKeyRef of existingSecret (keys console-token, access-key, secret-key) in the release
+    # namespace, so no value is in values, args or the pod spec. -backend=grpc refuses to start
+    # without all three. vws apply creates the Secret once with random values when it is missing.
+    apiCredentials:
+      existingSecret: vws-console-api-credentials
     # Image defaults are -backend=fake and 127.0.0.1 listeners (vws-console-api
     # cmd/vws-console-api/main.go:40-50), so the default render served a fake cloud that the
     # Service could not reach (#84). Backend addresses are the in-namespace Service names.

@@ -225,6 +225,34 @@
               }
             }
           }
+        },
+        "apiCredentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "existingSecret"
+          ],
+          "description": "Credentials of a service that serves the console API (vws-console-api). Values come only from a Secret in the release namespace through secretKeyRef; vws apply creates it once when missing.",
+          "properties": {
+            "existingSecret": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"
+            }
+          }
+        },
+        "apiClient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "service"
+          ],
+          "description": "Wires a client of the console API: VWS_CONSOLE_API_URL from the named service's Service and port, VWS_CONSOLE_API_TOKEN from that service's apiCredentials Secret.",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$"
+            }
+          }
         }
       },
       "allOf": [

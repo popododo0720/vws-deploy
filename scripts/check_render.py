@@ -138,6 +138,13 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
     return errors
 
 
+# apiCredentials: flag -> env kubelet expands it from, and env -> key of the Secret (vws-console-api
+# cmd/vws-console-api/main.go -console-token, -access-key, -secret; -backend=grpc refuses the defaults).
+API_CREDENTIAL_FLAGS = {"console-token": "VWS_CONSOLE_TOKEN", "access-key": "VWS_ACCESS_KEY", "secret": "VWS_SECRET_KEY"}
+API_CREDENTIAL_KEYS = {"VWS_CONSOLE_TOKEN": "console-token", "VWS_ACCESS_KEY": "access-key", "VWS_SECRET_KEY": "secret-key"}
+API_CLIENT_ENV = ("VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN")
+
+
 def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
     """The args a service must get from values, and the errors found while resolving them."""
     flags = dict(spec.get("flags") or {})
@@ -150,6 +157,8 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
         if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
+    if spec.get("apiCredentials"):
+        flags.update({f: f"$({env})" for f, env in API_CREDENTIAL_FLAGS.items()})
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -311,7 +320,7 @@ def check_kubeconfig(name: str, spec: dict, pod: dict, container: dict) -> list[
         if vol.get("defaultMode") != 0o440:
             errors.append(f"R16: {name} kubeconfig file mode must be 0440")
     for env in container.get("env") or []:
-        if "KUBECONFIG" in env.get("name", "").upper() or "TOKEN" in env.get("name", "").upper():
+        if "KUBECONFIG" in env.get("name", "").upper() or ("TOKEN" in env.get("name", "").upper() and "secretKeyRef" not in (env.get("valueFrom") or {})):
             errors.append(f"R16: {name} passes a credential through env {env.get('name')}")
     return errors
 
@@ -338,6 +347,43 @@ def check_s3(name: str, spec: dict, container: dict) -> list[str]:
         ref = ((env.get(key) or {}).get("valueFrom") or {}).get("secretKeyRef") or {}
         if ref != {"name": rgw.get("existingSecret"), "key": secret_key}:
             errors.append(f"R16: {name} must read {key} from Secret {rgw.get('existingSecret')} key {secret_key}")
+    return errors
+
+
+def entry_of(env: list[dict], key: str) -> dict:
+    return next(e for e in env if e["name"] == key)
+
+
+def check_api(name: str, spec: dict, container: dict, values: dict, release_ns: str) -> list[str]:
+    """apiCredentials and apiClient: credentials only by secretKeyRef of one Secret, the URL from values."""
+    errors: list[str] = []
+    env = {e.get("name"): e for e in container.get("env") or []}
+
+    def ref(key: str) -> dict:
+        return ((env.get(key) or {}).get("valueFrom") or {}).get("secretKeyRef") or {}
+
+    secret = (spec.get("apiCredentials") or {}).get("existingSecret")
+    if spec.get("apiCredentials") is None:
+        if set(API_CREDENTIAL_KEYS) & set(env):
+            errors.append(f"R16: {name} gets console API credentials that values do not ask for")
+    else:
+        if not secret:
+            errors.append(f"R16: {name} apiCredentials has an empty existingSecret")
+        for key, secret_key in API_CREDENTIAL_KEYS.items():
+            if "value" in (env.get(key) or {}) or ref(key) != {"name": secret, "key": secret_key}:
+                errors.append(f"R16: {name} must read {key} from Secret {secret} key {secret_key}")
+    client = spec.get("apiClient")
+    if client is None:
+        if set(API_CLIENT_ENV) & set(env):
+            errors.append(f"R16: {name} gets console API wiring that values do not ask for")
+        return errors
+    target = values["services"].get(client.get("service")) or {}
+    target_secret = (target.get("apiCredentials") or {}).get("existingSecret")
+    want_url = f"http://{client.get('service')}.{release_ns}.svc:{int(target.get('port', 8080))}"
+    if (env.get("VWS_CONSOLE_API_URL") or {}).get("value") != want_url:
+        errors.append(f"R16: {name} VWS_CONSOLE_API_URL must be {want_url}")
+    if not target_secret or "value" in (env.get("VWS_CONSOLE_API_TOKEN") or {}) or ref("VWS_CONSOLE_API_TOKEN") != {"name": target_secret, "key": "console-token"}:
+        errors.append(f"R16: {name} must read VWS_CONSOLE_API_TOKEN from Secret {target_secret} key console-token")
     return errors
 
 
@@ -431,6 +477,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
+        errors.extend(check_api(name, spec, container, values, release_ns))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -819,6 +866,29 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             broken_values["services"][rgw_name]["s3"]["rgw"][field] = ""
             if not check(docs, broken_values, release):
                 return [f"R16: s3.rgw with an empty {field} did not fail"]
+
+    # apiCredentials / apiClient: credentials only by secretKeyRef, the URL from values.
+    api_cases = []
+    for svc, spec in values["services"].items():
+        spec = spec or {}
+        if spec.get("apiCredentials"):
+            api_cases += [
+                (svc, "a token as a literal value", lambda env: entry_of(env, "VWS_CONSOLE_TOKEN").update(value="x")),
+                (svc, "another credential Secret", lambda env: entry_of(env, "VWS_SECRET_KEY")["valueFrom"]["secretKeyRef"].update(name="other")),
+                (svc, "no access key env", lambda env: env.remove(entry_of(env, "VWS_ACCESS_KEY"))),
+            ]
+        if spec.get("apiClient"):
+            api_cases += [
+                (svc, "a hardcoded API URL", lambda env: entry_of(env, "VWS_CONSOLE_API_URL").update(value="http://console-api:9999")),
+                (svc, "an API token from another key", lambda env: entry_of(env, "VWS_CONSOLE_API_TOKEN")["valueFrom"]["secretKeyRef"].update(key="secret-key")),
+            ]
+    for svc, label, change in api_cases:
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == svc:
+                change(doc["spec"]["template"]["spec"]["containers"][0]["env"])
+        if not check(broken, values, release):
+            return [f"R16: {svc} {label} did not fail"]
 
     broken = copy.deepcopy(docs)
     for doc in broken:
