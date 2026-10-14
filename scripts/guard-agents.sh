@@ -4,6 +4,7 @@
 #   guard-agents.sh agents [FILE]           FILE (default AGENTS.md) has the guardrail section and items 1-7
 #   guard-agents.sh rules [FILE] [HEADING]  every row of the rule table under HEADING names an enforcer; prints the Judgment count
 #   guard-agents.sh judgment [FILE] [HEADING] alias of rules
+#   guard-agents.sh archtest [FILE] [HEADING] prints the rules line, then runs go test -v on GUARD_ARCHTEST_PKG
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N" and no closing keyword
@@ -16,7 +17,7 @@
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
 # GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default: the first of "## Rules" and "## 규칙표" in FILE),
-# GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
 set -euo pipefail
 export LC_ALL=C
 
@@ -71,6 +72,19 @@ cmd_rules() {
   awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
     die "rules: every row needs an enforcer (test, lint, CI step) or 'Judgment'"
   echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
+}
+
+# The one guard command for the architecture test: the Judgment count line comes first so the CI log
+# always shows it, even when the test fails; go test runs with -v so every rule test is listed.
+# A repo without the archtest directory says so and passes; the rules check still runs.
+cmd_archtest() {
+  local pkg=${GUARD_ARCHTEST_PKG:-./internal/archtest/...}
+  cmd_rules "$@"
+  if [[ ! -d ${pkg%/...} ]]; then
+    echo "archtest: ${pkg%/...} does not exist; no architecture test to run"
+    return 0
+  fi
+  go test -v -count=1 "$pkg" || die "archtest: go test -v ${pkg} failed"
 }
 
 # Every repo carries a byte-identical copy of the vws-deploy file. SUMFILE pins its sha256 (sha256sum format).
@@ -226,6 +240,19 @@ cmd_selftest() {
   echo "ok: Judgment count"
   [[ $(bash "$0" judgment "$rules") == "rules: 2 rows, 1 Judgment" ]] || die "selftest: judgment is not an alias of rules"
   echo "ok: judgment is an alias of rules"
+  mkdir -p "$tmp/bin" "$tmp/arch/internal/archtest"
+  printf '#!/bin/sh\necho "go $*" >>"$GOLOG"\n[ -z "$GOFAIL" ]\n' >"$tmp/bin/go"
+  chmod +x "$tmp/bin/go"
+  local out self
+  self=$(readlink -f "$0")
+  out=$(cd "$tmp/arch" && PATH="$tmp/bin:$PATH" GOLOG="$tmp/go.log" bash "$self" archtest "$rules")
+  [[ $(head -1 <<<"$out") == "rules: 2 rows, 1 Judgment" ]] || die "selftest: archtest does not print the Judgment count first"
+  grep -q -x -F 'go test -v -count=1 ./internal/archtest/...' "$tmp/go.log" || die "selftest: archtest does not run go test -v"
+  echo "ok: archtest prints the Judgment count and runs go test -v"
+  expect_fail "a failing archtest" bash -c 'cd "$1" && PATH="$2:$PATH" GOLOG=/dev/null GOFAIL=1 bash "$3" archtest "$4"' _ "$tmp/arch" "$tmp/bin" "$self" "$rules"
+  out=$(cd "$tmp" && PATH="$tmp/bin:$PATH" GOLOG=/dev/null GOFAIL=1 bash "$self" archtest "$rules") || die "selftest: archtest failed without an archtest directory"
+  grep -q -x -F "rules: 2 rows, 1 Judgment" <<<"$out" || die "selftest: archtest without a directory dropped the Judgment count"
+  echo "ok: archtest without a directory still prints the Judgment count"
   sed 's/^## Rules$/## 규칙표/; s/| Rule | Enforcer |/| 규칙 | 강제 |/' "$rules" >"$tmp/rules-ko.md"
   expect_pass "the Korean heading is found" cmd_rules "$tmp/rules-ko.md"
   sed 's/^## Rules$/## Policy/' "$rules" >"$tmp/rules-arg.md"
@@ -359,11 +386,12 @@ case "$command_name" in
   pr-base) cmd_pr_base "$@" ;;
   pr-body) cmd_pr_body "$@" ;;
   rules | judgment) cmd_rules "$@" ;;
+  archtest) cmd_archtest "$@" ;;
   identity) cmd_identity "$@" ;;
   commit-msg) cmd_commit_msg "$@" ;;
   pr-commits) cmd_pr_commits "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
   correct) cmd_correct "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
 esac
