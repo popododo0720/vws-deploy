@@ -327,4 +327,18 @@ run_vws_real render "${WORK}/two.yaml" "${WORK}/x.yaml"; expect_rc "two document
 run_vws_real render "${WORK}/missing.yaml" "${WORK}/x.yaml"; expect_rc "a missing file exits 2" 2
 run_vws_real render "${EX}/ha.yaml"; expect_rc "a missing output argument exits 2" 2
 
+# vws-compute#73: compute keeps the cloud-init Secret <instance>-cloudinit in the VM namespace. Only
+# the namespaced Role vws-compute in vws-vms may touch secrets: get, create, update, delete, no list
+# or watch (compute uses an uncached client), and no other Role or ClusterRole gains secrets.
+secret_rules=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] in ("Role", "ClusterRole"):
+        for r in d["rules"]:
+            if "secrets" in r["resources"]:
+                print(d["kind"], d["metadata"]["name"], d["metadata"].get("namespace"), r["resources"], r["verbs"], r.get("resourceNames"))')
+expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rules" "Role vws-compute vws-vms ['secrets'] ['get', 'create', 'update', 'delete'] None"
+if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
+if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
+
 finish_tests
