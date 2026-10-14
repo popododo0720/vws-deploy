@@ -245,16 +245,18 @@ cmd_correct() {
   tpl="${dir}/.github/ISSUE_TEMPLATE/incident.yml"
   labels="${dir}/.github/labels.yml"
   [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
-  grep -q -x -F -- "$CORRECT_HEADING" "${dir}/AGENTS.md" || die "correct: AGENTS.md has no '${CORRECT_HEADING}' heading"
+  # CRLF line endings are read as LF, so a heading saved on Windows still matches.
+  tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$CORRECT_HEADING" ||
+    die "correct: AGENTS.md has no line that is exactly '${CORRECT_HEADING}' (trailing spaces or a different heading do not match)"
   # Empty: no content before the next # or ## heading. A ### subheading and a line inside a code fence are
   # content; the fence lines themselves and blank lines are not, so an empty fence is an empty section.
-  awk -v h="$CORRECT_HEADING" '
+  tr -d '\r' <"${dir}/AGENTS.md" | awk -v h="$CORRECT_HEADING" '
     $0 == h { s = 1; next }
     !s { next }
     /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
     !fence && /^##?([[:space:]]|$)/ { exit }
     /[^[:space:]]/ { f = 1; exit }
-    END { exit !f }' "${dir}/AGENTS.md" || die "correct: AGENTS.md '${CORRECT_HEADING}' section is empty (blank lines and empty code fences do not count)"
+    END { exit !f }' || die "correct: AGENTS.md '${CORRECT_HEADING}' section is empty (blank lines and empty code fences do not count)"
   [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
   grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
   for id in $CORRECT_FIELDS; do
@@ -392,6 +394,10 @@ fixes acme/repo#7" bash "$0" pr-body
   expect_fail "/correct body with only an empty code fence" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n  \t\n```sh\n   \n```\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_fail "/correct body with whitespace and a blank fence" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\r\n%s\r\n1. x\r\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_pass "/correct heading with CRLF line endings" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\r\n%s\r\n\r\n## next\r\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_fail "/correct CRLF heading with an empty body" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n\n\n# top\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_fail "/correct body empty before a # heading" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/^labels:/d' "$cb/.github/ISSUE_TEMPLATE/incident.yml"
