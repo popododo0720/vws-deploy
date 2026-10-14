@@ -198,3 +198,7 @@ FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3
 ### vws restore
 
 `vws restore DIR [--yes]` checks `SHA256SUMS` first (a mismatch exits 1 before any write), then prints the plan; without `--yes` it exits 2, `--dry-run` stops after the plan. With `--yes` it applies the VWSCluster CRD from `charts/vws/crds`, saves the CR spec when it differs, runs `vws apply`, compares the release values with the backup (WARN when they differ), server-side applies only the ConfigMaps that differ, and folds `vws doctor` in as `after-*` lines. Restoring the same backup twice reports unchanged. State volumes are restored by hand from the VolumeSnapshots listed in the plan. Not yet checked on a real cluster (cluster-verification-list I8, I2).
+
+### vws verify
+
+`vws verify --update-feature-map [--map FILE] RESULT.json...` records vws-test scenario results in `docs/feature-map.json` and regenerates `docs/feature-map.md` (feature, verify command, last pass in KST, evidence). A result is `{"scenario", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence"}`. Only a `pass` on `vws-test` moves a last pass forward; a fail, another cluster or an older time changes nothing. Features without a scenario print `WARN unverified`. `vws verify --check-feature-map` exits 1 when the md was edited by hand or is stale. Local files only; no cluster call (vws-deploy#252). `vws verify scenario NAME` itself is not implemented yet.
