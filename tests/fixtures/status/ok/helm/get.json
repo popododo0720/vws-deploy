@@ -19,7 +19,10 @@
     "console-api": {
       "cpu": "100m",
       "memory": "256Mi",
-      "replicas": 2
+      "replicas": 1,
+      "flags": {
+        "console-origins": "https://console.example.invalid"
+      }
     },
     "network": {
       "cpu": "100m",

@@ -21,12 +21,12 @@ expect_text "the same spec is unchanged" "$OUT" "unchanged"
 assert_no_changes "the same spec changes nothing"
 
 # Questions: the answers that give single-node.yaml give the same spec, so unchanged too.
-run_vws_real init <<<$'single-node\nrook-ceph\n\n198.18.0.0/24\n'; expect_rc "interactive init exits 0" 0
+run_vws_real init <<<$'single-node\nrook-ceph\n\n198.18.0.0/24\nhttps://console.example.invalid\n'; expect_rc "interactive init exits 0" 0
 expect_text "interactive answers equal to --from are unchanged" "$OUT" "unchanged"
 assert_no_changes "interactive same spec changes nothing"
 
 installer_scenario other
-run_vws_real init <<<$'ha\nexisting\nfast-rbd\n0.1.0\n198.18.1.0/24\n'; expect_rc "interactive init with new answers saves" 0
+run_vws_real init <<<$'ha\nexisting\nfast-rbd\n0.1.0\n198.18.1.0/24\nhttps://console.example.invalid\n'; expect_rc "interactive init with new answers saves" 0
 assert_changes "new answers apply the CR"
 
 run_vws_real init <<<$'single-node\nrook-ceph\n\n\n'; expect_rc "no elastic IP pool answer exits 2" 2
