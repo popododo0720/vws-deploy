@@ -87,6 +87,15 @@ S3 객체 백엔드는 vws-storage가 구현한다. `-object-backend=s3`, `-s3-p
 - `bucketPrefix`가 비지 않으면 `-s3-bucket-prefix=<prefix>`로 렌더한다(vws-storage#46, #105). RGW 버킷 이름은 `<prefix>-vws-<40 hex>`이고 API 버킷 이름에는 붙지 않는다. 접두사를 바꾸면 이전 버킷은 VWS에서 보이지 않는다.
 - `enabled: true`인데 `endpoint`나 `existingSecret`이 비면 렌더가 실패하고, `scripts/guard.sh config`(R16)가 env가 리터럴 값이거나 다른 Secret을 가리키면 실패함을 시험한다.
 
+## console-api 자격 증명과 콘솔 연결
+
+vws-console-api는 `-backend=grpc`일 때 `-console-token`, `-access-key`, `-secret`이 명시되지 않으면 시작하지 않는다(`cmd/vws-console-api/main.go` `requireExplicit`, console-api #80). 콘솔 표면은 `Authorization: Bearer <console-token>`, EC2/S3 표면은 SigV4(`access-key`/`secret`)로 인증한다.
+
+- `services.console-api.apiCredentials.existingSecret`(기본 `vws-console-api-credentials`): 차트가 키 `console-token`, `access-key`, `secret-key`를 `secretKeyRef`로 `VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY` env에 넣고, 인자는 `-console-token=$(VWS_CONSOLE_TOKEN)`처럼 kubelet이 펼치는 참조만 쓴다. 값은 values, 인자 문자열, 파드 spec에 없다(컨테이너 안 프로세스 인자에는 펼쳐진 값이 보인다).
+- `services.console.apiClient.service`(기본 `console-api`): `VWS_CONSOLE_API_URL=http://<service>.<릴리스 네임스페이스>.svc:<그 서비스의 port>`와, 같은 Secret의 `console-token`을 `VWS_CONSOLE_API_TOKEN`으로 준다. 콘솔에는 SigV4 키를 주지 않는다.
+- Secret은 차트가 렌더하지 않는다(R16). `vws apply`가 helm 전에 `scripts/vws.d/lib/apisecret.py`(Python `secrets`, os.urandom)로 값을 만들어 kubectl create의 stdin으로만 넘긴다. 이미 있으면(AlreadyExists) 그대로 두어 회전하지 않고, Secret 읽기 권한도 필요 없다. 다른 이유로 실패하면 helm 전에 3으로 멈춘다. `--dry-run`은 값을 만들지 않는다. 회전은 Secret을 지우고 `vws apply`를 다시 실행한 뒤 두 Deployment를 재시작한다.
+- `scripts/guard.sh config`(R16)는 env가 리터럴이거나 다른 Secret·키를 가리키거나 URL이 values와 다르면 실패함을 시험한다.
+
 ## 확인 필요
 
 - **compute의 KubeVirt 플래그는 기본 렌더에 있다(#121).** vws-compute main(`62d90e7`)이 `-hypervisor`, `-vm-namespace`, `-image-namespace`, `-storage`를 받는다. 예전에는 `pendingFlags`였지만 지금 `pendingFlags`를 쓰는 서비스는 없다. vws-test T1(#51)에서 이 네 플래그로 볼륨 부팅을 확인했다.
