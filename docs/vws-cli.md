@@ -49,6 +49,8 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 - 시험하는 것: 종료 코드 0, 1, 2, 3, json 출력의 `jq` 파싱, 읽기 시나리오의 변경 호출 0건, `--dry-run`, `--context`, `-n`의 전달, `--yes` 없는 파괴적 명령, `--strict`, 로그가 변경 호출을 잡아내는지.
 - 실제 `kubectl`, `helm`의 출력 형식과 실제 클러스터는 시험하지 않는다. 명령 본체가 들어올 때 각 명령의 fixture를 더한다.
 
+- 집계: 각 시험 파일이 자기 `N cases, M failed` 줄을 내고, `run.sh`가 모든 파일을 더해 마지막 줄에 `total: C cases, F failed in S suites`를 낸다. 파일의 실패 수는 요약 줄과 `FAIL ` 줄 수 중 큰 값이고, 요약 없이 0이 아닌 코드로 끝난 파일은 1로 센다. 실패한 파일 이름을 적고, F가 0보다 크면 1로 끝난다. 전에는 마지막 파일의 요약만 화면 끝에 남아 앞 파일의 FAIL이 `0 failed` 뒤에 가려졌다. `VWS_TEST_DIR`로 다른 디렉터리를 돌릴 수 있다(`tests/vws/run.test.sh`가 쓴다).
+
 `scripts/guard.sh vws`(R17)는 위 하네스와 shellcheck를 돌리고, 명령 파일마다 시험 파일과 이 문서의 항목이 있는지, 명령이 kubectl이나 helm을 직접 부르지 않는지 본다. 깨진 사본으로 이 검사가 실제로 실패하는지도 시험한다.
 
 ## 명령
