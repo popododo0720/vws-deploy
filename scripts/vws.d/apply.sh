@@ -149,15 +149,16 @@ VWS_DEFAULT_IMAGE_SIZE=${VWS_DEFAULT_IMAGE_SIZE:-1Gi}
 # (pinned by digest) and a DataSource pointing at its claim. Each is created only when missing
 # (AlreadyExists keeps it as is), so an apply never overwrites or re-imports an image.
 vws_apply_seed_image() {
-  local values=$1 ns image kind err manifest
+  local values=$1 ns image kind err manifest class
   ns=$(python3 -c 'import sys,yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get("namespaces", {}).get("images", ""))' "$values") ||
     vws_die_env "cannot read namespaces.images from the rendered values"
   [[ -n $ns ]] || ns=vws-images
   image=$(vws_versions_env LAB_VM_IMAGE)
   [[ $image == *@sha256:* ]] || vws_die_env "LAB_VM_IMAGE in scripts/versions.env is not pinned by digest"
+  class=$(vws_seed_image_class "$values")
   err=$(mktemp)
   for kind in DataVolume DataSource; do
-    manifest=$(vws_seed_image_manifest "$kind" "$ns" "$image")
+    manifest=$(vws_seed_image_manifest "$kind" "$ns" "$image" "$class")
     if [[ -n $VWS_DRY_RUN ]]; then
       VWS_NAMESPACE=$ns vws_kubectl create -f - <<<"$manifest"
       vws_emit OK image "would create ${kind} ${ns}/${VWS_DEFAULT_IMAGE_ID} if it is missing"
@@ -173,13 +174,34 @@ vws_apply_seed_image() {
   rm -f "$err"
 }
 
-# vws_seed_image_manifest KIND NAMESPACE IMAGE: the JSON of the seeded DataVolume or DataSource.
+# vws_seed_image_class VALUES prints the StorageClass of the seeded image (#238): the class vws-storage
+# clones volumes in (services.storage.flags.kube-class-standard of the rendered values, else
+# global.storageClass, else the chart default), so the clone stays in one class. Only when all are
+# empty does it print the cluster default StorageClass; with none of them it prints nothing.
+vws_seed_image_class() {
+  local class
+  class=$(python3 -c '
+import sys, yaml
+def pick(v):
+    v = v or {}
+    flags = (((v.get("services") or {}).get("storage") or {}).get("flags") or {})
+    return flags.get("kube-class-standard") or (v.get("global") or {}).get("storageClass") or ""
+print(pick(yaml.safe_load(open(sys.argv[1]))) or pick(yaml.safe_load(open(sys.argv[2]))))' \
+    "$1" "${VWS_ROOT}/charts/vws/values.yaml") || vws_die_env "cannot read the storage class from the rendered values"
+  if [[ -z $class ]]; then
+    class=$(vws_kubectl get storageclass -o json 2>/dev/null | jq -r '[.items[]? | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name][0] // empty')
+  fi
+  printf '%s' "$class"
+}
+
+# vws_seed_image_manifest KIND NAMESPACE IMAGE [CLASS]: the JSON of the seeded DataVolume or DataSource.
 vws_seed_image_manifest() {
-  jq -nc --arg k "$1" --arg ns "$2" --arg img "$3" --arg id "$VWS_DEFAULT_IMAGE_ID" --arg size "$VWS_DEFAULT_IMAGE_SIZE" '
+  jq -nc --arg k "$1" --arg ns "$2" --arg img "$3" --arg cls "${4:-}" --arg id "$VWS_DEFAULT_IMAGE_ID" --arg size "$VWS_DEFAULT_IMAGE_SIZE" '
     {apiVersion: "cdi.kubevirt.io/v1beta1", kind: $k,
      metadata: {name: $id, namespace: $ns, labels: {"app.kubernetes.io/managed-by": "vws"}}}
     + if $k == "DataVolume" then
-        {spec: {source: {registry: {url: ("docker://" + $img)}}, storage: {resources: {requests: {storage: $size}}}}}
+        {spec: {source: {registry: {url: ("docker://" + $img)}},
+                storage: ({resources: {requests: {storage: $size}}} + if $cls == "" then {} else {storageClassName: $cls} end)}}
       else
         {spec: {source: {pvc: {name: $id, namespace: $ns}}}}
       end'
