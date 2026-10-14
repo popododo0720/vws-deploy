@@ -1,4 +1,5 @@
 {
+  "vwsTest": {"kubeSystemUID": null, "note": "set to `kubectl get ns kube-system -o jsonpath={.metadata.uid}` on vws-test; until then every result is refused (vws-deploy#262)"},
   "features": [
     {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": null},
     {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
