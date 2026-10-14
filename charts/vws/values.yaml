@@ -73,9 +73,10 @@ services:
     # split them (popododo0720/vws-console-api#95). The schema, check_render.py (R4) and vws render
     # refuse any other count; the chart has no HPA. Change this only with shared session storage.
     replicas: 1
-    # apiCredentials: -console-token, -access-key and -secret are $(VAR) references to env
-    # from secretKeyRef of existingSecret (keys console-token, access-key, secret-key) in the release
-    # namespace, so no value is in values, args or the pod spec. -backend=grpc refuses to start
+    # apiCredentials: env VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and VWS_SECRET_KEY from secretKeyRef of
+    # existingSecret (keys console-token, access-key, secret-key) in the release namespace. No
+    # credential flag is passed, so no value is in values, args, the pod spec or the process
+    # arguments. Needs a console-api build that reads the env (S1). -backend=grpc refuses to start
     # without all three. vws apply creates the Secret once with random values when it is missing.
     apiCredentials:
       existingSecret: vws-console-api-credentials
