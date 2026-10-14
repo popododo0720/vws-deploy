@@ -206,8 +206,10 @@ vws_check_kernel_indirect() {
 }
 
 # spec.network.nodes against the nodes (#128): node IPs in management, NICs and MTUs from talosctl links.
+# vm-mtu (#236): when the tunnel NIC cannot carry VM MTU 9001 plus the overhead, the one write of
+# preflight: spec.network.vmMTU (lowered) and underlayMTU (read) go into the VWSCluster. No NIC is touched.
 vws_check_node_network() {
-  local links=$1 tmp level name message
+  local links=$1 tmp level name message vm underlay
   [[ -z $links || -f $links ]] || vws_usage "--links ${links} does not exist"
   tmp=$(mktemp -d)
   if ! vws_kubectl get vwsclusters vws -o json >"${tmp}/cr.json" 2>/dev/null; then
@@ -220,6 +222,16 @@ vws_check_node_network() {
   [[ -z $links ]] || args+=("$links")
   python3 "${VWS_ROOT}/scripts/vws.d/lib/nodenet.py" "${args[@]}" >"${tmp}/out" || { rm -rf "$tmp"; vws_die_env "cannot evaluate spec.network.nodes"; }
   while IFS=$'\t' read -r level name message; do
+    if [[ $level == SET ]]; then
+      IFS=$'\t' read -r vm underlay <<<"$message"
+      if vws_kubectl patch vwsclusters vws --type merge \
+        -p "{\"spec\":{\"network\":{\"vmMTU\":${vm},\"underlayMTU\":${underlay}}}}" >/dev/null 2>&1; then
+        vws_emit OK vm-mtu-set "spec.network.vmMTU=${vm} underlayMTU=${underlay} written to VWSCluster vws"
+      else
+        vws_emit WARN vm-mtu-set "could not write spec.network.vmMTU=${vm}; set it with vws reconfigure --set network.vmMTU=${vm}"
+      fi
+      continue
+    fi
     vws_emit "$level" "$name" "$message"
   done <"${tmp}/out"
   rm -rf "$tmp"

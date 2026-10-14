@@ -7,6 +7,10 @@ CR is the VWSCluster as JSON or YAML, NODES is `kubectl get nodes -o json`, LINK
 - Every node InternalIP must be inside nodes.management.cidr (FAIL).
 - With LINKS, every node must have each interface (host networks: <nic> or <nic>.<vlan>; underlay:
   <nic>) with an MTU of at least the CR's (FAIL). Without LINKS that is WARN: unverified.
+- vm-mtu (vws-deploy#236): the tunnel NIC MTU read from LINKS (else spec.network.underlayMTU) must carry
+  the VM MTU (9001 unless vmMTU says less) plus the tunnel overhead, 9101 by default. Short of that it is
+  WARN and a "SET<TAB>vm-mtu<TAB>VM<TAB>UNDERLAY" line asks the caller to write the lowered vmMTU and the
+  read underlayMTU into the VWSCluster. Nothing here changes a NIC.
 Exit 2 when an input cannot be read.
 """
 import ipaddress
@@ -17,7 +21,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import host_interface  # noqa: E402
+from render import RECOMMENDED_UNDERLAY_MTU, VM_MTU, host_interface, tunnel_overhead  # noqa: E402
 
 
 def wanted(nodes, direct):
@@ -51,6 +55,26 @@ def read_links(text):
     return out
 
 
+def mtu_check(network, measured, emit):
+    """The vm-mtu line, and a SET line when the VM MTU has to come down. measured: the smallest tunnel
+    NIC MTU read from the nodes, or None."""
+    underlay = measured if measured is not None else network.get("underlayMTU")
+    overhead = tunnel_overhead(network)
+    want = network.get("vmMTU") or VM_MTU
+    if underlay is None:
+        emit("WARN", "vm-mtu", f"unverified: the underlay MTU needs --links FILE or spec.network.underlayMTU; "
+             f"VM MTU {want} needs {want + overhead}")
+        return
+    room = underlay - overhead
+    if room >= want:
+        note = "" if underlay >= RECOMMENDED_UNDERLAY_MTU else f" ({RECOMMENDED_UNDERLAY_MTU} recommended)"
+        emit("OK", "vm-mtu", f"underlay MTU {underlay} carries VM MTU {want} plus the {overhead}-byte overhead{note}")
+        return
+    emit("WARN", "vm-mtu", f"underlay MTU {underlay} is under {want + overhead} (VM MTU {want} plus the "
+         f"{overhead}-byte overhead; {RECOMMENDED_UNDERLAY_MTU} recommended); VM MTU lowered to {room}")
+    emit("SET", "vm-mtu", f"{room}\t{underlay}")
+
+
 def check(cr, nodes_json, links_text):
     lines = []
     emit = lambda level, name, msg: lines.append(f"{level}\t{name}\t{msg}")  # noqa: E731
@@ -58,6 +82,7 @@ def check(cr, nodes_json, links_text):
     nodes = network.get("nodes")
     if not nodes:
         emit("OK", "node-network", "spec.network.nodes is not set: one NIC, nothing to check")
+        mtu_check(network, None, emit)
         return lines
     mgmt = ipaddress.IPv4Network(nodes["management"]["cidr"])
     addrs = {}
@@ -73,8 +98,11 @@ def check(cr, nodes_json, links_text):
     want = wanted(nodes, network.get("direct") or [])
     if links_text is None:
         emit("WARN", "node-links", "unverified: NICs and MTUs need --links FILE (talosctl -n <nodes> get links -o json)")
+        mtu_check(network, None, emit)
         return lines
     links = read_links(links_text)
+    tunnel_iface = host_interface(nodes.get("tunnel", nodes["management"]))
+    tunnel_mtus = []
     for name, ips in sorted(addrs.items()):
         have = next((links[k] for k in [name, *ips] if k in links), None)
         if have is None:
@@ -82,12 +110,15 @@ def check(cr, nodes_json, links_text):
             continue
         for iface, (mtu, nets) in sorted(want.items()):
             got = have.get(iface)
+            if iface == tunnel_iface and got is not None:
+                tunnel_mtus.append(got)
             if got is None:
                 emit("FAIL", f"node-links/{name}", f"interface {iface} ({nets}) does not exist")
             elif got < mtu:
                 emit("FAIL", f"node-links/{name}", f"interface {iface} ({nets}) has MTU {got}, want at least {mtu}")
             else:
                 emit("OK", f"node-links/{name}", f"interface {iface} ({nets}) MTU {got}")
+    mtu_check(network, min(tunnel_mtus) if tunnel_mtus else None, emit)
     return lines
 
 
