@@ -1,0 +1,16 @@
+{
+  "features": [
+    {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": null},
+    {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
+    {"feature": "EC2 user-data", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
+    {"feature": "EBS volume create / attach / snapshot", "repo": "vws-storage", "issue": null, "scenario": null},
+    {"feature": "Elastic IP allocate / associate", "repo": "vws-network", "issue": null, "scenario": null},
+    {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": null},
+    {"feature": "IAM users and access keys", "repo": "vws-iam", "issue": "vws-iam#3", "scenario": null},
+    {"feature": "IAM policy evaluation (Authorize)", "repo": "vws-iam", "issue": "vws-iam#4", "scenario": null},
+    {"feature": "STS AssumeRole / GetSessionToken", "repo": "vws-iam", "issue": "vws-iam#5", "scenario": null},
+    {"feature": "IAM virtual MFA", "repo": "vws-iam", "issue": "vws-iam#6", "scenario": null},
+    {"feature": "Console login", "repo": "vws-console", "issue": null, "scenario": null},
+    {"feature": "Node reboot recovery", "repo": "vws-deploy", "issue": "vws-deploy#51", "scenario": null}
+  ]
+}
