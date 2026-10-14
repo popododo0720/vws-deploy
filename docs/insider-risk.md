@@ -6,7 +6,7 @@
 
 | 파일 | 하는 일 |
 | --- | --- |
-| `.github/workflows/repo-guard.yml` | PR에서만 돈다: base가 기본 브랜치인지, 본문에 `Part of #N`이 있고 PR 본문과 커밋에 닫는 키워드(`Closes/Fixes/Resolves #N`)가 없는지, AGENTS.md에 가드 섹션이 있는지 |
+| `.github/workflows/repo-guard.yml` | PR에서만 돈다: base가 기본 브랜치인지, 본문에 `Part of #N`(N은 1 이상, HTML 주석 `<!-- -->`과 코드펜스 밖에 있어야 함)이 있고 PR 본문과 커밋에 닫는 키워드(`Closes/Fixes/Resolves` 뒤에 `#N`, `owner/repo#N` 또는 이슈·PR 전체 URL)가 없는지, AGENTS.md에 가드 섹션이 있는지 |
 | `.github/workflows/direct-push-watch.yml` | `push` to main에서만 돈다: 새로 들어온 첫 부모 커밋마다 연결된 PR이 있는지, main 히스토리가 다시 쓰이지 않았는지. PR 실행에 건너뛴(skipped) 체크가 남지 않도록 별도 파일이다 |
 | `scripts/guard-agents.sh` | 위 검사의 실제 코드. 레포 경로를 쓰지 않는다. `selftest`가 나쁜 입력과 정상 입력를 직접 넣어 모두 실패하는지 본다 |
 
