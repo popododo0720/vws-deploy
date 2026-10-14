@@ -8,6 +8,8 @@ workload lost a probe, a disruption budget, restartPolicy Always, or its volume.
 from __future__ import annotations
 
 import copy
+import ipaddress
+import re
 import sys
 from pathlib import Path
 
@@ -144,6 +146,11 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
 API_CREDENTIAL_FLAGS = {"console-token": "VWS_CONSOLE_TOKEN", "access-key": "VWS_ACCESS_KEY", "secret": "VWS_SECRET_KEY"}
 API_CREDENTIAL_KEYS = {"VWS_CONSOLE_TOKEN": "console-token", "VWS_ACCESS_KEY": "access-key", "VWS_SECRET_KEY": "secret-key"}
 API_CLIENT_ENV = ("VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN")
+# Services that must run exactly one replica, and why. An HPA is already refused: it is not in
+# ALLOWED_KINDS (R10).
+SINGLE_REPLICA = {
+    "console-api": "sessions are held in memory (popododo0720/vws-console-api#95)",
+}
 
 
 def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
@@ -177,6 +184,8 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
 # network: cmd/vws-network/main.go (-db PATH -pool CIDR).
 # storage: starts without -db but keeps state in memory only, so a restart loses it (#85).
 REQUIRED_FLAGS = {"network": ["db", "pool"], "storage": ["db"]}
+# A browser origin: scheme://host[:port], no path, query or trailing slash (console-api#137).
+ORIGIN = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$|^https?://\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?$")
 
 
 # Resources a service creates with an existing-object check (Create, then Get on AlreadyExists).
@@ -281,6 +290,26 @@ def check_console_api(name: str, spec: dict, values: dict) -> list[str]:
         want = f"{target}:{int((values['services'].get(target) or {}).get('port', 8080))}"
         if flags.get(f"{target}-addr") != want:
             errors.append(f"R15: console-api -{target}-addr={flags.get(f'{target}-addr')} must be {want}")
+    # console-api#137: sign-in and cookie writes need an Origin that is the console's own host or one
+    # in -console-origins, else 403. The console is a LoadBalancer Service, so its public address is
+    # not known when the chart renders: the operator gives it (spec.services.console-api.flags).
+    origins = flags.get("console-origins")
+    if not origins:
+        errors.append("R15: console-api needs -console-origins, the public console URL such as https://console.example "
+                      "(console-api#137: without it sign-in and writes return 403); set "
+                      "spec.services.console-api.flags.console-origins")
+    else:
+        for origin in str(origins).split(","):
+            if not ORIGIN.match(origin.strip()):
+                errors.append(f"R15: console-api -console-origins entry {origin!r} must be scheme://host[:port] "
+                              "with no path, such as https://console.example")
+    proxies = flags.get("trusted-proxies")
+    if proxies is not None:
+        for cidr in str(proxies).split(","):
+            try:
+                ipaddress.ip_network(cidr.strip(), strict=False)
+            except ValueError:
+                errors.append(f"R15: console-api -trusted-proxies entry {cidr!r} is not an IP or CIDR")
     return errors
 
 
@@ -564,7 +593,10 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             if peers is None or (peers.get("spec") or {}).get("clusterIP") != "None":
                 errors.append(f"R4: StatefulSet {name} needs a headless peers Service")
         else:
-            if wspec.get("replicas", 0) < 2:
+            if name in SINGLE_REPLICA:
+                if wspec.get("replicas") != 1:
+                    errors.append(f"R4: Deployment {name} must have exactly one replica: {SINGLE_REPLICA[name]}")
+            elif wspec.get("replicas", 0) < 2:
                 errors.append(f"R4: Deployment {name} needs at least two replicas")
             rolling = (wspec.get("strategy") or {}).get("rollingUpdate") or {}
             if rolling.get("maxUnavailable") != 0:
@@ -852,6 +884,11 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"]["network"]["flags"].pop("pool", None)
         if not check(docs, broken_values, release):
             return ["R15: network without -pool did not fail"]
+    if "console-api" in values["services"]:
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {}).pop("console-origins", None)
+        if not check(docs, broken_values, release):
+            return ["R15: console-api without -console-origins did not fail"]
     if "storage" in values["services"]:
         broken_values = copy.deepcopy(values)
         broken_values["services"]["storage"]["flags"].pop("db", None)
