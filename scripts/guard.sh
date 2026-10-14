@@ -319,6 +319,7 @@ cmd_commit_msg() {
   case "$subject" in
     fixup!*|squash!*|WIP*|wip*) die "R2: subject is not a finished commit" ;;
   esac
+  scripts/guard-agents.sh commit-msg "$file" || die "R13: a commit must not close an issue; write 'Part of #N'"
 }
 
 scopes_snapshot() {
@@ -474,7 +475,10 @@ cmd_agents() {
   scripts/guard-agents.sh selftest >/dev/null || die "R13: scripts/guard-agents.sh accepted a bad input"
   scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
   grep -q 'guard-agents.sh pr-base' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the base"
-  grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Closes #N"
+  grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Part of #N"
+  (cd scripts && sha256sum --quiet -c guard-agents.sh.sha256) || die "R13: scripts/guard-agents.sh.sha256 does not match scripts/guard-agents.sh; this repo holds the canonical copy, so update the sum in the same commit (cd scripts && sha256sum guard-agents.sh > guard-agents.sh.sha256)"
+  grep -q 'guard-agents.sh identity' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the guard-agents.sh identity"
+  grep -q 'guard-agents.sh pr-commits' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check that no commit closes an issue"
   grep -q 'guard-agents.sh push-watch' .github/workflows/direct-push-watch.yml || die "R13: direct-push-watch.yml does not watch pushes to main"
   ! grep -q 'push:' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must run on pull requests only, so a pull request has no skipped check"
 }
