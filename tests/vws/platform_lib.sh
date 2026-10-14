@@ -8,7 +8,7 @@ platform_cr() { # PYTHON_EDIT -> ${WORK}/pcr.yaml
 import sys, yaml
 cr = yaml.safe_load(open(sys.argv[1]))
 cr["spec"]["network"] = yaml.safe_load(open(sys.argv[2]))
-exec(sys.argv[3], {"n": cr["spec"]["network"]})
+exec(sys.argv[3], {"n": cr["spec"]["network"], "spec": cr["spec"]})
 yaml.safe_dump(cr, sys.stdout)
 PY
 }

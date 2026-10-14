@@ -13,6 +13,7 @@ answers oversized packets bound for the 1500 path with ICMP fragmentation-needed
 With spec.storage.driver nfs, csi-driver-nfs and the vws-nfs StorageClass; otherwise no csi-driver-nfs.
 Exit 2 when the CR or the bundle does not fit.
 """
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -59,11 +60,30 @@ def kubeovn_version():
     raise Invalid(f"{VERSIONS}: no KUBEOVN_VERSION")
 
 
-def gateway_mtu(external):
-    """The Deployment that keeps gateway_mtu=<external mtu> on the VPC ports to vws-external."""
+DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+
+
+def gateway_mtu_target(spec):
+    """(external subnet, MTU) for the gateway_mtu Deployment, or None. spec.network.nodes.external
+    names vws-external with its link MTU; otherwise an external subnet wired only through the
+    vws-network flag kube-external-subnet gets the default 1500 (#246)."""
+    external = (((spec.get("network") or {}).get("nodes")) or {}).get("external")
+    if external:
+        return EXTERNAL_SUBNET, external.get("mtu", 1500)
+    flags = ((spec.get("services") or {}).get("network") or {}).get("flags") or {}
+    subnet = flags.get("kube-external-subnet")
+    if not subnet:
+        return None
+    if not DNS_LABEL.match(str(subnet)):
+        raise Invalid(f"spec.services.network.flags.kube-external-subnet: {subnet!r} is not a subnet name")
+    return str(subnet), 1500
+
+
+def gateway_mtu(subnet, mtu):
+    """The Deployment that keeps gateway_mtu=MTU on the VPC ports to the external SUBNET."""
     labels = {"app.kubernetes.io/name": GATEWAY_MTU_NAME, "app.kubernetes.io/part-of": "vws"}
-    env = [{"name": "SUBNET", "value": EXTERNAL_SUBNET},
-           {"name": "MTU", "value": str(external.get("mtu", 1500))},
+    env = [{"name": "SUBNET", "value": subnet},
+           {"name": "MTU", "value": str(mtu)},
            {"name": "PERIOD", "value": str(GATEWAY_MTU_PERIOD)}]
     return yaml.safe_dump({
         "apiVersion": "apps/v1",
@@ -145,8 +165,9 @@ def build(cr, bundle, out):
     out.mkdir(parents=True, exist_ok=True)
     if nfs:
         (out / NFS_CLASS_FILE).write_text(nfs_class(storage.get("nfs")))
-    if nodes and nodes.get("external"):
-        (out / GATEWAY_MTU_FILE).write_text(gateway_mtu(nodes["external"]))
+    target = gateway_mtu_target(spec)
+    if target:
+        (out / GATEWAY_MTU_FILE).write_text(gateway_mtu(*target))
     for f in files:
         if f.name == NFS_DRIVER_FILE and not nfs:
             continue
