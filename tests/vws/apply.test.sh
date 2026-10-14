@@ -301,7 +301,7 @@ expect_text "seed dry-run: says what it would create" "$OUT" "would create DataS
 # #246: vws apply runs the same check_render gate as vws reconfigure, before any change. The CR of
 # vws-test had FQDN console-api addresses that reconfigure refused (R15) and apply accepted.
 installer_scenario check-render-r15
-jq '.spec.services["console-api"] = {flags: {"compute-addr": "compute.vws.svc:50051"}}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+jq '.spec.services["console-api"].flags["compute-addr"] = "compute.vws.svc:50051"' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
 mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 installer_template
 run_vws_real apply --unattended;                 expect_rc "check_render: an R15 CR exits 2" 2
