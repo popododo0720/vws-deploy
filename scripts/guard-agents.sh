@@ -8,7 +8,7 @@
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N" and no closing keyword
-#   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N)
+#   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL)
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh verify-gate HEAD LABELS [FILE]
@@ -168,7 +168,8 @@ cmd_pr_base() {
 }
 
 # A closing keyword followed by an issue reference: GitHub would close that issue on merge.
-CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
+# The reference is #N, owner/repo#N or a full issue or pull request URL (GitHub closes on all three).
+CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+(([A-Za-z0-9._/-]+)?#[0-9]+|(https?://)?[^[:space:]]*/(issues|pull)/[0-9]+)'
 # "Part of #N" or "Part of owner/repo#N". #TBD is allowed in commits only, until the issue exists.
 PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
 
@@ -371,6 +372,16 @@ fixes acme/repo#7" bash "$0" pr-body
   expect_fail "commit with Closes #N" cmd_commit_msg "$tmp/msg-closes"
   printf 'docs: y (fixes acme/repo#7)\n' >"$tmp/msg-fixes"
   expect_fail "subject with fixes owner/repo#N" cmd_commit_msg "$tmp/msg-fixes"
+  local kw
+  for kw in Closes closes CLOSED close Fix fixes FIXED fixed Resolve resolves RESOLVED resolved; do
+    expect_fail "pr-body ${kw} with a full issue URL" env PR_BODY="Part of #3
+${kw} https://github.com/acme/repo/issues/7" bash "$0" pr-body
+    printf 'ci: x\n\n%s https://github.com/acme/repo/issues/7\n\nPart of #3\n' "$kw" >"$tmp/msg-url"
+    expect_fail "commit-msg ${kw} with a full issue URL" cmd_commit_msg "$tmp/msg-url"
+  done
+  expect_fail "Closes: with a pull request URL" env PR_BODY="Part of #3 Closes: https://github.com/acme/repo/pull/7" bash "$0" pr-body
+  expect_fail "fixes with a URL without the scheme" env PR_BODY="Part of #3 fixes github.com/acme/repo/issues/7" bash "$0" pr-body
+  expect_pass "an issue URL without a closing keyword" env PR_BODY="Part of #3, see https://github.com/acme/repo/issues/7" bash "$0" pr-body
   printf 'ci: x\n# Closes #12 in a git comment line\n' >"$tmp/msg-comment"
   expect_pass "Closes in a git comment line" cmd_commit_msg "$tmp/msg-comment"
 
@@ -451,6 +462,10 @@ GH
   expect_pass "commits with Part of" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
   git -C "$repo" commit -q --allow-empty -m "ci: z" -m "Closes #4"
   expect_fail "a commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
+  local c4
+  c4=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" commit -q --allow-empty -m "ci: u" -m "Resolved https://github.com/acme/repo/issues/4" -m "Part of #4"
+  expect_fail "a commit that closes an issue by URL" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c4"
   # verify-gate: label and a section bound to the head with evidence for every item.
   local h1 h2 ev
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
