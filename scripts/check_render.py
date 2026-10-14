@@ -290,9 +290,10 @@ def check_console_api(name: str, spec: dict, values: dict) -> list[str]:
         want = f"{target}:{int((values['services'].get(target) or {}).get('port', 8080))}"
         if flags.get(f"{target}-addr") != want:
             errors.append(f"R15: console-api -{target}-addr={flags.get(f'{target}-addr')} must be {want}")
-    # console-api#137: sign-in and cookie writes need an Origin that is the console's own host or one
-    # in -console-origins, else 403. The console is a LoadBalancer Service, so its public address is
-    # not known when the chart renders: the operator gives it (spec.services.console-api.flags).
+    # console-api#137 (5b42eb7+): sign-in and cookie writes need an Origin that is the console's own
+    # host or one in -console-origins, else 403. Required: the console is a LoadBalancer Service, so
+    # its public address is not known when the chart renders. A default install (-iam=static) still
+    # serves Bearer calls when the flag is set to the console URL (vws-test).
     origins = flags.get("console-origins")
     if not origins:
         errors.append("R15: console-api needs -console-origins, the public console URL such as https://console.example "
