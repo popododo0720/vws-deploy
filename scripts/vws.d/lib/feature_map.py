@@ -13,6 +13,12 @@ ran on, equal to MAP's "vwsTest": {"kubeSystemUID": ...}. A missing, unconfigure
 refused (FAIL). This stops results from another cluster or a typo'd file; it is not a signature, so a
 file written by hand with the committed UID copied in is still accepted. Output lines are
 "LEVEL<TAB>NAME<TAB>MESSAGE" for scripts/vws.d/verify.sh to emit.
+
+Exit codes (update): 0 recorded or ignored; 1 a result was refused or unreadable (FAIL lines);
+2 invalid input: a result field with the wrong type, missing or malformed (scenario, cluster,
+finishedAt, result, clusterUID, evidence), a finishedAt more than 5 minutes in the future, or a
+vwsTest.kubeSystemUID that is not a string or null. Exit 2 prints a single "FAIL: <reason>" line, no
+traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. render/check: 0, 1 stale, 3.
 """
 import json
 import os
@@ -21,6 +27,32 @@ from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9), "KST")
 CLUSTER = "vws-test"
+CLOCK_SKEW = timedelta(minutes=5)
+
+
+class InvalidInput(Exception):
+    """A result or the map fingerprint has the wrong shape: exit 2, nothing written."""
+
+
+def check_result(rpath, r):
+    """Validate the fields update() reads; return (scenario, finishedAt as aware datetime)."""
+    if not isinstance(r, dict):
+        raise InvalidInput(f"{rpath}: result is {type(r).__name__}, not an object")
+    for key in ("scenario", "cluster", "finishedAt", "result"):
+        if key not in r:
+            raise InvalidInput(f"{rpath}: {key} is missing")
+        if not isinstance(r[key], str) or not r[key]:
+            raise InvalidInput(f"{rpath}: {key} must be a non-empty string, got {type(r[key]).__name__}")
+    for key in ("clusterUID", "evidence"):
+        if r.get(key) is not None and not isinstance(r[key], str):
+            raise InvalidInput(f"{rpath}: {key} must be a string, got {type(r[key]).__name__}")
+    try:
+        when = parse_time(r["finishedAt"])
+    except (AttributeError, TypeError, ValueError) as e:
+        raise InvalidInput(f"{rpath}: finishedAt {r['finishedAt']!r} is not RFC3339 with a zone ({e})") from None
+    if when > datetime.now(timezone.utc) + CLOCK_SKEW:
+        raise InvalidInput(f"{rpath}: finishedAt {r['finishedAt']} is in the future")
+    return r["scenario"], when
 
 
 def parse_time(s):
@@ -82,17 +114,22 @@ def write(path, text):
 def update(map_path, results):
     data = load(map_path)
     by_sc = {f["scenario"]: f for f in data["features"] if f.get("scenario")}
-    want_uid = (data.get("vwsTest") or {}).get("kubeSystemUID")
+    vws_test = data.get("vwsTest") or {}
+    if not isinstance(vws_test, dict):
+        raise InvalidInput(f"{map_path}: vwsTest must be an object, got {type(vws_test).__name__}")
+    want_uid = vws_test.get("kubeSystemUID")
+    if want_uid is not None and not isinstance(want_uid, str):
+        raise InvalidInput(f"{map_path}: vwsTest.kubeSystemUID must be a string or null, got {type(want_uid).__name__}")
     out, failed = [], False
     for rpath in results:
         try:
             with open(rpath, encoding="utf-8") as fh:
                 r = json.load(fh)
-            sc, when = r["scenario"], parse_time(r["finishedAt"])
-        except (OSError, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError) as e:
             out.append(f"FAIL\tfeature-map\t{rpath}: unreadable scenario result ({e})")
             failed = True
             continue
+        sc, when = check_result(rpath, r)
         if sc not in by_sc:
             out.append(f"WARN\tfeature-map\t{sc}: no feature uses this scenario")
         elif r.get("cluster") != CLUSTER:
@@ -127,7 +164,14 @@ def main(argv):
         return 2
     try:
         if argv[0] == "update":
-            out, failed = update(argv[1], argv[2:])
+            try:
+                out, failed = update(argv[1], argv[2:])
+            except InvalidInput as e:
+                print(f"FAIL: {e}")
+                return 2
+            except (AttributeError, TypeError) as e:
+                print(f"FAIL: malformed input ({type(e).__name__}: {e})")
+                return 2
             print("\n".join(out))
             return 1 if failed else 0
         text = render(load(argv[1]))
