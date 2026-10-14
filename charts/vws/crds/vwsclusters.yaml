@@ -111,6 +111,24 @@ spec:
                     driver:
                       type: string
                       enum: [kube-ovn]
+                    vmMTU:
+                      description: MTU vws-network hands VPC VMs by DHCP (-vm-mtu, vws-network#93). Unset is 9001 (AWS), lowered to underlayMTU minus the tunnel overhead. vws preflight writes the lowered value here. Traffic leaving through IGW, NAT or EIP is 1500 on the vws-network side.
+                      type: integer
+                      minimum: 68
+                      maximum: 9001
+                    underlayMTU:
+                      description: MTU of the node NIC the tunnel rides on, as the OS already set it. vws preflight writes what it read (--links). The installer never changes a NIC MTU. Needs vmMTU plus the overhead, 9101 for 9001; 9216 is recommended.
+                      type: integer
+                      minimum: 1280
+                      maximum: 9216
+                    tunnelOverhead:
+                      description: Bytes the geneve tunnel adds. Unset is 100, or 60 with ipv4Only.
+                      type: integer
+                      minimum: 0
+                      maximum: 200
+                    ipv4Only:
+                      description: The underlay is IPv4 only, so an unset tunnelOverhead is 60 instead of 100.
+                      type: boolean
                     nodes:
                       description: Node NICs per network (vws-deploy#125). Omitted means one NIC, the current behavior. It describes host networking the OS already set up.
                       type: object

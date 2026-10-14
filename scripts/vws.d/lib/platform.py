@@ -3,7 +3,7 @@
 
 A pure function of the CR and the rendered bundle (build/platform). Without spec.network.nodes OUT
 is a byte copy of BUNDLE, less csi-driver-nfs unless the driver is nfs. With it:
-- kube-ovn-cni gets --iface=<tunnel interface> and --mtu=<tunnel mtu - 100> (geneve overhead);
+- kube-ovn-cni gets --iface=<tunnel interface> and --mtu=<tunnel mtu - tunnel overhead> (100, or spec.network.tunnelOverhead / ipv4Only);
 - the CephCluster gets network.provider host and addressRanges.public/cluster;
 No ovn-external-gw-config: it would delete the underlay bridge and wants a Subnet named external
 (vws-deploy#164). Gateway node labels belong to vws-network.
@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import GENEVE_OVERHEAD, NFS_CLASS, Invalid, host_interface  # noqa: E402
+from render import NFS_CLASS, Invalid, host_interface, tunnel_overhead  # noqa: E402
 
 # csi-driver-nfs (vws-deploy#170): in the bundle for every CR, installed only when spec.storage.driver is
 # nfs. Then NFS_CLASS_FILE adds the StorageClass the storage service uses, with the CR's export.
@@ -81,7 +81,7 @@ def build(cr, bundle, out):
         if nodes:
             if f.name.startswith("20-kube-ovn"):
                 tunnel = nodes.get("tunnel", nodes["management"])
-                text = patch_kube_ovn(text, host_interface(tunnel), tunnel.get("mtu", 1500) - GENEVE_OVERHEAD)
+                text = patch_kube_ovn(text, host_interface(tunnel), tunnel.get("mtu", 1500) - tunnel_overhead(spec.get("network") or {}))
             elif "\nkind: CephCluster\n" in text and "storage" in nodes:
                 text = patch_ceph(text, nodes["storage"])
         (out / f.name).write_text(text)

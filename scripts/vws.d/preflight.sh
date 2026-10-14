@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary: check the cluster before an install (read only)
+# summary: check the cluster before an install (read only, except a lowered spec.network.vmMTU)
 # Sourced by scripts/vws. Usage: vws preflight --profile single-node|small|ha [--links FILE]
 # --links: talosctl -n <every node> get links -o json, to check the NICs of spec.network.nodes (#128).
 # Exit 1 on any FAIL (or WARN with --strict), 3 when the cluster cannot be evaluated.

@@ -51,6 +51,7 @@ services:
 | network | `kube-direct-networks`, `kube-direct-nad-namespace: {namespace: vms}` | `-kube-direct-networks=<JSON>`, `-kube-direct-nad-namespace=<vms>` | 기본값 없음. `spec.network.direct`가 있을 때만 `vws render`가 쓴다(#131, `docs/node-network.md`) | vws-network `8ff82a7` `main.go:40-41` |
 | network | `kube-vm-namespace: {namespace: vms}` | `-kube-vm-namespace=<vms>` | 코드 기본은 빈 값. 주소가 instance에 붙으면 그 VMI의 인터페이스 IP로 OvnFip을 만든다. 차트는 항상 넘기고 같은 네임스페이스에 VMI get/list/watch Role을 둔다 | vws-network `ac269d0`(#87) `main.go:42` |
 | network | `kube-snat` | `-kube-snat=true` | 꺼짐. 외부 서브넷 필요 | `main.go:28` |
+| network | `vm-mtu` | `-vm-mtu=<MTU>` | 코드 기본 9001, 68–9001. `vws render`가 `spec.network.vmMTU`에서 항상 쓴다(#236, `docs/vm-mtu.md`). VPC Subnet의 `spec.mtu`와 DHCP `mtu` 옵션이 된다 | vws-network main(#93, #94) `main.go:28` |
 
 - 스키마가 `kubeconfig`가 있으면 `kube-external-subnet`과 `kube-nad-namespace`를, `kube-snat`이 있으면 `kube-external-subnet`을 요구한다(vws-deploy#30). 빠진 값으로 렌더하면 거절된다.
 - network는 `-db`와 `-pool`이 없으면 시작하지 않는다(`main.go:33-34`). 기본 values는 `db: /var/lib/vws/network.db`(상태 볼륨 마운트 경로 안, 루트 파일시스템은 읽기 전용이라 거기만 쓸 수 있다)만 넘긴다. `pool`(엘라스틱 IP 대역)은 기본값이 없고 사이트마다 CR의 `spec.services.network.flags.pool`로 준다. 없거나 RFC 5737 문서 대역이면 `vws render`가 종료 코드 2로 거절한다(#148). 레포 검사는 `charts/vws/ci/site.yaml`의 검사용 대역을 쓴다. Kube-OVN 데이터플레인을 켜려면 `kubeconfig`, `kube-external-subnet`, `kube-nad-namespace`와 함께 kubeconfig를 담은 Secret의 이름 `kubeconfigSecret`을 넣는다. 차트는 그 Secret을 `flags.kubeconfig` 경로의 디렉터리에 읽기 전용으로 마운트한다(아래 "network kubeconfig"). `scripts/guard.sh config`가 이 형태를 시험한다.

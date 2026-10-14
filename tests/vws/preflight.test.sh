@@ -146,6 +146,44 @@ sed 's/"enp1s0"},"spec":{"type":"ether","mtu":9000}/"enp1s0"},"spec":{"type":"et
 run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "a small MTU exits 1" 1
 expect_text "the MTU gap is named" "$OUT" "interface enp1s0 (management) has MTU 1500, want at least 9000"
 
+# vm-mtu (#236): the tunnel NIC must carry VM MTU 9001 plus the overhead; short of that preflight
+# writes the lowered spec.network.vmMTU and the read underlayMTU into the VWSCluster, never a NIC.
+expect_line "a vmMTU the tunnel carries is OK" OK vm-mtu
+net_scenario net-lower
+edit_json kubectl/get_vwsclusters.json 'del(.spec.network.vmMTU)'
+echo '{}' >"$(fx kubectl/patch_vwsclusters.json)"
+run_vws_real preflight --profile single-node --links "${LINKS}/links.json"; expect_rc "a lowered VM MTU is WARN, exit 0" 0
+expect_text "the gap is named" "$OUT" "underlay MTU 9000 is under 9101"
+expect_line "the lowered value is written" OK vm-mtu-set
+expect_text "only vmMTU and underlayMTU are patched" "$(changing_calls)" 'kubectl patch patch vwsclusters vws --type merge -p {"spec":{"network":{"vmMTU":8900,"underlayMTU":9000}}}'
+if [[ $(changing_calls | wc -l) == 1 ]]; then ok "the patch is the only change"; else bad "one change" "$(changing_calls)"; fi
+edit_json kubectl/get_vwsclusters.json '.spec.network.ipv4Only = true'
+run_vws_real preflight --profile single-node --links "${LINKS}/links.json"
+expect_text "ipv4Only lowers to 8940" "$(changing_calls)" '"vmMTU":8940'
+edit_json kubectl/get_vwsclusters.json '.spec.network.ipv4Only = false'
+# vws-test (OpenStack geneve under the nodes): NIC 8942 -> vmMTU 8842, 8882 with ipv4Only.
+sed 's/"mtu":9000}/"mtu":8942}/' "${LINKS}/links.json" >"${WORK}/links8942.json"
+edit_json kubectl/get_vwsclusters.json '.spec.network.nodes.management.mtu = 8942 | .spec.network.nodes.tunnel.mtu = 8942'
+run_vws_real preflight --profile single-node --links "${WORK}/links8942.json"; expect_rc "an 8942 underlay is WARN, exit 0" 0
+expect_text "8942 lowers vmMTU to 8842" "$(changing_calls)" '{"vmMTU":8842,"underlayMTU":8942}'
+edit_json kubectl/get_vwsclusters.json '.spec.network.ipv4Only = true'
+run_vws_real preflight --profile single-node --links "${WORK}/links8942.json"
+expect_text "8942 with ipv4Only lowers vmMTU to 8882" "$(changing_calls)" '{"vmMTU":8882,"underlayMTU":8942}'
+edit_json kubectl/get_vwsclusters.json '.spec.network.ipv4Only = false | .spec.network.vmMTU = 8842'
+run_vws_real preflight --profile single-node --links "${WORK}/links8942.json"; expect_rc "8842 on 8942 exits 0" 0
+expect_line "the lowered value then is OK" OK vm-mtu
+assert_no_changes "a written 8842 is not written again"
+edit_json kubectl/get_vwsclusters.json 'del(.spec.network.vmMTU)'
+sed 's/"mtu":9000}/"mtu":9216}/' "${LINKS}/links.json" >"${WORK}/links.json"
+run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "a 9216 underlay exits 0" 0
+expect_text "9216 carries 9001" "$OUT" "underlay MTU 9216 carries VM MTU 9001 plus the 100-byte overhead"
+assert_no_changes "a big enough underlay changes nothing"
+rm "$(fx kubectl/patch_vwsclusters.json)"; echo forbidden >"$(fx kubectl/patch_vwsclusters.fail)"
+run_vws_real preflight --profile single-node --links "${LINKS}/links.json"; expect_rc "a refused patch is WARN, exit 0" 0
+expect_line "a refused patch names reconfigure" WARN vm-mtu-set
+run_vws_real preflight --profile single-node; expect_rc "without --links the VM MTU is unverified, exit 0" 0
+expect_line "without --links vm-mtu is WARN" WARN vm-mtu
+
 net_scenario net-othernode
 sed 's/10.77.0.11/10.77.0.99/' "${LINKS}/links.json" >"${WORK}/links.json"
 run_vws_real preflight --profile single-node --links "${WORK}/links.json"; expect_rc "links without this node exit 1" 1
