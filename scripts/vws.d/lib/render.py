@@ -94,6 +94,12 @@ def secret_shaped(value, path):
 
 
 GENEVE_OVERHEAD = 100
+# spec.network.ipv4Only without tunnelOverhead: an IPv4 outer header leaves geneve at about 58 bytes
+# (outer IPv4 20, UDP 8, geneve 8 plus an 8-byte option, inner ethernet 14); 60 keeps a margin.
+IPV4_ONLY_OVERHEAD = 60
+# AWS parity (vws-deploy#236, vws-network#93): VPC VMs get 9001 unless the underlay is smaller.
+VM_MTU = 9001
+RECOMMENDED_UNDERLAY_MTU = 9216
 # The Kube-OVN Subnet of the external network. vws-network creates it (-kube-external-subnet).
 EXTERNAL_SUBNET = "vws-external"
 UNDERLAY_FLAGS = ("pool", "kube-external-subnet", "kube-provider-network", "kube-underlay-interface",
@@ -109,6 +115,38 @@ def host_interface(link):
     """The host interface of a host network: the NIC, or its VLAN subinterface <nic>.<vlan>."""
     return f"{link['nic']}.{link['vlan']}" if link.get("vlan") else link["nic"]
 MIN_MTU = 1280
+
+
+def tunnel_overhead(network):
+    """Bytes the tunnel adds: spec.network.tunnelOverhead, else 60 with ipv4Only, else 100."""
+    if network.get("tunnelOverhead") is not None:
+        return network["tunnelOverhead"]
+    return IPV4_ONLY_OVERHEAD if network.get("ipv4Only") else GENEVE_OVERHEAD
+
+
+def underlay_mtu(network):
+    """The MTU the tunnel rides on, as far as the CR knows: the smaller of spec.network.underlayMTU and
+    the tunnel (or management) link mtu of spec.network.nodes. None when the CR says neither."""
+    known = []
+    if network.get("underlayMTU") is not None:
+        known.append(network["underlayMTU"])
+    nodes = network.get("nodes")
+    if nodes:
+        known.append(nodes.get("tunnel", nodes["management"]).get("mtu", 1500))
+    return min(known) if known else None
+
+
+def vm_mtu(network):
+    """The VM MTU vws-network hands out by DHCP (-vm-mtu). An unset vmMTU is 9001 lowered to what the
+    underlay carries; a set vmMTU above that is an error (vws preflight writes the lowered value)."""
+    limit = underlay_mtu(network)
+    room = None if limit is None else limit - tunnel_overhead(network)
+    if network.get("vmMTU") is None:
+        return VM_MTU if room is None else min(VM_MTU, room)
+    if room is not None and network["vmMTU"] > room:
+        raise Invalid(f"spec.network.vmMTU: {network['vmMTU']} does not fit the underlay MTU {limit} minus the "
+                      f"{tunnel_overhead(network)}-byte tunnel overhead; at most {room} (vws preflight lowers it)")
+    return network["vmMTU"]
 
 
 def prefix(text, path):
@@ -188,10 +226,13 @@ def check_network(network):
         if tagged:
             raise Invalid(f"{tagged[0]}: {nic} carries an underlay network, so host networks on it must be untagged")
 
+    if network.get("underlayMTU") is not None and network["underlayMTU"] - tunnel_overhead(network) < MIN_MTU:
+        raise Invalid(f"spec.network.underlayMTU: leaves under {MIN_MTU} after the {tunnel_overhead(network)}-byte tunnel overhead")
     if nodes:
         tunnel = nodes.get("tunnel", nodes["management"])
-        if tunnel.get("mtu", 1500) - GENEVE_OVERHEAD < MIN_MTU:
-            raise Invalid(f"spec.network.nodes.tunnel.mtu: leaves under {MIN_MTU} after the {GENEVE_OVERHEAD}-byte geneve overhead")
+        overhead = tunnel_overhead(network)
+        if tunnel.get("mtu", 1500) - overhead < MIN_MTU:
+            raise Invalid(f"spec.network.nodes.tunnel.mtu: leaves under {MIN_MTU} after the {overhead}-byte geneve overhead")
         ext = nodes.get("external")
         if ext:
             net = ipaddress.IPv4Network(ext["cidr"])
@@ -249,6 +290,16 @@ def external_flags(network, services):
             raise Invalid("spec.services.network.flags.kube-gateway-nodes: comes from "
                           "spec.network.nodes.external.gatewayNodes; remove it")
         flags["kube-gateway-nodes"] = ",".join(gw)
+
+
+def mtu_flag(network, services):
+    """spec.network.vmMTU -> vws-network -vm-mtu (vws-network#93), which hands it to VMs by DHCP.
+    vws-network main (#94) takes 68..9001, default 9001. The installer never sets a NIC or
+    host MTU; it only passes this number on."""
+    svc = services.setdefault("network", {})
+    if "vm-mtu" in (svc.get("flags") or {}):
+        raise Invalid("spec.services.network.flags.vm-mtu: comes from spec.network.vmMTU; remove it")
+    svc.setdefault("flags", {})["vm-mtu"] = vm_mtu(network)
 
 
 def direct_flags(network, services, base):
@@ -353,6 +404,7 @@ def render(cr):
         if "flags" in override:
             target.setdefault("flags", {}).update(override["flags"])
     external_flags(spec.get("network") or {}, services)
+    mtu_flag(spec.get("network") or {}, services)
     direct_flags(spec.get("network") or {}, services, base)
     pool = (((services.get("network") or {}).get("flags") or {}).get("pool")
              or base["services"]["network"].get("flags", {}).get("pool"))
