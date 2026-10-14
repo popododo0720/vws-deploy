@@ -437,4 +437,37 @@ expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rule
 if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
 if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
 
+# S1: console-api credentials go only by secretKeyRef env. No -console-token, -access-key or -secret
+# in args, not even as a $(VAR) reference, so the values never reach the process arguments.
+creds() {
+  helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws "$@" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] in ("Deployment", "StatefulSet") and d["metadata"]["name"] == "console-api":
+        c = d["spec"]["template"]["spec"]["containers"][0]
+        bad = [a.split("=")[0] for a in c.get("args", []) if a.split("=")[0].lstrip("-") in ("console-token", "access-key", "secret") or "$(VWS_" in a]
+        env = {e["name"]: e.get("valueFrom", {}).get("secretKeyRef") for e in c.get("env", []) if e["name"] in ("VWS_CONSOLE_TOKEN", "VWS_ACCESS_KEY", "VWS_SECRET_KEY")}
+        lit = [e["name"] for e in c.get("env", []) if e["name"] in env and "value" in e]
+        print("args", bad); print("env", sorted((k, v["name"], v["key"]) for k, v in env.items() if v)); print("literal", lit)'
+}
+got=$(creds -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
+expect_text "S1: no credential flag in console-api args" "$got" "args []"
+expect_text "S1: credentials are secretKeyRef env" "$got" "env [('VWS_ACCESS_KEY', 'vws-console-api-credentials', 'access-key'), ('VWS_CONSOLE_TOKEN', 'vws-console-api-credentials', 'console-token'), ('VWS_SECRET_KEY', 'vws-console-api-credentials', 'secret-key')]"
+expect_text "S1: no credential as a literal env value" "$got" "literal []"
+run_vws_real render "${EX}/ha.yaml" "${WORK}/s1.yaml"; expect_rc "S1: ha example renders" 0
+got=$(creds -f "${WORK}/s1.yaml")
+expect_text "S1: ha render has no credential flag" "$got" "args []"
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" >"${WORK}/s1.out"
+python3 - "${WORK}/s1.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for d in docs:
+    if d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api":
+        d["spec"]["template"]["spec"]["containers"][0]["args"].append("-secret=$(VWS_SECRET_KEY)")
+yaml.safe_dump_all(docs, open(sys.argv[1] + ".flag", "w"))
+PY
+cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/s1-values.yaml"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/s1.out.flag" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/s1-values.yaml" 2>&1 || true)
+expect_text "S1: check_render refuses a credential flag in args" "$out" "R16: console-api passes credential flag -secret in args"
+
 finish_tests
