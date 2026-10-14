@@ -85,5 +85,6 @@ spec:
 
 - 기본값이 없다. `lib/render.py`는 없으면 종료 코드 2(`spec.services.console-api.flags.console-origins: required`), `vws init`도 묻는다.
 - `scripts/check_render.py` R15: `-console-origins`가 없거나 항목이 `scheme://host[:port]`가 아니면 거절, `-trusted-proxies` 항목이 IP/CIDR가 아니면 거절.
-- `-trusted-proxies`는 값이 있을 때만 넘긴다. console-api main(a340da3)과 #137 브랜치(21a52e0)에는 아직 이 플래그가 없으므로, 지원하는 이미지 전에 설정하면 console-api가 시작하지 못한다.
-- 이 차트는 #137이 들어간 console-api 이미지가 필요하다. 그 전 이미지는 모르는 플래그 `-console-origins`로 시작하지 못한다.
+- `-trusted-proxies`는 값이 있을 때만 넘긴다. #137(5b42eb7)부터 `-console-origins`와 함께 지원한다.
+- 이 차트는 console-api 이미지 #137(5b42eb7) 이상이 필요하다. 그 전 이미지는 모르는 플래그 `-console-origins`(그리고 설정했다면 `-trusted-proxies`)로 시작하지 못한다.
+- vws-test 실측: 기본 설치(`-iam=static`)에서 `-console-origins`를 콘솔 공개 주소로 두면 로그인 없이 콘솔 API가 모두 200이다. 필수여도 기본 설치를 막지 않는다.
