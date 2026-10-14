@@ -124,6 +124,7 @@ for d in yaml.safe_load_all(sys.stdin):
     if d and d["kind"] == "Role" and d["metadata"]["namespace"] == "vws-vms" and "network" in d["metadata"]["name"]:
         print([(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])')
 expect_text "network gets get/create on NADs in the VM namespace" "$role" "(['k8s.cni.cncf.io'], ['network-attachment-definitions'], ['get', 'create'])"
+expect_text "direct networks keep the VMI read rule in the VM namespace (vws-network#87)" "$role" "(['kubevirt.io'], ['virtualmachineinstances'], ['get', 'list', 'watch'])"
 net_cr 'n["nodes"].pop("external"); n.pop("direct"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "nodes without external renders" 0
 flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
@@ -143,6 +144,14 @@ run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
 expect_text "without gatewayNodes render sets no gateway flag" "$(python3 -c 'import sys,yaml; print("kube-gateway-nodes" in yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"])' "${WORK}/net.out")" "False"
 chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/net.out")
 expect_text "the chart default leaves the labels alone" "$chart" "-kube-gateway-nodes="
+# The chart default passes the VM namespace and reads VMIs there (vws-network#87).
+expect_text "the chart passes the VMI namespace to vws-network" "$chart" "-kube-vm-namespace=vws-vms"
+role=$(printf '%s\n' "$chart" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["namespace"] == "vws-vms" and "network" in d["metadata"]["name"]:
+        print([(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])')
+expect_text "network gets get/list/watch on VMIs in the VM namespace" "$role" "(['kubevirt.io'], ['virtualmachineinstances'], ['get', 'list', 'watch'])"
 bad_net() {
   net_cr "$2"
   run_vws_real render "${WORK}/net.yaml" "${WORK}/net.bad"
