@@ -72,7 +72,7 @@ vws_cmd_main() {
   fi
 
   vws_apply_preflight "$profile"
-  vws_emit OK secrets "none required: the chart takes no Secret from the installer"
+  vws_apply_secrets "$values"
 
   # VWS_BUNDLE_DIR: the rendered bundle, build/platform from scripts/platform.sh (the harness points it at fixtures).
   local bundle=${VWS_BUNDLE_DIR:-${VWS_ROOT}/build/platform}
@@ -135,4 +135,34 @@ vws_apply_drop_extgw() {
   VWS_NAMESPACE=kube-system vws_kubectl delete configmap ovn-external-gw-config --ignore-not-found >/dev/null ||
     vws_die_env "cannot delete kube-system/ovn-external-gw-config"
   vws_emit OK extgw "deleted kube-system/ovn-external-gw-config from an earlier apply (#171)"
+}
+
+# vws_apply_secrets VALUES creates each Secret the chart reads by secretKeyRef and vws makes itself
+# (services.*.apiCredentials.existingSecret), once, in the release namespace. The values come from
+# lib/apisecret.py on the stdin of vws_kubectl: never in an argument, a file, the output or the CR.
+# An existing Secret is kept as is (AlreadyExists), so an apply never rotates a credential and
+# needs no read access to Secrets. Only names reach the output.
+vws_apply_secrets() {
+  local values=$1 name err list
+  list=$(python3 "${VWS_ROOT}/scripts/vws.d/lib/apisecret.py" names "$values") || vws_die_env "cannot list the Secrets the chart needs"
+  if [[ -z $list ]]; then
+    vws_emit OK secrets "none required: no service has apiCredentials"
+    return 0
+  fi
+  err=$(mktemp)
+  while IFS= read -r name; do
+    # --dry-run: print the call, make no values (vws_kubectl would not read them).
+    if [[ -n $VWS_DRY_RUN ]]; then
+      vws_kubectl create -f - </dev/null
+      vws_emit OK secrets "would create Secret ${name} if it is missing"
+    elif python3 "${VWS_ROOT}/scripts/vws.d/lib/apisecret.py" manifest "$name" | vws_kubectl create -f - >/dev/null 2>"$err"; then
+      vws_emit OK secrets "created Secret ${name} with fresh random values"
+    elif grep -q -e 'AlreadyExists' -e 'already exists' "$err"; then
+      vws_emit OK secrets "kept Secret ${name}: it exists, values unchanged"
+    else
+      rm -f "$err"
+      vws_die_env "cannot create Secret ${name} in the release namespace; nothing else was changed"
+    fi
+  done <<<"$list"
+  rm -f "$err"
 }
