@@ -160,6 +160,20 @@ services:
       apiGroups: [kubevirt.io]
       resources: [virtualmachines]
       verbs: [list]
+    # image volume: a CDI DataVolume in the VM namespace clones the image DataSource from the
+    # images namespace (vws-storage#86, #201). datavolumes/source create is CDI's clone authorization.
+    - namespace: vms
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datavolumes]
+      verbs: [get, create, delete]
+    - namespace: images
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datasources]
+      verbs: [get]
+    - namespace: images
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datavolumes/source]
+      verbs: [create]
     state:
       size: 20Gi
   network:
