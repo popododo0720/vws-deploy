@@ -14,8 +14,11 @@ spec:
   observability:
     otlpEndpoint: ""
   services:
-    console-api:
+    console:
       replicas: 4
     network:
       flags:
         pool: 198.18.1.0/24
+    console-api:
+      flags:
+        console-origins: https://console.example.invalid
