@@ -21,10 +21,7 @@ vws_reconfigure_validate() {
   local cr=$1 dir=$2
   python3 "${VWS_ROOT}/scripts/vws.d/lib/render.py" "$cr" "${dir}/values.yaml" ||
     vws_usage "the new VWSCluster is invalid (see above); nothing was written"
-  vws_helm template vws "${VWS_ROOT}/charts/vws" --namespace "$VWS_NAMESPACE" -f "${dir}/values.yaml" >"${dir}/rendered.yaml" 2>"${dir}/helm.err" ||
-    vws_usage "the rendered values fail charts/vws/values.schema.json: $(head -1 "${dir}/helm.err"); nothing was written"
-  python3 "${VWS_ROOT}/scripts/check_render.py" "${dir}/rendered.yaml" "${VWS_ROOT}/charts/vws/values.yaml" "$VWS_NAMESPACE" "${dir}/values.yaml" >"${dir}/check.out" 2>&1 ||
-    vws_usage "scripts/check_render.py rejects the result: $(head -1 "${dir}/check.out"); nothing was written"
+  vws_validate_rendered "${dir}/values.yaml" "$dir" "nothing was written"
 }
 
 vws_cmd_main() {

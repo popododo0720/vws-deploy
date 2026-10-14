@@ -59,6 +59,8 @@ vws_cmd_main() {
     vws_usage "the VWSCluster in the cluster is invalid (see above)"
   fi
   values="${tmp}/values.yaml"
+  # The same schema and recovery invariants as vws reconfigure, so both accept the same CR (#246).
+  ( vws_validate_rendered "$values" "$tmp" "nothing was applied" ) || { local rc=$?; rm -rf "$tmp"; exit "$rc"; }
   hash=$(vws_applied_hash "$values")
   generation=$(jq -r '.metadata.generation // 0' <<<"$cr")
   applied=$(jq -r '.status.appliedValuesHash // ""' <<<"$cr")

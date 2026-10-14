@@ -68,3 +68,14 @@ vws_apply_spec() {
     vws_emit FAIL "$name" "apply failed (the release was rolled back by --atomic); the VWSCluster spec is back to the previous value; next: vws status, then fix and retry"
   fi
 }
+
+# vws_validate_rendered VALUES DIR WHAT: the chart schema (helm template) and scripts/check_render.py
+# on rendered values, the same gate for vws apply and vws reconfigure (#246). Exit 2 with WHAT
+# ("nothing was written", "nothing was applied") when either fails.
+vws_validate_rendered() {
+  local values=$1 dir=$2 what=$3
+  vws_helm template vws "${VWS_ROOT}/charts/vws" --namespace "$VWS_NAMESPACE" -f "$values" >"${dir}/rendered.yaml" 2>"${dir}/helm.err" ||
+    vws_usage "the rendered values fail charts/vws/values.schema.json: $(head -1 "${dir}/helm.err"); ${what}"
+  python3 "${VWS_ROOT}/scripts/check_render.py" "${dir}/rendered.yaml" "${VWS_ROOT}/charts/vws/values.yaml" "$VWS_NAMESPACE" "$values" >"${dir}/check.out" 2>&1 ||
+    vws_usage "scripts/check_render.py rejects the result: $(paste -sd";" "${dir}/check.out" | sed "s/;/; /g"); ${what}"
+}
