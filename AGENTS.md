@@ -24,7 +24,7 @@
 | R18 | VWS 전용 CRD는 `VWSCluster` 하나뿐이고(#2 결정의 예외, `docs/vwscluster.md`), API 그룹은 그 CRD의 `spec.group` 한 곳에만 쓴다(예제 CR의 `apiVersion`은 가드가 대조). CR 스키마에 비밀처럼 보이는 필드 이름이 없고 CR은 Secret 이름만 담는다 | `charts/vws/crds/vwsclusters.yaml` `scripts/vws.d/lib/render.py` | `scripts/guard.sh crd` |
 | R19 | 프로필은 `profiles/<이름>.yaml`의 값 파일이고 세 프로필은 같은 키를 갖는다. 프로필마다 lint, template, kubeconform, check_render가 통과하고, 같은 CR의 `vws render`는 같은 바이트다 | `profiles/` `platform/rook-ceph-cluster.single-node.values.yaml` `platform/rook-ceph-cluster.ha.values.yaml` | `scripts/guard.sh profiles` |
 | R20 | 설치용 cluster-admin은 `vws-installer-temp` 바인딩 하나뿐이고 TTL(`INSTALLER_TTL_SECONDS`) 주석, 시한이 TTL인 설치 파드, TTL에 바인딩을 지우는 리퍼 Job을 갖는다. bootstrap의 이미지는 digest이고 권한 상승, privileged, host 네임스페이스, hostPath가 없다. 회수 뒤 남는 권한에는 와일드카드, Secret, RBAC, 클러스터 쓰기가 없고, ClusterRole `vws-operator-read`는 `docs/installer.md` 표의 그룹/리소스에 get, list만 갖는다(목록 밖은 실패). `vws installer finish`는 auth can-i로 회수를 확인하고 실패하면 1이다 | `bootstrap/bootstrap.yaml` `scripts/bootstrap.sh` `scripts/vws.d/installer.sh` `scripts/vws.d/lib/installer.sh` | `scripts/guard.sh bootstrap` `tests/vws/installer.test.sh` |
-| R21 | 교정받은 실수는 incident 이슈가 되고, 반복되면 검사로 승격한다(/correct 루프). AGENTS.md에 그 절이 있고 incident 양식과 `incident` 라벨 정의가 있다 | `AGENTS.md` `.github/ISSUE_TEMPLATE/incident.yml` `.github/labels.yml` | `scripts/guard.sh agents` |
+| R21 | 교정받은 실수는 incident 이슈가 되고, 반복되면 검사로 승격한다(/correct 루프). AGENTS.md에 그 절(본문 포함)이 있고 incident 양식이 있으며 `incident` 라벨이 `.github/labels.yml`에 정의되어 있다. GitHub에 라벨이 실제로 만들어졌는지는 검사하지 않는다 | `AGENTS.md` `.github/ISSUE_TEMPLATE/incident.yml` `.github/labels.yml` | `scripts/guard.sh agents` |
 
 표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
 
@@ -58,7 +58,7 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 2. 며칠마다 vws-verify가 gardener pass를 돈다. 열린 incident를 원인별로 묶고, 반복된 것은 문장이 아니라 검사(테스트, lint, guard 규칙, archtest)로 승격한다. 검사는 그 실수가 든 입력에서 실제로 실패해야 한다(위 `correct` 절).
 3. 승격한 PR이 머지되면 incident를 그 링크와 함께 닫는다. 승격하지 않기로 한 incident는 이유를 적고 닫는다.
 4. 마일스톤 보고(tmp에게)에 기간 중 incident 수와 승격한 검사 목록을 적는다.
-5. 라벨 정의는 `.github/labels.yml` 한 곳이다. `scripts/guard-agents.sh correct`가 이 절, 양식의 필수 항목, 라벨 정의를 검사한다.
+5. `incident` 라벨은 `.github/labels.yml`에 정의되어 있다(정의는 이 한 곳). 이 파일은 정의일 뿐이고 GitHub에 라벨을 만들지 않는다. `scripts/guard-agents.sh correct`가 이 절과 그 본문, 양식의 필수 항목, 라벨 정의를 검사한다.
 
 ## 작업 방식 (poteto-mode)
 
