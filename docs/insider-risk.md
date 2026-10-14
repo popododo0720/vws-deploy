@@ -6,7 +6,7 @@
 
 | 파일 | 하는 일 |
 | --- | --- |
-| `.github/workflows/repo-guard.yml` | PR에서만 돈다: base가 기본 브랜치인지, 본문에 `Closes #N`이 있는지, AGENTS.md에 가드 섹션이 있는지 |
+| `.github/workflows/repo-guard.yml` | PR에서만 돈다: base가 기본 브랜치인지, 본문에 `Part of #N`이 있고 PR 본문과 커밋에 닫는 키워드(`Closes/Fixes/Resolves #N`)가 없는지, AGENTS.md에 가드 섹션이 있는지 |
 | `.github/workflows/direct-push-watch.yml` | `push` to main에서만 돈다: 새로 들어온 첫 부모 커밋마다 연결된 PR이 있는지, main 히스토리가 다시 쓰이지 않았는지. PR 실행에 건너뛴(skipped) 체크가 남지 않도록 별도 파일이다 |
 | `scripts/guard-agents.sh` | 위 검사의 실제 코드. 레포 경로를 쓰지 않는다. `selftest`가 나쁜 입력과 정상 입력를 직접 넣어 모두 실패하는지 본다 |
 
@@ -26,3 +26,11 @@
 - push 감시(`direct-push-watch.yml`)는 사후 탐지다. PR 없이 들어간 커밋을 막지 못하고 실패로 표시할 뿐이다. 커밋과 PR의 연결은 머지 직후 몇 초 늦을 수 있어 3번 재시도한다.
 - 작성 봇, 검증 봇, 머지자가 같은 GitHub 계정이면 "작성자와 머지자가 다르다"는 검사는 의미가 없어 넣지 않았다. 설계 원칙 1과 5는 프로세스 규칙이다.
 - GitHub 쪽 실행 결과는 PR의 CI로만 확인한다. `direct-push-watch.yml`은 main에 머지된 뒤에야 처음 실행된다.
+
+## guard-agents.sh 정본과 동일성 검사
+
+- 정본은 vws-deploy의 `scripts/guard-agents.sh`이고 sha256을 `scripts/guard-agents.sh.sha256`(sha256sum 형식)에 고정한다. 다른 레포는 두 파일을 바이트 그대로 복사하고 고치지 않는다.
+- 각 레포의 repo-guard는 `scripts/guard-agents.sh identity`로 자기 사본의 sha256이 고정값과 같은지 본다. 다르면 실패한다.
+- 정본을 바꿀 때: vws-deploy PR에서 스크립트를 고치고 `(cd scripts && sha256sum guard-agents.sh > guard-agents.sh.sha256)`로 해시를 같은 커밋에 갱신한다. vws-deploy의 `scripts/guard.sh agents`(R13)가 둘이 어긋나면 실패한다. 머지 뒤 각 레포에 두 파일을 그대로 복사하는 PR을 연다.
+- 한계: 해시 파일도 레포 안에 있으므로 두 파일을 함께 고친 사본은 이 검사를 통과한다. 이것은 실수로 생긴 차이를 잡는다. 의도적인 변경까지 막으려면 CI가 vws-deploy main의 해시를 직접 읽어야 하고, 그러려면 private 레포를 읽는 토큰이 필요하다(확인 필요).
+- `rules [FILE] [HEADING]`(별칭 `judgment`)은 규칙표의 모든 행에 강제 수단이 있는지 보고 Judgment 행 수를 출력한다. 제목은 인자, `GUARD_RULES_HEADING`, 또는 파일에 있는 `## Rules`/`## 규칙표` 순으로 정한다.
