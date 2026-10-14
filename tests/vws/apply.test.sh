@@ -54,6 +54,7 @@ mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real --dry-run apply;                    expect_rc "a new generation with --dry-run exits 0" 0
 assert_no_changes "dry-run changes nothing"
 expect_text "dry-run prints the helm plan" "$ERR" "DRYRUN helm upgrade --install vws"
+expect_text "dry-run prints the Secret create and makes no values" "$ERR" "DRYRUN kubectl create -f -"
 
 installer_scenario preflight-fail
 echo '{"items":[]}' >"${VWS_FAKE_DIR}/kubectl/get_storageclass.json"
@@ -164,5 +165,40 @@ run_vws_real apply --unattended -f "${WORK}/bad-f.yaml";   expect_rc "apply -f w
 assert_no_changes "an invalid -f file changes nothing"
 if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "an invalid -f file does not reach helm" "$(calls)"; else ok "an invalid -f file does not reach helm"; fi
 run_vws_real apply -f;                                      expect_rc "-f without a file exits 2" 2
+
+# apiCredentials: vws apply creates the console-api Secret once, values only on kubectl's stdin.
+secret_values() { sed -n '/^--- create$/,/^$/p' "${VWS_FAKE_LOG}.stdin" | sed -n 2p | jq -r '.stringData | .["console-token"], .["access-key"], .["secret-key"]'; }
+installer_scenario secret
+run_vws_real apply --unattended;                 expect_rc "apply with apiCredentials exits 0" 0
+expect_text "the Secret is reported by name" "$OUT" "created Secret vws-console-api-credentials"
+manifest=$(sed -n '/^--- create$/,/^$/p' "${VWS_FAKE_LOG}.stdin" | sed -n 2p)
+if jq -e '.kind == "Secret" and .metadata.name == "vws-console-api-credentials" and (.metadata.namespace == null)
+  and (.stringData | keys) == ["access-key", "console-token", "secret-key"]
+  and (.stringData["console-token"] | length) >= 43 and (.stringData["secret-key"] | length) >= 43
+  and (.stringData["access-key"] | test("^VWS[A-Z0-9]{17}$"))' <<<"$manifest" >/dev/null; then
+  ok "the Secret has the three keys console-api reads, random and long"; else bad "Secret manifest shape" "(not printed: holds values)"; fi
+create_line=$(grep -n $'^kubectl\tcreate' "$VWS_FAKE_LOG" | cut -d: -f1)
+helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
+if [[ -n $create_line && -n $helm_line ]] && ((create_line < helm_line)); then ok "the Secret is created before helm"; else bad "Secret before helm" "$(calls)"; fi
+if grep $'^kubectl\tcreate' "$VWS_FAKE_LOG" | grep -q -e '--namespace=vws'; then ok "the Secret goes to the release namespace"; else bad "Secret namespace" "$(grep $'^kubectl\tcreate' "$VWS_FAKE_LOG")"; fi
+first=$(secret_values)
+leaked=0
+while IFS= read -r v; do
+  [[ -n $v ]] || { leaked=1; continue; }
+  if [[ $OUT == *"$v"* || $ERR == *"$v"* ]] || grep -qF -- "$v" "$VWS_FAKE_LOG"; then leaked=1; fi
+done <<<"$first"
+if ((leaked == 0)); then ok "no Secret value is in the output, stderr or any command argument"; else bad "Secret value leak" "a value reached the output or an argument"; fi
+run_vws_real apply --unattended;                 expect_rc "a second fresh apply exits 0" 0
+if [[ $(secret_values) != "$first" ]]; then ok "each created Secret gets fresh values"; else bad "fresh values" "two manifests have the same values"; fi
+
+echo 'Error from server (AlreadyExists): secrets "vws-console-api-credentials" already exists' >"${VWS_FAKE_DIR}/kubectl/create_.fail"
+run_vws_real apply --unattended;                 expect_rc "apply with an existing Secret exits 0" 0
+expect_text "an existing Secret is kept" "$OUT" "kept Secret vws-console-api-credentials"
+expect_text "helm still runs" "$(calls)" "upgrade --install vws"
+
+echo 'Error from server (Forbidden): secrets is forbidden' >"${VWS_FAKE_DIR}/kubectl/create_.fail"
+run_vws_real apply --unattended;                 expect_rc "a refused Secret exits 3" 3
+expect_text "a refused Secret is named" "$ERR" "cannot create Secret vws-console-api-credentials"
+if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "a refused Secret stops before helm" "$(calls)"; else ok "a refused Secret stops before helm"; fi
 
 finish_tests

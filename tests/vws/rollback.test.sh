@@ -8,8 +8,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/installer_lib.sh"
 
 last_saved_spec() {
   python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
-import sys, yaml, json
-specs = [d["spec"] for doc in open(sys.argv[1]).read().split("--- apply\n")
+import json, re, sys, yaml
+specs = [d["spec"] for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read())
          for d in [yaml.safe_load(doc) if doc.strip() else None] if isinstance(d, dict) and d.get("kind") == "VWSCluster"]
 print(json.dumps(specs[-1], sort_keys=True) if specs else "")
 PY

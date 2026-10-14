@@ -9,8 +9,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/installer_lib.sh"
 # saved_specs: the spec of every CR document written through "kubectl apply -f -", one line each.
 saved_specs() {
   python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
-import sys, yaml, json
-for doc in open(sys.argv[1]).read().split("--- apply\n"):
+import json, re, sys, yaml
+# Split on every "--- <verb>" marker: a create (the apiCredentials Secret) follows the CR apply.
+for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read()):
     try:
         d = yaml.safe_load(doc)
     except yaml.YAMLError:

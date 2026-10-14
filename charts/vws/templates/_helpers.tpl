@@ -33,6 +33,14 @@ A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" 
     {{- $_ = set $flags "s3-bucket-prefix" $rgw.bucketPrefix }}
   {{- end }}
 {{- end }}
+{{- /* apiCredentials: the credential flags are $(VAR) references kubelet expands from the
+secretKeyRef env of vws.podTemplate, so no value is in values, args or the pod spec. */}}
+{{- if .spec.apiCredentials }}
+  {{- $_ := required "services.*.apiCredentials needs existingSecret" .spec.apiCredentials.existingSecret }}
+  {{- $_ = set $flags "console-token" "$(VWS_CONSOLE_TOKEN)" }}
+  {{- $_ = set $flags "access-key" "$(VWS_ACCESS_KEY)" }}
+  {{- $_ = set $flags "secret" "$(VWS_SECRET_KEY)" }}
+{{- end }}
 {{- $args := list }}
 {{- range $key := keys $flags | sortAlpha }}
   {{- $value := index $flags $key }}
@@ -151,6 +159,32 @@ spec:
             secretKeyRef:
               name: {{ . }}
               key: secret-key
+        {{- end }}
+        {{- with .apiSecret }}
+        - name: VWS_CONSOLE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: console-token
+        - name: VWS_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: access-key
+        - name: VWS_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ . }}
+              key: secret-key
+        {{- end }}
+        {{- with .apiClient }}
+        - name: VWS_CONSOLE_API_URL
+          value: {{ .url | quote }}
+        - name: VWS_CONSOLE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .secret }}
+              key: console-token
         {{- end }}
       {{- include "vws.probes" . | nindent 6 }}
       resources:
