@@ -110,6 +110,7 @@ vws_cmd_main() {
     --description "$description" >/dev/null ||
     { rm -rf "$tmp"; vws_emit FAIL helm "helm release upgrade failed and rolled back (--atomic)"; vws_finish; }
   vws_emit OK helm "release vws upgraded"
+  vws_apply_seed_image "$values"
 
   vws_kubectl patch vwsclusters vws --subresource=status --type=merge -p "$(jq -nc --argjson g "$generation" --arg h "$hash" --argjson sh "$history" \
     '{status: {observedGeneration: $g, appliedValuesHash: $h, specHistory: $sh, conditions: [{type: "Applied", status: "True", reason: "Applied", message: "vws apply"}]}}')" >/dev/null ||
@@ -135,6 +136,53 @@ vws_apply_drop_extgw() {
   VWS_NAMESPACE=kube-system vws_kubectl delete configmap ovn-external-gw-config --ignore-not-found >/dev/null ||
     vws_die_env "cannot delete kube-system/ovn-external-gw-config"
   vws_emit OK extgw "deleted kube-system/ovn-external-gw-config from an earlier apply (#171)"
+}
+
+# VWS_DEFAULT_IMAGE_ID is the image id console-api asks for on every run-instances. vws-storage
+# (#88) clones an image volume from the CDI DataSource of that name in the images namespace, and
+# vws-compute keeps an image as a DataVolume and a DataSource of the same name there (#232).
+VWS_DEFAULT_IMAGE_ID=ami-0123456789abcdef0
+VWS_DEFAULT_IMAGE_SIZE=${VWS_DEFAULT_IMAGE_SIZE:-1Gi}
+
+# vws_apply_seed_image VALUES seeds the default image after the chart (CDI is installed by the bundle,
+# the images namespace by the chart): a DataVolume importing LAB_VM_IMAGE of scripts/versions.env
+# (pinned by digest) and a DataSource pointing at its claim. Each is created only when missing
+# (AlreadyExists keeps it as is), so an apply never overwrites or re-imports an image.
+vws_apply_seed_image() {
+  local values=$1 ns image kind err manifest
+  ns=$(python3 -c 'import sys,yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get("namespaces", {}).get("images", ""))' "$values") ||
+    vws_die_env "cannot read namespaces.images from the rendered values"
+  [[ -n $ns ]] || ns=vws-images
+  image=$(vws_versions_env LAB_VM_IMAGE)
+  [[ $image == *@sha256:* ]] || vws_die_env "LAB_VM_IMAGE in scripts/versions.env is not pinned by digest"
+  err=$(mktemp)
+  for kind in DataVolume DataSource; do
+    manifest=$(vws_seed_image_manifest "$kind" "$ns" "$image")
+    if [[ -n $VWS_DRY_RUN ]]; then
+      VWS_NAMESPACE=$ns vws_kubectl create -f - <<<"$manifest"
+      vws_emit OK image "would create ${kind} ${ns}/${VWS_DEFAULT_IMAGE_ID} if it is missing"
+    elif VWS_NAMESPACE=$ns vws_kubectl create -f - <<<"$manifest" >/dev/null 2>"$err"; then
+      vws_emit OK image "created ${kind} ${ns}/${VWS_DEFAULT_IMAGE_ID}"
+    elif grep -q -e 'AlreadyExists' -e 'already exists' "$err"; then
+      vws_emit OK image "kept ${kind} ${ns}/${VWS_DEFAULT_IMAGE_ID}: it exists, unchanged"
+    else
+      rm -f "$err"
+      vws_die_env "cannot create ${kind} ${ns}/${VWS_DEFAULT_IMAGE_ID}"
+    fi
+  done
+  rm -f "$err"
+}
+
+# vws_seed_image_manifest KIND NAMESPACE IMAGE: the JSON of the seeded DataVolume or DataSource.
+vws_seed_image_manifest() {
+  jq -nc --arg k "$1" --arg ns "$2" --arg img "$3" --arg id "$VWS_DEFAULT_IMAGE_ID" --arg size "$VWS_DEFAULT_IMAGE_SIZE" '
+    {apiVersion: "cdi.kubevirt.io/v1beta1", kind: $k,
+     metadata: {name: $id, namespace: $ns, labels: {"app.kubernetes.io/managed-by": "vws"}}}
+    + if $k == "DataVolume" then
+        {spec: {source: {registry: {url: ("docker://" + $img)}}, storage: {resources: {requests: {storage: $size}}}}}
+      else
+        {spec: {source: {pvc: {name: $id, namespace: $ns}}}}
+      end'
 }
 
 # vws_apply_secrets VALUES creates each Secret the chart reads by secretKeyRef and vws makes itself
