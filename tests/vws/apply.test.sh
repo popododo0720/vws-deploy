@@ -231,6 +231,7 @@ if jq -e 'any(.[]; .kind == "DataVolume" and .spec.storage.storageClassName == "
 installer_scenario seed-image-existing
 jq '.spec.storage = {driver: "existing", storageClass: "fast-rbd"}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
 mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+installer_template
 run_vws_real apply --unattended;                 expect_rc "seed existing: the apply exits 0" 0
 dv=$(python3 -c '
 import json, sys
@@ -271,5 +272,23 @@ installer_scenario seed-image-dry-run
 run_vws_real --dry-run apply;                    expect_rc "seed dry-run: exits 0" 0
 assert_no_changes "seed dry-run: changes nothing"
 expect_text "seed dry-run: says what it would create" "$OUT" "would create DataSource vws-images/ami-0123456789abcdef0 if it is missing"
+
+# #246: vws apply runs the same check_render gate as vws reconfigure, before any change. The CR of
+# vws-test had FQDN console-api addresses that reconfigure refused (R15) and apply accepted.
+installer_scenario check-render-r15
+jq '.spec.services["console-api"] = {flags: {"compute-addr": "compute.vws.svc:50051"}}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+installer_template
+run_vws_real apply --unattended;                 expect_rc "check_render: an R15 CR exits 2" 2
+expect_text "check_render: the rule is named" "$ERR" "R15"
+expect_text "check_render: says nothing was applied" "$ERR" "nothing was applied"
+assert_no_changes "check_render: a refused CR changes nothing"
+if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "check_render before helm" "$(calls)"; else ok "check_render: no helm upgrade"; fi
+
+installer_scenario check-render-schema
+rm -f "${VWS_FAKE_DIR}/helm/template.json"
+run_vws_real apply --unattended;                 expect_rc "schema: a failing helm template exits 2" 2
+expect_text "schema: named" "$ERR" "values.schema.json"
+assert_no_changes "schema: a refused CR changes nothing"
 
 finish_tests

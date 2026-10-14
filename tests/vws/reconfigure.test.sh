@@ -53,6 +53,7 @@ run_vws_real reconfigure --from "${WORK}/broken.yaml"; expect_rc "broken --from 
 
 installer_scenario schema
 # No template fixture: the fake helm fails, as helm does when the values break the schema.
+rm -f "${VWS_FAKE_DIR}/helm/template.json"
 run_vws_real reconfigure --set version=v3;        expect_rc "a schema failure from helm exits 2" 2
 expect_text "the schema failure is named" "$ERR" "values.schema.json"
 assert_no_changes "a schema failure writes nothing"

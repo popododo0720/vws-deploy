@@ -283,6 +283,18 @@ run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
 expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
 if [[ ! -e ${WORK}/pout/22-vws-ovn-gateway-mtu.yaml ]]; then ok "without external no gateway_mtu Deployment"; else bad "gateway_mtu without external" "$(ls "${WORK}/pout")"; fi
+# #246: an external subnet wired only through the vws-network flag (no nodes.external) still gets
+# the Deployment, on that subnet, at the default 1500.
+platform_cr 'n.clear(); n["driver"] = "kube-ovn"; spec["services"] = {"network": {"flags": {"kube-external-subnet": "lab-ext", "pool": "10.78.0.224/28"}}}'
+run_platform "$PLATFORM_BUNDLE"
+if ((PRC == 0)) && [[ -f $gw ]]; then ok "flag kube-external-subnet writes the gateway_mtu Deployment"; else bad "gateway_mtu from flag" "$(ls "${WORK}/pout") $(cat "${WORK}/perr")"; fi
+expect_text "flag: SUBNET is the flag value, MTU 1500" "$(gwq '{e["name"]: e["value"] for e in c["env"]}')" "{'SUBNET': 'lab-ext', 'MTU': '1500', 'PERIOD': '30'}"
+platform_cr 'n.clear(); n["driver"] = "kube-ovn"; spec["services"] = {"network": {"flags": {"kube-external-subnet": "x; rm -rf /"}}}'
+run_platform "$PLATFORM_BUNDLE"
+if ((PRC == 2)) && grep -q "kube-external-subnet" "${WORK}/perr"; then ok "flag: a non-name subnet exits 2"; else bad "bad flag subnet" "rc=$PRC $(cat "${WORK}/perr")"; fi
+platform_cr 'n.clear(); n["driver"] = "kube-ovn"; spec["services"] = {"network": {"flags": {"pool": "10.78.0.224/28"}}}'
+run_platform "$PLATFORM_BUNDLE"
+if [[ ! -e $gw ]]; then ok "no external subnet at all: no gateway_mtu Deployment"; else bad "gateway_mtu without any external" "$(ls "${WORK}/pout")"; fi
 platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct"); n["ipv4Only"] = True'
 run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
