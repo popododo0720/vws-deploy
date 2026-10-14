@@ -166,6 +166,9 @@ services:
       # separated). Empty leaves the labels alone. vws render fills it from
       # spec.network.nodes.external.gatewayNodes (#197); no node name is written here.
       kube-gateway-nodes: ""
+      # Instance VMIs live in the vms namespace; an address attached to an instance reads the VMI
+      # interface IP there for the OvnFip (vws-network#87, docs/rbac.md).
+      kube-vm-namespace: {namespace: vms}
     rbac:
     - apiGroups: [kubeovn.io]
       resources: [vpcs, subnets, ovn-eips, ovn-snat-rules]
@@ -198,5 +201,10 @@ services:
       apiGroups: [k8s.cni.cncf.io]
       resources: [network-attachment-definitions]
       verbs: [get, create, delete]
+    # VMI interface IP for an address attached to an instance (-kube-vm-namespace, vws-network#87).
+    - namespace: vms
+      apiGroups: [kubevirt.io]
+      resources: [virtualmachineinstances]
+      verbs: [get, list, watch]
     state:
       size: 20Gi
