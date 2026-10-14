@@ -124,7 +124,7 @@ PY
 }
 net_cr "pass"
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "a 4-NIC CR with direct networks renders" 0
-flags=$(python3 -c 'import sys,yaml,json; f=yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]; print(json.dumps({k: v for k, v in f.items() if "direct" not in k}, sort_keys=True))' "${WORK}/net.out")
+flags=$(python3 -c 'import sys,yaml,json; f=yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]; print(json.dumps({k: v for k, v in f.items() if "direct" not in k and k != "vm-mtu"}, sort_keys=True))' "${WORK}/net.out")
 expect_text "nodes.external becomes the vws-network underlay flags (#130)" "$flags" '{"kube-external-subnet": "vws-external", "kube-provider-network": "vws-pn0", "kube-underlay-cidr": "198.18.10.0/24", "kube-underlay-exclude": "198.18.10.1..198.18.10.9", "kube-underlay-gateway": "198.18.10.1", "kube-underlay-interface": "enp4s0", "kube-underlay-vlan": 100, "pool": "198.18.10.64/26"}'
 # spec.network.direct -> -kube-direct-networks, -kube-direct-nad-namespace and a vms Role (#131).
 direct=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]["kube-direct-networks"])' "${WORK}/net.out")
@@ -146,7 +146,7 @@ expect_text "direct networks keep the storage clone rule (#201)" "$roles" "(['cd
 net_cr 'n["nodes"].pop("external"); n.pop("direct"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "nodes without external renders" 0
 flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
-expect_text "without external only the pool is set" "$flags" '{"pool": "198.18.1.0/24"}'
+expect_text "without external only the pool and the VM MTU are set" "$flags" '{"pool": "198.18.1.0/24", "vm-mtu": 8900}'
 expect_text "without direct networks the network RBAC is the chart default" "$(python3 -c 'import sys,yaml; print("rbac" in yaml.safe_load(open(sys.argv[1]))["services"]["network"])' "${WORK}/net.out")" "False"
 net_cr 'n["direct"][0]["nic"] = "enp0s9"'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
@@ -205,6 +205,40 @@ bad_net "nic name over 15 characters" 'n["nodes"]["management"]["nic"] = "enp1s0
 bad_net "unknown network field" 'n["nodes"]["management"]["bond"] = "x"'
 net_cr 'n["nodes"]["tunnel"]["nic"] = "enp4s0"; n["nodes"]["tunnel"]["vlan"] = 0; n["direct"][1]["vlan"] = 10'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "an untagged host network may share an underlay nic" 0
+# VM MTU (#236, vws-network#93): 9001 by default, lowered to what the tunnel NIC carries -> -vm-mtu.
+vmmtu() { python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"]["vm-mtu"])' "${WORK}/net.out"; }
+net_cr 'n["nodes"]["tunnel"]["mtu"] = 9216'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "a 9216 tunnel renders" 0
+expect_text "a 9216 underlay gives VMs 9001" "$(vmmtu)" "9001"
+net_cr 'pass'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "a 9000 tunnel lowers an unset vmMTU to 8900" "$(vmmtu)" "8900"
+net_cr 'n["ipv4Only"] = True'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "ipv4Only takes a 60-byte overhead" "$(vmmtu)" "8940"
+net_cr 'n["tunnelOverhead"] = 80; n["ipv4Only"] = True'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "tunnelOverhead wins over ipv4Only" "$(vmmtu)" "8920"
+net_cr 'n["underlayMTU"] = 8000'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "underlayMTU below the tunnel mtu lowers the VM MTU" "$(vmmtu)" "7900"
+net_cr 'n["underlayMTU"] = 8942; n["vmMTU"] = 8842'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "the vws-test override 8942/8842 renders" "$(vmmtu)" "8842"
+net_cr 'n["vmMTU"] = 1500'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "a set vmMTU that fits is kept" "$(vmmtu)" "1500"
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/net.out")
+expect_text "the chart passes -vm-mtu to vws-network" "$chart" "-vm-mtu=1500"
+net_cr 'n["nodes"]["tunnel"]["mtu"] = 1500'
+run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"
+expect_text "a 1500 underlay (vws-test ens3) gives VMs 1400" "$(vmmtu)" "1400"
+bad_net "a vmMTU over what the tunnel carries" 'n["vmMTU"] = 9001'
+bad_net "vmMTU below 68" 'n["vmMTU"] = 67'
+bad_net "vmMTU above 9001" 'n["nodes"]["tunnel"]["mtu"] = 9216; n["vmMTU"] = 9100'
+bad_net "underlayMTU too small for the overhead" 'n["underlayMTU"] = 1300'
+bad_net "tunnelOverhead above 200" 'n["tunnelOverhead"] = 300'
+bad_net "a vm-mtu flag beside spec.network.vmMTU" 'spec["services"]["network"] = {"flags": {"vm-mtu": 1500}}'
 
 # The platform bundle for spec.network.nodes (#127).
 # shellcheck source=tests/vws/platform_lib.sh
@@ -224,6 +258,10 @@ platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].p
 run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
 expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
+platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct"); n["ipv4Only"] = True'
+run_platform "$PLATFORM_BUNDLE"
+args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
+expect_text "ipv4Only gives Kube-OVN the 60-byte overhead too" "$args" "--iface=enp1s0 --mtu=1440"
 if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]] && cmp -s "$PLATFORM_BUNDLE/31-rook-ceph-cluster.yaml" "${WORK}/pout/31-rook-ceph-cluster.yaml"; then ok "no Ceph network without storage"; else bad "optional parts" "$(ls "${WORK}/pout")"; fi
 # #170: csi-driver-nfs is in the bundle; only driver nfs installs it, with the vws-nfs StorageClass.
 mkdir -p "${WORK}/nfsbundle" && cp "$PLATFORM_BUNDLE"/*.yaml "${WORK}/nfsbundle/"
