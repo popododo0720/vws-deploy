@@ -404,4 +404,23 @@ expect_text "trusted-proxies: not passed by default" "$got" "0"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string 'services.console-api.flags.trusted-proxies=10.0.0.0/8' | grep -c -- '-trusted-proxies=10.0.0.0/8' || true)
 expect_text "trusted-proxies: passed when set" "$got" "1"
 
+# vws-deploy#280: console-api is pinned by services.console-api.imageTag to sha-5b42eb7, the
+# console-api#137 build that vws-console-api publish.yml pushes as ghcr.io/popododo0720/vws/console-api:sha-<commit>.
+# Other services keep global.tag / appVersion, and spec.version moves them but not console-api.
+images() {
+  helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws "$@" |
+    python3 -c 'import sys,yaml; print(sorted(d["metadata"]["name"]+"="+d["spec"]["template"]["spec"]["containers"][0]["image"] for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ("Deployment","StatefulSet") and d["metadata"]["namespace"] == "vws"))'
+}
+got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
+expect_text "image pin: console-api renders sha-5b42eb7" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-5b42eb7'"
+expect_text "image pin: other services keep appVersion" "$got" "'compute=ghcr.io/popododo0720/vws/compute:0.1.0'"
+run_vws_real render "${EX}/ha.yaml" "${WORK}/pin.yaml"; expect_rc "image pin: ha example renders" 0
+got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9)
+expect_text "image pin: global.tag moves other services" "$got" "'compute=ghcr.io/popododo0720/vws/compute:9.9.9'"
+expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-5b42eb7'"
+got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.console-api.imageTag=sha-1234567)
+expect_text "image pin: imageTag is the only knob" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-1234567'"
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set 'services.console-api.imageTag=a/b' >/dev/null 2>"${WORK}/tag.err"; then
+  bad "image pin: schema refuses a slash" "rendered"; else expect_text "image pin: the schema refuses a tag with a slash" "$(cat "${WORK}/tag.err")" "imageTag"; fi
+
 finish_tests
