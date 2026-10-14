@@ -70,7 +70,36 @@
         ]
       },
       "additionalProperties": {
-        "$ref": "#/definitions/service"
+        "allOf": [
+          {
+            "$ref": "#/definitions/service"
+          },
+          {
+            "$ref": "#/definitions/deployment-replicas"
+          }
+        ]
+      },
+      "properties": {
+        "console-api": {
+          "description": "console-api holds sessions in memory, so it runs exactly one replica (popododo0720/vws-console-api#95).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/service"
+            },
+            {
+              "properties": {
+                "replicas": {
+                  "const": 1,
+                  "description": "Exactly 1: console-api sessions are held in memory (popododo0720/vws-console-api#95)."
+                },
+                "autoscaling": false
+              },
+              "required": [
+                "replicas"
+              ]
+            }
+          ]
+        }
       }
     },
     "namespaces": {
@@ -291,13 +320,6 @@
                 "minimum": 1
               }
             }
-          },
-          "else": {
-            "properties": {
-              "replicas": {
-                "minimum": 2
-              }
-            }
           }
         },
         {
@@ -384,6 +406,23 @@
         "kubeconfig": {
           "type": "string",
           "pattern": "^/[^/]+(/[^/]+)*/[^/]+$"
+        }
+      }
+    },
+    "deployment-replicas": {
+      "description": "A stateless service runs at least two replicas, except console-api.",
+      "if": {
+        "not": {
+          "required": [
+            "state"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "replicas": {
+            "minimum": 2
+          }
         }
       }
     }
