@@ -83,6 +83,21 @@ storage_cr existing-fs 's["volumeMode"] = "Filesystem"'
 expect_rc "existing with Filesystem renders" 0
 if storage_values existing-fs "v['flags']['kube-volume-mode'] == 'Filesystem' and ${DV} in v['rbac']"; then ok "existing Filesystem sets the mode and the datavolumes rule"; else bad "existing fs" "$(cat "${WORK}/existing-fs.out")"; fi
 if ! grep -q 'kube-volume-mode\|datavolumes' "${WORK}/small.yaml"; then ok "Block (the default) renders no volume mode and no datavolumes rule"; else bad "block default" "$(cat "${WORK}/small.yaml")"; fi
+# CDI clone rights for image volumes stay under every storage override (vws-storage#86, #201).
+storage_roles() { # CHART_YAML -> "ns: [(apiGroups, resources, verbs)...]" per storage Role in vws-vms/vws-images
+  printf '%s\n' "$1" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["name"].endswith("-storage") and d["metadata"]["namespace"] in ("vws-vms", "vws-images"):
+        print(d["metadata"]["namespace"], [(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])'
+}
+for out in small nfs existing-fs; do
+  src="${WORK}/${out}.out"; [ "$out" = small ] && src="${WORK}/small.yaml"
+  roles=$(storage_roles "$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "$src")")
+  expect_text "${out}: storage gets DataVolume get/create/delete in the VM namespace" "$roles" "(['cdi.kubevirt.io'], ['datavolumes'], ['get', 'create', 'delete'])"
+  expect_text "${out}: storage gets DataSource get in the images namespace" "$roles" "(['cdi.kubevirt.io'], ['datasources'], ['get'])"
+  expect_text "${out}: storage gets datavolumes/source create in the images namespace" "$roles" "(['cdi.kubevirt.io'], ['datavolumes/source'], ['create'])"
+done
 for case in \
   'nfs-no-export|s.clear(); s["driver"] = "nfs"' \
   'nfs-no-share|s.clear(); s.update(driver="nfs", nfs={"server": "nas"})' \
@@ -125,6 +140,9 @@ for d in yaml.safe_load_all(sys.stdin):
         print([(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])')
 expect_text "network gets get/create on NADs in the VM namespace" "$role" "(['k8s.cni.cncf.io'], ['network-attachment-definitions'], ['get', 'create'])"
 expect_text "direct networks keep the VMI read rule in the VM namespace (vws-network#87)" "$role" "(['kubevirt.io'], ['virtualmachineinstances'], ['get', 'list', 'watch'])"
+roles=$(storage_roles "$chart")
+expect_text "direct networks keep the storage DataVolume rule (#201)" "$roles" "(['cdi.kubevirt.io'], ['datavolumes'], ['get', 'create', 'delete'])"
+expect_text "direct networks keep the storage clone rule (#201)" "$roles" "(['cdi.kubevirt.io'], ['datavolumes/source'], ['create'])"
 net_cr 'n["nodes"].pop("external"); n.pop("direct"); spec["services"]["network"] = {"flags": {"pool": "198.18.1.0/24"}}'
 run_vws_real render "${WORK}/net.yaml" "${WORK}/net.out"; expect_rc "nodes without external renders" 0
 flags=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["services"]["network"]["flags"], sort_keys=True))' "${WORK}/net.out")
