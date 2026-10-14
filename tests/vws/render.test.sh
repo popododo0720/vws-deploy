@@ -423,4 +423,18 @@ expect_text "image pin: imageTag is the only knob" "$got" "'console-api=ghcr.io/
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set 'services.console-api.imageTag=a/b' >/dev/null 2>"${WORK}/tag.err"; then
   bad "image pin: schema refuses a slash" "rendered"; else expect_text "image pin: the schema refuses a tag with a slash" "$(cat "${WORK}/tag.err")" "imageTag"; fi
 
+# vws-compute#73: compute keeps the cloud-init Secret <instance>-cloudinit in the VM namespace. Only
+# the namespaced Role vws-compute in vws-vms may touch secrets: get, create, update, delete, no list
+# or watch (compute uses an uncached client), and no other Role or ClusterRole gains secrets.
+secret_rules=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] in ("Role", "ClusterRole"):
+        for r in d["rules"]:
+            if "secrets" in r["resources"]:
+                print(d["kind"], d["metadata"]["name"], d["metadata"].get("namespace"), r["resources"], r["verbs"], r.get("resourceNames"))')
+expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rules" "Role vws-compute vws-vms ['secrets'] ['get', 'create', 'update', 'delete'] None"
+if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
+if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
+
 finish_tests
