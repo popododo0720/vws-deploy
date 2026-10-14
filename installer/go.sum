@@ -27,8 +27,8 @@ github.com/pingcap/errors v0.11.4 h1:lFuQV/oaUMGcD2tqt+01ROSmJs75VG1ToEOkZIZ4nE4
 github.com/pingcap/errors v0.11.4/go.mod h1:Oi8TUi2kEtXXLMJk9l1cGmz20kV3TaQ0usTwv5KuLY8=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
-github.com/popododo0720/vws-lib v0.1.2-0.20261013193439-fe9cd2996d97 h1:6ZxMwDeNjIPt+bkv/i/0KXT/qAMAAq9xUYQNlLkXoG8=
-github.com/popododo0720/vws-lib v0.1.2-0.20261013193439-fe9cd2996d97/go.mod h1:OgFUh7eAGU/yCksFnO9G5LgJQ6tALpuwDee1hGbq5AQ=
+github.com/popododo0720/vws-lib v0.2.0 h1:02zOvGkGZVGU8/J75oTFuMEDX7iLeWV1Naa+VQUpqbU=
+github.com/popododo0720/vws-lib v0.2.0/go.mod h1:OgFUh7eAGU/yCksFnO9G5LgJQ6tALpuwDee1hGbq5AQ=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

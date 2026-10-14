@@ -2,7 +2,7 @@ module github.com/popododo0720/vws-deploy/installer
 
 go 1.26.9
 
-require github.com/popododo0720/vws-lib v0.1.2-0.20261013193439-fe9cd2996d97
+require github.com/popododo0720/vws-lib v0.2.0
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
