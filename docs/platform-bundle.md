@@ -91,3 +91,12 @@ k3s v1.35.9 + 외부 Ceph(ceph-csi-rbd) 3노드에서 확인한 것이다. 다�
 | CephCluster `spec.network` | `provider: host`, `addressRanges.public`/`cluster`(storage가 있을 때만) |
 
 번들의 kube-ovn-cni에 빈 `--iface=` 인자가 정확히 하나가 아니면(차트가 바뀜) 종료 코드 2다. `ovn-external-gw-config`는 만들지 않는다(#164). vws-test 증거 53: 이 ConfigMap을 켜면 kube-ovn-controller가 underlay 브리지 `br-vwsul`을 지우고, 이름이 `external`인 Subnet을 요구한다. 사용자 VPC와 `extraExternalSubnets` 조합의 EIP/SNAT에는 필요 없었다. 게이트웨이 노드 레이블 `ovn.kubernetes.io/external-gw`는 vws-network가 reconcile로 다시 붙인다(vws-network 담당, RBAC은 [rbac.md](rbac.md)). 이전 apply가 만든 ConfigMap(field manager `vws`)은 `vws apply`가 unchanged 판정 전에 지운다(#171). vws가 쓰지 않은 같은 이름의 ConfigMap은 지우지 않고 WARN이다. 확인 필요: ConfigMap 삭제만으로 kube-ovn이 `br-vwsul`을 되살리는지, 노드 레이블이나 `br-external` 정리가 더 필요한지는 vws-test에서 재지 않았다. 확인 필요: 운영 중 `--iface`/`--mtu`/Ceph network 변경의 영향(kube-ovn-cni 재시작, mon 재배포). 실제 클러스터에서 재지 않았다.
+
+### OVN gateway_mtu (#237)
+
+`spec.network.nodes.external`이 있으면 `platform.py`가 `22-vws-ovn-gateway-mtu.yaml`을 더한다. kube-system의 Deployment `vws-ovn-gateway-mtu`(레플리카 1)가 30초마다 OVN NB에서 이름이 `-vws-external`로 끝나는 logical_router_port(Kube-OVN이 `extraExternalSubnets`의 VPC 포트를 `<vpc>-<subnet>`으로 만든다)를 찾아 `options:gateway_mtu`가 외부 링크 MTU(`nodes.external.mtu`, 없으면 1500)와 다를 때만 `ovn-nbctl set`한다. 같으면 아무것도 쓰지 않으므로 멱등이고, 새 VPC도 다음 주기에 잡힌다. 이유: VPC VM은 9001(#236)인데 번들의 Kube-OVN은 `gateway_mtu`를 설정하지 않고 필드도 없어, VPC 라우터가 1500 외부망으로 가는 큰 DF 패킷에 ICMP fragmentation-needed를 보내지 않는다(PMTUD 실패, vws-network `docs/mtu.md`). vws-network는 Kubernetes API만 쓰므로 NB에 쓸 수 없다.
+
+- 접속: `ovn-nb` Service(kube-system, TCP 6641, 번들은 `ENABLE_SSL=false`)를 서비스 링크 환경 변수로 쓴다. Kubernetes 토큰과 RBAC은 없다(`automountServiceAccountToken: false`).
+- 이미지: `docker.io/kubeovn/kube-ovn:<KUBEOVN_VERSION>`(`scripts/versions.env`), 이미 노드에 있는 이미지라 새 이미지를 받지 않는다. runAsNonRoot 65534, 읽기 전용 루트, capability 없음.
+- 대안과 버린 이유: Job은 한 번만 돌아 이후 VPC를 놓친다. vws-network에 넣으면 NB 접근 권한을 서비스에 줘야 하고 저장소 경계(Kubernetes API만)를 깬다. TCP MSS 클램핑은 TCP만 고치고 UDP/ICMP PMTUD는 그대로이며 OVN 논리 라우터에 표준 수단이 없다. Kube-OVN 업그레이드로 해결되면 이 Deployment를 지운다.
+- 확인 필요: vws-test에서 재지 않았다. gateway_mtu가 실제로 ICMP needs-frag를 내는지(분산 게이트웨이 포트 조건), 비루트로 `ovn-nbctl`이 도는지, NB 리더가 바뀔 때 Service가 따라가는지. `nodes.external` 없이 `spec.services.network.flags.kube-external-subnet`만 쓰는 클러스터에는 만들지 않는다.

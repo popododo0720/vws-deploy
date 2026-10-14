@@ -254,10 +254,35 @@ expect_text "kube-ovn-cni uses the tunnel VLAN interface" "$args" "--iface=enp2s
 ceph=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["spec"]["network"], sort_keys=True))' "${WORK}/pout/31-rook-ceph-cluster.yaml")
 expect_text "Ceph gets the public and cluster networks" "$ceph" '{"addressRanges": {"cluster": ["10.31.0.0/24"], "public": ["10.30.0.0/24"]}, "connections": {"requireMsgr2": true}, "provider": "host"}'
 if [[ ! -e ${WORK}/pout/21-ovn-external-gw-config.yaml ]]; then ok "external writes no ovn-external-gw-config (#164)"; else bad "gw config" "$(cat "${WORK}/pout/21-ovn-external-gw-config.yaml")"; fi
+# OVN gateway_mtu (#237): with nodes.external a Deployment keeps gateway_mtu on the VPC ports to vws-external.
+gw="${WORK}/pout/22-vws-ovn-gateway-mtu.yaml"
+gwq() { python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); c=d["spec"]["template"]["spec"]["containers"][0]; print(eval(sys.argv[2]))' "$gw" "$1"; }
+if [[ -f $gw ]]; then ok "external writes the gateway_mtu Deployment"; else bad "gateway_mtu file" "$(ls "${WORK}/pout")"; fi
+expect_text "it runs in kube-system without a token" "$(gwq '(d["metadata"]["namespace"], d["spec"]["template"]["spec"]["automountServiceAccountToken"])')" "('kube-system', False)"
+expect_text "the image is the bundle Kube-OVN version" "$(gwq 'c["image"]')" "docker.io/kubeovn/kube-ovn:$(sed -n 's/^KUBEOVN_VERSION=//p' "${VWS_TEST_ROOT}/scripts/versions.env")"
+expect_text "the external MTU defaults to 1500 on vws-external" "$(gwq '{e["name"]: e["value"] for e in c["env"]}')" "{'SUBNET': 'vws-external', 'MTU': '1500', 'PERIOD': '30'}"
+expect_text "the container is non-root with a read-only root" "$(gwq '(d["spec"]["template"]["spec"]["securityContext"]["runAsNonRoot"], c["securityContext"]["readOnlyRootFilesystem"])')" "(True, True)"
+# The loop against a fake ovn-nbctl: it sets only ports to vws-external, once, and leaves an equal value alone.
+mkdir -p "${WORK}/nbbin" && : >"${WORK}/nb.log"
+printf '%s\n' '#!/usr/bin/env bash' 'shift 2; echo "$*" >>"$NBLOG"' \
+  'case $1 in --bare) printf "vpc-a-vws-external\n\nvpc-a-subnet1\n\nvpc-b-vws-external\n" ;;' \
+  '  --if-exists) if [[ $4 == vpc-b-vws-external ]] || grep -q "^set logical_router_port $4 " "$NBLOG"; then echo "\"1500\""; fi ;; esac; exit 0' >"${WORK}/nbbin/ovn-nbctl"
+chmod +x "${WORK}/nbbin/ovn-nbctl"
+script=$(gwq 'c["command"][2]')
+PATH="${WORK}/nbbin:$PATH" NBLOG="${WORK}/nb.log" OVN_NB_SERVICE_HOST=10.96.0.9 OVN_NB_SERVICE_PORT=6641 SUBNET=vws-external MTU=1500 PERIOD=1 \
+  timeout 3 /bin/sh -c "$script" >"${WORK}/nb.out" 2>&1 || true
+sets=$(grep '^set ' "${WORK}/nb.log" || true)
+expect_text "only vpc-a-vws-external is set, once" "$sets" "set logical_router_port vpc-a-vws-external options:gateway_mtu=1500"
+if [[ $(grep -c '^set ' "${WORK}/nb.log") == 1 ]]; then ok "a second pass sets nothing (idempotent)"; else bad "idempotent" "$sets"; fi
+if ! grep -q 'subnet1' <<<"$sets"; then ok "a port to another subnet is left alone"; else bad "other port" "$sets"; fi
+platform_cr 'n["nodes"]["external"]["mtu"] = 9000'
+run_platform "$PLATFORM_BUNDLE"
+expect_text "the external link mtu becomes gateway_mtu" "$(gwq '{e["name"]: e["value"] for e in c["env"]}["MTU"]')" "9000"
 platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct")'
 run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
 expect_text "without tunnel the management NIC carries geneve" "$args" "--iface=enp1s0 --mtu=1400"
+if [[ ! -e ${WORK}/pout/22-vws-ovn-gateway-mtu.yaml ]]; then ok "without external no gateway_mtu Deployment"; else bad "gateway_mtu without external" "$(ls "${WORK}/pout")"; fi
 platform_cr 'n["nodes"].pop("external"); n["nodes"].pop("storage"); n["nodes"].pop("tunnel"); n.pop("direct"); n["ipv4Only"] = True'
 run_platform "$PLATFORM_BUNDLE"
 args=$(python3 -c 'import sys,yaml; print(" ".join(yaml.safe_load(open(sys.argv[1]))["spec"]["template"]["spec"]["containers"][0]["args"]))' "${WORK}/pout/20-kube-ovn.yaml")
