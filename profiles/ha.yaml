@@ -10,7 +10,8 @@ services:
     cpu: 500m
     memory: 1Gi
   console-api:
-    replicas: 3
+    # One replica in every profile: sessions are held in memory (popododo0720/vws-console-api#95).
+    replicas: 1
     cpu: 500m
     memory: 1Gi
   # Stateful services run one replica: the services have no multi-replica state (vws-deploy#43 decision 2).

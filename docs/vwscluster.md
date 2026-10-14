@@ -31,7 +31,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | `spec.network.nodes`, `spec.network.direct` | 노드 NIC별 망과 direct provider network. 규칙과 예는 `docs/node-network.md`(#125) | Kube-OVN, Ceph 번들 설정과 `services.network.flags` |
 | `spec.network.vmMTU`, `underlayMTU`, `tunnelOverhead`, `ipv4Only` | VPC VM MTU(#236, vws-network#93). `vmMTU` 68–9001, 없으면 9001(AWS)을 underlay가 실어 나르는 값으로 낮춘다. `underlayMTU`는 OS가 이미 설정한 터널 NIC MTU(1280–9216). `tunnelOverhead` 0–200, 없으면 100, `ipv4Only: true`면 60. 9001에는 underlay 9101 이상이 필요하고 9216을 권장한다. 설치기는 NIC MTU를 바꾸지 않는다. 자세한 것은 `docs/vm-mtu.md` | `services.network.flags.vm-mtu`(`-vm-mtu`). `vmMTU`가 underlay − 오버헤드보다 크면 종료 코드 2. 같은 오버헤드가 kube-ovn-cni `--mtu`에도 쓰인다 |
 | `spec.observability.otlpEndpoint` | 비어 있어야 한다 | 차트에 관측성 값이 아직 없어 값이 있으면 종료 코드 2 |
-| `spec.services.<이름>.{replicas,cpu,memory,flags}` | `charts/vws/values.yaml`에 있는 서비스만 | 같은 이름의 `services.<이름>` 키, `flags`는 합친다 |
+| `spec.services.<이름>.{replicas,cpu,memory,flags}` | `charts/vws/values.yaml`에 있는 서비스만. `console-api.replicas`는 1만(세션을 메모리에 둔다, popododo0720/vws-console-api#95). 다른 값은 render가 종료 코드 2로 거절 | 같은 이름의 `services.<이름>` 키, `flags`는 합친다 |
 | `spec.secrets.<이름>.secretName` | Secret 이름 참조만 | 지금은 받는 values가 없어 비어 있어야 한다 |
 
 - 비밀 값 필드는 없다. 필드나 플래그 이름이 비밀처럼 보이면(`password`, `token`, `secret`, `credential`, `key` 등, `secrets`/`secretName`/`existingSecret` 제외) `vws render`가 거절하고 가드가 CRD 스키마에서 거절한다.
@@ -46,6 +46,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | | single-node | small | ha |
 | --- | --- | --- | --- |
 | 무상태 replicas | 2(스키마 최소, 한 노드에 둘) | 2 | 3 |
+| console-api replicas | 1 | 1 | 1 |
 | 상태 서비스 | 1, 20Gi | 1, 20Gi | 1, 20Gi |
 | cpu/memory (추정, T2 실측 전) | 100m/256Mi | 200m/512Mi | 500m/1Gi |
 | `global.topologySpread` | soft | soft | hard (`DoNotSchedule`) |
@@ -58,3 +59,32 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 - API 서버가 CRD를 받아들이는지와 `x-kubernetes-validations`의 CEL 규칙(이름 `vws`). kubeconform 카탈로그에 CRD 스키마가 없어 가드가 구조 규칙(타입, 저장 버전 하나)을 직접 본다.
 - Ceph size 1 설정(`requireSafeReplicaSize: false`)과 mon 1이 Rook에서 실제로 뜨는지.
 - 프로필 리소스 숫자.
+
+## console-api는 레플리카 1 (popododo0720/vws-console-api#95)
+
+console-api는 세션을 메모리에 둔다. 두 번째 파드나 HPA가 있으면 요청마다 다른 파드로 가서 세션이 갈라진다. 그래서:
+
+- 차트 기본값과 모든 프로필(`profiles/*.yaml`)이 `services.console-api.replicas: 1`이다.
+- `values.schema.json`: `services.console-api.replicas`는 `const: 1`(필수), `autoscaling` 같은 값은 없다. 다른 무상태 서비스는 그대로 최소 2.
+- `scripts/check_render.py` R4: Deployment console-api가 1이 아니면 `must have exactly one replica: sessions are held in memory`. HPA는 control-plane 종류가 아니라 R10이 이미 거절한다.
+- `lib/render.py`: CR의 `spec.services.console-api.replicas`가 1이 아니면 종료 코드 2.
+- 한계: 레플리카 1이라 console-api 롤아웃과 노드 장애 동안 세션이 끊기고, PDB(maxUnavailable 1)는 그 파드의 축출을 막지 않는다. 공유 세션 저장소가 생기면 이 고정을 푼다.
+
+## console-api -console-origins (필수), -trusted-proxies (선택) (popododo0720/vws-console-api#137)
+
+console-api#137부터 로그인과 쿠키 쓰기 요청은 Origin이 콘솔 자신의 호스트이거나 `-console-origins`에 있어야 하고, 아니면 403이다. 콘솔 Service는 LoadBalancer라 vws가 렌더링 때 공개 주소를 알 수 없으므로 운영자가 CR에 적는다:
+
+```yaml
+spec:
+  services:
+    console-api:
+      flags:
+        console-origins: https://console.example        # 쉼표로 여러 개, scheme://host[:port], 경로 없음
+        # trusted-proxies: 10.0.0.0/8,192.0.2.1          # 선택. 비우면 플래그를 넘기지 않는다
+```
+
+- 기본값이 없다. `lib/render.py`는 없으면 종료 코드 2(`spec.services.console-api.flags.console-origins: required`), `vws init`도 묻는다.
+- `scripts/check_render.py` R15: `-console-origins`가 없거나 항목이 `scheme://host[:port]`가 아니면 거절, `-trusted-proxies` 항목이 IP/CIDR가 아니면 거절.
+- `-trusted-proxies`는 값이 있을 때만 넘긴다. #137(5b42eb7)부터 `-console-origins`와 함께 지원한다.
+- 이 차트는 console-api 이미지 #137(5b42eb7) 이상이 필요하다. 그 전 이미지는 모르는 플래그 `-console-origins`(그리고 설정했다면 `-trusted-proxies`)로 시작하지 못한다.
+- vws-test 실측: 기본 설치(`-iam=static`)에서 `-console-origins`를 콘솔 공개 주소로 두면 로그인 없이 콘솔 API가 모두 200이다. 필수여도 기본 설치를 막지 않는다.

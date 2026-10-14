@@ -37,7 +37,7 @@ bad_cr "secret-shaped flag" 's/      replicas: 4/      replicas: 4\n      flags:
 bad_cr "a secret value under secrets" 's/^  version: 0.1.0/  version: 0.1.0\n  secrets:\n    db:\n      secretName: db\n      value: x/'
 bad_cr "wrong name" 's/name: vws$/name: other/'
 bad_cr "wrong group" 's#apiVersion: .*#apiVersion: example.com/v1alpha1#'
-bad_cr "unknown service" 's/console-api:/billing:/'
+bad_cr "unknown service" 's/^    console:$/    billing:/'
 bad_cr "replicas below one" 's/replicas: 4/replicas: 0/'
 bad_cr "otlp endpoint the chart cannot take yet" 's/otlpEndpoint: ""/otlpEndpoint: http:\/\/collector:4317/'
 bad_cr "existing driver without a class" 's/driver: rook-ceph/driver: existing/'
@@ -338,5 +338,70 @@ printf -- '---\na: 1\n---\nb: 2\n' >"${WORK}/two.yaml"
 run_vws_real render "${WORK}/two.yaml" "${WORK}/x.yaml"; expect_rc "two documents exit 2" 2
 run_vws_real render "${WORK}/missing.yaml" "${WORK}/x.yaml"; expect_rc "a missing file exits 2" 2
 run_vws_real render "${EX}/ha.yaml"; expect_rc "a missing output argument exits 2" 2
+
+# popododo0720/vws-console-api#95: console-api holds sessions in memory, so it runs one replica in
+# every profile, and the CR, the chart schema and check_render.py refuse any other count.
+for profile in single-node small ha; do
+  got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/profiles/${profile}.yaml" --set services.network.flags.pool=198.18.0.0/24 |
+    python3 -c 'import sys,yaml; print([d["spec"]["replicas"] for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api"])')
+  expect_text "console-api: ${profile} renders one replica" "$got" "[1]"
+done
+python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); d["spec"]["services"]["console-api"]["replicas"]=4; yaml.safe_dump(d,sys.stdout)' "${EX}/ha.yaml" >"${WORK}/ca4.yaml"
+run_vws_real render "${WORK}/ca4.yaml" "${WORK}/x.yaml";  expect_rc "console-api: a CR with replicas 4 exits 2" 2
+expect_text "console-api: the CR error says why" "$ERR" "sessions in memory"
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console-api.replicas=2 >/dev/null 2>"${WORK}/ca.err"; then
+  bad "console-api: schema refuses 2" "rendered"; else expect_text "console-api: the schema refuses 2" "$(cat "${WORK}/ca.err")" "services.console-api.replicas"; fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console-api.autoscaling.enabled=true >/dev/null 2>&1; then
+  bad "console-api: schema refuses autoscaling" "rendered"; else ok "console-api: the schema refuses an autoscaling value"; fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console.replicas=1 >/dev/null 2>&1; then
+  bad "console: one replica still refused" "rendered"; else ok "console: other Deployments still need two replicas"; fi
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" >"${WORK}/ca.yaml"
+python3 - "${WORK}/ca.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+two = [dict(d, spec=dict(d["spec"], replicas=2)) if d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api" else d for d in docs]
+yaml.safe_dump_all(two, open(sys.argv[1] + ".two", "w"))
+hpa = {"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler", "metadata": {"name": "console-api", "namespace": "vws"},
+       "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "console-api"}, "maxReplicas": 3}}
+yaml.safe_dump_all(docs + [hpa], open(sys.argv[1] + ".hpa", "w"))
+PY
+cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/ca-values.yaml"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.two" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1 || true)
+expect_text "console-api: check_render refuses two replicas" "$out" "R4: Deployment console-api must have exactly one replica: sessions are held in memory"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.hpa" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1 || true)
+expect_text "console-api: check_render refuses an HPA" "$out" "R10: kind HorizontalPodAutoscaler is not a control-plane object"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1) && ok "console-api: the default render passes check_render" || bad "default render" "$out"
+
+# popododo0720/vws-console-api#137 (5b42eb7+): console-api answers 403 to sign-in and cookie
+# writes from any Origin it was not given, and vws cannot know the LoadBalancer address, so the
+# CR must name it. Needs a console-api image from #137 (5b42eb7) or later. vws-test: on a default
+# install (-iam=static) with -console-origins set to the console URL, the console works without
+# login (all 200).
+python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); del d["spec"]["services"]["console-api"]; yaml.safe_dump(d,sys.stdout)' "${EX}/small.yaml" >"${WORK}/noorigin.yaml"
+run_vws_real render "${WORK}/noorigin.yaml" "${WORK}/x.yaml"; expect_rc "console-origins: a CR without it exits 2" 2
+expect_text "console-origins: the CR error names the field" "$ERR" "spec.services.console-api.flags.console-origins: required"
+run_vws_real render "${EX}/small.yaml" "${WORK}/origin.yaml"; expect_rc "console-origins: the example renders" 0
+got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/origin.yaml" |
+  python3 -c 'import sys,yaml; print([a for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api" for a in d["spec"]["template"]["spec"]["containers"][0]["args"] if "origins" in a or "proxies" in a])')
+expect_text "console-origins: the flag reaches console-api" "$got" "['-console-origins=https://console.example.invalid']"
+# cr_case NAME VALUES: render the chart with these site values and run check_render.py on it.
+cr_case() {
+  printf '%s\n' "$2" >"${WORK}/cr-$1.yaml"
+  helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/cr-$1.yaml" >"${WORK}/cr-$1.out" 2>&1 || true
+  python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/cr-$1.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/cr-$1.yaml" 2>&1
+}
+pool='services: {network: {flags: {pool: 198.18.0.0/24}}'
+out=$(cr_case noorigin "${pool}}" || true)
+expect_text "console-origins: check_render refuses a render without it" "$out" "R15: console-api needs -console-origins"
+out=$(cr_case badorigin "${pool}, console-api: {flags: {console-origins: 'https://console.example/login'}}}" || true)
+expect_text "console-origins: check_render refuses an origin with a path" "$out" "'https://console.example/login' must be scheme://host[:port]"
+out=$(cr_case proxies "${pool}, console-api: {flags: {console-origins: 'https://a.example,http://10.0.0.5:8080', trusted-proxies: '10.0.0.0/8,192.0.2.1'}}}") &&
+  ok "console-origins/trusted-proxies: valid lists pass check_render" || bad "trusted-proxies valid" "$out"
+out=$(cr_case badproxies "${pool}, console-api: {flags: {console-origins: 'https://a.example', trusted-proxies: '10.0.0.0/33'}}}" || true)
+expect_text "trusted-proxies: check_render refuses a bad CIDR" "$out" "'10.0.0.0/33' is not an IP or CIDR"
+got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" | grep -c -- '-trusted-proxies' || true)
+expect_text "trusted-proxies: not passed by default" "$got" "0"
+got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string 'services.console-api.flags.trusted-proxies=10.0.0.0/8' | grep -c -- '-trusted-proxies=10.0.0.0/8' || true)
+expect_text "trusted-proxies: passed when set" "$got" "1"
 
 finish_tests

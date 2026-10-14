@@ -63,6 +63,10 @@ services:
       service: console-api
   console-api:
     external: true
+    # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
+    # split them (popododo0720/vws-console-api#95). The schema, check_render.py (R4) and vws render
+    # refuse any other count; the chart has no HPA. Change this only with shared session storage.
+    replicas: 1
     # apiCredentials: -console-token, -access-key and -secret are $(VAR) references to env
     # from secretKeyRef of existingSecret (keys console-token, access-key, secret-key) in the release
     # namespace, so no value is in values, args or the pod spec. -backend=grpc refuses to start
@@ -72,6 +76,15 @@ services:
     # Image defaults are -backend=fake and 127.0.0.1 listeners (vws-console-api
     # cmd/vws-console-api/main.go:40-50), so the default render served a fake cloud that the
     # Service could not reach (#84). Backend addresses are the in-namespace Service names.
+    # console-origins (required, no default; vws-console-api#137 / 5b42eb7+): the browser origin(s)
+    # of the console, comma-separated scheme://host[:port], such as https://console.example.
+    # Sign-in and cookie writes from any other Origin return 403. On a default install (-iam=static)
+    # Bearer calls still work when this is set to the console URL (vws-test: all 200, no login).
+    # The console Service is a LoadBalancer, so the address is only known to the operator: set
+    # spec.services.console-api.flags.console-origins. Needs a console-api image from #137
+    # (5b42eb7) or later (unknown -console-origins / -trusted-proxies refuse to start).
+    # trusted-proxies (optional, comma-separated IPs or CIDRs; in #137 / 5b42eb7+) is passed only
+    # when set.
     flags:
       backend: grpc
       console-addr: 0.0.0.0:8080

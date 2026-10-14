@@ -5,3 +5,6 @@ services:
   network:
     flags:
       pool: 198.18.0.0/24
+  console-api:
+    flags:
+      console-origins: https://console.example.invalid

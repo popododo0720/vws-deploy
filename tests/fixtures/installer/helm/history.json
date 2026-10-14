@@ -7,11 +7,11 @@
   {
     "revision": 2,
     "status": "superseded",
-    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"},\"services\":{\"network\":{\"flags\":{\"pool\":\"198.18.0.0/24\"}}},\"version\":\"v2\"}"
+    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"},\"services\":{\"network\":{\"flags\":{\"pool\":\"198.18.0.0/24\"}},\"console-api\":{\"flags\":{\"console-origins\":\"https://console.example.invalid\"}}},\"version\":\"v2\"}"
   },
   {
     "revision": 3,
     "status": "deployed",
-    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"},\"services\":{\"network\":{\"flags\":{\"pool\":\"198.18.0.0/24\"}}}}"
+    "description": "vws-spec:{\"profile\":\"single-node\",\"storage\":{\"driver\":\"rook-ceph\"},\"network\":{\"driver\":\"kube-ovn\"},\"services\":{\"network\":{\"flags\":{\"pool\":\"198.18.0.0/24\"}},\"console-api\":{\"flags\":{\"console-origins\":\"https://console.example.invalid\"}}}}"
   }
 ]
