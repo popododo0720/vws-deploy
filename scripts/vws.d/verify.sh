@@ -7,6 +7,8 @@
 #    "clusterUID": "kube-system namespace UID"}
 # clusterUID must equal vwsTest.kubeSystemUID in the map, else the result is refused (FAIL).
 # Only a pass on vws-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
+# Exit: 0 ok/warn, 1 a result refused (FAIL), 2 usage or invalid result/fingerprint ("FAIL: <reason>",
+# map unchanged; includes finishedAt > 5 min in the future), 3 map unreadable.
 # Changes local files only; never touches the cluster.
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(python3)
@@ -39,6 +41,10 @@ vws_cmd_main() {
   ((${#results[@]})) || vws_usage "verify --update-feature-map needs at least one RESULT.json"
   local out
   rc=0; out=$(python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" update "$map" "${results[@]}") || rc=$?
+  if ((rc == 2)); then # invalid input: one "FAIL: <reason>" line, nothing written
+    printf '%s\n' "$out"
+    exit 2
+  fi
   ((rc <= 1)) || vws_die_env "feature map ${map} is unreadable"
   while IFS=$'\t' read -r level name msg; do
     [[ -n $level ]] && vws_emit "$level" "$name" "$msg"
