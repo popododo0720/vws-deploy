@@ -224,6 +224,41 @@ if jq -e --arg u "docker://${pin}" 'any(.[]; .kind == "DataVolume" and .metadata
 if jq -e 'any(.[]; .kind == "DataSource" and .metadata.name == "ami-0123456789abcdef0" and .spec.source.pvc == {name: "ami-0123456789abcdef0", namespace: "vws-images"})' <<<"$docs" >/dev/null; then
   ok "seed: the DataSource points at the DataVolume claim"; else bad "seed DataSource" "$docs"; fi
 
+if jq -e 'any(.[]; .kind == "DataVolume" and .spec.storage.storageClassName == "ceph-block")' <<<"$docs" >/dev/null; then
+  ok "seed: rook-ceph puts the DataVolume in the class of vws-storage, not the cluster default (#238)"; else bad "seed class rook-ceph" "$docs"; fi
+
+# driver existing: the seeded DataVolume takes spec.storage.storageClass (#238).
+installer_scenario seed-image-existing
+jq '.spec.storage = {driver: "existing", storageClass: "fast-rbd"}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
+mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+run_vws_real apply --unattended;                 expect_rc "seed existing: the apply exits 0" 0
+dv=$(python3 -c '
+import json, sys
+for chunk in open(sys.argv[1]).read().split("--- create\n"):
+    chunk = chunk.strip()
+    if chunk.startswith("{"):
+        d = json.JSONDecoder().raw_decode(chunk)[0]
+        if d.get("kind") == "DataVolume": print(json.dumps(d))' "${VWS_FAKE_LOG}.stdin")
+if jq -e '.spec.storage.storageClassName == "fast-rbd"' <<<"$dv" >/dev/null; then
+  ok "seed existing: the DataVolume is in spec.storage.storageClass"; else bad "seed class existing" "$dv"; fi
+
+# No class in the values or the chart: the cluster default StorageClass, else none (#238).
+seed_class() (
+  set +eu
+  export VWS_ROOT="${WORK}/seedroot"
+  mkdir -p "${VWS_ROOT}/charts/vws"
+  echo '{}' >"${VWS_ROOT}/charts/vws/values.yaml"
+  echo '{}' >"${WORK}/seed-values.yaml"
+  vws_emit() { :; }; vws_die_env() { echo "DIE $*"; exit 1; }
+  vws_kubectl() { cat "$1"; }
+  eval "$(sed -n '/^vws_seed_image_class() {/,/^}/p' "${VWS_TEST_ROOT}/scripts/vws.d/apply.sh" | sed 's/vws_kubectl get storageclass -o json/vws_kubectl "$SC_JSON"/')"
+  vws_seed_image_class "${WORK}/seed-values.yaml"
+)
+SC_JSON="${FIXTURES}/installer/kubectl/get_storageclass.json"
+if [[ $(SC_JSON=$SC_JSON seed_class) == local-path ]]; then ok "seed fallback: the cluster default StorageClass"; else bad "seed fallback default" "$(SC_JSON=$SC_JSON seed_class)"; fi
+echo '{"items":[]}' >"${WORK}/no-sc.json"
+if [[ -z $(SC_JSON="${WORK}/no-sc.json" seed_class) ]]; then ok "seed fallback: no default class, no storageClassName"; else bad "seed fallback none" "$(SC_JSON="${WORK}/no-sc.json" seed_class)"; fi
+
 installer_scenario seed-image-exists
 echo 'Error from server (AlreadyExists): already exists' >"${VWS_FAKE_DIR}/kubectl/create_.fail"
 run_vws_real apply --unattended;                 expect_rc "seed exists: the apply exits 0" 0
