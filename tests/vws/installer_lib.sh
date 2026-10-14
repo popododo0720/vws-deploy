@@ -4,12 +4,11 @@ GROUP=$(sed -n 's/^  group: //p' "${VWS_TEST_ROOT}/charts/vws/crds/vwsclusters.y
 export VWS_SOURCE_CHECKS=0
 INSTALLER_REAL_HELM=$(command -v helm)
 
-# installer_template [CR_JSON_FILTER]: the fake helm answers "template" with the real chart rendered
-# from the scenario CR, so the check_render.py gate of vws apply and reconfigure (#246) sees real
-# manifests. installer_scenario calls it; a test that edits the CR calls it again.
+# installer_template: the fake helm answers "template" with the real chart rendered from the
+# scenario CR as kubectl/get_vwsclusters.json holds it, so the check_render.py gate of vws apply
+# and reconfigure (#246) sees real manifests. installer_scenario calls it; a test that edits the CR calls it again.
 installer_template() {
-  jq "${1:-.}" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/tmpl-cr.json"
-  python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/render.py" "${WORK}/tmpl-cr.json" "${WORK}/tmpl-values.yaml"
+  python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/render.py" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" "${WORK}/tmpl-values.yaml"
   "$INSTALLER_REAL_HELM" template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/tmpl-values.yaml" >"${VWS_FAKE_DIR}/helm/template.json"
 }
 
