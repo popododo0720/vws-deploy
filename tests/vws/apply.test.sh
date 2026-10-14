@@ -216,6 +216,7 @@ set +e; python3 "$AS" manifest x bogus >/dev/null 2>&1; rc=$?; set -e
 if ((rc == 2)); then ok "an unknown Secret kind exits 2"; else bad "unknown kind" "rc ${rc}"; fi
 installer_scenario iam-kek
 jq '.spec.services.iam = {enabled: true}' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json" && mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+installer_template
 run_vws_real apply --unattended; expect_rc "apply with iam enabled exits 0" 0
 expect_text "the KEK Secret is created" "$OUT" "created Secret vws-iam-kek"
 kek=$(sed -n '/^--- create$/,/^$/p' "${VWS_FAKE_LOG}.stdin" | grep '"vws-iam-kek"' | jq -r .stringData.kek)
