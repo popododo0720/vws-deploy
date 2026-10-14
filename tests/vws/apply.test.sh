@@ -177,7 +177,7 @@ if jq -e '.kind == "Secret" and .metadata.name == "vws-console-api-credentials" 
   and (.stringData["console-token"] | length) >= 43 and (.stringData["secret-key"] | length) >= 43
   and (.stringData["access-key"] | test("^VWS[A-Z0-9]{17}$"))' <<<"$manifest" >/dev/null; then
   ok "the Secret has the three keys console-api reads, random and long"; else bad "Secret manifest shape" "(not printed: holds values)"; fi
-create_line=$(grep -n $'^kubectl\tcreate' "$VWS_FAKE_LOG" | cut -d: -f1)
+create_line=$(grep -n $'^kubectl\tcreate' "$VWS_FAKE_LOG" | grep -e "--namespace=vws " | head -1 | cut -d: -f1)
 helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
 if [[ -n $create_line && -n $helm_line ]] && ((create_line < helm_line)); then ok "the Secret is created before helm"; else bad "Secret before helm" "$(calls)"; fi
 if grep $'^kubectl\tcreate' "$VWS_FAKE_LOG" | grep -q -e '--namespace=vws'; then ok "the Secret goes to the release namespace"; else bad "Secret namespace" "$(grep $'^kubectl\tcreate' "$VWS_FAKE_LOG")"; fi
@@ -200,5 +200,41 @@ echo 'Error from server (Forbidden): secrets is forbidden' >"${VWS_FAKE_DIR}/kub
 run_vws_real apply --unattended;                 expect_rc "a refused Secret exits 3" 3
 expect_text "a refused Secret is named" "$ERR" "cannot create Secret vws-console-api-credentials"
 if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "a refused Secret stops before helm" "$(calls)"; else ok "a refused Secret stops before helm"; fi
+
+# The default image (#232): after the chart, a DataVolume and a DataSource ami-0123456789abcdef0 in
+# the images namespace, created only when missing; the DataSource points at the DataVolume's claim.
+installer_scenario seed-image
+run_vws_real apply --unattended;                 expect_rc "seed: the apply exits 0" 0
+expect_text "seed: the DataVolume is created" "$OUT" "created DataVolume vws-images/ami-0123456789abcdef0"
+expect_text "seed: the DataSource is created" "$OUT" "created DataSource vws-images/ami-0123456789abcdef0"
+first_helm=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | cut -d: -f1)
+seed_line=$(grep -n $'^kubectl\tcreate' "$VWS_FAKE_LOG" | grep -e '--namespace=vws-images' | head -1 | cut -d: -f1)
+if [[ -n $seed_line ]] && ((seed_line > first_helm)); then ok "seed: after the bundle and the chart"; else bad "seed order" "$(calls)"; fi
+docs=$(python3 -c '
+import json, sys
+out = []
+for chunk in open(sys.argv[1]).read().split("--- create\n"):
+    chunk = chunk.strip()
+    if chunk.startswith("{"):
+        out.append(json.JSONDecoder().raw_decode(chunk)[0])
+print(json.dumps(out))' "${VWS_FAKE_LOG}.stdin")
+pin=$(sed -n 's/^LAB_VM_IMAGE=//p' "${VWS_TEST_ROOT}/scripts/versions.env")
+if jq -e --arg u "docker://${pin}" 'any(.[]; .kind == "DataVolume" and .metadata.name == "ami-0123456789abcdef0" and .metadata.namespace == "vws-images" and .spec.source.registry.url == $u)' <<<"$docs" >/dev/null; then
+  ok "seed: the DataVolume imports the pinned LAB_VM_IMAGE"; else bad "seed DataVolume" "$docs"; fi
+if jq -e 'any(.[]; .kind == "DataSource" and .metadata.name == "ami-0123456789abcdef0" and .spec.source.pvc == {name: "ami-0123456789abcdef0", namespace: "vws-images"})' <<<"$docs" >/dev/null; then
+  ok "seed: the DataSource points at the DataVolume claim"; else bad "seed DataSource" "$docs"; fi
+
+installer_scenario seed-image-exists
+echo 'Error from server (AlreadyExists): already exists' >"${VWS_FAKE_DIR}/kubectl/create_.fail"
+run_vws_real apply --unattended;                 expect_rc "seed exists: the apply exits 0" 0
+expect_text "seed exists: the DataVolume is kept" "$OUT" "kept DataVolume vws-images/ami-0123456789abcdef0"
+expect_text "seed exists: the DataSource is kept" "$OUT" "kept DataSource vws-images/ami-0123456789abcdef0"
+if grep $'^kubectl' "$VWS_FAKE_LOG" | grep -e 'vws-images' | grep -q -v $'^kubectl\tcreate'; then
+  bad "seed exists: no overwrite" "$(calls)"; else ok "seed exists: only create, never apply, replace or delete"; fi
+
+installer_scenario seed-image-dry-run
+run_vws_real --dry-run apply;                    expect_rc "seed dry-run: exits 0" 0
+assert_no_changes "seed dry-run: changes nothing"
+expect_text "seed dry-run: says what it would create" "$OUT" "would create DataSource vws-images/ami-0123456789abcdef0 if it is missing"
 
 finish_tests
