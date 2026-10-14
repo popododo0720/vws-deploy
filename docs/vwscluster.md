@@ -21,7 +21,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | 필드 | 값 | values로 |
 | --- | --- | --- |
 | `spec.profile` | `single-node`, `small`, `ha` (필수) | `profiles/<값>.yaml`을 바탕으로 쓴다 |
-| `spec.version` | 이미지 태그, 비면 차트 appVersion | `global.tag` |
+| `spec.version` | 이미지 태그, 비면 차트 appVersion. `services.<이름>.imageTag`가 있는 서비스(지금은 console-api)는 움직이지 않는다 | `global.tag` |
 | `spec.storage.driver` | `rook-ceph`(기본), `existing`, `nfs` | `existing`이면 `global.storageClass`와 storage의 `kube-class-standard`, `kube-class-ssd`. `nfs`이면 두 클래스가 `vws-nfs`, `kube-volume-mode=Filesystem`, `kube-snapshot-class=`(빈 값, 스냅숏 없음). 상태 볼륨은 기본 클래스에 남는다 |
 | `spec.storage.storageClass` | `existing`일 때 필수, 아니면 금지(범용 CSI 드라이버는 모두 `existing`이다) | 위와 같음 |
 | `spec.storage.volumeMode` | `existing`일 때만, `Block`(기본) 또는 `Filesystem` | `Filesystem`이면 `kube-volume-mode=Filesystem`과 storage의 `datavolumes.cdi.kubevirt.io` 권한(vws-storage#73) |
@@ -87,4 +87,8 @@ spec:
 - `scripts/check_render.py` R15: `-console-origins`가 없거나 항목이 `scheme://host[:port]`가 아니면 거절, `-trusted-proxies` 항목이 IP/CIDR가 아니면 거절.
 - `-trusted-proxies`는 값이 있을 때만 넘긴다. #137(5b42eb7)부터 `-console-origins`와 함께 지원한다.
 - 이 차트는 console-api 이미지 #137(5b42eb7) 이상이 필요하다. 그 전 이미지는 모르는 플래그 `-console-origins`(그리고 설정했다면 `-trusted-proxies`)로 시작하지 못한다.
+- 이미지 고정(#280): `charts/vws/values.yaml`의 `services.console-api.imageTag: sha-5b42eb7`이 console-api만 `ghcr.io/popododo0720/vws/console-api:sha-5b42eb7`로 고정한다. 다른 서비스는 그대로 `global.tag` → appVersion이다. 스키마는 태그 모양(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)만 본다.
+  - 이 태그는 vws-console-api의 `publish.yml`(main 푸시마다 ko로 `sha-<커밋 7자>`, 라벨 `org.opencontainers.image.revision=<전체 SHA>`)이 5b42eb7에 대해 돈 뒤에만 있다: 워크플로가 머지된 뒤 `workflow_dispatch`에 `ref=5b42eb7`을 넣어 한 번 돌린다. 그 전에는 이 차트로 새로 설치하면 이미지를 받지 못한다(확인 필요: 발행 후 vws-test에서 pull 확인).
+  - 5b42eb7을 고른 이유: vws-test에서 이 차트(c1f377b)와 함께 실측한 빌드다(#267). 더 새 main 커밋으로 옮길 때는 그 커밋이 발행된 뒤 `imageTag`만 바꾸고 vws-test에서 다시 잰다.
+  - 패키지 공개 여부는 워크플로가 바꾸지 않는다. 비공개면 노드에 pull 자격 증명이 필요하다(확인 필요).
 - vws-test 실측: 기본 설치(`-iam=static`)에서 `-console-origins`를 콘솔 공개 주소로 두면 로그인 없이 콘솔 API가 모두 200이다. 필수여도 기본 설치를 막지 않는다.
