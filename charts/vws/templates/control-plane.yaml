@@ -11,8 +11,10 @@ Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
 */}}
 {{- $namespaces := dict }}
 {{- range $name := keys .Values.services | sortAlpha }}
+  {{- if ne (index $.Values.services $name).enabled false }}
   {{- range (index $.Values.services $name).rbac }}
     {{- if and .namespace (ne .namespace "release") }}{{ $_ := set $namespaces (include "vws.ns" (dict "root" $ "key" .namespace)) true }}{{ end }}
+  {{- end }}
   {{- end }}
 {{- end }}
 {{- range $ns := keys $namespaces | sortAlpha }}
@@ -28,6 +30,8 @@ metadata:
 {{- end }}
 {{- range $name := keys .Values.services | sortAlpha }}
 {{- $spec := index $.Values.services $name }}
+{{- /* enabled false: a service whose image is not published yet stays out of the render (#243). */}}
+{{- if ne $spec.enabled false }}
 {{- $stateful := hasKey $spec "state" }}
 {{- $replicas := $spec.replicas | default (ternary 1 2 $stateful) }}
 {{- $port := int ($spec.port | default 8080) }}
@@ -61,7 +65,7 @@ renamed service, release namespace or port moves with it. */}}
   {{- $targetSecret := required (printf "services.%s.apiClient.service %s has no apiCredentials.existingSecret" $name .service) (($target.apiCredentials | default dict).existingSecret) }}
   {{- $apiClient = dict "url" (printf "http://%s.%s.svc:%d" .service $.Release.Namespace (int ($target.port | default 8080))) "secret" $targetSecret }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "apiSecret" $apiSecret "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -275,5 +279,31 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- with $spec.allowFrom }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vws.selector" $ctx | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range . }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ . }}
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+        {{- end }}
+      ports:
+        - port: http
+{{- end }}
 {{- end }}
 {{- end }}
