@@ -16,6 +16,10 @@
 - **부트스트랩(루트/관리자 사용자, 기존 `vws-console-api-credentials` 키 가져오기, `vws-initial-admin` 비밀번호)**: vws-iam API(vws-iam#3)가 있어야 부를 수 있다. 계획: `vws apply`가 helm 뒤에 vws-iam이 Ready면 클러스터 안에서 한 번 실행하는 Job으로 처리하고, 비밀은 Secret 참조로만 넘긴다. 이미 있으면 아무것도 하지 않는다.
 - **console-api 연결**: #243 범위가 아니다(vws-console-api#121).
 
+## apply와 check_render
+
+`vws apply`는 helm/Secret에 손대기 전에 렌더한 values로 `helm template`과 `check_render.py`를 돌린다(#246). `spec.services.iam.enabled: true`이면 차트에 Deployment `iam`이 있어야 게이트를 통과한다. 테스트 하니스의 fake helm은 시나리오 CR로 미리 렌더한 `helm/template.json`을 쓰므로, 테스트가 CR로 iam을 켠 뒤에는 `installer_template`을 다시 호출해야 한다(`tests/vws/installer_lib.sh`).
+
 ## 확인 필요
 
 - vws-test 설치 증거 없음(이미지 없음).
