@@ -48,6 +48,7 @@ vws_cmd_main() {
     [[ $driver != existing ]] || class=$(vws_init_ask "StorageClass to use" "")
     version=$(vws_init_ask "image tag (empty: chart appVersion)" "")
     pool=$(vws_init_ask "elastic IP pool CIDR (required)" "")
+    origins=$(vws_init_ask "public console URL, such as https://console.example (required)" "")
     {
       printf 'apiVersion: %s/v1alpha1\nkind: VWSCluster\nmetadata:\n  name: vws\n  namespace: %s\nspec:\n' "$(vws_api_group)" "$VWS_NAMESPACE"
       printf '  profile: %s\n' "$profile"
@@ -55,7 +56,9 @@ vws_cmd_main() {
       printf '  storage:\n    driver: %s\n' "$driver"
       [[ -z $class ]] || printf '    storageClass: %s\n' "$class"
       printf '  network:\n    driver: kube-ovn\n'
-      [[ -z $pool ]] || printf '  services:\n    network:\n      flags:\n        pool: %s\n' "$pool"
+      printf '  services:\n'
+      [[ -z $pool ]] || printf '    network:\n      flags:\n        pool: %s\n' "$pool"
+      [[ -z $origins ]] || printf '    console-api:\n      flags:\n        console-origins: %s\n' "$origins"
     } >"$file"
   fi
   if ! python3 "${VWS_ROOT}/scripts/vws.d/lib/render.py" "$file" /dev/null; then

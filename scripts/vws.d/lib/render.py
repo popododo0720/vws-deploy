@@ -397,6 +397,9 @@ def render(cr):
     for name, override in sorted((spec.get("services") or {}).items()):
         if name not in base["services"]:
             raise Invalid(f"spec.services.{name}: not a service in charts/vws/values.yaml")
+        if name == "console-api" and "replicas" in override and override["replicas"] != 1:
+            raise Invalid("spec.services.console-api.replicas: must be 1; console-api holds sessions in memory "
+                          "(popododo0720/vws-console-api#95)")
         target = services.setdefault(name, {})
         for key in ("enabled", "replicas", "cpu", "memory"):
             if key in override:
@@ -406,6 +409,12 @@ def render(cr):
     external_flags(spec.get("network") or {}, services)
     mtu_flag(spec.get("network") or {}, services)
     direct_flags(spec.get("network") or {}, services, base)
+    origins = ((services.get("console-api") or {}).get("flags") or {}).get("console-origins") or \
+        ((base["services"].get("console-api") or {}).get("flags") or {}).get("console-origins")
+    if not origins:
+        raise Invalid("spec.services.console-api.flags.console-origins: required; the public console URL such as "
+                      "https://console.example (popododo0720/vws-console-api#137: sign-in and writes from any other "
+                      "Origin return 403). The console Service is a LoadBalancer, so vws cannot know its address")
     pool = (((services.get("network") or {}).get("flags") or {}).get("pool")
              or base["services"]["network"].get("flags", {}).get("pool"))
     if not pool:
