@@ -34,3 +34,4 @@
 - 정본을 바꿀 때: vws-deploy PR에서 스크립트를 고치고 `(cd scripts && sha256sum guard-agents.sh > guard-agents.sh.sha256)`로 해시를 같은 커밋에 갱신한다. vws-deploy의 `scripts/guard.sh agents`(R13)가 둘이 어긋나면 실패한다. 머지 뒤 각 레포에 두 파일을 그대로 복사하는 PR을 연다.
 - 한계: 해시 파일도 레포 안에 있으므로 두 파일을 함께 고친 사본은 이 검사를 통과한다. 이것은 실수로 생긴 차이를 잡는다. 의도적인 변경까지 막으려면 CI가 vws-deploy main의 해시를 직접 읽어야 하고, 그러려면 private 레포를 읽는 토큰이 필요하다(확인 필요).
 - `rules [FILE] [HEADING]`(별칭 `judgment`)은 규칙표의 모든 행에 강제 수단이 있는지 보고 Judgment 행 수를 출력한다. 제목은 인자, `GUARD_RULES_HEADING`, 또는 파일에 있는 `## Rules`/`## 규칙표` 순으로 정한다.
+- `archtest [FILE] [HEADING]`은 아키텍처 테스트를 부르는 통합 명령이다. `rules`의 Judgment 행 수 줄(`rules: 50 rows, 2 Judgment`)을 먼저 출력하고, `go test -v -count=1 ${GUARD_ARCHTEST_PKG:-./internal/archtest/...}`를 돌린다. 테스트가 실패해도 CI 로그에 행 수가 남는다. 디렉터리가 없는 레포는 그 사실을 출력하고 통과한다. 각 레포 CI는 `go test ./internal/archtest/...` 대신 `scripts/guard-agents.sh archtest`를 부른다(vws-network#99).
