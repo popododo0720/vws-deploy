@@ -372,8 +372,11 @@ out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.hpa" "
 expect_text "console-api: check_render refuses an HPA" "$out" "R10: kind HorizontalPodAutoscaler is not a control-plane object"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1) && ok "console-api: the default render passes check_render" || bad "default render" "$out"
 
-# popododo0720/vws-console-api#137: console-api answers 403 to sign-in and cookie writes from any
-# Origin it was not given, and vws cannot know the LoadBalancer address, so the CR must name it.
+# popododo0720/vws-console-api#137 (5b42eb7+): console-api answers 403 to sign-in and cookie
+# writes from any Origin it was not given, and vws cannot know the LoadBalancer address, so the
+# CR must name it. Needs a console-api image from #137 (5b42eb7) or later. vws-test: on a default
+# install (-iam=static) with -console-origins set to the console URL, the console works without
+# login (all 200).
 python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); del d["spec"]["services"]["console-api"]; yaml.safe_dump(d,sys.stdout)' "${EX}/small.yaml" >"${WORK}/noorigin.yaml"
 run_vws_real render "${WORK}/noorigin.yaml" "${WORK}/x.yaml"; expect_rc "console-origins: a CR without it exits 2" 2
 expect_text "console-origins: the CR error names the field" "$ERR" "spec.services.console-api.flags.console-origins: required"
