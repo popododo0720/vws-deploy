@@ -10,6 +10,7 @@
 | --- | --- | --- | --- |
 | `Get`, `Create`, `Delete`, `Patch`(merge), `List` | `kubevirt.io` virtualmachines | get, create, delete, patch, list | VM 네임스페이스 `Config.Namespace` |
 | `Get`(READY 판정, vws-compute#50), `Delete`(재부팅 시) | `kubevirt.io` virtualmachineinstances | get, delete | VM 네임스페이스 |
+| `Create`(VM 생성 전), `Get`/`Update`(생성 재시도), `Delete`(destroy, VM 다음): cloud-init Secret `<instance>-cloudinit`(vws-compute#73, `userDataSecretRef`) | `""` secrets | get, create, update, delete | VM 네임스페이스. list/watch 없음(compute는 캐시 없는 `client.New`). `resourceNames`로 묶지 않는다: 이름이 인스턴스마다 다르고, RBAC은 create를 이름으로 제한하지 못한다. 그래서 이 Role은 VM 네임스페이스의 모든 Secret을 읽고 고치고 지울 수 있다. compute는 자기 managed 라벨이 붙은 Secret만 건드린다(코드 보장, RBAC 보장 아님). VM 네임스페이스에 다른 Secret을 두지 않는다 |
 | `Get`, `Create`, `Delete` | `cdi.kubevirt.io` datavolumes, datasources | get, create, delete | 이미지 네임스페이스 `Config.ImageNamespace` |
 | `Get`(`checkAttachable`, 헬스 프로브) | persistentvolumeclaims | get | VM 네임스페이스(#121) |
 | `Get`(용량 읽기, 헬스 프로브) | persistentvolumeclaims | get | 이미지 네임스페이스 |
