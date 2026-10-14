@@ -81,6 +81,7 @@ make vws-test                          # 하네스(가짜 kubectl, helm)
 | `release` | helm 릴리스 `vws`가 `pending-*`/`failed`면 | FAIL |
 | `source` | 체크아웃이면 `guard.sh bundle`, `recovery`, `config` | FAIL. `VWS_SOURCE_CHECKS=0`이면 건너뜀(하네스) |
 | `node-network`, `node-ip/<노드>`, `node-links/<노드>` | 클러스터의 VWSCluster `spec.network.nodes`(#128, `lib/nodenet.py`). 노드 InternalIP가 management CIDR 안인지. `--links FILE`(`talosctl -n <모든 노드> get links -o json`)이 있으면 노드마다 호스트 망 인터페이스(`<nic>` 또는 `<nic>.<vlan>`)와 underlay NIC이 있고 MTU가 CR 값 이상인지 | IP 밖, 인터페이스 없음, MTU 부족, 노드가 links에 없음은 FAIL. `--links`가 없으면 `node-links` WARN(미확인). CR이 없거나 `nodes`가 없으면 OK |
+| `vm-mtu`, `vm-mtu-set` | 터널 NIC MTU(`--links`에서 노드 중 최솟값, 없으면 `spec.network.underlayMTU`)가 VM MTU(`vmMTU`, 없으면 9001) + 터널 오버헤드 이상인지(#236). 9216 미만이면 OK 메시지에 권장값을 적는다 | 부족하면 WARN이고 낮춘 `spec.network.vmMTU`와 읽은 `underlayMTU`를 VWSCluster `vws`에 `kubectl patch`로 쓴다(`vm-mtu-set` OK, 거절되면 WARN과 `vws reconfigure` 안내). preflight가 쓰는 것은 이 두 필드뿐이고 NIC MTU는 건드리지 않는다. 근거가 없으면 `vm-mtu` WARN(미확인) |
 
 FAIL이 하나라도 있으면 1, `--strict`이면 WARN도 1, 평가 불가면 3. 하네스 `tests/vws/preflight.test.sh`는 `tests/fixtures/preflight/ok`를 시나리오마다 한 파일씩 바꿔 검사별 통과/실패를 본다.
 
