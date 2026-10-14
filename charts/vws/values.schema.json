@@ -168,6 +168,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "imageTag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+          "description": "Image tag of this service only; overrides global.tag and Chart appVersion (vws-deploy#280)."
+        },
         "port": {
           "type": "integer",
           "minimum": 1024,
