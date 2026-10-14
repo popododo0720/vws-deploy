@@ -10,7 +10,7 @@
 VWS_NEED=(python3)
 
 vws_cmd_main() {
-  local mode= map="${VWS_ROOT}/docs/feature-map.json" results=() line level name msg rc
+  local mode='' map="${VWS_ROOT}/docs/feature-map.json" results=() line level name msg rc
   while (($#)); do
     case $1 in
       --update-feature-map) mode=update; shift ;;
