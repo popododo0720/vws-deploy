@@ -177,16 +177,41 @@ PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
 # issue automatically, so closing keywords are banned outright. Telling a parent issue from a
 # leaf would need the GitHub API (sub-issues or a tracking label) in every hook and run; a
 # plain ban needs no token, works offline and cannot be fooled by a missing label.
+# The text a reader sees: HTML comments (<!-- -->, also across lines) and fenced code blocks
+# (``` or ~~~) are removed, so a "Part of #N" hidden there does not count.
+visible_text() {
+  awk '
+    {
+      line = $0; out = ""
+      if (!incom && line ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; next }
+      if (fence) next
+      while (1) {
+        if (incom) {
+          i = index(line, "-->"); if (!i) { line = ""; break }
+          line = substr(line, i + 3); incom = 0
+        } else {
+          i = index(line, "<!--"); if (!i) { out = out line; break }
+          out = out substr(line, 1, i - 1); line = substr(line, i + 4); incom = 1
+        }
+      }
+      print out
+    }'
+}
+
 cmd_pr_body() {
-  local body=${PR_BODY:-}
+  local body=${PR_BODY:-} seen
   if [[ -n ${1:-} ]]; then
     [[ -f $1 ]] || die "pr-body: ${1} does not exist"
     body=$(cat "$1")
   fi
-  ! grep -q -i -E "$CLOSING_RE" <<<"$body" ||
+  seen=$(visible_text <<<"$body")
+  # Closing keywords are checked in the raw text and in the visible text, so hiding one in a
+  # comment or fence never makes a body pass that would otherwise fail.
+  if grep -q -i -E "$CLOSING_RE" <<<"$body" || grep -q -i -E "$CLOSING_RE" <<<"$seen"; then
     die "pr-body: do not close issues from a pull request (found Closes/Fixes/Resolves #N); write 'Part of #N'"
-  grep -q -i -E "$PART_OF_RE" <<<"$body" ||
-    die "pr-body: the pull request text needs 'Part of #N'"
+  fi
+  grep -q -i -E "$PART_OF_RE" <<<"$seen" ||
+    die "pr-body: the pull request text needs 'Part of #N' outside HTML comments and code fences"
 }
 
 cmd_commit_msg() {
@@ -194,8 +219,9 @@ cmd_commit_msg() {
   [[ -n $file && -f $file ]] || die "commit-msg: needs the message file"
   # Lines starting with # are git's comments and never reach the commit.
   msg=$(grep -v '^#' "$file" || true)
-  ! grep -q -i -E "$CLOSING_RE" <<<"$msg" ||
+  if grep -q -i -E "$CLOSING_RE" <<<"$msg" || grep -q -i -E "$CLOSING_RE" <<<"$(visible_text <<<"$msg")"; then
     die "commit-msg: do not close issues from a commit (found Closes/Fixes/Resolves #N); write 'Part of #N'"
+  fi
 }
 
 cmd_pr_commits() {
@@ -364,6 +390,34 @@ fixes acme/repo#7" bash "$0" pr-body
   expect_fail "Part of without number" env PR_BODY="Part of the gap" bash "$0" pr-body
   expect_fail "Part of #TBD in a pull request" env PR_BODY="Part of #TBD" bash "$0" pr-body
 
+  expect_fail "Part of only in an HTML comment" env PR_BODY="<!-- Part of #12 -->" bash "$0" pr-body
+  expect_fail "Part of only in a multi-line HTML comment" env PR_BODY="intro
+<!--
+Part of #12
+-->
+outro" bash "$0" pr-body
+  expect_fail "Part of only in a backtick fence" env PR_BODY="intro
+\`\`\`
+Part of #12
+\`\`\`" bash "$0" pr-body
+  expect_fail "Part of only in a tilde fence" env PR_BODY="~~~text
+Part of #12
+~~~" bash "$0" pr-body
+  expect_fail "Part of only in an unclosed fence" env PR_BODY="\`\`\`
+Part of #12" bash "$0" pr-body
+  expect_pass "Part of after a closed comment on the same line" env PR_BODY="<!-- note --> Part of #12" bash "$0" pr-body
+  expect_pass "Part of after a fence" env PR_BODY="\`\`\`
+code
+\`\`\`
+Part of #12" bash "$0" pr-body
+  expect_fail "Closes hidden in an HTML comment" env PR_BODY="Part of #3 <!-- Closes #12 -->" bash "$0" pr-body
+  expect_fail "Closes hidden in a fence" env PR_BODY="Part of #3
+\`\`\`
+Closes #12
+\`\`\`" bash "$0" pr-body
+  expect_fail "Closes split around a comment" env PR_BODY="Part of #3 Closes<!-- x --> #12" bash "$0" pr-body
+  printf 'ci: x\n\nPart of #3 Fixes<!-- --> #12\n' >"$tmp/msg-hidden"
+  expect_fail "commit-msg Fixes split around a comment" cmd_commit_msg "$tmp/msg-hidden"
   printf 'ci: x\n\nPart of #12\n' >"$tmp/msg-ok"
   expect_pass "commit with Part of #N" cmd_commit_msg "$tmp/msg-ok"
   printf 'ci: x\n\nPart of #TBD\n' >"$tmp/msg-tbd"
