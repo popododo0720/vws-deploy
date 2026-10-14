@@ -8,15 +8,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 map="${WORK}/fm/feature-map.json"
 mkdir -p "${WORK}/fm"
 cat >"$map" <<'JSON'
-{"features": [
+{"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
   {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": "ec2-keypair"},
   {"feature": "STS", "repo": "vws-iam", "issue": "vws-iam#5", "scenario": "sts-assume-role", "lastPass": "2026-10-14T00:00:00Z", "evidence": "old"},
   {"feature": "Console login", "repo": "vws-console", "scenario": null}
 ]}
 JSON
-result() { # FILE SCENARIO RESULT CLUSTER TIME
-  jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" \
-    '{scenario: $s, result: $r, cluster: $c, finishedAt: $t, evidence: "https://example.invalid/\($s)"}' >"${WORK}/fm/$1"
+result() { # FILE SCENARIO RESULT CLUSTER TIME [CLUSTER_UID]
+  jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" --arg u "${6-uid-vws-test}" \
+    '{scenario: $s, result: $r, cluster: $c, finishedAt: $t, clusterUID: $u, evidence: "https://example.invalid/\($s)"}' >"${WORK}/fm/$1"
 }
 result pass.json ec2-keypair pass vws-test 2026-10-14T06:30:00Z
 result fail.json sts-assume-role fail vws-test 2026-10-14T07:00:00Z
@@ -44,6 +44,23 @@ echo '{"scenario": "x"}' >"${WORK}/fm/bad.json"
 run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/bad.json"; expect_rc "an unreadable result fails" 1
 run_vws_real verify --update-feature-map --map "$map"; expect_rc "no result file is a usage error" 2
 run_vws_real verify; expect_rc "no mode is a usage error" 2
+
+# Provenance: a hand-written result without clusterUID, or with another cluster's UID, is refused.
+before=$(cat "$map")
+jq -n '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: "2026-10-20T00:00:00Z", evidence: "forged"}' >"${WORK}/fm/nouid.json"
+result baduid.json ec2-keypair pass vws-test 2026-10-20T00:00:00Z uid-elsewhere
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/nouid.json"; expect_rc "a result without clusterUID is refused" 1
+expect_text "missing clusterUID is reported" "$OUT" "clusterUID None does not match the vws-test fingerprint; refused"
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/baduid.json"; expect_rc "a mismatched clusterUID is refused" 1
+expect_text "mismatched clusterUID is reported" "$OUT" "clusterUID 'uid-elsewhere' does not match"
+if [[ $(cat "$map") == "$before" ]]; then ok "refused results leave the map unchanged"; else bad "map unchanged" "$(cat "$map")"; fi
+jq '.vwsTest.kubeSystemUID = null' "$map" >"${WORK}/fm/nofp.json"
+result good.json ec2-keypair pass vws-test 2026-10-20T00:00:00Z
+run_vws_real verify --update-feature-map --map "${WORK}/fm/nofp.json" "${WORK}/fm/good.json"; expect_rc "no configured fingerprint refuses every result" 1
+expect_text "unconfigured fingerprint is reported" "$OUT" "no vws-test fingerprint"
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/good.json"; expect_rc "a matching clusterUID is accepted" 0
+if jq -e '.features[0].lastPass == "2026-10-20T00:00:00Z" and .vwsTest.kubeSystemUID == "uid-vws-test"' "$map" >/dev/null; then
+  ok "a matching clusterUID records the pass and keeps the fingerprint"; else bad "matching pass" "$(cat "$map")"; fi
 
 # The repository's own map renders to the committed md.
 run_vws_real verify --check-feature-map; expect_rc "docs/feature-map.md is current" 0

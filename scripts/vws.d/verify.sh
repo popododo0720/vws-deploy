@@ -3,7 +3,9 @@
 # Sourced by scripts/vws. Usage: vws verify --update-feature-map [--map FILE] RESULT.json...
 #        vws verify --check-feature-map [--map FILE]
 # vws-deploy#252. RESULT.json is a scenario result:
-#   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence": "link"}
+#   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence": "link",
+#    "clusterUID": "kube-system namespace UID"}
+# clusterUID must equal vwsTest.kubeSystemUID in the map, else the result is refused (FAIL).
 # Only a pass on vws-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
 # Changes local files only; never touches the cluster.
 # shellcheck disable=SC2034 # read by scripts/vws
