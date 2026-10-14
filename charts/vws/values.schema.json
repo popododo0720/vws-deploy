@@ -172,6 +172,10 @@
         "external": {
           "type": "boolean"
         },
+        "portEnv": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$"
+        },
         "rbac": {
           "type": "array",
           "minItems": 1,

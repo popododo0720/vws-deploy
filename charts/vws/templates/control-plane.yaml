@@ -61,7 +61,7 @@ renamed service, release namespace or port moves with it. */}}
   {{- $targetSecret := required (printf "services.%s.apiClient.service %s has no apiCredentials.existingSecret" $name .service) (($target.apiCredentials | default dict).existingSecret) }}
   {{- $apiClient = dict "url" (printf "http://%s.%s.svc:%d" .service $.Release.Namespace (int ($target.port | default 8080))) "secret" $targetSecret }}
 {{- end }}
-{{- $ctx := dict "apiSecret" $apiSecret "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "apiSecret" $apiSecret "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
