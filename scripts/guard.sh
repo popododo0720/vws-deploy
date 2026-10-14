@@ -472,6 +472,7 @@ PY
 cmd_agents() {
   scripts/guard-agents.sh agents AGENTS.md || die "R13: AGENTS.md lost the Insider-risk guardrails"
   scripts/guard-agents.sh selftest >/dev/null || die "R13: scripts/guard-agents.sh accepted a bad input"
+  scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
   grep -q 'guard-agents.sh pr-base' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the base"
   grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Closes #N"
   grep -q 'guard-agents.sh push-watch' .github/workflows/direct-push-watch.yml || die "R13: direct-push-watch.yml does not watch pushes to main"
