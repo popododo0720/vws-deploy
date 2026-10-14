@@ -2,15 +2,21 @@
 # Insider-risk guards that need no repo-specific paths. Copy this file as-is into another repo.
 #
 #   guard-agents.sh agents [FILE]           FILE (default AGENTS.md) has the guardrail section and items 1-7
+#   guard-agents.sh rules [FILE] [HEADING]  every row of the rule table under HEADING names an enforcer; prints the Judgment count
+#   guard-agents.sh judgment [FILE] [HEADING] alias of rules
+#   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
-#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Closes #N"
+#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N" and no closing keyword
+#   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N)
+#   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh correct [DIR]           DIR (default .) has the /correct section in AGENTS.md, the incident
 #                                           issue template with its required fields, and the incident label
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
-# GUARD_ITEMS (default 7), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default: the first of "## Rules" and "## 규칙표" in FILE),
+# GITHUB_REPOSITORY and an authenticated gh for push-watch.
 set -euo pipefail
 export LC_ALL=C
 
@@ -40,20 +46,93 @@ cmd_agents() {
   fi
 }
 
+# The rule table under HEADING has two columns, rule | enforcer. An enforcer cell is never empty;
+# a rule without a test, lint or CI step says so with a cell that starts with "Judgment".
+# HEADING: the argument, else GUARD_RULES_HEADING, else "## Rules" or "## 규칙표", whichever FILE has.
+cmd_rules() {
+  local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows
+  [[ -f $file ]] || die "rules: ${file} does not exist"
+  if [[ -z $heading ]]; then
+    for h in "## Rules" "## 규칙표"; do
+      if grep -q -x -F -- "$h" "$file"; then heading=$h; break; fi
+    done
+    [[ -n $heading ]] || die "rules: ${file} has no '## Rules' or '## 규칙표' heading"
+  fi
+  grep -q -x -F -- "$heading" "$file" || die "rules: ${file} has no '${heading}' heading"
+  rows=$(awk -v h="$heading" '
+    $0 == h { on = 1; next }
+    on && /^## / { exit }
+    on && /^\|/ { print }' "$file")
+  [[ -n $rows ]] || die "rules: '${heading}' has no table"
+  awk -F'|' 'NR == 1 && NF != 4 { exit 1 } NR == 2 && $2 !~ /^[[:space:]]*:?-+:?[[:space:]]*$/ { exit 1 }' <<<"$rows" ||
+    die "rules: '${heading}' needs a two-column '| Rule | Enforcer |' table"
+  rows=$(tail -n +3 <<<"$rows")
+  [[ -n $rows ]] || die "rules: '${heading}' has no rule rows"
+  awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
+    die "rules: every row needs an enforcer (test, lint, CI step) or 'Judgment'"
+  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
+}
+
+# Every repo carries a byte-identical copy of the vws-deploy file. SUMFILE pins its sha256 (sha256sum format).
+# vws-deploy CI checks SUMFILE against the file, so a change to the canonical file updates SUMFILE in the
+# same pull request; other repos copy both files unchanged.
+cmd_identity() {
+  local sumfile=${1:-scripts/guard-agents.sh.sha256} self want got
+  self=${GUARD_SELF:-${BASH_SOURCE[0]}}
+  [[ -f $sumfile ]] || die "identity: ${sumfile} does not exist"
+  want=$(awk 'NR == 1 { print $1 }' "$sumfile")
+  [[ $want =~ ^[0-9a-f]{64}$ ]] || die "identity: ${sumfile} has no sha256"
+  got=$(sha256sum "$self" | cut -d' ' -f1)
+  [[ $got == "$want" ]] ||
+    die "identity: ${self} (sha256 ${got}) is not the canonical vws-deploy copy (${want}); copy scripts/guard-agents.sh and its .sha256 from vws-deploy main, do not edit them here"
+  echo "identity: ${self} is the canonical copy (${want:0:12})"
+}
+
 cmd_pr_base() {
   local base=${1:-}
   [[ -n $base ]] || die "pr-base: needs the base ref"
   [[ $base == "$MAIN" ]] || die "pr-base: this pull request targets '${base}', not '${MAIN}'. Do not stack pull requests."
 }
 
+# A closing keyword followed by an issue reference: GitHub would close that issue on merge.
+CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
+# "Part of #N" or "Part of owner/repo#N". #TBD is allowed in commits only, until the issue exists.
+PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+'
+
+# Work items are tracked on parent issues that a human closes. No PR or commit may close an
+# issue automatically, so closing keywords are banned outright. Telling a parent issue from a
+# leaf would need the GitHub API (sub-issues or a tracking label) in every hook and run; a
+# plain ban needs no token, works offline and cannot be fooled by a missing label.
 cmd_pr_body() {
   local body=${PR_BODY:-}
   if [[ -n ${1:-} ]]; then
     [[ -f $1 ]] || die "pr-body: ${1} does not exist"
     body=$(cat "$1")
   fi
-  grep -q -i -E '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+([A-Za-z0-9._/-]+)?#[0-9]+' <<<"$body" ||
-    die "pr-body: the pull request text needs 'Closes #N'"
+  ! grep -q -i -E "$CLOSING_RE" <<<"$body" ||
+    die "pr-body: do not close issues from a pull request (found Closes/Fixes/Resolves #N); write 'Part of #N'"
+  grep -q -i -E "$PART_OF_RE" <<<"$body" ||
+    die "pr-body: the pull request text needs 'Part of #N'"
+}
+
+cmd_commit_msg() {
+  local file=${1:-} msg
+  [[ -n $file && -f $file ]] || die "commit-msg: needs the message file"
+  # Lines starting with # are git's comments and never reach the commit.
+  msg=$(grep -v '^#' "$file" || true)
+  ! grep -q -i -E "$CLOSING_RE" <<<"$msg" ||
+    die "commit-msg: do not close issues from a commit (found Closes/Fixes/Resolves #N); write 'Part of #N'"
+}
+
+cmd_pr_commits() {
+  local base=${1:-} head=${2:-} sha tmp
+  [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' RETURN
+  for sha in $(git rev-list --no-merges "${base}..${head}"); do
+    git log -1 --format=%B "$sha" >"$tmp"
+    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue; write 'Part of #N'"
+  done
 }
 
 pr_count() {
@@ -140,16 +219,66 @@ cmd_selftest() {
   awk -v h="$HEADING" '$0 == h { print "## Other"; next } { print }' "$good" >"$tmp/renamed.md"
   expect_fail "renamed heading" cmd_agents "$tmp/renamed.md"
 
+  local rules="$tmp/rules.md"
+  printf '# t\n## Rules\n\n| Rule | Enforcer |\n| --- | --- |\n| a | `TestA` |\n| b | Judgment. why |\n\n## next\n| x | |\n' >"$rules"
+  expect_pass "every rule has an enforcer" cmd_rules "$rules"
+  [[ $(cmd_rules "$rules") == "rules: 2 rows, 1 Judgment" ]] || die "selftest: Judgment count is wrong"
+  echo "ok: Judgment count"
+  [[ $(bash "$0" judgment "$rules") == "rules: 2 rows, 1 Judgment" ]] || die "selftest: judgment is not an alias of rules"
+  echo "ok: judgment is an alias of rules"
+  sed 's/^## Rules$/## 규칙표/; s/| Rule | Enforcer |/| 규칙 | 강제 |/' "$rules" >"$tmp/rules-ko.md"
+  expect_pass "the Korean heading is found" cmd_rules "$tmp/rules-ko.md"
+  sed 's/^## Rules$/## Policy/' "$rules" >"$tmp/rules-arg.md"
+  expect_pass "heading from the argument" cmd_rules "$tmp/rules-arg.md" "## Policy"
+  expect_pass "heading from GUARD_RULES_HEADING" env GUARD_RULES_HEADING="## Policy" bash "$0" rules "$tmp/rules-arg.md"
+  expect_fail "a heading the file does not have" cmd_rules "$rules" "## Policy"
+  sed 's/^| a | `TestA` |$/| a |  |/' "$rules" >"$tmp/norule.md"
+  expect_fail "a rule without an enforcer" cmd_rules "$tmp/norule.md"
+  sed 's/^| a | `TestA` |$/| a | `TestA` | extra |/' "$rules" >"$tmp/threecol.md"
+  expect_fail "a row with three columns" cmd_rules "$tmp/threecol.md"
+  sed 's/| Rule | Enforcer |/| Rule | Enforcer | Note |/' "$rules" >"$tmp/header.md"
+  expect_fail "a three-column header" cmd_rules "$tmp/header.md"
+  sed 's/^## Rules$/## other/' "$rules" >"$tmp/norules.md"
+  expect_fail "no rule table heading" cmd_rules "$tmp/norules.md"
+  printf '# t\n## Rules\n\n| Rule | Enforcer |\n| --- | --- |\n' >"$tmp/emptyrules.md"
+  expect_fail "an empty rule table" cmd_rules "$tmp/emptyrules.md"
+
+  cp "$0" "$tmp/copy.sh"
+  sha256sum "$tmp/copy.sh" >"$tmp/copy.sha256"
+  expect_pass "an identical copy" env GUARD_SELF="$tmp/copy.sh" bash "$0" identity "$tmp/copy.sha256"
+  echo "# local edit" >>"$tmp/copy.sh"
+  expect_fail "an edited copy" env GUARD_SELF="$tmp/copy.sh" bash "$0" identity "$tmp/copy.sha256"
+  echo "not-a-hash  x" >"$tmp/bad.sha256"
+  expect_fail "a sum file without a hash" bash "$0" identity "$tmp/bad.sha256"
+  expect_fail "a missing sum file" bash "$0" identity "$tmp/none.sha256"
+
   expect_pass "base is main" cmd_pr_base "$MAIN"
   expect_fail "base is a stack branch" cmd_pr_base "feature-stack-base"
   expect_fail "empty base" cmd_pr_base ""
 
-  expect_pass "Closes #N" env PR_BODY="Closes #12" bash "$0" pr-body
-  expect_pass "fixes owner/repo#N" env PR_BODY="intro
+  expect_pass "Part of #N" env PR_BODY="Part of #12" bash "$0" pr-body
+  expect_pass "part of owner/repo#N" env PR_BODY="intro
+part of acme/repo#7" bash "$0" pr-body
+  expect_fail "Closes #N" env PR_BODY="Part of #3
+Closes #12" bash "$0" pr-body
+  expect_fail "fixes owner/repo#N" env PR_BODY="Part of #3
 fixes acme/repo#7" bash "$0" pr-body
-  expect_fail "no closing keyword" env PR_BODY="mentions #12 only" bash "$0" pr-body
+  expect_fail "Resolves: #N" env PR_BODY="Part of #3 Resolves: #7" bash "$0" pr-body
+  expect_fail "no Part of" env PR_BODY="mentions #12 only" bash "$0" pr-body
   expect_fail "empty body" env PR_BODY="" bash "$0" pr-body
-  expect_fail "Closes without number" env PR_BODY="Closes the gap" bash "$0" pr-body
+  expect_fail "Part of without number" env PR_BODY="Part of the gap" bash "$0" pr-body
+  expect_fail "Part of #TBD in a pull request" env PR_BODY="Part of #TBD" bash "$0" pr-body
+
+  printf 'ci: x\n\nPart of #12\n' >"$tmp/msg-ok"
+  expect_pass "commit with Part of #N" cmd_commit_msg "$tmp/msg-ok"
+  printf 'ci: x\n\nPart of #TBD\n' >"$tmp/msg-tbd"
+  expect_pass "commit with Part of #TBD" cmd_commit_msg "$tmp/msg-tbd"
+  printf 'ci: x\n\nCloses #12\n' >"$tmp/msg-closes"
+  expect_fail "commit with Closes #N" cmd_commit_msg "$tmp/msg-closes"
+  printf 'docs: y (fixes acme/repo#7)\n' >"$tmp/msg-fixes"
+  expect_fail "subject with fixes owner/repo#N" cmd_commit_msg "$tmp/msg-fixes"
+  printf 'ci: x\n# Closes #12 in a git comment line\n' >"$tmp/msg-comment"
+  expect_pass "Closes in a git comment line" cmd_commit_msg "$tmp/msg-comment"
 
   # correct: a complete repo passes; each missing piece fails.
   local cr="$tmp/correct"
@@ -213,6 +342,13 @@ GH
   git -C "$repo" commit -q -m rewrite
   expect_fail "rewritten history" push "$c3" "$(git -C "$repo" rev-parse HEAD)"
   expect_fail "new branch whose head has no pull request" push "$(printf '0%.0s' {1..40})" "$c1"
+  git -C "$repo" checkout -q -b commits "$c3"
+  echo y >"$repo/h"
+  git -C "$repo" add h
+  git -C "$repo" commit -q -m "ci: y" -m "Part of #4"
+  expect_pass "commits with Part of" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
+  git -C "$repo" commit -q --allow-empty -m "ci: z" -m "Closes #4"
+  expect_fail "a commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
   echo "selftest passed"
 }
 
@@ -222,8 +358,12 @@ case "$command_name" in
   agents) cmd_agents "$@" ;;
   pr-base) cmd_pr_base "$@" ;;
   pr-body) cmd_pr_body "$@" ;;
+  rules | judgment) cmd_rules "$@" ;;
+  identity) cmd_identity "$@" ;;
+  commit-msg) cmd_commit_msg "$@" ;;
+  pr-commits) cmd_pr_commits "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
   correct) cmd_correct "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|pr-body [FILE]|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
 esac

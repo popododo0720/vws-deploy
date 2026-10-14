@@ -17,14 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Base is the main branch
         env:
           GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
           BASE_REF: ${{ github.base_ref }}
         run: scripts/guard-agents.sh pr-base "$BASE_REF"
-      - name: Body closes an issue
+      - name: Body says Part of #N and closes no issue
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: scripts/guard-agents.sh pr-body
+      - name: No commit closes an issue
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/guard-agents.sh pr-commits "$BASE_SHA" "$HEAD_SHA"
+      - name: guard-agents.sh is the canonical vws-deploy copy
+        run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
       - name: AGENTS.md has the guardrails
         run: scripts/guard-agents.sh agents
