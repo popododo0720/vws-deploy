@@ -7,7 +7,8 @@ a rule with a namespace becomes a Role and RoleBinding in that namespace, a rule
 A rule's namespace is a key of values namespaces ("release" is the release namespace). Every such
 namespace except the release one is rendered once and kept on uninstall.
 flags -> container args, one -name=value each; pendingFlags are added only when global.pendingFlags is true.
-Image is <global.registry>/<name>:<Chart.appVersion>, written once below.
+Image is <global.registry>/<name>:<tag>, written once below. tag is the service's imageTag, else
+global.tag, else Chart.appVersion (vws-deploy#280).
 */}}
 {{- $namespaces := dict }}
 {{- range $name := keys .Values.services | sortAlpha }}
@@ -41,7 +42,7 @@ metadata:
 {{- $startup := int ($spec.startupSeconds | default 60) }}
 {{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
-{{- $image := printf "%s/%s:%s" $.Values.global.registry $name ($.Values.global.tag | default $.Chart.AppVersion) }}
+{{- $image := printf "%s/%s:%s" $.Values.global.registry $name ($spec.imageTag | default ($.Values.global.tag | default $.Chart.AppVersion)) }}
 {{- $rbac := hasKey $spec "rbac" }}
 {{- $args := include "vws.args" (dict "root" $ "spec" $spec) | fromJsonArray }}
 {{- /* kubeconfigSecret: a Secret the operator created, mounted read-only at the directory of the
