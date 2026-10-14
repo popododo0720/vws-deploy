@@ -387,6 +387,19 @@ def check_api(name: str, spec: dict, container: dict, values: dict, release_ns: 
     return errors
 
 
+def check_port_env(name: str, spec: dict, container: dict) -> list[str]:
+    """portEnv: the image listens on that env, so its value must be the containerPort (#231)."""
+    want = spec.get("portEnv")
+    if not want:
+        return []
+    env = {e.get("name"): e for e in container.get("env") or []}
+    ports = [p.get("containerPort") for p in container.get("ports") or []]
+    got = (env.get(want) or {}).get("value")
+    if not ports or got != str(ports[0]):
+        return [f"R15: {name} env {want}={got} must be its containerPort {ports[0] if ports else None}"]
+    return []
+
+
 def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dict) -> list[str]:
     want, errors = want_args(spec, values, nsmap)
     got = container.get("args") or []
@@ -478,6 +491,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
         errors.extend(check_api(name, spec, container, values, release_ns))
+        errors.extend(check_port_env(name, spec, container))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -882,6 +896,10 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 (svc, "a hardcoded API URL", lambda env: entry_of(env, "VWS_CONSOLE_API_URL").update(value="http://console-api:9999")),
                 (svc, "an API token from another key", lambda env: entry_of(env, "VWS_CONSOLE_API_TOKEN")["valueFrom"]["secretKeyRef"].update(key="secret-key")),
             ]
+    for svc, spec in values["services"].items():
+        if (spec or {}).get("portEnv"):
+            api_cases.append((svc, "a port env apart from containerPort",
+                              lambda env, k=spec["portEnv"]: entry_of(env, k).update(value="3000")))
     for svc, label, change in api_cases:
         broken = copy.deepcopy(docs)
         for doc in broken:

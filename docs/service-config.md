@@ -93,6 +93,7 @@ vws-console-api는 `-backend=grpc`일 때 `-console-token`, `-access-key`, `-sec
 
 - `services.console-api.apiCredentials.existingSecret`(기본 `vws-console-api-credentials`): 차트가 키 `console-token`, `access-key`, `secret-key`를 `secretKeyRef`로 `VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY` env에 넣고, 인자는 `-console-token=$(VWS_CONSOLE_TOKEN)`처럼 kubelet이 펼치는 참조만 쓴다. 값은 values, 인자 문자열, 파드 spec에 없다(컨테이너 안 프로세스 인자에는 펼쳐진 값이 보인다).
 - `services.console.apiClient.service`(기본 `console-api`): `VWS_CONSOLE_API_URL=http://<service>.<릴리스 네임스페이스>.svc:<그 서비스의 port>`와, 같은 Secret의 `console-token`을 `VWS_CONSOLE_API_TOKEN`으로 준다. 콘솔에는 SigV4 키를 주지 않는다.
+- `services.console.portEnv`(기본 `PORT`): 콘솔 이미지(Next.js 서버)는 듣는 포트를 env `PORT`에서 읽는다. 차트는 그 env에 서비스의 `port`(기본 8080)를 넣어 containerPort, 프로브, Service와 같은 값 하나에서 나오게 한다. 없으면 이미지 기본 3000에서 들어 프로브와 Service가 닿지 않는다. `scripts/check_render.py`(R15)가 그 값이 containerPort와 같은지 확인하고, 다른 값으로 바꾼 렌더가 실패하는지도 본다.
 - Secret은 차트가 렌더하지 않는다(R16). `vws apply`가 helm 전에 `scripts/vws.d/lib/apisecret.py`(Python `secrets`, os.urandom)로 값을 만들어 kubectl create의 stdin으로만 넘긴다. 이미 있으면(AlreadyExists) 그대로 두어 회전하지 않고, Secret 읽기 권한도 필요 없다. 다른 이유로 실패하면 helm 전에 3으로 멈춘다. `--dry-run`은 값을 만들지 않는다. 회전은 Secret을 지우고 `vws apply`를 다시 실행한 뒤 두 Deployment를 재시작한다.
 - `scripts/guard.sh config`(R16)는 env가 리터럴이거나 다른 Secret·키를 가리키거나 URL이 values와 다르면 실패함을 시험한다.
 

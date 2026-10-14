@@ -39,6 +39,9 @@ namespaces:
 services:
   console:
     external: true
+    # portEnv names the env the image reads its listen port from (the Next.js server reads PORT). The
+    # value is this service's port, the same as containerPort, the probe and the Service.
+    portEnv: PORT
     # apiClient wires this service to another service's console surface: env VWS_CONSOLE_API_URL is
     # http://<service>.<release namespace>.svc:<that service's port>, and VWS_CONSOLE_API_TOKEN comes by
     # secretKeyRef from key console-token of that service's apiCredentials.existingSecret. The token

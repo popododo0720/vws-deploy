@@ -144,6 +144,10 @@ spec:
       env:
         - name: VWS_SERVICE_NAME
           value: {{ .name | quote }}
+        {{- with .portEnv }}
+        - name: {{ . }}
+          value: {{ $.port | quote }}
+        {{- end }}
         {{- if .stateful }}
         - name: VWS_STATE_DIR
           value: /var/lib/vws
