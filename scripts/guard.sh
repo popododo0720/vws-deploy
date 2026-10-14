@@ -476,6 +476,10 @@ cmd_agents() {
   grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Closes #N"
   grep -q 'guard-agents.sh push-watch' .github/workflows/direct-push-watch.yml || die "R13: direct-push-watch.yml does not watch pushes to main"
   ! grep -q 'push:' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must run on pull requests only, so a pull request has no skipped check"
+  grep -q 'guard-agents.sh verify-gate' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml has no verify-gate (#249)"
+  grep -q -e 'labeled, unlabeled' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must re-run verify-gate on labeled/unlabeled"
+  ! grep -q 'pull_request_target' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must not use pull_request_target"
+  grep -q 'ref: ${{ github.event.pull_request.base.sha }}' .github/workflows/repo-guard.yml || die "R13: verify-gate must run the guard from the base commit"
 }
 
 cmd_config() {

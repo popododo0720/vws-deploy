@@ -79,3 +79,11 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 
 - `make check` — helm lint, kubeconform, envtest kube-apiserver의 CRD 검사(`make crd`), 플랫폼 번들 렌더 검사, 이 파일의 검사
 - `helm template vws charts/vws --namespace vws` — 적용하지 않고 매니페스트를 본다
+
+## Verify gate
+
+Merging needs the `repo-guard / verify-gate` check (#249). It requires the `verify-approved` label
+and a `Verified-by: vws-verify` section that names the PR head SHA, with evidence for each
+docs/QUALITY.md item. A push voids the approval. The gate runs under `pull_request` (never
+`pull_request_target`) and uses the guard script from the base commit. Test it locally with
+`scripts/guard-agents.sh verify-gate <sha> <labels> <file>`.

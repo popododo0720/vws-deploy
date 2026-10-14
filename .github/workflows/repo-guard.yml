@@ -6,7 +6,8 @@ name: repo-guard
 
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize]
+    # labeled/unlabeled re-run verify-gate when vws-verify approves or the label is removed (#249).
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -28,3 +29,54 @@ jobs:
         run: scripts/guard-agents.sh pr-body
       - name: AGENTS.md has the guardrails
         run: scripts/guard-agents.sh agents
+
+  # verify-gate (#249): red unless the PR has the verify-approved label and a "Verified-by: vws-verify"
+  # section (body or comment) that names the current head SHA with evidence for every docs/QUALITY.md
+  # item. A push changes the head, so an old approval no longer counts.
+  # Safety: pull_request only (never the privileged target variant), read-only token, and the guard script comes from
+  # the base commit, so a PR cannot edit the check that judges it.
+  verify-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Approved for this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          text=$(mktemp)
+          printf '%s\n' "$PR_BODY" >"$text"
+          gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" --jq '.[].body' >>"$text"
+          scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
+
+  # A new push drops the approval label as well; the head check above already fails without it.
+  # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
+  verify-reset:
+    if: github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Remove verify-approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
+            gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" >/dev/null
+            echo "verify-approved removed: a new head needs a new verification"
+          fi
