@@ -11,19 +11,29 @@
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N)
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
-#   guard-agents.sh correct [DIR]           DIR (default .) has the /correct section in AGENTS.md, the incident
-#                                           issue template with its required fields, and the incident label
+#   guard-agents.sh verify-gate HEAD LABELS [FILE]
+#                                           the pull request is verify-approved for HEAD: LABELS (comma list) has
+#                                           verify-approved and a comment in the text (FILE or $PR_TEXT) has a
+#                                           "Verified-by: vws-verify" section naming HEAD with evidence for every
+#                                           QUALITY.md item. Each comment starts with a "@@comment-by: LOGIN" line;
+#                                           text outside a comment (such as the PR body) never counts
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
 # GUARD_ITEMS (default 7), GUARD_RULES_HEADING (default: the first of "## Rules" and "## 규칙표" in FILE),
-# GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# GUARD_VERIFY_LABEL (default verify-approved), GUARD_QUALITY_ITEMS (default 9, the QUALITY.md checklist),
+# GUARD_VERIFY_ACTORS (comma list of logins allowed to approve; empty = any author), GUARD_VERIFY_LABELER
+# (login that last added the label), GUARD_VERIFY_EXCLUDE (PR author and head pusher: never approve),
+# GUARD_VERIFY_IDENTITY (the vws-verify login, exempt from EXCLUDE), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
 set -euo pipefail
 export LC_ALL=C
 
 MAIN=${GUARD_MAIN_BRANCH:-main}
 HEADING=${GUARD_HEADING:-## Insider-risk guardrails}
 ITEMS=${GUARD_ITEMS:-7}
+VERIFY_LABEL=${GUARD_VERIFY_LABEL:-verify-approved}
+QUALITY_ITEMS=${GUARD_QUALITY_ITEMS:-9}
+VERIFY_ACTORS=${GUARD_VERIFY_ACTORS:-}
 
 die() {
   echo "$*" >&2
@@ -72,6 +82,55 @@ cmd_rules() {
   awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
     die "rules: every row needs an enforcer (test, lint, CI step) or 'Judgment'"
   echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
+}
+
+# verify-gate: the approval is bound to one head commit. A push changes the head, so the old section no
+# longer matches and the gate is red until vws-verify judges the new head (the label is also removed on
+# synchronize by the workflow). Evidence per checklist item: a URL, a path, or "N/A: <reason>".
+cmd_verify_gate() {
+  local head=${1:-} labels=${2:-} text=${PR_TEXT:-} section n line
+  [[ $head =~ ^[0-9a-f]{40}$ ]] || die "verify-gate: needs the full head commit SHA"
+  if [[ -n ${3:-} ]]; then
+    [[ -f $3 ]] || die "verify-gate: ${3} does not exist"
+    text=$(cat "$3")
+  fi
+  [[ ",${labels}," == *",${VERIFY_LABEL},"* ]] || die "verify-gate: the pull request has no '${VERIFY_LABEL}' label"
+  local labeler=${GUARD_VERIFY_LABELER:-} excluded=${GUARD_VERIFY_EXCLUDE:-} identity=${GUARD_VERIFY_IDENTITY:-}
+  if [[ -n $VERIFY_ACTORS ]]; then
+    [[ -n $labeler && ",${VERIFY_ACTORS}," == *",${labeler},"* ]] ||
+      die "verify-gate: '${VERIFY_LABEL}' was added by '${labeler:-unknown}', not by one of: ${VERIFY_ACTORS}"
+  fi
+  # No self-approval: the PR author and the head pusher (GUARD_VERIFY_EXCLUDE) can neither label nor
+  # approve, unless the login is the vws-verify identity (GUARD_VERIFY_IDENTITY). Same-account gap: when
+  # vws-verify and the author share one login, this check cannot tell them apart.
+  if [[ -n $labeler && $labeler != "$identity" && ",${excluded}," == *",${labeler},"* ]]; then
+    die "verify-gate: '${VERIFY_LABEL}' was added by '${labeler}', the PR author or pusher"
+  fi
+  # Keep only comments ("@@comment-by: LOGIN" blocks) by allowed authors. Each kept block starts with a
+  # "#" line so a section never runs from one comment into the next. The PR body is not a comment.
+  text=$(tr -d '\r' <<<"$text" | awk -v actors=",${VERIFY_ACTORS}," -v excl=",${excluded}," -v id="$identity" '
+    /^@@comment-by: / { who = substr($0, 15); keep = (actors == ",," || index(actors, "," who ",") > 0)
+      if (who != id && index(excl, "," who ",") > 0) keep = 0
+      if (keep) print "#"; next }
+    keep { print }')
+  # The section that names this head: from its "Verified-by: vws-verify" line to the next such line or heading.
+  section=$(tr -d '`' <<<"$text" | awk -v h="$head" '
+    /Verified-by:[[:space:]]*vws-verify/ { if (keep) exit; on = 1; buf = ""; next }
+    on && /^#/ { if (keep) exit; on = 0; next }
+    on { buf = buf $0 "\n"; if ($0 ~ "^[[:space:]]*Head:[[:space:]]*" h "[[:space:]]*$") keep = 1 }
+    END { if (keep) printf "%s", buf }')
+  [[ -n $section ]] || die "verify-gate: no 'Verified-by: vws-verify' section names the head ${head}; a push after approval needs a new verification"
+  for ((n = 1; n <= QUALITY_ITEMS; n++)); do
+    line=$(grep -m1 -E "^[[:space:]]*(- )?${n}\.[[:space:]]" <<<"$section" || true)
+    line=${line#*"${n}."}
+    # "N/A:" needs a reason; otherwise a URL or a file path (dir/file.ext) is the evidence.
+    if grep -q -E '^[[:space:]]*N/A' <<<"$line"; then
+      grep -q -E '^[[:space:]]*N/A:[[:space:]]*[^[:space:]]' <<<"$line"
+    else
+      grep -q -E '(https?://[^[:space:]]+|[A-Za-z0-9._-]+/[A-Za-z0-9._/-]*\.[A-Za-z0-9]+)' <<<"$line"
+    fi ||
+      die "verify-gate: the Verified-by section for ${head:0:12} has no evidence (URL, path or 'N/A: reason') for checklist item ${n}"
+  done
 }
 
 # The one guard command for the architecture test: the Judgment count line comes first so the CI log
@@ -376,6 +435,51 @@ GH
   expect_pass "commits with Part of" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
   git -C "$repo" commit -q --allow-empty -m "ci: z" -m "Closes #4"
   expect_fail "a commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c3"
+  # verify-gate: label and a section bound to the head with evidence for every item.
+  local h1 h2 ev
+  h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
+  ev="$tmp/ev.md"
+  { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"
+    for ((i = 1; i <= QUALITY_ITEMS; i++)); do echo "${i}. https://example.invalid/log/${i}"; done; } >"$ev"
+  expect_pass "label and evidence for the head" cmd_verify_gate "$h1" "bug,${VERIFY_LABEL}" "$ev"
+  expect_fail "no label" cmd_verify_gate "$h1" "bug" "$ev"
+  expect_fail "a push after approval (new head)" cmd_verify_gate "$h2" "$VERIFY_LABEL" "$ev"
+  expect_fail "short SHA" cmd_verify_gate "${h1:0:12}" "$VERIFY_LABEL" "$ev"
+  grep -v -E "^4\. " "$ev" >"$tmp/ev4.md"
+  expect_fail "missing evidence for item 4" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/ev4.md"
+  sed 's#^6\. .*#6. done#' "$ev" >"$tmp/ev6.md"
+  expect_fail "item 6 without a link, path or N/A reason" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/ev6.md"
+  sed 's#^7\. .*#7. N/A: no telemetry in a shell script#; s#^2\. .*#2. tests/vws/run.sh output in evidence/run.log#' "$ev" >"$tmp/evna.md"
+  expect_pass "N/A with a reason and a path count as evidence" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/evna.md"
+  sed 's#^7\. .*#7. N/A:#' "$ev" >"$tmp/evna2.md"
+  expect_fail "N/A without a reason" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/evna2.md"
+  expect_fail "no section" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/nohead.md"
+  { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
+  expect_pass "a stale section and a current one: the current one counts" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/two.md"
+  # Only comments count: the same section in the PR body (no @@comment-by block) is ignored.
+  grep -v '^@@comment-by:' "$ev" >"$tmp/body.md"
+  expect_fail "a section in the PR body, not a comment" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/body.md"
+  # A section split across comments does not count: items 5-9 come from another comment.
+  { head -n 7 "$ev"; echo "@@comment-by: verifier"; tail -n +8 "$ev"; } >"$tmp/split.md"
+  expect_fail "a section split across two comments" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/split.md"
+  # Allowed actors: the comment author and the labeler must both be in GUARD_VERIFY_ACTORS.
+  expect_pass "allowed author and labeler" env GUARD_VERIFY_ACTORS=bot,verifier GUARD_VERIFY_LABELER=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  sed 's#^@@comment-by: .*#@@comment-by: intruder#' "$ev" >"$tmp/other.md"
+  expect_fail "a comment by an author who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/other.md"
+  expect_fail "a label added by someone who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=intruder \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  expect_fail "an unknown labeler when actors are set" env GUARD_VERIFY_ACTORS=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  # No self-approval: a comment or label by the PR author/pusher never counts, unless it is the vws-verify identity.
+  expect_fail "a verdict comment by the PR author" env GUARD_VERIFY_EXCLUDE=verifier "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  expect_fail "a label added by the pusher" env GUARD_VERIFY_EXCLUDE=author,pusher GUARD_VERIFY_LABELER=pusher \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  expect_pass "a verdict by someone other than the author" env GUARD_VERIFY_EXCLUDE=author,pusher GUARD_VERIFY_LABELER=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
+  expect_pass "the vws-verify identity on the same account (known gap)" env GUARD_VERIFY_EXCLUDE=verifier GUARD_VERIFY_IDENTITY=verifier \
+    GUARD_VERIFY_LABELER=verifier "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
   echo "selftest passed"
 }
 
@@ -387,11 +491,12 @@ case "$command_name" in
   pr-body) cmd_pr_body "$@" ;;
   rules | judgment) cmd_rules "$@" ;;
   archtest) cmd_archtest "$@" ;;
+  verify-gate) cmd_verify_gate "$@" ;;
   identity) cmd_identity "$@" ;;
   commit-msg) cmd_commit_msg "$@" ;;
   pr-commits) cmd_pr_commits "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
   correct) cmd_correct "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|correct [DIR]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|selftest>" ;;
 esac
