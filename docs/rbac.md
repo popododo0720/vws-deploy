@@ -26,6 +26,9 @@
 | `Get`, `Create`, `Update`(확장), `Delete` | persistentvolumeclaims | get, create, update, delete | `-kube-namespace` 하나. 값에서는 VM 네임스페이스(`namespaces.vms`)와 같다 |
 | `Get`, `Create`, `Delete` | `snapshot.storage.k8s.io` volumesnapshots | get, create, delete | 같은 네임스페이스(`namespaces.vms`) |
 | `Create`, `Get`, `List`, `Delete`(`-kube-volume-mode=Filesystem`, vws-storage#73 `datavolume.go`) | `cdi.kubevirt.io` datavolumes | get, list, create, delete | 같은 네임스페이스. `spec.storage.driver: nfs`나 `existing` + `volumeMode: Filesystem`일 때만 `vws render`가 넣는다 |
+| `Create`, `Get`, `Delete`(image volume, vws-storage#86) | `cdi.kubevirt.io` datavolumes | get, create, delete | VM 네임스페이스(`namespaces.vms`). 이미지에서 볼륨을 만들 때 DataSource를 원본으로 하는 CDI clone DataVolume을 만든다. 렌더 오버라이드(nfs, existing Filesystem, direct networks)와 상관없이 항상 들어간다(#201) |
+| `Get`(image volume 원본 확인) | `cdi.kubevirt.io` datasources | get | 이미지 네임스페이스(`namespaces.images`) |
+| (CDI clone 인가) | `cdi.kubevirt.io` datavolumes/source | create | 이미지 네임스페이스. CDI가 네임스페이스를 넘는 clone을 허용하기 전에 요청자 SA에 이 subresource `create`가 있는지 SubjectAccessReview로 본다 |
 | `List`(관리 VM, `vws.io/managed=true`) | `kubevirt.io` virtualmachines | list | 같은 네임스페이스(`namespaces.vms`) |
 
 - 모든 호출이 `b.ns` 한 곳을 가리킨다. 그래서 다른 네임스페이스의 PVC는 지울 수 없다.
