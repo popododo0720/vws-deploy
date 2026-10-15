@@ -1,0 +1,73 @@
+# vws-installer lint: the common baseline (lint/golangci-common.yml) with the installer import prefix.
+# Existing long lines are tracked in a follow-up; until then only changed lines are held to lll 120.
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errcheck
+    - errname
+    - errorlint
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nilerr
+    - nilnil
+    - noctx
+    - sloglint
+    - staticcheck
+    - unused
+    - wrapcheck
+  settings:
+    lll:
+      line-length: 120
+      tab-width: 1
+    misspell:
+      locale: US
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    sloglint:
+      no-mixed-args: true
+      attr-only: true
+      context: all
+      static-msg: true
+      key-naming-case: snake
+    depguard:
+      rules:
+        no-sentry-direct:
+          files: [$all]
+          deny:
+            - pkg: github.com/getsentry/sentry-go
+              desc: use vws-lib/obs/report
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+    paths:
+      - third_party
+issues:
+  new-from-merge-base: origin/main
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/popododo0720/vws-deploy/installer
+  exclusions:
+    generated: lax
+    paths:
+      - third_party
