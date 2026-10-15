@@ -594,6 +594,15 @@ GH
   [[ $msg == *"Codex review needs a full path or URL"* ]] || die "selftest: no path gave '${msg}'"
   sed 's#^Codex review: .*#Codex review: codex/vws-deploy-1-aaaaaaa.md blocking=0#' "$ev" >"$tmp/codexrel.md"
   expect_fail "a Codex review with a relative path" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexrel.md"
+  # blocking=<N> is a string match: only all-zero digits pass, no bash arithmetic (2^64 wrapped to 0).
+  local bv i=0
+  for bv in 18446744073709551616 -0 -1 '' abc 0x0 ' 0' 1; do
+    i=$((i + 1))
+    sed "s#blocking=0#blocking=${bv}#" "$ev" >"$tmp/codexbad$i.md"
+    expect_fail "a Codex review with blocking='${bv}'" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexbad$i.md"
+  done
+  sed 's#blocking=0#blocking=00#' "$ev" >"$tmp/codex00.md"
+  expect_pass "a Codex review with blocking=00" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codex00.md"
   sed 's#^Codex review: .*#Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md#' "$ev" >"$tmp/codexnon.md"
   expect_fail "a Codex review without blocking=<N>" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnon.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
