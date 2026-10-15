@@ -161,8 +161,11 @@ func network(n api.Network, nodes []cluster.Node) []api.Check {
 	want := wanted(n)
 	for _, node := range nodes {
 		if !node.NICsKnown {
-			out = append(out, api.Check{ID: "nic.links", Severity: "warning", Status: "unknown", Node: node.Name, Field: "spec.network.nodes",
-				Message: "NICs and MTUs are not verified: no links for this node", Hint: "start vws-installer with -links FILE (talosctl -n <nodes> get links -o json)"})
+			out = append(out, api.Check{
+				ID: "nic.links", Severity: "warning", Status: "unknown", Node: node.Name, Field: "spec.network.nodes",
+				Message: "NICs and MTUs are not verified: no links for this node",
+				Hint:    "start vws-installer with -links FILE (talosctl -n <nodes> get links -o json)",
+			})
 			continue
 		}
 		for _, l := range want {
@@ -197,8 +200,10 @@ func (e Engine) storage(ctx context.Context, s api.Storage) []api.Check {
 		return []api.Check{check("storage.class", "error", slices.Contains(classes, s.StorageClass), "", "spec.storage.storageClass",
 			"StorageClass "+s.StorageClass+" exists", "create it first or pick another driver")}
 	case "nfs":
-		return []api.Check{{ID: "storage.nfs", Severity: "info", Status: "unknown", Field: "spec.storage.nfs.server",
-			Message: "the NFS server is not reached from the installer", Hint: "the CSI driver mounts it after the install"}}
+		return []api.Check{{
+			ID: "storage.nfs", Severity: "info", Status: "unknown", Field: "spec.storage.nfs.server",
+			Message: "the NFS server is not reached from the installer", Hint: "the CSI driver mounts it after the install",
+		}}
 	}
 	return nil
 }

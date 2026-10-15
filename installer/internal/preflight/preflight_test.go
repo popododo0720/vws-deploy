@@ -81,12 +81,18 @@ func TestLinksUnknownDoesNotBlock(t *testing.T) {
 
 func TestNICsAndMTU(t *testing.T) {
 	// Host networks use <nic>.<vlan>; the external underlay uses the bare NIC even with a VLAN.
-	ok := cluster.Node{Name: "ok", InternalIPs: []string{"10.0.0.5"}, NICsKnown: true,
-		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens3.20", MTU: 9000}, {Name: "ens8", MTU: 1500}}}
-	small := cluster.Node{Name: "small", InternalIPs: []string{"10.0.0.6"}, NICsKnown: true,
-		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens3.20", MTU: 1500}, {Name: "ens8", MTU: 1500}}}
-	missing := cluster.Node{Name: "missing", InternalIPs: []string{"10.0.0.7"}, NICsKnown: true,
-		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens8.30", MTU: 1500}}}
+	ok := cluster.Node{
+		Name: "ok", InternalIPs: []string{"10.0.0.5"}, NICsKnown: true,
+		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens3.20", MTU: 9000}, {Name: "ens8", MTU: 1500}},
+	}
+	small := cluster.Node{
+		Name: "small", InternalIPs: []string{"10.0.0.6"}, NICsKnown: true,
+		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens3.20", MTU: 1500}, {Name: "ens8", MTU: 1500}},
+	}
+	missing := cluster.Node{
+		Name: "missing", InternalIPs: []string{"10.0.0.7"}, NICsKnown: true,
+		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}, {Name: "ens8.30", MTU: 1500}},
+	}
 	got := engine.Run(context.Background(), "network", net(true, 20, 9000), []cluster.Node{ok, small, missing})
 	for _, c := range got {
 		if c.Node == "ok" && c.Status != "pass" {
