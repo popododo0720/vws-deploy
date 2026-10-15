@@ -209,8 +209,19 @@ visible_text() {
   awk '
     {
       line = $0; out = ""
-      if (!incom && line ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; next }
-      if (fence) next
+      # A fence closes only on a line of the same character, at least as long as the opening run, with
+      # nothing after it (CommonMark), so "```" inside a "~~~~" block or a "```go" line does not close it.
+      if (!incom && !fence && match(line, /^[[:space:]]*(```+|~~~+)/)) {
+        run = substr(line, RSTART, RLENGTH); sub(/^[[:space:]]*/, "", run)
+        fch = substr(run, 1, 1); flen = length(run); fence = 1; next
+      }
+      if (fence) {
+        if (match(line, /^[[:space:]]*(```+|~~~+)[[:space:]]*$/)) {
+          run = line; gsub(/[[:space:]]/, "", run)
+          if (substr(run, 1, 1) == fch && length(run) >= flen) fence = 0
+        }
+        next
+      }
       while (1) {
         if (incom) {
           i = index(line, "-->"); if (!i) { line = ""; break }
