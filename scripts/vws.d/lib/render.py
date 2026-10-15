@@ -400,6 +400,9 @@ def render(cr):
         if name == "console-api" and "replicas" in override and override["replicas"] != 1:
             raise Invalid("spec.services.console-api.replicas: must be 1; console-api holds sessions in memory "
                           "(popododo0720/vws-console-api#95)")
+        if name == "iam" and "replicas" in override and override["replicas"] != 1:
+            raise Invalid("spec.services.iam.replicas: must be 1; iam state is in memory until a shared store "
+                          "(vws-iam#110). One replica does not survive a restart.")
         target = services.setdefault(name, {})
         for key in ("enabled", "replicas", "cpu", "memory"):
             if key in override:
