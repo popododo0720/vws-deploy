@@ -148,8 +148,15 @@ services:
       verbs: [get, create, update, delete]
     - namespace: images
       apiGroups: [cdi.kubevirt.io]
-      resources: [datavolumes, datasources]
+      resources: [datavolumes]
       verbs: [get, create, delete]
+    # image_auth.go AuthorizeImages (vws-compute#93, a31223a) lists managed DataSources
+    # on every sweep and merge-patches their authorization labels. The client is uncached,
+    # so this rule has list and patch and no watch.
+    - namespace: images
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datasources]
+      verbs: [get, list, create, patch, delete]
     - namespace: images
       apiGroups: [""]
       resources: [persistentvolumeclaims]

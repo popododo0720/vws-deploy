@@ -442,6 +442,17 @@ expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rule
 if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
 if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
 
+image_rights=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
+import sys, yaml
+rights = {}
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["name"] == "vws-compute" and d["metadata"].get("namespace") == "vws-images":
+        for r in d["rules"]:
+            for key in ((g, res) for g in r["apiGroups"] for res in r["resources"]):
+                rights.setdefault(key, set()).update(r["verbs"])
+print(sorted((g, res, sorted(v)) for (g, res), v in rights.items()))')
+expect_text "compute: exact rights in vws-images, list and patch only on datasources" "$image_rights" "[('', 'persistentvolumeclaims', ['get']), ('cdi.kubevirt.io', 'datasources', ['create', 'delete', 'get', 'list', 'patch']), ('cdi.kubevirt.io', 'datavolumes', ['create', 'delete', 'get'])]"
+
 # S1: console-api credentials go only by secretKeyRef env. No -console-token, -access-key or -secret
 # in args, not even as a $(VAR) reference, so the values never reach the process arguments.
 creds() {
