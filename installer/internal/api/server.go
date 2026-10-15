@@ -213,8 +213,10 @@ func (srv *Server) result(i int, nodes []cluster.Node) StepResult {
 	if errs == nil {
 		errs = []FieldError{}
 	}
-	return StepResult{Step: Steps[i].Name, Status: st.status, Defaults: Steps[i].Defaults(nodes), Value: st.raw,
-		Options: Steps[i].Options(nodes), Preflight: st.preflight, Errors: errs}
+	return StepResult{
+		Step: Steps[i].Name, Status: st.status, Defaults: Steps[i].Defaults(nodes), Value: st.raw,
+		Options: Steps[i].Options(nodes), Preflight: st.preflight, Errors: errs,
+	}
 }
 
 func (srv *Server) nodes(ctx context.Context) ([]cluster.Node, error) {

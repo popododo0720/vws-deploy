@@ -1,0 +1,36 @@
+# Daily guardrail drift check across the vws-* repos (vws-deploy#300).
+# GITHUB_TOKEN reads public repos, so branch protection comes from the branch summary;
+# run .github/drift/drift-check.sh with an admin gh for the full settings during an audit.
+name: drift-check
+
+on:
+  schedule:
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/drift/drift-check.sh
+      - .github/drift/**
+      - .github/golangci-common.yml
+      - .github/workflows/drift-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --user pyyaml==6.0.2
+      - name: Compare every repo against the baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A pull request only proves the script runs; the schedule is what fails on drift.
+        run: |
+          set +e
+          .github/drift/drift-check.sh --markdown "$RUNNER_TEMP/drift.md"
+          rc=$?
+          cat "$RUNNER_TEMP/drift.md" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $rc -eq 1 && "${{ github.event_name }}" == "pull_request" ]]; then exit 0; fi
+          exit $rc

@@ -224,10 +224,17 @@ func TestAccessCodeShape(t *testing.T) {
 func TestEveryEndpointNeedsASession(t *testing.T) {
 	h := newHarness(t, nil)
 	for _, e := range []struct{ method, path string }{
-		{"GET", "/api/v1/state"}, {"GET", "/api/v1/steps/roles"}, {"PUT", "/api/v1/steps/roles"},
-		{"POST", "/api/v1/steps/roles/preflight"}, {"GET", "/api/v1/summary"}, {"POST", "/api/v1/install"},
-		{"GET", "/api/v1/install/events"}, {"GET", "/api/v1/result"}, {"POST", "/api/v1/result/credential"},
-		{"GET", "/api/v1/cr"}, {"POST", "/api/v1/cr"},
+		{"GET", "/api/v1/state"},
+		{"GET", "/api/v1/steps/roles"},
+		{"PUT", "/api/v1/steps/roles"},
+		{"POST", "/api/v1/steps/roles/preflight"},
+		{"GET", "/api/v1/summary"},
+		{"POST", "/api/v1/install"},
+		{"GET", "/api/v1/install/events"},
+		{"GET", "/api/v1/result"},
+		{"POST", "/api/v1/result/credential"},
+		{"GET", "/api/v1/cr"},
+		{"POST", "/api/v1/cr"},
 	} {
 		status, body := h.do(e.method, e.path, nil)
 		h.wantError(status, body, 401, ReasonUnauthenticated)
@@ -632,8 +639,10 @@ func TestEveryReasonHasAStatus(t *testing.T) {
 			t.Fatalf("reason %s maps to %d %v", r, v.status, v.code)
 		}
 	}
-	for _, r := range []Reason{ReasonValidationFailed, ReasonBadRequest, ReasonUnauthenticated, ReasonSessionExpired, ReasonForbidden,
-		ReasonStepOutOfOrder, ReasonSpecChanged, ReasonInstallInProgress, ReasonAlreadyInstalled} {
+	for _, r := range []Reason{
+		ReasonValidationFailed, ReasonBadRequest, ReasonUnauthenticated, ReasonSessionExpired, ReasonForbidden,
+		ReasonStepOutOfOrder, ReasonSpecChanged, ReasonInstallInProgress, ReasonAlreadyInstalled,
+	} {
 		if _, ok := reasons[r]; !ok {
 			t.Fatalf("#139 reason %s is missing", r)
 		}

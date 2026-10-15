@@ -1,0 +1,75 @@
+# The common golangci-lint v2 baseline for every vws-* Go module (vws-deploy#300).
+# Each repo's .golangci.yml enables at least every linter below, sets lll to 120 and
+# enables the gofumpt and goimports formatters. A repo may add linters and settings
+# (depguard layer rules, wrapcheck ignores, local-prefixes) but never drops one.
+# .github/drift/drift-check.sh fails when a repo's config falls below this baseline.
+#
+# Existing long lines: until a repo's follow-up issue fixes them, its config sets
+# issues.new-from-merge-base: origin/main, so a pull request is held to the baseline
+# on the lines it changes. Remove that setting when the repo reports 0 findings.
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errcheck
+    - errname
+    - errorlint
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nilerr
+    - nilnil
+    - noctx
+    - sloglint
+    - staticcheck
+    - unused
+    - wrapcheck
+  settings:
+    lll:
+      line-length: 120
+      tab-width: 1
+    misspell:
+      locale: US
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    sloglint:
+      no-mixed-args: true
+      attr-only: true
+      context: all
+      static-msg: true
+      key-naming-case: snake
+    depguard:
+      rules:
+        no-sentry-direct:
+          files: [$all]
+          deny:
+            - pkg: github.com/getsentry/sentry-go
+              desc: use vws-lib/obs/report
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+    paths:
+      - third_party
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party
