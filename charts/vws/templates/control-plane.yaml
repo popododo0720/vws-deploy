@@ -316,7 +316,7 @@ spec:
               app.kubernetes.io/instance: {{ $.Release.Name }}
         {{- end }}
       ports:
-        - port: http
+        - port: {{ $port }}
 {{- end }}
 {{- end }}
 {{- end }}

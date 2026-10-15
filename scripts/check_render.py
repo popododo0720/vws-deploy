@@ -552,10 +552,15 @@ def check_network_policy(name: str, spec: dict, by_kind: dict, release: str) -> 
     got = sorted((p.get("podSelector") or {}).get("matchLabels", {}).get("app.kubernetes.io/name", "")
                  for rule in pspec.get("ingress") or [] for p in rule.get("from") or [])
     rules = pspec.get("ingress") or []
+    errors: list[str] = []
     if ((pspec.get("podSelector") or {}).get("matchLabels") != want_pod or pspec.get("policyTypes") != ["Ingress"]
             or len(rules) != 1 or got != sorted(allow) or "" in got):
-        return [f"R10: NetworkPolicy {name} must select {name} and admit only {sorted(allow)}"]
-    return []
+        errors.append(f"R10: NetworkPolicy {name} must select {name} and admit only {sorted(allow)}")
+    want_port = int(spec.get("port", 8080))
+    got_ports = [entry.get("port") for rule in rules for entry in rule.get("ports") or []]
+    if got_ports != [want_port]:
+        errors.append(f"R10: NetworkPolicy {name} port {got_ports!r} must be the numeric service port {want_port}")
+    return errors
 
 
 def check_port_env(name: str, spec: dict, container: dict) -> list[str]:
@@ -1186,6 +1191,12 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                     doc["spec"]["ingress"][0]["from"].append({"podSelector": {"matchLabels": {"app.kubernetes.io/name": "console"}}})
             if not check(broken, values, release):
                 return [f"R10: {svc} NetworkPolicy admitting another service did not fail"]
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                    doc["spec"]["ingress"][0]["ports"] = [{"port": "http"}]
+            if not any("numeric service port" in err for err in check(broken, values, release)):
+                return [f"R10: {svc} NetworkPolicy named port did not fail"]
             broken = [d for d in docs if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == svc)]
             if not check(broken, values, release):
                 return [f"R10: {svc} without its NetworkPolicy did not fail"]
