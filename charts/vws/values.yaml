@@ -64,11 +64,12 @@ services:
   console-api:
     external: true
     # imageTag pins this service's image to one build instead of global.tag / Chart appVersion
-    # (vws-deploy#280). sha-5b42eb7 is console-api#137, the build vws-test ran with this chart (#267):
-    # it has -console-origins and -trusted-proxies. vws-console-api publish.yml pushes
-    # ghcr.io/popododo0720/vws/console-api:sha-<7-char commit>; this tag exists only after that
-    # workflow has run for 5b42eb7 (workflow_dispatch ref=5b42eb7). spec.version does not move it.
-    imageTag: sha-5b42eb7
+    # (vws-deploy#280). sha-a003d96 is console-api#156 (S1): it reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY
+    # and VWS_SECRET_KEY from env, which this chart now relies on (no credential flags), and it keeps
+    # -console-origins and -trusted-proxies (#137). vws-console-api publish.yml pushed
+    # ghcr.io/popododo0720/vws/console-api:sha-a003d96 (sha256:dbd6ab8a…, revision a003d96) on merge.
+    # spec.version does not move it.
+    imageTag: sha-a003d96
     # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
     # split them (popododo0720/vws-console-api#95). The schema, check_render.py (R4) and vws render
     # refuse any other count; the chart has no HPA. Change this only with shared session storage.
