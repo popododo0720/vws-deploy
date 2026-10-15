@@ -475,4 +475,106 @@ cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/s1-values.yaml"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/s1.out.flag" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/s1-values.yaml" 2>&1 || true)
 expect_text "S1: check_render refuses a credential flag in args" "$out" "R16: console-api passes credential flag -secret in args"
 
+# IAM listeners: services.iam.port 9095, and 0.0.0.0 *-addr flags become client Service ports.
+# -iam=grpc derives -iam-endpoint=iam:9095. The CR does not set iam-endpoint.
+cat >"${WORK}/iam-listeners.yaml" <<'YAML'
+services:
+  iam:
+    enabled: true
+  console-api:
+    flags:
+      iam: grpc
+      ec2-addr: 0.0.0.0:8081
+      s3-addr: 0.0.0.0:8082
+      iam-addr: 0.0.0.0:8084
+YAML
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/iam-listeners.yaml" >"${WORK}/iam-listeners.out"
+got=$(python3 - "${WORK}/iam-listeners.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+def one(kind, name):
+    return next(d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name)
+iam = one("Service", "iam")
+idep = one("Deployment", "iam")["spec"]["template"]["spec"]["containers"][0]
+ca = one("Service", "console-api")
+cdep = one("Deployment", "console-api")["spec"]["template"]["spec"]["containers"][0]
+print("iam-type", iam["spec"]["type"])
+print("iam-ports", iam["spec"]["ports"])
+print("iam-cports", [p["containerPort"] for p in idep["ports"]])
+print("iam-args", idep["args"])
+print("ca-ports", [(p["name"], p["port"], p["targetPort"]) for p in ca["spec"]["ports"]])
+print("ca-cports", [p["containerPort"] for p in cdep["ports"]])
+print("ca-args", cdep.get("args"))
+PY
+)
+expect_text "iam listeners: Service iam is ClusterIP" "$got" "iam-type ClusterIP"
+expect_text "iam listeners: Service iam is http 9095" "$got" "iam-ports [{'name': 'http', 'port': 9095, 'targetPort': 'http'}]"
+expect_text "iam listeners: Deployment iam containerPorts are 9095" "$got" "iam-cports [9095]"
+expect_text "iam listeners: Deployment iam args are the listen flag" "$got" "iam-args ['-listen=0.0.0.0:9095']"
+expect_text "iam listeners: console-api Service ports" "$got" "ca-ports [('http', 8080, 'http'), ('ec2', 8081, 8081), ('s3', 8082, 8082), ('iam', 8084, 8084)]"
+expect_text "iam listeners: console-api containerPorts stay 8080" "$got" "ca-cports [8080]"
+expect_text "iam listeners: console-api args include -iam=grpc" "$got" "-iam=grpc"
+expect_text "iam listeners: console-api args include -iam-endpoint=iam:9095" "$got" "-iam-endpoint=iam:9095"
+expect_text "iam listeners: console-api args include -ec2-addr=0.0.0.0:8081" "$got" "-ec2-addr=0.0.0.0:8081"
+expect_text "iam listeners: console-api args include -s3-addr=0.0.0.0:8082" "$got" "-s3-addr=0.0.0.0:8082"
+expect_text "iam listeners: console-api args include -iam-addr=0.0.0.0:8084" "$got" "-iam-addr=0.0.0.0:8084"
+if python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/iam-listeners.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/iam-listeners.yaml" >"${WORK}/iam-listeners.check" 2>&1; then
+  ok "iam listeners: check_render accepts the render"
+else
+  bad "iam listeners: check_render" "$(cat "${WORK}/iam-listeners.check")"
+fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.iam=grpc >/dev/null 2>"${WORK}/iam-off.err"; then
+  bad "iam listeners: grpc with iam disabled rendered" "exit 0"
+else
+  ok "iam listeners: grpc with iam disabled fails"
+fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/iam-listeners.yaml" --set-string services.console-api.flags.iam-endpoint=iam:9095 >/dev/null 2>"${WORK}/iam-ep.err"; then
+  bad "iam listeners: a caller iam-endpoint rendered" "exit 0"
+else
+  ok "iam listeners: a caller iam-endpoint fails"
+fi
+cat >"${WORK}/iam-loop.yaml" <<'YAML'
+services:
+  iam:
+    enabled: true
+  console-api:
+    flags:
+      iam: grpc
+      ec2-addr: 127.0.0.1:8081
+      s3-addr: 0.0.0.0:8082
+      iam-addr: 0.0.0.0:8084
+YAML
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/iam-loop.yaml" >/dev/null 2>"${WORK}/iam-loop.err"; then
+  bad "iam listeners: loopback ec2-addr rendered" "exit 0"
+else
+  ok "iam listeners: loopback ec2-addr fails"
+fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.ec2-addr=0.0.0.0:80 >/dev/null 2>"${WORK}/iam-low.err"; then
+  bad "iam listeners: port 80 rendered" "exit 0"
+else
+  expect_text "iam listeners: port 80 is outside the Service range" "$(cat "${WORK}/iam-low.err")" "outside 1024..65535"
+fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.ec2-addr=0.0.0.0:8080 >/dev/null 2>"${WORK}/iam-dup.err"; then
+  bad "iam listeners: a second listener on 8080 rendered" "exit 0"
+else
+  expect_text "iam listeners: a second listener on the primary port fails" "$(cat "${WORK}/iam-dup.err")" "primary port"
+fi
+python3 - "${EX}/single-node.yaml" "${WORK}/iam-cr.yaml" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+doc["spec"]["services"]["iam"] = {"enabled": True}
+flags = doc["spec"]["services"]["console-api"]["flags"]
+flags["iam"] = "grpc"
+flags["ec2-addr"] = "0.0.0.0:8081"
+flags["s3-addr"] = "0.0.0.0:8082"
+flags["iam-addr"] = "0.0.0.0:8084"
+yaml.safe_dump(doc, open(sys.argv[2], "w"), sort_keys=False)
+PY
+run_vws_real render "${WORK}/iam-cr.yaml" "${WORK}/iam-cr.values.yaml"; expect_rc "iam listeners: vws render exits 0" 0
+run_vws_real render "${WORK}/iam-cr.yaml" "${WORK}/iam-cr.again.yaml"; expect_rc "iam listeners: vws render again exits 0" 0
+if cmp -s "${WORK}/iam-cr.values.yaml" "${WORK}/iam-cr.again.yaml"; then ok "iam listeners: vws render twice gives the same bytes"; else bad "iam listeners: vws render is deterministic" "outputs differ"; fi
+if grep -q 'iam-endpoint' "${WORK}/iam-cr.values.yaml"; then bad "iam listeners: render writes iam-endpoint" "present"; else ok "iam listeners: the values overlay has no iam-endpoint"; fi
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/iam-cr.values.yaml")
+expect_text "iam listeners: the chart sets -iam-endpoint from the overlay" "$chart" "-iam-endpoint=iam:9095"
+
 finish_tests
