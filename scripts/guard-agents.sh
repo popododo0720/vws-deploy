@@ -15,7 +15,8 @@
 #                                           the pull request is verify-approved for HEAD: LABELS (comma list) has
 #                                           verify-approved and a comment in the text (FILE or $PR_TEXT) has a
 #                                           "Verified-by: vws-verify" section naming HEAD with evidence for every
-#                                           QUALITY.md item. Each comment starts with a "@@comment-by: LOGIN" line;
+#                                           QUALITY.md item, plus a "Codex review: <full path or URL> blocking=0"
+#                                           line. Each comment starts with a "@@comment-by: LOGIN" line;
 #                                           text outside a comment (such as the PR body) never counts
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
@@ -131,6 +132,18 @@ cmd_verify_gate() {
     fi ||
       die "verify-gate: the Verified-by section for ${head:0:12} has no evidence (URL, path or 'N/A: reason') for checklist item ${n}"
   done
+  # The same section carries the Codex review: "Codex review: <absolute path or http(s) URL> blocking=<N>".
+  # It passes only with blocking=0. Path rule: /workspace/handoff/codex/<repo>-<pr>-<sha7>.md.
+  local codex where blocking
+  codex=$(grep -m1 -E '^[[:space:]]*(- )?Codex review:' <<<"$section" || true)
+  [[ -n $codex ]] || die "verify-gate: no Codex review in the Verified-by section for ${head:0:12}; add 'Codex review: <full path or URL> blocking=<N>'"
+  codex=${codex#*Codex review:}
+  [[ $codex =~ blocking=([0-9]+)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
+  blocking=$((10#${BASH_REMATCH[1]}))
+  where=$(sed -E 's/[[:space:]]*blocking=[0-9]+[[:space:]]*$//; s/^[[:space:]]+//' <<<"$codex")
+  [[ $where =~ ^(/[^[:space:]]+|https?://[^[:space:]/]+[^[:space:]]*)$ ]] ||
+    die "verify-gate: Codex review needs a full path or URL (an absolute /... path or an http(s) URL), got '${where}'"
+  ((blocking == 0)) || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
 }
 
 # The one guard command for the architecture test: the Judgment count line comes first so the CI log
@@ -542,7 +555,8 @@ GH
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
   ev="$tmp/ev.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"
-    for ((i = 1; i <= QUALITY_ITEMS; i++)); do echo "${i}. https://example.invalid/log/${i}"; done; } >"$ev"
+    for ((i = 1; i <= QUALITY_ITEMS; i++)); do echo "${i}. https://example.invalid/log/${i}"; done
+    echo "Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md blocking=0"; } >"$ev"
   expect_pass "label and evidence for the head" cmd_verify_gate "$h1" "bug,${VERIFY_LABEL}" "$ev"
   expect_fail "no label" cmd_verify_gate "$h1" "bug" "$ev"
   expect_fail "a push after approval (new head)" cmd_verify_gate "$h2" "$VERIFY_LABEL" "$ev"
