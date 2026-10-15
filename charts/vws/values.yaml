@@ -101,6 +101,12 @@ services:
       network-addr: network:8080
   compute:
     external: true
+    # imageTag pins compute to one published build (vws-deploy#280 mechanism). sha-07b591c is
+    # vws-compute#91 (07b591c = #89's 99a45e4 plus publish.yml): key pairs go in NoCloud meta-data
+    # public-keys (#83). vws-compute publish.yml pushed ghcr.io/popododo0720/vws/compute:sha-07b591c
+    # (sha256:292268f3…, revision 07b591c) on merge. ko sets the entrypoint /ko-app/vws-compute,
+    # user 65532; this chart passes only args, never command. spec.version does not move it.
+    imageTag: sha-07b591c
     # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
     # scripts/guard.sh config fails when they differ.
     port: 50051
