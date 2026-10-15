@@ -489,7 +489,6 @@ cmd_agents() {
   grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' .github/workflows/repo-guard.yml || die "R13: verify-gate must pass the vws-verify identity"
 }
 
-# console_api_closed FILE: the default console-api Service is one http port, with no AWS listener args.
 console_api_closed() {
   python3 - "$1" <<'PY'
 import sys, yaml
