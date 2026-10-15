@@ -37,7 +37,9 @@ When `flags.iam` is the string `grpc`, the render fails if `services.iam.enabled
 
 Extra ports are appended only on the client Service. The headless `-peers` Service stays one `http` port. Container ports stay the primary port. The extra targetPort is the number.
 
-The NetworkPolicy `ports` entry is the integer `services.iam.port`. kube-ovn with `--np-enforcement=standard` does not resolve a named port, so `port: http` blocks console-api from `iam:9095`. `check_render.py` rejects a NetworkPolicy port that is not that integer.
+The NetworkPolicy `ports` entry is the integer `services.iam.port`. kube-ovn with `--np-enforcement=standard` does not resolve a named port, so `port: http` blocks console-api from `iam:9095`. `check_render.py` rejects a NetworkPolicy port that is not that integer, a port range (`endPort`), and a protocol other than TCP.
+
+`services.iam.replicas` is 1. Users are in memory, so a second replica would split them (vws-iam#110). One replica does not survive a restart. A shared store is still required.
 
 ## Tradeoffs
 
@@ -65,8 +67,10 @@ Teaching the CR a port field would give the listen port a second owner. The port
 
 | Gap | Standing |
 | --- | --- |
-| live AWS CLI `iam create-user`, `list-users`, and `sts get-caller-identity` with a non-root key | this repo does not apply to a cluster; render tests stand in |
+| live AWS CLI `iam create-user` and `list-users` | console-api#198. Those operations return `InvalidAction` over gRPC. This chart does not implement them |
+| `sts get-caller-identity` with a non-root key | this repo does not apply to a cluster |
 | AWS error shapes | handlers are in vws-console-api, not this chart |
-| vws-iam publishes no image | workflows are `ci.yml`, `direct-push-watch.yml`, `english.yml`, and `repo-guard.yml`. No `publish.yml`, Dockerfile, or ko config. Anonymous token for `repository:popododo0720/vws/iam:pull` returned HTTP 403 `DENIED` on 2026-10-15. Tag `0.1.0` returned HTTP 403 `invalid token`. The packages API returned 404. `enabled` stays false. With `enabled` true the chart still names `ghcr.io/popododo0720/vws/iam:0.1.0`, which does not pull. There is no published tag to pin |
+| one iam replica | mitigation only. Users stay in memory. A restart drops them. The shared store is vws-iam#110 |
+| vws-iam publishes no image | vws-iam#111. Workflows are `ci.yml`, `direct-push-watch.yml`, `english.yml`, and `repo-guard.yml`. No `publish.yml`, Dockerfile, or ko config. Anonymous token for `repository:popododo0720/vws/iam:pull` returned HTTP 403 `DENIED` on 2026-10-15. Tag `0.1.0` returned HTTP 403 `invalid token`. The packages API returned 404. `enabled` stays false. With `enabled` true the chart still names `ghcr.io/popododo0720/vws/iam:0.1.0`, which does not pull. There is no published tag to pin |
 | the live Deployment described as `vws-iam-test` is not in this repo | the chart creates Deployment and Service `iam` |
 | the live VWSCluster is not in this repo | nothing here changes vws-test until an operator sets the fields and runs `vws apply` |
