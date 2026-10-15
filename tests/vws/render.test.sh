@@ -507,10 +507,13 @@ iam = one("Service", "iam")
 idep = one("Deployment", "iam")["spec"]["template"]["spec"]["containers"][0]
 ca = one("Service", "console-api")
 cdep = one("Deployment", "console-api")["spec"]["template"]["spec"]["containers"][0]
+pol = one("NetworkPolicy", "iam")
+policy_ports = [p.get("port") for rule in pol["spec"]["ingress"] for p in rule.get("ports") or []]
 print("iam-type", iam["spec"]["type"])
 print("iam-ports", iam["spec"]["ports"])
 print("iam-cports", [p["containerPort"] for p in idep["ports"]])
 print("iam-args", idep["args"])
+print("iam-policy-ports", policy_ports)
 print("ca-ports", [(p["name"], p["port"], p["targetPort"]) for p in ca["spec"]["ports"]])
 print("ca-cports", [p["containerPort"] for p in cdep["ports"]])
 print("ca-args", cdep.get("args"))
@@ -520,6 +523,7 @@ expect_text "iam listeners: Service iam is ClusterIP" "$got" "iam-type ClusterIP
 expect_text "iam listeners: Service iam is http 9095" "$got" "iam-ports [{'name': 'http', 'port': 9095, 'targetPort': 'http'}]"
 expect_text "iam listeners: Deployment iam containerPorts are 9095" "$got" "iam-cports [9095]"
 expect_text "iam listeners: Deployment iam args are the listen flag" "$got" "iam-args ['-listen=0.0.0.0:9095']"
+expect_text "iam listeners: NetworkPolicy port is numeric 9095" "$got" "iam-policy-ports [9095]"
 expect_text "iam listeners: console-api Service ports" "$got" "ca-ports [('http', 8080, 'http'), ('ec2', 8081, 8081), ('s3', 8082, 8082), ('iam', 8084, 8084)]"
 expect_text "iam listeners: console-api containerPorts stay 8080" "$got" "ca-cports [8080]"
 expect_text "iam listeners: console-api args include -iam=grpc" "$got" "-iam=grpc"
@@ -531,6 +535,19 @@ if python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/iam-listeners.out
   ok "iam listeners: check_render accepts the render"
 else
   bad "iam listeners: check_render" "$(cat "${WORK}/iam-listeners.check")"
+fi
+python3 - "${WORK}/iam-listeners.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for doc in docs:
+    if doc["kind"] == "NetworkPolicy" and doc["metadata"]["name"] == "iam":
+        doc["spec"]["ingress"][0]["ports"] = [{"port": "http"}]
+yaml.safe_dump_all(docs, open(sys.argv[1] + ".named", "w"))
+PY
+if python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/iam-listeners.out.named" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/iam-listeners.yaml" >"${WORK}/iam-named.check" 2>&1; then
+  bad "iam listeners: named NetworkPolicy port accepted" "exit 0"
+else
+  expect_text "iam listeners: a named NetworkPolicy port fails" "$(cat "${WORK}/iam-named.check")" "numeric service port"
 fi
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.iam=grpc >/dev/null 2>"${WORK}/iam-off.err"; then
   bad "iam listeners: grpc with iam disabled rendered" "exit 0"
