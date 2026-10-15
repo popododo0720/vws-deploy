@@ -104,6 +104,13 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
-            gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" >/dev/null
-            echo "verify-approved removed: a new head needs a new verification"
+            # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
+            if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+              echo "verify-approved removed: a new head needs a new verification"
+            elif [[ $out == *"HTTP 404"* ]]; then
+              echo "verify-approved was already removed"
+            else
+              echo "$out" >&2
+              exit 1
+            fi
           fi
