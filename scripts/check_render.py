@@ -151,6 +151,7 @@ API_CLIENT_ENV = ("VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN")
 # ALLOWED_KINDS (R10).
 SINGLE_REPLICA = {
     "console-api": "sessions are held in memory (popododo0720/vws-console-api#95)",
+    "iam": "users are held in memory until a shared store (vws-iam#110); one replica does not survive a restart",
 }
 
 
@@ -560,6 +561,13 @@ def check_network_policy(name: str, spec: dict, by_kind: dict, release: str) -> 
     got_ports = [entry.get("port") for rule in rules for entry in rule.get("ports") or []]
     if got_ports != [want_port]:
         errors.append(f"R10: NetworkPolicy {name} port {got_ports!r} must be the numeric service port {want_port}")
+    for rule in rules:
+        for entry in rule.get("ports") or []:
+            if "endPort" in entry:
+                errors.append(f"R10: NetworkPolicy {name} must not set endPort on the listener port")
+            protocol = entry.get("protocol")
+            if protocol not in (None, "TCP"):
+                errors.append(f"R10: NetworkPolicy {name} protocol {protocol!r} must be TCP")
     return errors
 
 
@@ -1197,6 +1205,19 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                     doc["spec"]["ingress"][0]["ports"] = [{"port": "http"}]
             if not any("numeric service port" in err for err in check(broken, values, release)):
                 return [f"R10: {svc} NetworkPolicy named port did not fail"]
+            listener = int(spec.get("port", 8080))
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                    doc["spec"]["ingress"][0]["ports"] = [{"port": listener, "endPort": listener}]
+            if not any("endPort" in err for err in check(broken, values, release)):
+                return [f"R10: {svc} NetworkPolicy endPort did not fail"]
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                    doc["spec"]["ingress"][0]["ports"] = [{"protocol": "UDP", "port": listener}]
+            if not any("must be TCP" in err for err in check(broken, values, release)):
+                return [f"R10: {svc} NetworkPolicy non-TCP protocol did not fail"]
             broken = [d for d in docs if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == svc)]
             if not check(broken, values, release):
                 return [f"R10: {svc} without its NetworkPolicy did not fail"]

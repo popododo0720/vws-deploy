@@ -49,6 +49,9 @@ services:
     port: 9095
     flags:
       listen: 0.0.0.0:9095
+    # One replica until vws-iam#110 has a shared store. A second replica would split
+    # in-memory users, and this one replica is still lost on restart.
+    replicas: 1
     kekSecret: vws-iam-kek
     allowFrom: [console-api]
   console:
