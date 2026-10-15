@@ -49,6 +49,13 @@ services:
     port: 9095
     flags:
       listen: 0.0.0.0:9095
+    # imageTag pins iam to one published build (vws-deploy#280 mechanism). sha-b567471 is
+    # vws-iam#112 (vws-iam#111). vws-iam publish.yml pushed
+    # ghcr.io/popododo0720/vws/iam:sha-b567471
+    # (sha256:ea481d637e103b7426e7c9b12b8ea1e9291ab1de65ecfe6ce746f8c6660b231d, revision b567471).
+    # An anonymous manifest request for that tag returned HTTP 200 and this digest on 2026-10-15.
+    # spec.version does not move it. enabled stays false, so the default render still leaves iam out.
+    imageTag: sha-b567471
     # One replica until vws-iam#110 has a shared store. A second replica would split
     # in-memory users, and this one replica is still lost on restart.
     replicas: 1
