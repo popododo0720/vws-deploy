@@ -87,8 +87,8 @@ spec:
 - `scripts/check_render.py` R15: `-console-origins`가 없거나 항목이 `scheme://host[:port]`가 아니면 거절, `-trusted-proxies` 항목이 IP/CIDR가 아니면 거절.
 - `-trusted-proxies`는 값이 있을 때만 넘긴다. #137(5b42eb7)부터 `-console-origins`와 함께 지원한다.
 - 이 차트는 console-api 이미지 #137(5b42eb7) 이상이 필요하다. 그 전 이미지는 모르는 플래그 `-console-origins`(그리고 설정했다면 `-trusted-proxies`)로 시작하지 못한다.
-- 이미지 고정(#280): `charts/vws/values.yaml`의 `services.console-api.imageTag: sha-5b42eb7`이 console-api만 `ghcr.io/popododo0720/vws/console-api:sha-5b42eb7`로 고정한다. 다른 서비스는 그대로 `global.tag` → appVersion이다. 스키마는 태그 모양(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)만 본다.
-  - 이 태그는 vws-console-api의 `publish.yml`(main 푸시마다 ko로 `sha-<커밋 7자>`, 라벨 `org.opencontainers.image.revision=<전체 SHA>`)이 5b42eb7에 대해 돈 뒤에만 있다: 워크플로가 머지된 뒤 `workflow_dispatch`에 `ref=5b42eb7`을 넣어 한 번 돌린다. 그 전에는 이 차트로 새로 설치하면 이미지를 받지 못한다(확인 필요: 발행 후 vws-test에서 pull 확인).
-  - 5b42eb7을 고른 이유: vws-test에서 이 차트(c1f377b)와 함께 실측한 빌드다(#267). 더 새 main 커밋으로 옮길 때는 그 커밋이 발행된 뒤 `imageTag`만 바꾸고 vws-test에서 다시 잰다.
+- 이미지 고정(#280): `charts/vws/values.yaml`의 `services.console-api.imageTag: sha-a003d96`이 console-api만 `ghcr.io/popododo0720/vws/console-api:sha-a003d96`로 고정한다. 이 빌드(console-api#156)부터 자격 증명을 env(`VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY`)로 읽고, 이 차트는 자격 증명 플래그를 넘기지 않으므로 그 전 이미지로는 `-backend=grpc`가 시작하지 않는다. 다른 서비스는 그대로 `global.tag` → appVersion이다. 스키마는 태그 모양(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)만 본다.
+  - 이 태그는 vws-console-api의 `publish.yml`(main 푸시마다 ko로 `sha-<커밋 7자>`, 라벨 `org.opencontainers.image.revision=<전체 SHA>`)이 a003d96 머지 때 발행했다(digest sha256:dbd6ab8a…, 2026-10-15 익명 pull 확인). vws-test에서의 pull과 기동은 확인 필요.
+  - a003d96을 고른 이유: 자격 증명 env를 읽는 첫 빌드다(S1). 이전 고정은 5b42eb7(#267에서 vws-test 실측)이었다. 더 새 main 커밋으로 옮길 때는 그 커밋이 발행된 뒤 `imageTag`만 바꾸고 vws-test에서 다시 잰다.
   - 패키지 공개 여부는 워크플로가 바꾸지 않는다. 비공개면 노드에 pull 자격 증명이 필요하다(확인 필요).
 - vws-test 실측: 기본 설치(`-iam=static`)에서 `-console-origins`를 콘솔 공개 주소로 두면 로그인 없이 콘솔 API가 모두 200이다. 필수여도 기본 설치를 막지 않는다.

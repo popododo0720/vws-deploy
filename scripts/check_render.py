@@ -141,9 +141,10 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
     return errors
 
 
-# apiCredentials: flag -> env kubelet expands it from, and env -> key of the Secret (vws-console-api
-# cmd/vws-console-api/main.go -console-token, -access-key, -secret; -backend=grpc refuses the defaults).
-API_CREDENTIAL_FLAGS = {"console-token": "VWS_CONSOLE_TOKEN", "access-key": "VWS_ACCESS_KEY", "secret": "VWS_SECRET_KEY"}
+# apiCredentials: env -> key of the Secret. vws-console-api reads the env (cmd/vws-console-api
+# credentials.go; -backend=grpc refuses the defaults). The deprecated flags would put the values in the
+# process arguments, so no service may get them in args, as values or as $(VAR) references.
+API_CREDENTIAL_FLAGS = ("console-token", "access-key", "secret")
 API_CREDENTIAL_KEYS = {"VWS_CONSOLE_TOKEN": "console-token", "VWS_ACCESS_KEY": "access-key", "VWS_SECRET_KEY": "secret-key"}
 API_CLIENT_ENV = ("VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN")
 # Services that must run exactly one replica, and why. An HPA is already refused: it is not in
@@ -165,8 +166,6 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
         if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
-    if spec.get("apiCredentials"):
-        flags.update({f: f"$({env})" for f, env in API_CREDENTIAL_FLAGS.items()})
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -394,6 +393,9 @@ def check_api(name: str, spec: dict, container: dict, values: dict, release_ns: 
         return ((env.get(key) or {}).get("valueFrom") or {}).get("secretKeyRef") or {}
 
     secret = (spec.get("apiCredentials") or {}).get("existingSecret")
+    for arg in container.get("args") or []:
+        if str(arg).split("=", 1)[0].lstrip("-") in API_CREDENTIAL_FLAGS:
+            errors.append(f"R16: {name} passes credential flag {str(arg).split('=', 1)[0]} in args; credentials go only by secretKeyRef env")
     if spec.get("apiCredentials") is None:
         if set(API_CREDENTIAL_KEYS) & set(env):
             errors.append(f"R16: {name} gets console API credentials that values do not ask for")
@@ -959,6 +961,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
 
     # apiCredentials / apiClient: credentials only by secretKeyRef, the URL from values.
     api_cases = []
+    api_arg_cases = []
     for svc, spec in values["services"].items():
         spec = spec or {}
         if spec.get("apiCredentials"):
@@ -967,6 +970,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 (svc, "another credential Secret", lambda env: entry_of(env, "VWS_SECRET_KEY")["valueFrom"]["secretKeyRef"].update(name="other")),
                 (svc, "no access key env", lambda env: env.remove(entry_of(env, "VWS_ACCESS_KEY"))),
             ]
+            api_arg_cases.append(svc)
         if spec.get("apiClient"):
             api_cases += [
                 (svc, "a hardcoded API URL", lambda env: entry_of(env, "VWS_CONSOLE_API_URL").update(value="http://console-api:9999")),
@@ -983,6 +987,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 change(doc["spec"]["template"]["spec"]["containers"][0]["env"])
         if not check(broken, values, release):
             return [f"R16: {svc} {label} did not fail"]
+    for svc in api_arg_cases:
+        for arg in ("-secret=$(VWS_SECRET_KEY)", "-console-token=x"):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == svc:
+                    doc["spec"]["template"]["spec"]["containers"][0].setdefault("args", []).append(arg)
+            if not check(broken, values, release):
+                return [f"R16: {svc} with {arg.split('=')[0]} in args did not fail"]
 
     # kekSecret and allowFrom (#243): a literal KEK, another Secret, or a policy that admits more must fail.
     for svc, spec in values["services"].items():

@@ -404,20 +404,20 @@ expect_text "trusted-proxies: not passed by default" "$got" "0"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string 'services.console-api.flags.trusted-proxies=10.0.0.0/8' | grep -c -- '-trusted-proxies=10.0.0.0/8' || true)
 expect_text "trusted-proxies: passed when set" "$got" "1"
 
-# vws-deploy#280: console-api is pinned by services.console-api.imageTag to sha-5b42eb7, the
-# console-api#137 build that vws-console-api publish.yml pushes as ghcr.io/popododo0720/vws/console-api:sha-<commit>.
+# vws-deploy#280: console-api is pinned by services.console-api.imageTag to sha-a003d96, the
+# console-api#156 build (env credentials, S1) that vws-console-api publish.yml pushes as ghcr.io/popododo0720/vws/console-api:sha-<commit>.
 # Other services keep global.tag / appVersion, and spec.version moves them but not console-api.
 images() {
   helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws "$@" |
     python3 -c 'import sys,yaml; print(sorted(d["metadata"]["name"]+"="+d["spec"]["template"]["spec"]["containers"][0]["image"] for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ("Deployment","StatefulSet") and d["metadata"]["namespace"] == "vws"))'
 }
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
-expect_text "image pin: console-api renders sha-5b42eb7" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-5b42eb7'"
+expect_text "image pin: console-api renders sha-a003d96" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
 expect_text "image pin: other services keep appVersion" "$got" "'compute=ghcr.io/popododo0720/vws/compute:0.1.0'"
 run_vws_real render "${EX}/ha.yaml" "${WORK}/pin.yaml"; expect_rc "image pin: ha example renders" 0
 got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9)
 expect_text "image pin: global.tag moves other services" "$got" "'compute=ghcr.io/popododo0720/vws/compute:9.9.9'"
-expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-5b42eb7'"
+expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.console-api.imageTag=sha-1234567)
 expect_text "image pin: imageTag is the only knob" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-1234567'"
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set 'services.console-api.imageTag=a/b' >/dev/null 2>"${WORK}/tag.err"; then
@@ -436,5 +436,38 @@ for d in yaml.safe_load_all(sys.stdin):
 expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rules" "Role vws-compute vws-vms ['secrets'] ['get', 'create', 'update', 'delete'] None"
 if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
 if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
+
+# S1: console-api credentials go only by secretKeyRef env. No -console-token, -access-key or -secret
+# in args, not even as a $(VAR) reference, so the values never reach the process arguments.
+creds() {
+  helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws "$@" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] in ("Deployment", "StatefulSet") and d["metadata"]["name"] == "console-api":
+        c = d["spec"]["template"]["spec"]["containers"][0]
+        bad = [a.split("=")[0] for a in c.get("args", []) if a.split("=")[0].lstrip("-") in ("console-token", "access-key", "secret") or "$(VWS_" in a]
+        env = {e["name"]: e.get("valueFrom", {}).get("secretKeyRef") for e in c.get("env", []) if e["name"] in ("VWS_CONSOLE_TOKEN", "VWS_ACCESS_KEY", "VWS_SECRET_KEY")}
+        lit = [e["name"] for e in c.get("env", []) if e["name"] in env and "value" in e]
+        print("args", bad); print("env", sorted((k, v["name"], v["key"]) for k, v in env.items() if v)); print("literal", lit)'
+}
+got=$(creds -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
+expect_text "S1: no credential flag in console-api args" "$got" "args []"
+expect_text "S1: credentials are secretKeyRef env" "$got" "env [('VWS_ACCESS_KEY', 'vws-console-api-credentials', 'access-key'), ('VWS_CONSOLE_TOKEN', 'vws-console-api-credentials', 'console-token'), ('VWS_SECRET_KEY', 'vws-console-api-credentials', 'secret-key')]"
+expect_text "S1: no credential as a literal env value" "$got" "literal []"
+run_vws_real render "${EX}/ha.yaml" "${WORK}/s1.yaml"; expect_rc "S1: ha example renders" 0
+got=$(creds -f "${WORK}/s1.yaml")
+expect_text "S1: ha render has no credential flag" "$got" "args []"
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" >"${WORK}/s1.out"
+python3 - "${WORK}/s1.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for d in docs:
+    if d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api":
+        d["spec"]["template"]["spec"]["containers"][0]["args"].append("-secret=$(VWS_SECRET_KEY)")
+yaml.safe_dump_all(docs, open(sys.argv[1] + ".flag", "w"))
+PY
+cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/s1-values.yaml"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/s1.out.flag" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/s1-values.yaml" 2>&1 || true)
+expect_text "S1: check_render refuses a credential flag in args" "$out" "R16: console-api passes credential flag -secret in args"
 
 finish_tests
