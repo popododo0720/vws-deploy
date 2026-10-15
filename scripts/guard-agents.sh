@@ -287,7 +287,13 @@ cmd_pr_commits() {
   [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
-  for sha in $(git rev-list --no-merges "${base}..${head}"); do
+  # Merge commits too: a merge message that closes an issue closes it like any other commit. A range git
+  # cannot list (a bad ref) fails instead of checking nothing.
+  local -a shas
+  mapfile -t shas < <(git rev-list "${base}..${head}" || echo "rev-list-failed")
+  [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
+  for sha in "${shas[@]}"; do
+    [[ -n $sha ]] || continue
     git log -1 --format=%B "$sha" >"$tmp"
     (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
