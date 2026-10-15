@@ -505,6 +505,23 @@ Closes #12
   expect_fail "Part of owner/repo#0" env PR_BODY="Part of acme/repo#0" bash "$0" pr-body
   expect_fail "Part of #00" env PR_BODY="Part of #00" bash "$0" pr-body
   expect_fail "Part of #012" env PR_BODY="Part of #012" bash "$0" pr-body
+  # A fence closes only on the same character, at least as long (vws-deploy guard P2).
+  expect_fail "Part of behind a shorter inner fence" env PR_BODY="~~~~
+\`\`\`
+Part of #12
+~~~~" bash "$0" pr-body
+  expect_fail "Part of behind a three-tilde line in a four-tilde fence" env PR_BODY="~~~~
+~~~
+Part of #12
+~~~~" bash "$0" pr-body
+  expect_fail "Part of behind a fence line with text after it" env PR_BODY="\`\`\`
+\`\`\`go
+Part of #12
+\`\`\`" bash "$0" pr-body
+  expect_pass "Part of after a properly closed long fence" env PR_BODY="~~~~
+x
+~~~~~
+Part of #12" bash "$0" pr-body
   expect_fail "Part of #0 next to a valid Part of" env PR_BODY="Part of #3
 Part of #0" bash "$0" pr-body
   expect_pass "Part of #10" env PR_BODY="Part of #10" bash "$0" pr-body
@@ -639,6 +656,22 @@ GH
   c4=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" commit -q --allow-empty -m "ci: u" -m "Resolved https://github.com/acme/repo/issues/4" -m "Part of #4"
   expect_fail "a commit that closes an issue by URL" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c4"
+  # Stored messages keep their # lines; merge commits are checked; a bad range fails (vws-deploy guard P2).
+  local c5
+  git -C "$repo" reset -q --hard "$c4"
+  c5=$(git -C "$repo" rev-parse HEAD~1)
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci: v" -m "# Fixes #4" -m "Part of #4"
+  expect_fail "a stored commit message with '# Fixes #N'" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  git -C "$repo" checkout -q -b side "$c5"
+  git -C "$repo" commit -q --allow-empty -m "ci: side" -m "Part of #4"
+  git -C "$repo" checkout -q commits
+  git -C "$repo" merge -q --no-ff -m "Merge side" -m "Closes #4" side
+  expect_fail "a merge commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" reset -q --hard "$c5"
+  expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
+  expect_pass "pr-commits on an empty clean range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
   # verify-gate: label and a section bound to the head with evidence for every item.
   local h1 h2 ev
   h1=$(printf 'a%.0s' {1..40}); h2=$(printf 'b%.0s' {1..40})
@@ -691,6 +724,11 @@ GH
   sed 's#^Codex review: .*#Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md#' "$ev" >"$tmp/codexnon.md"
   expect_fail "a Codex review without blocking=<N>" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnon.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
+  # Several sections name the head: the newest (last) one is the verdict (vws-deploy guard P2).
+  { cat "$ev"; echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"; echo "1. withdrawn"; } >"$tmp/newbad.md"
+  expect_fail "a newer incomplete verdict for the head replaces a complete one" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/newbad.md"
+  { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h1}"; echo "1. first try"; cat "$ev"; } >"$tmp/newgood.md"
+  expect_pass "a newer complete verdict for the head replaces an incomplete one" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/newgood.md"
   expect_pass "a stale section and a current one: the current one counts" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/two.md"
   # Only comments count: the same section in the PR body (no @@comment-by block) is ignored.
   grep -v '^@@comment-by:' "$ev" >"$tmp/body.md"
