@@ -120,11 +120,13 @@ cmd_verify_gate() {
       if (keep) print "#"; next }
     keep { print }')
   # The section that names this head: from its "Verified-by: vws-verify" line to the next such line or heading.
+  # Comments come oldest first; when several sections name this head, the newest (last) one is the verdict.
   section=$(tr -d '`' <<<"$text" | awk -v h="$head" '
-    /Verified-by:[[:space:]]*vws-verify/ { if (keep) exit; on = 1; buf = ""; next }
-    on && /^#/ { if (keep) exit; on = 0; next }
+    function done() { if (on && keep) last = buf; on = 0; keep = 0; buf = "" }
+    /Verified-by:[[:space:]]*vws-verify/ { done(); on = 1; next }
+    on && /^#/ { done(); next }
     on { buf = buf $0 "\n"; if ($0 ~ "^[[:space:]]*Head:[[:space:]]*" h "[[:space:]]*$") keep = 1 }
-    END { if (keep) printf "%s", buf }')
+    END { done(); printf "%s", last }')
   [[ -n $section ]] || die "verify-gate: no 'Verified-by: vws-verify' section names the head ${head}; a push after approval needs a new verification"
   for ((n = 1; n <= QUALITY_ITEMS; n++)); do
     line=$(grep -m1 -E "^[[:space:]]*(- )?${n}\.[[:space:]]" <<<"$section" || true)
