@@ -47,7 +47,7 @@ The Service publishes 8081, 8082 and 8084 with numeric targetPorts. The containe
 
 `127.0.0.1` on an `-addr` flag fails the render, so a loopback address cannot look configured while staying unreachable.
 
-`enabled` stays false until a pullable `ghcr.io/popododo0720/vws/iam` tag is proven. Turning it on names that image.
+`enabled` stays false. vws-iam publishes no image, so there is no tag to pin. Turning it on names `ghcr.io/popododo0720/vws/iam` plus `spec.version`, or appVersion `0.1.0`.
 
 ## Alternatives rejected
 
