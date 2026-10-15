@@ -33,6 +33,12 @@ check yet; making it required is a separate admin step.
   The gate fails with "no Codex review" (line missing), "Codex review has N blocking findings"
   (N > 0) or "Codex review needs a full path or URL". This is not a tenth checklist item; the
   nine items above are unchanged.
+- Standard commands: per PR `codex review --base <PR base branch>` (usually `main`); per commit
+  `codex review --commit <SHA>`. Save the output under the path rule, for example
+  `codex review --base main > /workspace/handoff/codex/vws-deploy-123-abc1234.md`. `blocking=<N>` is
+  the number of blocking findings in that saved review for the head being verified; the Verified-by
+  line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
+  Fix the findings and re-run on the new head until N is 0.
 
 ```
 Verified-by: vws-verify
