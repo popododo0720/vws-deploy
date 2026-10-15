@@ -270,10 +270,11 @@ cmd_pr_body() {
 }
 
 cmd_commit_msg() {
-  local file=${1:-} msg
+  local file=${1:-} mode=${2:-} msg
   [[ -n $file && -f $file ]] || die "commit-msg: needs the message file"
-  # Lines starting with # are git's comments and never reach the commit.
-  msg=$(grep -v '^#' "$file" || true)
+  # In the commit-msg hook, lines starting with # are git's comments and never reach the commit. A stored
+  # message (mode "stored", from pr-commits) has no such comments: every line is real and is checked.
+  if [[ $mode == stored ]]; then msg=$(cat "$file"); else msg=$(grep -v '^#' "$file" || true); fi
   if grep -q -i -E "$CLOSING_RE" <<<"$msg" || grep -q -i -E "$CLOSING_RE" <<<"$(visible_text <<<"$msg")"; then
     die "commit-msg: do not close issues from a commit (found Closes/Fixes/Resolves #N); write 'Part of #N'"
   fi
@@ -295,7 +296,7 @@ cmd_pr_commits() {
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
     git log -1 --format=%B "$sha" >"$tmp"
-    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
+    (cmd_commit_msg "$tmp" stored) 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
 }
 
