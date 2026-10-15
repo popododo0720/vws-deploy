@@ -138,12 +138,16 @@ cmd_verify_gate() {
   codex=$(grep -m1 -E '^[[:space:]]*(- )?Codex review:' <<<"$section" || true)
   [[ -n $codex ]] || die "verify-gate: no Codex review in the Verified-by section for ${head:0:12}; add 'Codex review: <full path or URL> blocking=<N>'"
   codex=${codex#*Codex review:}
-  [[ $codex =~ blocking=([0-9]+)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
-  blocking=$((10#${BASH_REMATCH[1]}))
-  where=$(sed -E 's/[[:space:]]*blocking=[0-9]+[[:space:]]*$//; s/^[[:space:]]+//' <<<"$codex")
+  # blocking=<N> is matched as a string, never as bash arithmetic: $((N)) wraps 2^64 to 0, so only
+  # all-zero digits pass; empty, signed, hex, spaced or other non-digit values are rejected.
+  [[ $codex =~ blocking=([^[:space:]]*)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
+  blocking=${BASH_REMATCH[1]}
+  where=${codex%blocking=*}
+  where=$(sed -E 's/[[:space:]]+$//; s/^[[:space:]]+//' <<<"$where")
   [[ $where =~ ^(/[^[:space:]]+|https?://[^[:space:]/]+[^[:space:]]*)$ ]] ||
     die "verify-gate: Codex review needs a full path or URL (an absolute /... path or an http(s) URL), got '${where}'"
-  ((blocking == 0)) || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
+  [[ $blocking =~ ^[0-9]+$ ]] || die "verify-gate: Codex review blocking=<N> must be decimal digits, got '${blocking}' (${where})"
+  [[ $blocking =~ ^0+$ ]] || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
 }
 
 # The one guard command for the architecture test: the Judgment count line comes first so the CI log
