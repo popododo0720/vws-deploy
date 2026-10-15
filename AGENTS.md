@@ -88,3 +88,14 @@ main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜�
 
 - `make check` — helm lint, kubeconform, envtest kube-apiserver의 CRD 검사(`make crd`), 플랫폼 번들 렌더 검사, 이 파일의 검사
 - `helm template vws charts/vws --namespace vws` — 적용하지 않고 매니페스트를 본다
+
+## Verify gate
+
+`repo-guard / verify-gate` (#249) requires the `verify-approved` label and a PR comment (not the
+body) with a `Verified-by: vws-verify` section that names the PR head SHA, with evidence for each
+docs/QUALITY.md item. A push voids the approval. The PR author and the head pusher cannot approve
+unless they are the vws-verify identity. The gate runs under `pull_request` (never
+`pull_request_target`) and uses the guard script from the base commit, but the PR can still edit
+the workflow YAML, and all bots share one account; see "Known gaps" in docs/QUALITY.md. It is not a
+required check yet. vws-verify judges and labels; eggbot merges only after that. Test it locally
+with `scripts/guard-agents.sh verify-gate <sha> <labels> <file>`.
