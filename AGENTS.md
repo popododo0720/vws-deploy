@@ -99,3 +99,10 @@ unless they are the vws-verify identity. The gate runs under `pull_request` (nev
 the workflow YAML, and all bots share one account; see "Known gaps" in docs/QUALITY.md. It is not a
 required check yet. vws-verify judges and labels; eggbot merges only after that. Test it locally
 with `scripts/guard-agents.sh verify-gate <sha> <labels> <file>`.
+
+Codex review result attached, no blocking findings: the same section must have a line
+`Codex review: <full path or URL> blocking=<N>`, and the gate passes only with `blocking=0`.
+Missing line: "no Codex review"; N > 0: "Codex review has N blocking findings"; no absolute path
+or http(s) URL: "Codex review needs a full path or URL". Path rule:
+`/workspace/handoff/codex/<repo>-<pr>-<sha7>.md`, for example
+`Codex review: /workspace/handoff/codex/vws-deploy-301-7d994a0.md blocking=0`.

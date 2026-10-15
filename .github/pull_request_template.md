@@ -21,3 +21,7 @@ AWS-grade production quality, not demo (see docs/QUALITY.md). Every checked box 
 - [ ] **Observability**: OpenTelemetry traces/metrics for the new paths and structured logs (no secrets). Evidence:
 - [ ] **Idempotency**: safe on retry, duplicate request and process restart. Evidence:
 - [ ] **AWS compatibility (where applicable)**: API behavior and error codes match AWS. Evidence:
+
+## Codex review (required by verify-gate)
+
+- [ ] **Codex review result attached, no blocking findings**: vws-verify's `Verified-by` comment for the head has `Codex review: <full path or URL> blocking=0`. Path rule: `/workspace/handoff/codex/<repo>-<pr>-<sha7>.md`, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-301-7d994a0.md blocking=0`. Result:
