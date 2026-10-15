@@ -4,10 +4,10 @@ The design is vws-iam#1 and the contract is vws-proto#24 (`vws/iam/v1`, branch `
 
 ## What is in now
 
-- **Chart service `iam`**: `enabled: false`. A pullable `ghcr.io/popododo0720/vws/iam` tag is not proven, so it is left out of the default render (render-only). Turn it on with CR `spec.services.iam.enabled: true` or values `services.iam.enabled=true`. Port 9095, `-listen=0.0.0.0:9095`. The vws-iam binary's `-listen` default is `127.0.0.1:9095`; `-health-listen` stays `127.0.0.1:9096` and is not passed. console-api connects with CR flags `iam=grpc` plus the three `0.0.0.0` addr flags (`ec2-addr`, `s3-addr`, `iam-addr`), and the chart sets `-iam-endpoint=iam:9095`.
+- **Chart service `iam`**: `enabled: false`. vws-iam has no publish workflow, so it is left out of the default render (render-only). Its workflows are `ci.yml`, `direct-push-watch.yml`, `english.yml`, and `repo-guard.yml`. There is no `publish.yml`, Dockerfile, or ko config. An anonymous token request for `repository:popododo0720/vws/iam:pull` returned HTTP 403 `DENIED` on 2026-10-15, and the manifest for tag `0.1.0` returned HTTP 403 `invalid token`. The packages API returned 404 for container `vws/iam`. The same request for `ghcr.io/popododo0720/vws/compute:sha-07b591c` returned HTTP 200. There is no published tag to pin. Turning iam on still names `ghcr.io/popododo0720/vws/iam` plus `spec.version`, or appVersion `0.1.0`, and that image does not pull. Port 9095, `-listen=0.0.0.0:9095`. The vws-iam binary's `-listen` default is `127.0.0.1:9095`; `-health-listen` stays `127.0.0.1:9096` and is not passed. console-api connects with CR flags `iam=grpc` plus the three `0.0.0.0` addr flags (`ec2-addr`, `s3-addr`, `iam-addr`), and the chart sets `-iam-endpoint=iam:9095`.
 - **`enabled`**: available on every service. With `false` the chart creates none of that service's objects, and `check_render.py`, `vws status`, the profile resource calculation and the Secret step of `vws apply` skip it too.
 - **KEK**: `kekSecret: vws-iam-kek`. `vws apply` creates the Secret in the release namespace only when it does not exist (`kek`: base64 of 32 random bytes, `key-id`: `kek-1`). The value goes only through kubectl stdin and never appears in arguments, output or logs. An existing Secret is left alone (no silent rotation). The pod gets `VWS_IAM_KEK` and `VWS_IAM_KEK_ID` only through secretKeyRef. `check_render.py` fails if the KEK is in args.
-- **NetworkPolicy**: `allowFrom: [console-api]`. Only console-api pods of the same release reach the iam port. `check_render.py` fails if the policy is missing or lets another service in.
+- **NetworkPolicy**: `allowFrom: [console-api]`. Only console-api pods of the same release reach the iam port. The policy port is the integer service port (`9095`). A named port such as `http` is rejected, because kube-ovn does not resolve it. `check_render.py` fails if the policy is missing, lets another service in, or uses any port other than that integer.
 - **mTLS**: not added, because no other service uses it yet.
 
 ## What is missing and why
@@ -22,6 +22,6 @@ Before touching helm or Secrets, `vws apply` runs `helm template` and `check_ren
 
 ## Needs checking
 
-- No evidence of an install on vws-test (a pullable image tag is not proven).
+- vws-iam publishes no image (anonymous GHCR 403 on 2026-10-15, no `publish.yml`). An install on vws-test cannot pull `ghcr.io/popododo0720/vws/iam:0.1.0`.
 - Whether NetworkPolicy on Kube-OVN blocks kubelet probes.
 - When `iam` is turned on through the CR, the service list in `vws status` follows the chart default (`enabled: false`). The difference goes away once an image exists and the default becomes `true`.
