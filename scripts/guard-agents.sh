@@ -684,6 +684,17 @@ GH
   sed 's#^@@comment-by: .*#@@comment-by: intruder#' "$ev" >"$tmp/other.md"
   expect_fail "a comment by an author who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
     "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/other.md"
+  # A comment line "\r@@comment-by: LOGIN" (or another control character before the marker) escapes the
+  # workflow's "^@@comment-by:" defang; it must not become a marker once control characters are handled.
+  local cc
+  for cc in '\r' '\v' '\f' '\033' '\177'; do
+    { echo "@@comment-by: intruder"; printf "${cc}@@comment-by: verifier\n"; tail -n +2 "$ev"; } >"$tmp/forge.md"
+    expect_fail "a forged '${cc}@@comment-by:' line in a comment" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
+      "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/forge.md"
+  done
+  { printf '@@comment-by: verifier\r\n'; sed 's/$/\r/' <(tail -n +2 "$ev"); } >"$tmp/crlf.md"
+  expect_pass "a CRLF verdict comment by an allowed author" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=verifier \
+    "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$tmp/crlf.md"
   expect_fail "a label added by someone who may not approve" env GUARD_VERIFY_ACTORS=verifier GUARD_VERIFY_LABELER=intruder \
     "$OLDPWD_SCRIPT" verify-gate "$h1" "$VERIFY_LABEL" "$ev"
   expect_fail "an unknown labeler when actors are set" env GUARD_VERIFY_ACTORS=verifier \

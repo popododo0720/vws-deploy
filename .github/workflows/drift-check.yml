@@ -13,6 +13,7 @@ on:
       - .github/drift/**
       - .github/golangci-common.yml
       - .github/workflows/drift-check.yml
+      - tests/drift/**
 
 permissions:
   contents: read
@@ -23,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --user pyyaml==6.0.2
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/drift -v
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
