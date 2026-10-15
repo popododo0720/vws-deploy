@@ -154,6 +154,23 @@ SINGLE_REPLICA = {
 }
 
 
+def apply_iam_endpoint(flags: dict, values: dict) -> list[str]:
+    errors: list[str] = []
+    iam = (values.get("services") or {}).get("iam")
+    enabled = isinstance(iam, dict) and iam.get("enabled", True) is not False
+    port = int(iam.get("port", 9095)) if isinstance(iam, dict) else 9095
+    if flags.get("iam") == "grpc":
+        if not enabled:
+            errors.append("R14: -iam=grpc needs services.iam enabled")
+        if "iam-endpoint" in flags:
+            errors.append("R14: -iam-endpoint is derived from services.iam.port")
+        elif enabled:
+            flags["iam-endpoint"] = f"iam:{port}"
+    elif "iam-endpoint" in flags:
+        errors.append("R14: -iam-endpoint requires -iam=grpc")
+    return errors
+
+
 def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
     """The args a service must get from values, and the errors found while resolving them."""
     flags = dict(spec.get("flags") or {})
@@ -166,6 +183,7 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
         if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
+    errors.extend(apply_iam_endpoint(flags, values))
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -218,6 +236,91 @@ def check_ensure_get(name: str, spec: dict) -> list[str]:
             errors.append(f"R11: {name} has no create on {group}/{resource}, which ensure needs")
         if "delete" not in verbs or "get" not in verbs:
             errors.append(f"R11: {name} cannot get and delete {group}/{resource}, which remove needs")
+    return errors
+
+
+ADDR_PORT = re.compile(r"^0\.0\.0\.0:(\d+)$")
+LOOPBACK_PORT = re.compile(r"^127\.0\.0\.1:(\d+)$")
+PORT_NAME = re.compile(r"^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$")
+
+
+def extra_ports(name: str, spec: dict) -> tuple[list[dict], list[str]]:
+    errors: list[str] = []
+    primary = int(spec.get("port", 8080))
+    primary_hits = 0
+    found: list[dict] = []
+    for key, value in (spec.get("flags") or {}).items():
+        if not str(key).endswith("-addr") or not isinstance(value, str):
+            continue
+        if LOOPBACK_PORT.match(value):
+            errors.append(f"R15: {name} -{key}={value} must not listen on loopback")
+            continue
+        match = ADDR_PORT.match(value)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number < 1024 or number > 65535:
+            errors.append(f"R15: {name} -{key}={value} is outside 1024..65535")
+            continue
+        if number == primary:
+            primary_hits += 1
+            continue
+        pname = str(key)[: -len("-addr")]
+        if not PORT_NAME.match(pname):
+            errors.append(f"R15: {name} -{key}={value} port name {pname} is invalid")
+            continue
+        found.append({"key": str(key), "value": value, "name": pname, "port": number})
+    found.sort(key=lambda item: (item["port"], item["name"]))
+    seen_names: dict[str, str] = {}
+    seen_ports: dict[int, str] = {}
+    kept: list[dict] = []
+    for item in found:
+        if item["name"] in seen_names or item["name"] == "http":
+            errors.append(
+                f"R15: {name} -{item['key']}={item['value']} repeats Service port name {item['name']}"
+            )
+            continue
+        if item["port"] in seen_ports:
+            errors.append(
+                f"R15: {name} -{item['key']}={item['value']} repeats Service port {item['port']}"
+            )
+            continue
+        seen_names[item["name"]] = item["key"]
+        seen_ports[item["port"]] = item["key"]
+        kept.append({"name": item["name"], "port": item["port"]})
+    if primary_hits > 1:
+        errors.append(f"R15: {name} more than one -addr flag listens on the primary port")
+    return kept, errors
+
+
+def port_view(ports: list) -> list[dict]:
+    return [
+        {"name": p.get("name"), "port": p.get("port"), "targetPort": p.get("targetPort")}
+        for p in ports
+    ]
+
+
+def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
+    errors: list[str] = []
+    extra, extra_errors = extra_ports(name, spec)
+    errors.extend(extra_errors)
+    primary = int(spec.get("port", 8080))
+    want = [{"name": "http", "port": primary, "targetPort": "http"}]
+    want.extend(
+        {"name": item["name"], "port": item["port"], "targetPort": item["port"]} for item in extra
+    )
+    service = by_kind.get("Service", {}).get(name)
+    if service is not None:
+        got = port_view((service.get("spec") or {}).get("ports") or [])
+        if got != want:
+            errors.append(f"R15: Service {name} ports {got} must be {want}")
+    if "state" in spec and spec.get("state") is not None:
+        peers = by_kind.get("Service", {}).get(f"{name}-peers")
+        peer_want = [{"name": "http", "port": primary, "targetPort": "http"}]
+        if peers is not None:
+            got = port_view((peers.get("spec") or {}).get("ports") or [])
+            if got != peer_want:
+                errors.append(f"R15: Service {name}-peers ports {got} must be {peer_want}")
     return errors
 
 
@@ -484,6 +587,10 @@ def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dic
     return errors
 
 
+def service_rendered(spec) -> bool:
+    return isinstance(spec, dict) and spec.get("enabled", True) is not False
+
+
 def check(docs: list[dict], values: dict, release: str) -> list[str]:
     errors: list[str] = []
     by_kind: dict[str, dict[str, dict]] = {}
@@ -509,6 +616,8 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         if (doc["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep":
             errors.append(f"R14: Namespace {doc['metadata']['name']} must be kept on uninstall")
     for name, spec in values["services"].items():
+        if not service_rendered(spec):
+            continue
         spec = spec or {}
         if "state" in spec and spec["state"] is None:
             errors.append(f"R4: {name} state must be a volume size or be omitted, not null")
@@ -555,6 +664,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_flags(name, spec, container, values, nsmap))
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
+        errors.extend(check_service_ports(name, spec, by_kind))
         errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
@@ -646,7 +756,11 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             return ["R4: removing the state volume did not fail"]
 
     stateless = next(
-        (name for name, spec in values["services"].items() if "state" not in (spec or {})),
+        (
+            name
+            for name, spec in values["services"].items()
+            if service_rendered(spec) and "state" not in (spec or {})
+        ),
         None,
     )
     if stateless is not None:
@@ -661,7 +775,11 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             return ["R4: removing a PodDisruptionBudget did not fail"]
 
     stateful = next(
-        (name for name, spec in values["services"].items() if "state" in (spec or {})),
+        (
+            name
+            for name, spec in values["services"].items()
+            if service_rendered(spec) and "state" in (spec or {})
+        ),
         None,
     )
     if stateful is not None:
@@ -675,7 +793,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             (
                 name
                 for name, spec in values["services"].items()
-                if any(pred(rule) for rule in (spec or {}).get("rbac") or [])
+                if service_rendered(spec) and any(pred(rule) for rule in (spec or {}).get("rbac") or [])
             ),
             None,
         )
@@ -745,7 +863,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             return ["R11: a namespaced resource without a namespace did not fail"]
 
     # console-api keeps the gRPC backend, the open console address and the real service ports (#84).
-    if (values["services"].get("console-api") or {}).get("flags"):
+    if service_rendered(values["services"].get("console-api")) and (values["services"].get("console-api") or {}).get("flags"):
         for key, value in (("backend", "fake"), ("console-addr", "127.0.0.1:8080"), ("compute-addr", "compute:1"), ("network-addr", None)):
             broken_values = copy.deepcopy(values)
             flags = broken_values["services"]["console-api"]["flags"]
@@ -758,7 +876,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
 
     # Flags come from values, and a namespace flag needs a Role in that namespace.
     with_flags = next(
-        (n for n, spec in values["services"].items() if (spec or {}).get("flags")), None
+        (n for n, spec in values["services"].items() if service_rendered(spec) and (spec or {}).get("flags")), None
     )
     if with_flags is not None:
         for index in range(3):
@@ -778,6 +896,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             (
                 (n, key)
                 for n, spec in values["services"].items()
+                if service_rendered(spec)
                 for key, value in ((spec or {}).get("flags") or {}).items()
                 if isinstance(value, dict)
             ),
@@ -797,7 +916,12 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                     return ["R14: a namespace flag without a Role in that namespace did not fail"]
     # One port: -listen, containerPort and the probes. Probes are tcpSocket or grpc, never HTTP.
     target = next(
-        (n for n, spec in values["services"].items() if (spec or {}).get("flags", {}).get("listen")), None
+        (
+            n
+            for n, spec in values["services"].items()
+            if service_rendered(spec) and (spec or {}).get("flags", {}).get("listen")
+        ),
+        None,
     )
     if target is not None:
         def mutate(change):
@@ -826,6 +950,8 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             return ["R15: a -listen on 127.0.0.1 did not fail"]
     # gRPC health names and the readiness ClusterRole (vws-storage#39), when rendered.
     for hname, hspec in values["services"].items():
+        if not service_rendered(hspec):
+            continue
         ready = (hspec or {}).get("grpcReadinessService")
         if not ready:
             continue
@@ -867,7 +993,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][target]["flags"]["listen"] = "0.0.0.0:9"
         if not check(docs, broken_values, release):
             return ["R15: a -listen port that differs from the service port did not fail"]
-    if "network" in values["services"]:
+    if service_rendered(values["services"].get("network")):
         for rule in values["services"]["network"].get("rbac") or []:
             if "get" in rule["verbs"] and "create" in rule["verbs"] and rule["resources"]:
                 broken_values = copy.deepcopy(values)
@@ -892,14 +1018,46 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"]["console-api"].setdefault("flags", {}).pop("console-origins", None)
         if not check(docs, broken_values, release):
             return ["R15: console-api without -console-origins did not fail"]
-    if "storage" in values["services"]:
+        closed = copy.deepcopy(docs)
+        for doc in closed:
+            if doc.get("kind") == "Service" and doc.get("metadata", {}).get("name") == "console-api":
+                spec_ports = (doc.get("spec") or {}).get("ports") or []
+                doc["spec"]["ports"] = [port for port in spec_ports if port.get("name") == "http"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:8081"
+        if not any("8081" in err for err in check(closed, broken_values, release)):
+            return ["R15: console-api -ec2-addr=0.0.0.0:8081 did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"].setdefault("iam", {"port": 9095})["enabled"] = False
+        broken_values["services"]["console-api"].setdefault("flags", {}).pop("iam-endpoint", None)
+        broken_values["services"]["console-api"]["flags"]["iam"] = "grpc"
+        if not any("needs services.iam enabled" in err for err in check(docs, broken_values, release)):
+            return ["R14: console-api -iam=grpc with iam disabled did not fail"]
+        broken_values = copy.deepcopy(values)
+        flags = broken_values["services"]["console-api"].setdefault("flags", {})
+        flags.pop("iam", None)
+        flags["iam-endpoint"] = "iam:9095"
+        if not any("requires -iam=grpc" in err for err in check(docs, broken_values, release)):
+            return ["R14: console-api -iam-endpoint without -iam=grpc did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:80"
+        if not any("outside 1024..65535" in err for err in check(docs, broken_values, release)):
+            return ["R15: console-api -ec2-addr=0.0.0.0:80 did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:8080"
+        if not any("primary port" in err for err in check(docs, broken_values, release)):
+            return ["R15: a second listener on the primary port did not fail"]
+    if service_rendered(values["services"].get("storage")):
         broken_values = copy.deepcopy(values)
         broken_values["services"]["storage"]["flags"].pop("db", None)
         if not check(docs, broken_values, release):
             return ["R15: storage without -db did not fail"]
 
     # kubeconfigSecret: the mount, the Secret name, the key and the mode come from values only.
-    kube = next((n for n, spec in values["services"].items() if (spec or {}).get("kubeconfigSecret")), None)
+    kube = next(
+        (n for n, spec in values["services"].items() if service_rendered(spec) and (spec or {}).get("kubeconfigSecret")),
+        None,
+    )
     if kube is not None:
         def mutate_pod(change):
             broken = copy.deepcopy(docs)
@@ -933,7 +1091,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             return ["R16: a kubeconfig volume that values do not ask for did not fail"]
 
     # s3.rgw: the keys come only from secretKeyRef, and enabled needs every value.
-    rgw_name = next((n for n, s in values["services"].items() if (((s or {}).get("s3") or {}).get("rgw") or {}).get("enabled")), None)
+    rgw_name = next(
+        (
+            n
+            for n, s in values["services"].items()
+            if service_rendered(s) and (((s or {}).get("s3") or {}).get("rgw") or {}).get("enabled")
+        ),
+        None,
+    )
     if rgw_name is not None:
         def mutate_env(change):
             broken = copy.deepcopy(docs)
@@ -963,6 +1128,8 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     api_cases = []
     api_arg_cases = []
     for svc, spec in values["services"].items():
+        if not service_rendered(spec):
+            continue
         spec = spec or {}
         if spec.get("apiCredentials"):
             api_cases += [
@@ -977,7 +1144,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 (svc, "an API token from another key", lambda env: entry_of(env, "VWS_CONSOLE_API_TOKEN")["valueFrom"]["secretKeyRef"].update(key="secret-key")),
             ]
     for svc, spec in values["services"].items():
-        if (spec or {}).get("portEnv"):
+        if service_rendered(spec) and (spec or {}).get("portEnv"):
             api_cases.append((svc, "a port env apart from containerPort",
                               lambda env, k=spec["portEnv"]: entry_of(env, k).update(value="3000")))
     for svc, label, change in api_cases:
@@ -998,6 +1165,8 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
 
     # kekSecret and allowFrom (#243): a literal KEK, another Secret, or a policy that admits more must fail.
     for svc, spec in values["services"].items():
+        if not service_rendered(spec):
+            continue
         spec = spec or {}
         if spec.get("kekSecret"):
             for label, change in (
@@ -1073,8 +1242,6 @@ def main(argv: list[str]) -> int:
     values = yaml.safe_load(Path(argv[2]).read_text())
     for override in argv[4:]:
         values = deep_merge(values, yaml.safe_load(Path(override).read_text()))
-    # enabled false: the chart renders nothing for the service, so nothing is checked (#243).
-    values["services"] = {n: s for n, s in values["services"].items() if (s or {}).get("enabled", True) is not False}
     errors = self_test(docs, values, argv[3])
     for error in errors:
         print(error, file=sys.stderr)

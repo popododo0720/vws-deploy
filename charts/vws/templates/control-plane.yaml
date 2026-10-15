@@ -29,6 +29,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: vws
 {{- end }}
+{{- $iamSpec := index $.Values.services "iam" | default dict }}
+{{- $iamEnabled := true }}
+{{- if and (hasKey $iamSpec "enabled") (not $iamSpec.enabled) }}
+  {{- $iamEnabled = false }}
+{{- end }}
+{{- $iamPort := int ($iamSpec.port | default 9095) }}
 {{- range $name := keys .Values.services | sortAlpha }}
 {{- $spec := index $.Values.services $name }}
 {{- /* enabled false: a service whose image is not published yet stays out of the render (#243). */}}
@@ -44,7 +50,8 @@ metadata:
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
 {{- $image := printf "%s/%s:%s" $.Values.global.registry $name ($spec.imageTag | default ($.Values.global.tag | default $.Chart.AppVersion)) }}
 {{- $rbac := hasKey $spec "rbac" }}
-{{- $args := include "vws.args" (dict "root" $ "spec" $spec) | fromJsonArray }}
+{{- $args := include "vws.args" (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPort) | fromJsonArray }}
+{{- $extraPorts := include "vws.extraPorts" (dict "flags" ($spec.flags | default dict) "port" $port) | fromJsonArray }}
 {{- /* kubeconfigSecret: a Secret the operator created, mounted read-only at the directory of the
  kubeconfig flag. The chart never renders a Secret and no credential is in values. Temporary, see docs/service-config.md. */}}
 {{- $kube := dict }}
@@ -92,6 +99,11 @@ spec:
     - name: http
       port: {{ $port }}
       targetPort: http
+{{- range $extra := $extraPorts }}
+    - name: {{ $extra.name }}
+      port: {{ int $extra.port }}
+      targetPort: {{ int $extra.port }}
+{{- end }}
 {{- if $stateful }}
 ---
 apiVersion: v1

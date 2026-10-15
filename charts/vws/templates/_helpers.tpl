@@ -16,7 +16,8 @@ Call with (dict "root" $ "key" "vms").
 
 {{/*
 Container args of one service: flags, plus pendingFlags when global.pendingFlags is true.
-A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" $spec).
+A flag value is a scalar or {namespace: <key>}.
+Call with (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPort).
 */}}
 {{- define "vws.args" -}}
 {{- $flags := deepCopy (.spec.flags | default dict) }}
@@ -32,6 +33,21 @@ A flag value is a scalar or {namespace: <key>}. Call with (dict "root" $ "spec" 
   {{- if $rgw.bucketPrefix }}
     {{- $_ = set $flags "s3-bucket-prefix" $rgw.bucketPrefix }}
   {{- end }}
+{{- end }}
+{{- $iamFlag := "" }}
+{{- if and (hasKey $flags "iam") (kindIs "string" (index $flags "iam")) }}
+  {{- $iamFlag = index $flags "iam" }}
+{{- end }}
+{{- if eq $iamFlag "grpc" }}
+  {{- if not .iamEnabled }}
+    {{- fail "R14: -iam=grpc needs services.iam enabled" }}
+  {{- end }}
+  {{- if hasKey $flags "iam-endpoint" }}
+    {{- fail "R14: -iam-endpoint is derived from services.iam.port" }}
+  {{- end }}
+  {{- $_ := set $flags "iam-endpoint" (printf "iam:%d" (int .iamPort)) }}
+{{- else if hasKey $flags "iam-endpoint" }}
+  {{- fail "R14: -iam-endpoint requires -iam=grpc" }}
 {{- end }}
 {{- /* apiCredentials: no credential flag. console-api reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and
 VWS_SECRET_KEY from the secretKeyRef env of vws.podTemplate, so no value is in values, args, the pod
@@ -50,6 +66,62 @@ spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV
   {{- $args = append $args (printf "-%s=%v" $key $value) }}
 {{- end }}
 {{- toJson $args }}
+{{- end -}}
+
+{{/*
+Call with (dict "flags" $flags "port" $port).
+*/}}
+{{- define "vws.extraPorts" -}}
+{{- $primary := int .port }}
+{{- $acc := dict "items" (list) "primaryHits" 0 }}
+{{- range $key, $value := (.flags | default dict) }}
+  {{- if and (kindIs "string" $value) (regexMatch "-addr$" $key) }}
+    {{- if regexMatch "^127[.]0[.]0[.]1:[0-9]+$" $value }}
+      {{- fail (printf "R15: -%s=%s must not listen on loopback" $key $value) }}
+    {{- end }}
+    {{- if regexMatch "^0[.]0[.]0[.]0:[0-9]+$" $value }}
+      {{- $n := int (index (splitList ":" $value) 1) }}
+      {{- if or (lt $n 1024) (gt $n 65535) }}
+        {{- fail (printf "R15: -%s=%s is outside 1024..65535" $key $value) }}
+      {{- else if eq $n $primary }}
+        {{- $_ := set $acc "primaryHits" (add (index $acc "primaryHits") 1) }}
+      {{- else }}
+        {{- $pname := trimSuffix "-addr" $key }}
+        {{- if not (regexMatch "^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$" $pname) }}
+          {{- fail (printf "R15: -%s=%s port name %s is invalid" $key $value $pname) }}
+        {{- end }}
+        {{- $_ := set $acc "items" (append (index $acc "items") (dict "key" $key "value" $value "name" $pname "port" $n)) }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if gt (int (index $acc "primaryHits")) 1 }}
+  {{- fail "R15: more than one -addr flag listens on the primary port" }}
+{{- end }}
+{{- $seenName := dict }}
+{{- $seenPort := dict }}
+{{- range $item := index $acc "items" }}
+  {{- if or (hasKey $seenName $item.name) (eq $item.name "http") }}
+    {{- fail (printf "R15: -%s=%s repeats Service port name %s" $item.key $item.value $item.name) }}
+  {{- end }}
+  {{- if hasKey $seenPort (toString (int $item.port)) }}
+    {{- fail (printf "R15: -%s=%s repeats Service port %d" $item.key $item.value (int $item.port)) }}
+  {{- end }}
+  {{- $_ := set $seenName $item.name $item.key }}
+  {{- $_ := set $seenPort (toString (int $item.port)) $item.key }}
+{{- end }}
+{{- $packed := dict "keys" (list) "port" (dict) }}
+{{- range $item := index $acc "items" }}
+  {{- $_ := set $packed "keys" (append (index $packed "keys") (printf "%05d|%s" (int $item.port) $item.name)) }}
+  {{- $_ := set (index $packed "port") $item.name (int $item.port) }}
+{{- end }}
+{{- $out := dict "items" (list) }}
+{{- range $key := index $packed "keys" | sortAlpha }}
+  {{- $bits := splitList "|" $key }}
+  {{- $pname := index $bits 1 }}
+  {{- $_ := set $out "items" (append (index $out "items") (dict "name" $pname "port" (index (index $packed "port") $pname))) }}
+{{- end }}
+{{- toJson (index $out "items") }}
 {{- end -}}
 
 {{- define "vws.selector" -}}
