@@ -475,8 +475,6 @@ cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/s1-values.yaml"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/s1.out.flag" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/s1-values.yaml" 2>&1 || true)
 expect_text "S1: check_render refuses a credential flag in args" "$out" "R16: console-api passes credential flag -secret in args"
 
-# IAM listeners: services.iam.port 9095, and 0.0.0.0 *-addr flags become client Service ports.
-# -iam=grpc derives -iam-endpoint=iam:9095. The CR does not set iam-endpoint.
 cat >"${WORK}/iam-listeners.yaml" <<'YAML'
 services:
   iam:
