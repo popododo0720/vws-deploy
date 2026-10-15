@@ -90,7 +90,7 @@ vws_verify_save() {
 
 # vws_verify_krbd: a node with RBD volumes mapped by ceph-csi (krbd) can hang in shutdown when the
 # network goes down before the unmap (libceph error -101, vws-deploy#116). WARN per such node so it
-# is drained first (docs/platform-bundle.md "노드 재부팅 절차"). Read only.
+# is drained first (docs/platform-bundle.md "Reboot procedure"). Read only.
 vws_verify_krbd() { # VOLUMEATTACHMENTS_FILE
   local attached node count
   attached=$(jq -c '[.items[] | select(.spec.attacher == "rbd.csi.ceph.com" and .status.attached == true) | .spec.nodeName]' "$1") ||
