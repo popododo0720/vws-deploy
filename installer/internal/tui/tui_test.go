@@ -94,7 +94,7 @@ func TestWizardInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"NIC ens3 mtu 1500 on node1,node2", "minio: 준비 중", "local: 준비 중", "== summary ==", `"eipPool": "198.18.0.128/25"`, "installed. console: https://console.example.invalid", "vws-deploy#146"} {
+	for _, want := range []string{"NIC ens3 mtu 1500 on node1,node2", "minio: Coming soon", "local: Coming soon", "== summary ==", `"eipPool": "198.18.0.128/25"`, "installed. console: https://console.example.invalid", "vws-deploy#146"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}

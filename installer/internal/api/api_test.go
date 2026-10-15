@@ -543,7 +543,7 @@ func TestValidation(t *testing.T) {
 	}
 	_, body = h.do("GET", "/api/v1/steps/storage", nil)
 	drivers := body["options"].(map[string]any)["drivers"].([]any)
-	if d := drivers[3].(map[string]any); d["driver"] != "minio" || d["disabled"] != true || !strings.Contains(d["reason"].(string), "준비 중") {
+	if d := drivers[3].(map[string]any); d["driver"] != "minio" || d["disabled"] != true || !strings.Contains(d["reason"].(string), "Coming soon") {
 		t.Fatalf("minio option %v", d)
 	}
 }

@@ -264,7 +264,7 @@ type NFS struct {
 	Share  string `json:"share"`
 }
 
-// StorageOption is one driver in the wizard. Disabled drivers show the Korean UI label "준비 중" (coming soon).
+// StorageOption is one driver in the wizard. Disabled drivers show "Coming soon".
 type StorageOption struct {
 	Driver   string `json:"driver"`
 	Disabled bool   `json:"disabled,omitempty"`
@@ -275,8 +275,8 @@ var storageDrivers = []StorageOption{
 	{Driver: "rook-ceph"},
 	{Driver: "existing"},
 	{Driver: "nfs"},
-	{Driver: "minio", Disabled: true, Reason: "준비 중 (popododo0720/vws-storage#70)"},
-	{Driver: "local", Disabled: true, Reason: "준비 중 (popododo0720/vws-storage#71)"},
+	{Driver: "minio", Disabled: true, Reason: "Coming soon (popododo0720/vws-storage#70)"},
+	{Driver: "local", Disabled: true, Reason: "Coming soon (popododo0720/vws-storage#71)"},
 }
 
 func storageOptions([]cluster.Node) any { return map[string]any{"drivers": storageDrivers} }
