@@ -154,6 +154,27 @@ SINGLE_REPLICA = {
 }
 
 
+def apply_iam_endpoint(flags: dict, values: dict) -> list[str]:
+    """-iam=grpc derives -iam-endpoint from services.iam.port. The caller cannot set it.
+
+    check() drops a service whose enabled is false before this runs, so a missing iam
+    service is that disabled catalog entry.
+    """
+    errors: list[str] = []
+    iam = (values.get("services") or {}).get("iam") or {}
+    enabled = bool(iam) and iam.get("enabled") is not False
+    if flags.get("iam") == "grpc":
+        if not enabled:
+            errors.append("R14: -iam=grpc needs services.iam enabled")
+        if "iam-endpoint" in flags:
+            errors.append("R14: -iam-endpoint is derived from services.iam.port")
+        elif enabled:
+            flags["iam-endpoint"] = f"iam:{int(iam.get('port', 9095))}"
+    elif "iam-endpoint" in flags:
+        errors.append("R14: -iam-endpoint requires -iam=grpc")
+    return errors
+
+
 def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
     """The args a service must get from values, and the errors found while resolving them."""
     flags = dict(spec.get("flags") or {})
@@ -166,6 +187,7 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         flags.update({"object-backend": "s3", "s3-profile": "rgw", "s3-endpoint": rgw.get("endpoint")})
         if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
+    errors.extend(apply_iam_endpoint(flags, values))
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -218,6 +240,94 @@ def check_ensure_get(name: str, spec: dict) -> list[str]:
             errors.append(f"R11: {name} has no create on {group}/{resource}, which ensure needs")
         if "delete" not in verbs or "get" not in verbs:
             errors.append(f"R11: {name} cannot get and delete {group}/{resource}, which remove needs")
+    return errors
+
+
+# A 0.0.0.0:<n> value of a *-addr flag, n in 1024..65535 and not the primary port, is one Service port.
+ADDR_PORT = re.compile(r"^0\.0\.0\.0:(\d+)$")
+LOOPBACK_PORT = re.compile(r"^127\.0\.0\.1:(\d+)$")
+PORT_NAME = re.compile(r"^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$")
+
+
+def extra_ports(name: str, spec: dict) -> tuple[list[dict], list[str]]:
+    """Client Service ports implied by *-addr flags. flags.listen is not one of them."""
+    errors: list[str] = []
+    primary = int(spec.get("port", 8080))
+    primary_hits = 0
+    found: list[dict] = []
+    for key, value in (spec.get("flags") or {}).items():
+        if not str(key).endswith("-addr") or not isinstance(value, str):
+            continue
+        if LOOPBACK_PORT.match(value):
+            errors.append(f"R15: {name} -{key}={value} must not listen on loopback")
+            continue
+        match = ADDR_PORT.match(value)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number < 1024 or number > 65535:
+            errors.append(f"R15: {name} -{key}={value} is outside 1024..65535")
+            continue
+        if number == primary:
+            primary_hits += 1
+            continue
+        pname = str(key)[: -len("-addr")]
+        if not PORT_NAME.match(pname):
+            errors.append(f"R15: {name} -{key}={value} port name {pname} is invalid")
+            continue
+        found.append({"key": str(key), "value": value, "name": pname, "port": number})
+    found.sort(key=lambda item: (item["port"], item["name"]))
+    seen_names: dict[str, str] = {}
+    seen_ports: dict[int, str] = {}
+    kept: list[dict] = []
+    for item in found:
+        if item["name"] in seen_names or item["name"] == "http":
+            errors.append(
+                f"R15: {name} -{item['key']}={item['value']} repeats Service port name {item['name']}"
+            )
+            continue
+        if item["port"] in seen_ports:
+            errors.append(
+                f"R15: {name} -{item['key']}={item['value']} repeats Service port {item['port']}"
+            )
+            continue
+        seen_names[item["name"]] = item["key"]
+        seen_ports[item["port"]] = item["key"]
+        kept.append({"name": item["name"], "port": item["port"]})
+    if primary_hits > 1:
+        errors.append(f"R15: {name} more than one -addr flag listens on the primary port")
+    return kept, errors
+
+
+def port_view(ports: list) -> list[dict]:
+    return [
+        {"name": p.get("name"), "port": p.get("port"), "targetPort": p.get("targetPort")}
+        for p in ports
+    ]
+
+
+def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
+    """The client Service lists http plus extra ports. The peers Service stays one http port."""
+    errors: list[str] = []
+    extra, extra_errors = extra_ports(name, spec)
+    errors.extend(extra_errors)
+    primary = int(spec.get("port", 8080))
+    want = [{"name": "http", "port": primary, "targetPort": "http"}]
+    want.extend(
+        {"name": item["name"], "port": item["port"], "targetPort": item["port"]} for item in extra
+    )
+    service = by_kind.get("Service", {}).get(name)
+    if service is not None:
+        got = port_view((service.get("spec") or {}).get("ports") or [])
+        if got != want:
+            errors.append(f"R15: Service {name} ports {got} must be {want}")
+    if "state" in spec and spec.get("state") is not None:
+        peers = by_kind.get("Service", {}).get(f"{name}-peers")
+        peer_want = [{"name": "http", "port": primary, "targetPort": "http"}]
+        if peers is not None:
+            got = port_view((peers.get("spec") or {}).get("ports") or [])
+            if got != peer_want:
+                errors.append(f"R15: Service {name}-peers ports {got} must be {peer_want}")
     return errors
 
 
@@ -555,6 +665,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_flags(name, spec, container, values, nsmap))
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
+        errors.extend(check_service_ports(name, spec, by_kind))
         errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
@@ -892,6 +1003,34 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"]["console-api"].setdefault("flags", {}).pop("console-origins", None)
         if not check(docs, broken_values, release):
             return ["R15: console-api without -console-origins did not fail"]
+        # self_test also runs on a render that already publishes these listeners.
+        # Setting the same value again is that success path, so only mutate a real difference.
+        ca_flags = (values["services"]["console-api"] or {}).get("flags") or {}
+        if ca_flags.get("ec2-addr") != "0.0.0.0:8081":
+            broken_values = copy.deepcopy(values)
+            broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:8081"
+            if not any("8081" in err for err in check(docs, broken_values, release)):
+                return ["R15: console-api -ec2-addr=0.0.0.0:8081 did not fail"]
+        iam_spec = (values.get("services") or {}).get("iam") or {}
+        iam_on = bool(iam_spec) and iam_spec.get("enabled") is not False
+        if not iam_on and ca_flags.get("iam") != "grpc":
+            broken_values = copy.deepcopy(values)
+            broken_values["services"]["console-api"].setdefault("flags", {})["iam"] = "grpc"
+            if not any("needs services.iam enabled" in err for err in check(docs, broken_values, release)):
+                return ["R14: console-api -iam=grpc with iam disabled did not fail"]
+        if ca_flags.get("iam") != "grpc":
+            broken_values = copy.deepcopy(values)
+            broken_values["services"]["console-api"].setdefault("flags", {})["iam-endpoint"] = "iam:9095"
+            if not any("requires -iam=grpc" in err for err in check(docs, broken_values, release)):
+                return ["R14: console-api -iam-endpoint without -iam=grpc did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:80"
+        if not any("outside 1024..65535" in err for err in check(docs, broken_values, release)):
+            return ["R15: console-api -ec2-addr=0.0.0.0:80 did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"]["console-api"].setdefault("flags", {})["ec2-addr"] = "0.0.0.0:8080"
+        if not any("primary port" in err for err in check(docs, broken_values, release)):
+            return ["R15: a second listener on the primary port did not fail"]
     if "storage" in values["services"]:
         broken_values = copy.deepcopy(values)
         broken_values["services"]["storage"]["flags"].pop("db", None)
