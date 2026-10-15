@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// State is the draft session state (#139 상태 기계):
+// State is the draft session state (#139 state machine):
 //
 //	editing -> confirming -> installing -> succeeded | failed
 //	confirming -> editing (a step is saved again)

@@ -264,7 +264,7 @@ type NFS struct {
 	Share  string `json:"share"`
 }
 
-// StorageOption is one driver in the wizard. Disabled drivers show as "준비 중".
+// StorageOption is one driver in the wizard. Disabled drivers show the Korean UI label "준비 중" (coming soon).
 type StorageOption struct {
 	Driver   string `json:"driver"`
 	Disabled bool   `json:"disabled,omitempty"`
@@ -314,7 +314,7 @@ func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
 }
 
 // decodeEIP needs the saved network step: the pool lives on spec.network.nodes.external and must be
-// inside its CIDR. It has no default (#139: 기본값 없음, 필수).
+// inside its CIDR. It has no default (#139: no default, required).
 func decodeEIP(raw json.RawMessage, in Input) (any, []FieldError) {
 	network := in.Network
 	var pool string
