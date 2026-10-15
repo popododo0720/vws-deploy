@@ -31,6 +31,34 @@ jobs:
           VWS_BASE_REF: ${{ github.base_ref }}
         run: make check
 
+  # Common golangci-lint baseline (lint/golangci-common.yml, vws-deploy#300). fetch-depth 0 gives
+  # new-from-merge-base the origin/main history it compares against.
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: installer/go.mod
+          cache-dependency-path: installer/go.sum
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          install-only: true
+
+      - name: Lint
+        run: golangci-lint run --timeout=5m ./...
+
+      - name: Format (gofumpt, goimports)
+        run: golangci-lint fmt --diff
+
   installer:
     runs-on: ubuntu-latest
     defaults:
