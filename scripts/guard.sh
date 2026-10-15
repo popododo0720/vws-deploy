@@ -175,7 +175,8 @@ import yaml
 
 values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
 services = values["services"]
-stateless = next((name for name, spec in services.items() if "state" not in (spec or {})), None)
+single = {"console-api", "iam"}
+stateless = next((name for name, spec in services.items() if "state" not in (spec or {}) and name not in single), None)
 stateful = next((name for name, spec in services.items() if "state" in (spec or {})), None)
 wildcard_rule = {"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines"], "verbs": ["get"]}
 cases = [
@@ -489,6 +490,22 @@ cmd_agents() {
   grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' .github/workflows/repo-guard.yml || die "R13: verify-gate must pass the vws-verify identity"
 }
 
+console_api_closed() {
+  python3 - "$1" <<'PY'
+import sys, yaml
+path = sys.argv[1]
+docs = [d for d in yaml.safe_load_all(open(path)) if d]
+svc = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "console-api")
+ports = [{"name": p.get("name"), "port": p.get("port"), "targetPort": p.get("targetPort")} for p in svc["spec"]["ports"]]
+if ports != [{"name": "http", "port": 8080, "targetPort": "http"}]:
+    sys.exit(f"console-api ports {ports}")
+text = open(path).read()
+for bad in ("-iam=grpc", "-iam-endpoint", "-ec2-addr", "-s3-addr", "-iam-addr"):
+    if bad in text:
+        sys.exit(f"found {bad}")
+PY
+}
+
 cmd_config() {
   local tmp literal
   tmp=$(mktemp -d)
@@ -543,6 +560,16 @@ PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.iam.enabled=true > "$tmp/iam.yaml"
   python3 scripts/check_render.py "$tmp/iam.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  iam:\n    enabled: true\n') ||
     die "R16: check_render rejects the vws-iam render"
+  python3 - "$tmp/iam.yaml" <<'PY' || die "R15: Service iam port is not 9095"
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+svc = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "iam")
+ports = svc["spec"]["ports"]
+ok = (len(ports) == 1 and ports[0].get("name") == "http" and ports[0].get("port") == 9095
+      and ports[0].get("targetPort") == "http")
+sys.exit(0 if ok else 1)
+PY
+  console_api_closed "$tmp/default.yaml" || die "R15: the default render publishes an AWS listener or an iam endpoint"
 
   cat > "$tmp/override.yaml" <<'YAML'
 global:
@@ -807,6 +834,7 @@ cmd_profiles() {
     helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
     kubeconform -strict -kubernetes-version "$version" -cache .cache/kubeconform "$tmp/${profile}.yaml" || die "R19: kubeconform rejects ${profile}"
     python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
+    console_api_closed "$tmp/${profile}.yaml" || die "R19: profile ${profile} publishes an AWS listener or an iam endpoint"
     # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.values.yaml" >/dev/null || die "R19: vws render fails on examples/vwscluster/${profile}.yaml"
     scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.again.yaml" >/dev/null

@@ -31,7 +31,7 @@ The API group is written in **one place only**: `spec.group` in `charts/vws/crds
 | `spec.network.nodes`, `spec.network.direct` | per-NIC node networks and direct provider networks. Rules and examples in `docs/node-network.md` (#125) | Kube-OVN and Ceph bundle settings and `services.network.flags` |
 | `spec.network.vmMTU`, `underlayMTU`, `tunnelOverhead`, `ipv4Only` | VPC VM MTU (#236, vws-network#93). `vmMTU` 68–9001; when unset, 9001 (AWS) is lowered to what the underlay can carry. `underlayMTU` is the tunnel NIC MTU the OS already set (1280–9216). `tunnelOverhead` 0–200, 100 when unset, 60 with `ipv4Only: true`. 9001 needs an underlay of 9101 or more; 9216 is recommended. The installer does not change NIC MTUs. Details in `docs/vm-mtu.md` | `services.network.flags.vm-mtu` (`-vm-mtu`). If `vmMTU` exceeds underlay − overhead, exit code 2. The same overhead is used for kube-ovn-cni `--mtu` |
 | `spec.observability.otlpEndpoint` | must be empty | the chart has no observability values yet, so a value is exit code 2 |
-| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in `charts/vws/values.yaml`. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95); render refuses other values with exit code 2 | the `services.<name>` key of the same name; `flags` are merged |
+| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in `charts/vws/values.yaml`. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95). `iam.replicas` must be 1 (in-memory users, vws-iam#110; one replica does not survive a restart). render refuses other values with exit code 2 | the `services.<name>` key of the same name; `flags` are merged |
 | `spec.secrets.<name>.secretName` | Secret name references only | no values take it yet, so it must be empty |
 
 - There are no secret value fields. If a field or flag name looks secret (`password`, `token`, `secret`, `credential`, `key` and so on, except `secrets`/`secretName`/`existingSecret`), `vws render` refuses it and the guard refuses it in the CRD schema.
@@ -70,6 +70,15 @@ console-api holds sessions in memory. With a second pod or an HPA, requests land
 - `lib/render.py`: if the CR's `spec.services.console-api.replicas` is not 1, exit code 2.
 - Limit: with one replica, sessions drop during a console-api rollout or a node failure, and the PDB (maxUnavailable 1) does not stop that pod's eviction. Lift this pin once there is a shared session store.
 
+## iam has one replica (vws-iam#110)
+
+iam holds users in memory. Two replicas would split that state. The chart sets `services.iam.replicas: 1` so the vws-test enable path does not start a second pod. One replica does not survive a restart. A shared store is still required.
+
+- `values.schema.json`: `services.iam.replicas` is `const: 1`.
+- `scripts/check_render.py` R4: a Deployment iam that is not 1 fails.
+- `lib/render.py`: a CR `spec.services.iam.replicas` other than 1 exits 2.
+- The NetworkPolicy listener port is the integer `9095`, with no `endPort` and no protocol other than TCP.
+
 ## console-api -console-origins (required), -trusted-proxies (optional) (popododo0720/vws-console-api#137)
 
 Since console-api#137, login and cookie-writing requests must have an Origin that is the console's own host or is in `-console-origins`; otherwise they get 403. The console Service is a LoadBalancer, so vws cannot know the public address at render time, and the operator writes it in the CR:
@@ -92,5 +101,6 @@ spec:
   - Why a003d96: it is the first build that reads credentials from env (S1). The previous pin was 5b42eb7 (measured on vws-test in #267). To move to a newer main commit, change only `imageTag` after that commit is published, and measure again on vws-test.
   - The workflow does not change the package visibility. If it is private, the nodes need pull credentials (needs checking).
 - compute pin: `services.compute.imageTag: sha-07b591c` (vws-compute#91, 07b591c = #89 99a45e4 + publish.yml). vws-compute's `publish.yml` published it at merge (digest sha256:292268f3…, checked anonymously 2026-10-15, label revision 07b591c, user 65532). It is a ko image, so the entrypoint is `/ko-app/vws-compute`. The chart passes only `args`, never `command`.
+- iam has no `imageTag`. vws-iam workflows are `ci.yml`, `direct-push-watch.yml`, `english.yml`, and `repo-guard.yml` (HEAD `b5d4469` on 2026-10-15). There is no `publish.yml`, Dockerfile, or ko config. An anonymous token for `repository:popododo0720/vws/iam:pull` returned HTTP 403 `DENIED` on 2026-10-15. The manifest for tag `0.1.0` returned HTTP 403 `invalid token`. `GET /orgs/popododo0720/packages/container/vws%2Fiam` returned 404. The same anonymous request for compute tag `sha-07b591c` returned HTTP 200 and digest `sha256:292268f318521916d80296e74d56cf75ec6521abd0fe47f40a60002cf693414b`. `enabled` stays false. With `enabled` true the chart names `ghcr.io/popododo0720/vws/iam:0.1.0` from appVersion, and that name does not pull.
   - To move `services.compute.imageTag` from `sha-07b591c` to a31223a, ship the images-namespace Role grant of `list` and `patch` on `datasources` in that release or an earlier one. Helm applies the Role before the compute StatefulSet only inside one release. A pin change in an earlier release leaves every image sweep logging `cannot list datasources`.
 - Measured on vws-test: in the default install (`-iam=static`), with `-console-origins` set to the console's public address, every console API call returns 200 without a login. Being required does not block the default install.

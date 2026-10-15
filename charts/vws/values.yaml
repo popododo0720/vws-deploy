@@ -38,16 +38,20 @@ namespaces:
 
 services:
   # vws-iam (vws-iam#1, #243): users, policies, SigV4 Authenticate and Authorize for console-api.
-  # enabled false: vws-iam has no published image yet, so the default render leaves it out
-  # (render-only; vws-iam#2). kekSecret: the key-encryption key of access-key secrets and TOTP seeds
-  # comes by secretKeyRef as env VWS_IAM_KEK / VWS_IAM_KEK_ID, never in args or values; vws apply
-  # creates the Secret once and never rotates it. allowFrom: a NetworkPolicy admits only console-api.
-  # No rbac and no CRDs yet: the IAM CRDs and their API group come with vws-iam#2 (AGENTS.md R18).
+  # The vws-iam binary's -listen default is 127.0.0.1:9095. -health-listen stays 127.0.0.1:9096 and
+  # is not passed. kekSecret: the key-encryption key of
+  # access-key secrets and TOTP seeds comes by secretKeyRef as env VWS_IAM_KEK / VWS_IAM_KEK_ID,
+  # never in args or values; vws apply creates the Secret once and never rotates it. allowFrom: a
+  # NetworkPolicy admits only console-api. No rbac and no CRDs yet: the IAM CRDs and their API group
+  # come with vws-iam#2 (AGENTS.md R18).
   iam:
     enabled: false
-    port: 7500
+    port: 9095
     flags:
-      listen: 0.0.0.0:7500
+      listen: 0.0.0.0:9095
+    # One replica until vws-iam#110 has a shared store. A second replica would split
+    # in-memory users, and this one replica is still lost on restart.
+    replicas: 1
     kekSecret: vws-iam-kek
     allowFrom: [console-api]
   console:
