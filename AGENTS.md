@@ -106,3 +106,9 @@ Missing line: "no Codex review"; N > 0: "Codex review has N blocking findings"; 
 or http(s) URL: "Codex review needs a full path or URL". Path rule:
 `/workspace/handoff/codex/<repo>-<pr>-<sha7>.md`, for example
 `Codex review: /workspace/handoff/codex/vws-deploy-301-7d994a0.md blocking=0`.
+Standard commands: per PR `codex review --base <PR base branch>` (usually `main`); per commit
+`codex review --commit <SHA>`. Save the output under the path rule, for example
+`codex review --base main > /workspace/handoff/codex/vws-deploy-123-abc1234.md`. `blocking=<N>` is
+the number of blocking findings in that saved review for the head being verified; the Verified-by
+line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
+Fix the findings and re-run on the new head until N is 0.
