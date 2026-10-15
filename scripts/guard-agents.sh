@@ -138,12 +138,16 @@ cmd_verify_gate() {
   codex=$(grep -m1 -E '^[[:space:]]*(- )?Codex review:' <<<"$section" || true)
   [[ -n $codex ]] || die "verify-gate: no Codex review in the Verified-by section for ${head:0:12}; add 'Codex review: <full path or URL> blocking=<N>'"
   codex=${codex#*Codex review:}
-  [[ $codex =~ blocking=([0-9]+)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
-  blocking=$((10#${BASH_REMATCH[1]}))
-  where=$(sed -E 's/[[:space:]]*blocking=[0-9]+[[:space:]]*$//; s/^[[:space:]]+//' <<<"$codex")
+  # blocking=<N> is matched as a string, never as bash arithmetic: $((N)) wraps 2^64 to 0, so only
+  # all-zero digits pass; empty, signed, hex, spaced or other non-digit values are rejected.
+  [[ $codex =~ blocking=([^[:space:]]*)[[:space:]]*$ ]] || die "verify-gate: the Codex review line needs 'blocking=<N>' at the end: ${codex}"
+  blocking=${BASH_REMATCH[1]}
+  where=${codex%blocking=*}
+  where=$(sed -E 's/[[:space:]]+$//; s/^[[:space:]]+//' <<<"$where")
   [[ $where =~ ^(/[^[:space:]]+|https?://[^[:space:]/]+[^[:space:]]*)$ ]] ||
     die "verify-gate: Codex review needs a full path or URL (an absolute /... path or an http(s) URL), got '${where}'"
-  ((blocking == 0)) || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
+  [[ $blocking =~ ^[0-9]+$ ]] || die "verify-gate: Codex review blocking=<N> must be decimal digits, got '${blocking}' (${where})"
+  [[ $blocking =~ ^0+$ ]] || die "verify-gate: Codex review has ${blocking} blocking findings (${where})"
 }
 
 # The one guard command for the architecture test: the Judgment count line comes first so the CI log
@@ -590,6 +594,15 @@ GH
   [[ $msg == *"Codex review needs a full path or URL"* ]] || die "selftest: no path gave '${msg}'"
   sed 's#^Codex review: .*#Codex review: codex/vws-deploy-1-aaaaaaa.md blocking=0#' "$ev" >"$tmp/codexrel.md"
   expect_fail "a Codex review with a relative path" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexrel.md"
+  # blocking=<N> is a string match: only all-zero digits pass, no bash arithmetic (2^64 wrapped to 0).
+  local bv i=0
+  for bv in 18446744073709551616 -0 -1 '' abc 0x0 ' 0' 1; do
+    i=$((i + 1))
+    sed "s#blocking=0#blocking=${bv}#" "$ev" >"$tmp/codexbad$i.md"
+    expect_fail "a Codex review with blocking='${bv}'" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexbad$i.md"
+  done
+  sed 's#blocking=0#blocking=00#' "$ev" >"$tmp/codex00.md"
+  expect_pass "a Codex review with blocking=00" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codex00.md"
   sed 's#^Codex review: .*#Codex review: /workspace/handoff/codex/vws-deploy-1-aaaaaaa.md#' "$ev" >"$tmp/codexnon.md"
   expect_fail "a Codex review without blocking=<N>" cmd_verify_gate "$h1" "$VERIFY_LABEL" "$tmp/codexnon.md"
   { echo "@@comment-by: verifier"; echo "## Verified-by: vws-verify"; echo "Head: ${h2}"; echo "1. stale"; cat "$ev"; } >"$tmp/two.md"
