@@ -13,7 +13,8 @@ An archived repo is reported and skipped; it is not drift.
 
 Needs an authenticated gh. With admin access (an audit) the full protection settings are read;
 with a read-only token (CI) the branch summary is used and force-push and deletion show as "?".
-Exit status: 0 when nothing drifts, 1 when something does, 2 on a usage error.
+Exit status: 0 when nothing drifts, 3 when something does, 2 on a usage error or a bad baseline.
+Any other non-zero status (1 is an uncaught Python error) is a crash, never drift.
 """
 import argparse
 import base64
@@ -28,6 +29,7 @@ import yaml
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
 WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml"]
 HERE = os.path.dirname(os.path.abspath(__file__))
+DRIFT_EXIT = 3  # distinct from 1, which Python uses for a traceback
 ROOT = os.path.dirname(os.path.dirname(HERE))  # .github/drift -> repo root
 
 
@@ -70,21 +72,51 @@ def protection(owner, repo):
     }
 
 
+def _map(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _list(v):
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
+def _bad_baseline(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def load_common(path):
+    """The shared lint baseline; exit 2 with a clear message when it is missing, empty or malformed."""
+    try:
+        with open(path) as f:
+            c = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        _bad_baseline(f"drift-check: cannot read {path}: {e}")
+    enable = ((c or {}).get("linters") or {}).get("enable") if isinstance(c, dict) else None
+    if not isinstance(enable, list) or not enable:
+        _bad_baseline(f"drift-check: {path} has no linters.enable list")
+    return c
+
+
 def lint_drift(cfg, common):
     try:
         c = yaml.safe_load(cfg)
     except yaml.YAMLError as e:
         return [f"config does not parse: {e}"]
+    if not isinstance(c, dict):
+        return ["config is empty or not a YAML mapping"]
     out = []
     linters = c.get("linters") or {}
-    enabled = set(linters.get("enable") or [])
+    if not isinstance(linters, dict):
+        return ["config 'linters' is not a mapping"]
+    enabled = set(_list(linters.get("enable")))
     missing = [n for n in common["linters"]["enable"] if n not in enabled]
     if missing:
         out.append("missing linters: " + ",".join(missing))
-    lll = ((linters.get("settings") or {}).get("lll") or {}).get("line-length")
+    lll = _map(_map(linters.get("settings")).get("lll")).get("line-length")
     if lll != 120:
         out.append(f"lll line-length is {lll}, not 120")
-    fmts = set(((c.get("formatters") or {}).get("enable")) or [])
+    fmts = set(_list(_map(c.get("formatters")).get("enable")))
     for f in ("gofumpt", "goimports"):
         if f not in fmts:
             out.append(f"formatter {f} is off")
@@ -98,7 +130,7 @@ def main():
     ap.add_argument("--markdown", help="also write the table to this file")
     a = ap.parse_args()
 
-    common = yaml.safe_load(open(os.path.join(ROOT, ".github", "golangci-common.yml")))
+    common = load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
     want_sha = open(os.path.join(ROOT, "scripts", "guard-agents.sh.sha256")).read().split()[0]
 
     rows, drift = [], 0
@@ -178,7 +210,7 @@ def main():
     if a.markdown:
         with open(a.markdown, "w") as f:
             f.write(text)
-    return 1 if drift else 0
+    return DRIFT_EXIT if drift else 0
 
 
 if __name__ == "__main__":
