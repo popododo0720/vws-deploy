@@ -21,7 +21,7 @@ API 그룹은 `charts/vws/crds/vwsclusters.yaml`의 `spec.group` **한 곳**에�
 | 필드 | 값 | values로 |
 | --- | --- | --- |
 | `spec.profile` | `single-node`, `small`, `ha` (필수) | `profiles/<값>.yaml`을 바탕으로 쓴다 |
-| `spec.version` | 이미지 태그, 비면 차트 appVersion. `services.<이름>.imageTag`가 있는 서비스(지금은 console-api)는 움직이지 않는다 | `global.tag` |
+| `spec.version` | 이미지 태그, 비면 차트 appVersion. `services.<이름>.imageTag`가 있는 서비스(지금은 console-api, compute)는 움직이지 않는다 | `global.tag` |
 | `spec.storage.driver` | `rook-ceph`(기본), `existing`, `nfs` | `existing`이면 `global.storageClass`와 storage의 `kube-class-standard`, `kube-class-ssd`. `nfs`이면 두 클래스가 `vws-nfs`, `kube-volume-mode=Filesystem`, `kube-snapshot-class=`(빈 값, 스냅숏 없음). 상태 볼륨은 기본 클래스에 남는다 |
 | `spec.storage.storageClass` | `existing`일 때 필수, 아니면 금지(범용 CSI 드라이버는 모두 `existing`이다) | 위와 같음 |
 | `spec.storage.volumeMode` | `existing`일 때만, `Block`(기본) 또는 `Filesystem` | `Filesystem`이면 `kube-volume-mode=Filesystem`과 storage의 `datavolumes.cdi.kubevirt.io` 권한(vws-storage#73) |
@@ -91,4 +91,5 @@ spec:
   - 이 태그는 vws-console-api의 `publish.yml`(main 푸시마다 ko로 `sha-<커밋 7자>`, 라벨 `org.opencontainers.image.revision=<전체 SHA>`)이 a003d96 머지 때 발행했다(digest sha256:dbd6ab8a…, 2026-10-15 익명 pull 확인). vws-test에서의 pull과 기동은 확인 필요.
   - a003d96을 고른 이유: 자격 증명 env를 읽는 첫 빌드다(S1). 이전 고정은 5b42eb7(#267에서 vws-test 실측)이었다. 더 새 main 커밋으로 옮길 때는 그 커밋이 발행된 뒤 `imageTag`만 바꾸고 vws-test에서 다시 잰다.
   - 패키지 공개 여부는 워크플로가 바꾸지 않는다. 비공개면 노드에 pull 자격 증명이 필요하다(확인 필요).
+- compute 고정: `services.compute.imageTag: sha-07b591c`(vws-compute#91, 07b591c = #89 99a45e4 + publish.yml). vws-compute `publish.yml`이 머지 때 발행했다(digest sha256:292268f3…, 2026-10-15 익명 확인, 라벨 revision 07b591c, user 65532). ko 이미지라 entrypoint가 `/ko-app/vws-compute`다. 차트는 `args`만 넘기고 `command`는 넘기지 않는다.
 - vws-test 실측: 기본 설치(`-iam=static`)에서 `-console-origins`를 콘솔 공개 주소로 두면 로그인 없이 콘솔 API가 모두 200이다. 필수여도 기본 설치를 막지 않는다.
