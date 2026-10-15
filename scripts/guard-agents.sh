@@ -111,7 +111,10 @@ cmd_verify_gate() {
   fi
   # Keep only comments ("@@comment-by: LOGIN" blocks) by allowed authors. Each kept block starts with a
   # "#" line so a section never runs from one comment into the next. The PR body is not a comment.
-  text=$(tr -d '\r' <<<"$text" | awk -v actors=",${VERIFY_ACTORS}," -v excl=",${excluded}," -v id="$identity" '
+  # Control characters: a CRLF line ending is dropped; any other control character (a lone \r, \v, ESC...)
+  # becomes "?", so "\r@@comment-by:" (which the workflow's "^@@comment-by:" defang misses) never turns into
+  # a marker line. Tab and newline stay.
+  text=$(sed 's/\r$//' <<<"$text" | LC_ALL=C tr '\000-\010\013-\037\177' '?' | awk -v actors=",${VERIFY_ACTORS}," -v excl=",${excluded}," -v id="$identity" '
     /^@@comment-by: / { who = substr($0, 15); keep = (actors == ",," || index(actors, "," who ",") > 0)
       if (who != id && index(excl, "," who ",") > 0) keep = 0
       if (keep) print "#"; next }
