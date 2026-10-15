@@ -18,7 +18,6 @@ Call with (dict "root" $ "key" "vms").
 Container args of one service: flags, plus pendingFlags when global.pendingFlags is true.
 A flag value is a scalar or {namespace: <key>}.
 Call with (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPort).
--iam=grpc sets -iam-endpoint to iam:<iamPort>. This define does not read services.iam.
 */}}
 {{- define "vws.args" -}}
 {{- $flags := deepCopy (.spec.flags | default dict) }}
@@ -70,9 +69,7 @@ spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV
 {{- end -}}
 
 {{/*
-Extra client Service ports from *-addr flags. Call with (dict "flags" $flags "port" $port).
-0.0.0.0:<n> with n in 1024..65535 and n not the primary port becomes {name, port}.
-The name is the key with -addr removed. Returns a JSON array.
+Call with (dict "flags" $flags "port" $port).
 */}}
 {{- define "vws.extraPorts" -}}
 {{- $primary := int .port }}

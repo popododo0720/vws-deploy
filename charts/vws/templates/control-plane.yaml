@@ -99,7 +99,6 @@ spec:
     - name: http
       port: {{ $port }}
       targetPort: http
-{{- /* An empty extra port list must leave the single newline before the next document. */}}
 {{- range $extra := $extraPorts }}
     - name: {{ $extra.name }}
       port: {{ int $extra.port }}

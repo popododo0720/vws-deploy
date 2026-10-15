@@ -39,8 +39,7 @@ namespaces:
 services:
   # vws-iam (vws-iam#1, #243): users, policies, SigV4 Authenticate and Authorize for console-api.
   # The vws-iam binary's -listen default is 127.0.0.1:9095. -health-listen stays 127.0.0.1:9096 and
-  # is not passed. enabled false: a pullable ghcr.io/popododo0720/vws/iam tag is not proven, so the
-  # default render leaves it out (render-only; vws-iam#2). kekSecret: the key-encryption key of
+  # is not passed. kekSecret: the key-encryption key of
   # access-key secrets and TOTP seeds comes by secretKeyRef as env VWS_IAM_KEK / VWS_IAM_KEK_ID,
   # never in args or values; vws apply creates the Secret once and never rotates it. allowFrom: a
   # NetworkPolicy admits only console-api. No rbac and no CRDs yet: the IAM CRDs and their API group
