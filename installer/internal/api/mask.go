@@ -14,7 +14,7 @@ var (
 	secretPair = regexp.MustCompile(`(?i)((?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?code|credential|private[_-]?key)[a-z0-9_-]*"?\s*[:=]\s*"?)([^\s"',;}]+)`)
 	bearer     = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
 	// A URL's user:password@.
-	urlUser = regexp.MustCompile(`(://[^/\s:@]+:)[^/\s@]+@`)
+	urlUser  = regexp.MustCompile(`(://[^/\s:@]+:)[^/\s@]+@`)
 	pemBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE REQUEST)-----`)
 	pemEnd   = regexp.MustCompile(`-----END [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE REQUEST)-----`)
 )
