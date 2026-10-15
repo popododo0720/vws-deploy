@@ -1,68 +1,68 @@
-# 설치 파드와 임시 권한 회수 (vws-deploy#54, #43 결정 8)
+# The installer pod and reclaiming temporary rights (vws-deploy#54, #43 decision 8)
 
-## 권한의 일생
+## Lifetime of the rights
 
-| 단계 | 바인딩 | 권한 |
+| Stage | Bindings | Rights |
 | --- | --- | --- |
-| `kubectl apply -f build/bootstrap.yaml` | `vws-installer-temp` (ClusterRoleBinding → `cluster-admin`), `vws-operator`(Role), `vws-operator-read`(ClusterRole) | cluster-admin + 운영 권한 |
-| `vws init`, `vws apply` | 같음 | 번들(CRD, ClusterRole, 네임스페이스)과 차트를 설치 |
-| `vws installer finish` | `vws-installer-temp` 삭제 | 운영 권한만: 릴리스 네임스페이스의 VWSCluster와 그 status, `vws-operator-lock` Lease, 워크로드 읽기, 클러스터 범위 읽기(아래 표). Secret, RBAC, 클러스터 쓰기, watch 없음 |
+| `kubectl apply -f build/bootstrap.yaml` | `vws-installer-temp` (ClusterRoleBinding → `cluster-admin`), `vws-operator` (Role), `vws-operator-read` (ClusterRole) | cluster-admin + operator rights |
+| `vws init`, `vws apply` | same | installs the bundle (CRDs, ClusterRoles, namespaces) and the chart |
+| `vws installer finish` | deletes `vws-installer-temp` | operator rights only: the VWSCluster and its status in the release namespace, the `vws-operator-lock` Lease, reading workloads, cluster-scoped reads (table below). No Secrets, RBAC, cluster writes or watch |
 
-cluster-admin이 필요한 이유: 번들이 CRD, ClusterRole(Binding), 네임스페이스, 웹훅을 만든다. 그 목록을 동사 단위로 줄인 최소 권한 초안은 번들 매니페스트에 따라 바뀌어 유지 비용이 커서, 결정 8대로 임시 cluster-admin + 회수로 했다.
+Why cluster-admin is needed: the bundle creates CRDs, ClusterRoles (and bindings), namespaces and webhooks. A least-privilege draft that narrows that list verb by verb changes with every bundle manifest and is expensive to maintain, so per decision 8 it is temporary cluster-admin plus reclaim.
 
-## 운영 ClusterRole `vws-operator-read` (정확한 목록, R20이 강제)
+## Operator ClusterRole `vws-operator-read` (exact list, enforced by R20)
 
-| apiGroup | resource | verbs | 쓰는 곳 |
+| apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
 | `""` | `nodes` | get, list | preflight, doctor |
 | `storage.k8s.io` | `storageclasses` | get, list | preflight |
 | `snapshot.storage.k8s.io` | `volumesnapshotclasses` | get, list | preflight |
-| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list | doctor(CRD Established) |
-| `kubevirt.io` | `kubevirts` | get, list | status(번들 버전), doctor(phase), diag (#77) |
-| `cdi.kubevirt.io` | `cdis` | get, list | status(번들 버전), doctor(phase), diag (#77) |
-| `ceph.rook.io` | `cephclusters` | get, list | doctor(Ceph health), diag (#77) |
-| `""` | `persistentvolumeclaims` (모든 네임스페이스) | get, list | doctor(Pending PVC) (#77) |
+| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list | doctor (CRD Established) |
+| `kubevirt.io` | `kubevirts` | get, list | status (bundle version), doctor (phase), diag (#77) |
+| `cdi.kubevirt.io` | `cdis` | get, list | status (bundle version), doctor (phase), diag (#77) |
+| `ceph.rook.io` | `cephclusters` | get, list | doctor (Ceph health), diag (#77) |
+| `""` | `persistentvolumeclaims` (all namespaces) | get, list | doctor (Pending PVC) (#77) |
 
-목록 밖 그룹/리소스, get/list 밖 동사(watch 포함), `resourceNames`, `nonResourceURLs`는 `scripts/guard.sh bootstrap`이 거절한다(음성 시험: watch, 목록 밖 리소스, PVC 쓰기 동사, 목록 밖 그룹, 클러스터 범위 pods, 허용 항목 제거).
+`scripts/guard.sh bootstrap` refuses groups/resources outside the list, verbs other than get/list (including watch), `resourceNames` and `nonResourceURLs` (negative tests: watch, a resource outside the list, PVC write verbs, a group outside the list, cluster-wide pods, an allowed entry removed).
 
-## 회수와 확인 (`vws installer finish`)
+## Reclaim and confirmation (`vws installer finish`)
 
-1. `kubectl delete clusterrolebinding vws-installer-temp --ignore-not-found`. 출력이 없으면 `unchanged`.
-2. `kubectl auth can-i`로 사라져야 할 권한(`* *`, `create clusterrolebindings`, `create clusterroles`, `delete namespaces`, `create customresourcedefinitions`, `get secrets`)이 모두 `no`인지. 설치 파드 안(`VWS_INSTALLER_POD=1`)에서는 자기 자신의 SelfSubjectAccessReview, 밖에서는 `--as`로 그 ServiceAccount의 SubjectAccessReview다.
-3. 남아야 할 권한(`get vwsclusters`, `patch vwsclusters/status`)이 `yes`인지.
-4. 하나라도 어긋나면 종료 코드 1, 답을 못 읽으면 3. 재실행해도 안전하다(삭제는 `--ignore-not-found`, 확인은 매번).
+1. `kubectl delete clusterrolebinding vws-installer-temp --ignore-not-found`. With no output, `unchanged`.
+2. `kubectl auth can-i` confirms that every right that must be gone (`* *`, `create clusterrolebindings`, `create clusterroles`, `delete namespaces`, `create customresourcedefinitions`, `get secrets`) answers `no`. Inside the installer pod (`VWS_INSTALLER_POD=1`) it is a SelfSubjectAccessReview of itself; outside, a SubjectAccessReview of that ServiceAccount through `--as`.
+3. The rights that must remain (`get vwsclusters`, `patch vwsclusters/status`) answer `yes`.
+4. Any mismatch exits 1; an unreadable answer exits 3. Re-running is safe (the delete uses `--ignore-not-found` and the checks run every time).
 
-주의: 다른 바인딩(사용자가 따로 준 것)으로 권한이 남아 있어도 2에서 실패한다. 의도한 동작이다(권한이 실제로 줄었는지가 기준).
+Note: step 2 also fails when rights remain through another binding (one the user granted separately). That is intended: the criterion is whether the rights actually shrank.
 
-## 충돌, 재시작에 대한 안전
+## Safety against crashes and restarts
 
-- **리퍼 Job** `vws-installer-reaper`: 바인딩의 `creationTimestamp` + `vws-installer-ttl-seconds`(= `INSTALLER_TTL_SECONDS`, 4시간)까지 자고 바인딩을 지운다. 파드가 죽어 다시 떠도 남은 시간을 바인딩에서 다시 계산하므로 시한이 늘지 않는다. Job 시한은 TTL + 10분이라 삭제 전에 끊기지 않는다. finish 뒤에는 바인딩을 읽을 수 없어 곧 끝난다.
-- **시작 시 상태 확인**: `vws init`, `vws apply`는 먼저 바인딩이 TTL을 넘겼는지 보고, 넘겼으면 지우고 종료 코드 1로 멈춘다(리퍼가 못 돈 경우의 두 번째 방어).
-- **설치 Deployment** `vws-installer`(#140): replicas 1, `Recreate`(draft 세션은 하나). Deployment 파드에는 `activeDeadlineSeconds`를 둘 수 없어 시한은 파드가 아니라 권한에 건다. 리퍼가 TTL에 바인딩을 지우면 파드는 운영 권한만 가진 채 남는다. 파드가 죽어도 다시 떠서 `kubectl exec`가 계속 된다.
-- **Service** `vws-installer`: ClusterIP만, 포트 `api` 8443(`kubectl port-forward svc/vws-installer 8443`). NodePort, LoadBalancer, externalIPs, Ingress 없음. 설치 컨테이너는 `/opt/vws/bin/vws-installer`(#141, #191)를 실행하고 8443에 tcpSocket readiness/liveness 프로브를 둔다. 접속 코드는 `kubectl -n vws exec deploy/vws-installer -- cat /tmp/vws-installer/access-code`로 읽는다(`vws init --print-url`은 #142).
-- 남는 위험(확인 필요): 리퍼 Job이 완료된 뒤 bootstrap을 다시 apply하면 Job이 다시 돌지 않는다(같은 이름의 완료된 Job). `ttlSecondsAfterFinished: 600`이라 10분 뒤에는 지워져 다시 apply하면 새로 돈다. 그 사이 다시 apply하면 시작 시 상태 확인만 남는다.
+- **Reaper Job** `vws-installer-reaper`: sleeps until the binding's `creationTimestamp` + `vws-installer-ttl-seconds` (= `INSTALLER_TTL_SECONDS`, 4 hours), then deletes the binding. If its pod dies and comes back, it recomputes the remaining time from the binding, so the deadline never grows. The Job deadline is TTL + 10 minutes, so it is not cut off before the delete. After finish it can no longer read the binding and ends soon.
+- **State check at start**: `vws init` and `vws apply` first check whether the binding is past its TTL; if so they delete it and stop with exit code 1 (a second defence in case the reaper did not run).
+- **Installer Deployment** `vws-installer` (#140): replicas 1, `Recreate` (one draft session). A Deployment pod cannot have `activeDeadlineSeconds`, so the deadline is on the rights, not the pod. When the reaper deletes the binding at the TTL, the pod stays with operator rights only. If the pod dies it comes back, and `kubectl exec` keeps working.
+- **Service** `vws-installer`: ClusterIP only, port `api` 8443 (`kubectl port-forward svc/vws-installer 8443`). No NodePort, LoadBalancer, externalIPs or Ingress. The installer container runs `/opt/vws/bin/vws-installer` (#141, #191) with tcpSocket readiness/liveness probes on 8443. Read the access code with `kubectl -n vws exec deploy/vws-installer -- cat /tmp/vws-installer/access-code` (`vws init --print-url` is #142).
+- Remaining risk (needs checking): re-applying the bootstrap after the reaper Job has completed does not run the Job again (a completed Job of the same name). With `ttlSecondsAfterFinished: 600` it is deleted after 10 minutes, so a later re-apply runs it afresh. A re-apply in between leaves only the state check at start.
 
-## T0 수용 기준 (이 박스, 가짜 kubectl/helm)
+## T0 acceptance criteria (this box, fake kubectl/helm)
 
-- `scripts/guard.sh bootstrap`(R20): 렌더한 bootstrap이 kubeconform 통과, privileged/hostPath/hostNetwork/hostPID/hostIPC 없음, 모든 이미지가 digest, 권한 상승 금지, cluster-admin 바인딩은 `vws-installer-temp` 하나이고 TTL 주석이 `INSTALLER_TTL_SECONDS`, 맨 Pod 없음, 설치기는 replicas 1·`Recreate` Deployment이고 파드에 `activeDeadlineSeconds`/`restartPolicy` 없음, Service는 ClusterIP 하나이고 nodePort·externalIPs·loadBalancerIP 없음, 셀렉터와 targetPort가 설치 파드와 맞음, 리퍼 존재와 시한 > TTL, 운영 Role/ClusterRole에 와일드카드·Secret·RBAC 없음, ClusterRole은 읽기만. 각 규칙을 깨뜨린 사본(NodePort, replicas 2, RollingUpdate, 파드 시한, 셀렉터 불일치, 없는 targetPort, 맨 Pod 포함)이 실패하는지 음성 시험.
-- `tests/vws/installer.test.sh`: 회수와 확인 통과(0), 두 번째 실행 `unchanged`(0), 파드 안에서는 `--as` 없음, `* *`이 남음(1), `create clusterrolebindings`가 남음(1), 운영 권한 상실(1), can-i 무응답(3), `--dry-run`은 변경 0건, 잘못된 하위 명령(2).
-- `tests/vws/init.test.sh`, `tests/vws/apply.test.sh`: 두 번째 실행 `unchanged`와 변경 0건, 대화형과 `--from`이 같은 CR, 번들 순서, helm 실패 시 status 없음, `--dry-run` 계획만, TTL 지난 바인딩은 회수 후 1.
+- `scripts/guard.sh bootstrap` (R20): the rendered bootstrap passes kubeconform; no privileged/hostPath/hostNetwork/hostPID/hostIPC; every image by digest; no privilege escalation; the only cluster-admin binding is `vws-installer-temp` and its TTL annotation is `INSTALLER_TTL_SECONDS`; no bare Pod; the installer is a replicas 1, `Recreate` Deployment whose pod has no `activeDeadlineSeconds`/`restartPolicy`; one ClusterIP Service with no nodePort, externalIPs or loadBalancerIP; the selector and targetPort match the installer pod; the reaper exists with a deadline > TTL; the operator Role/ClusterRole have no wildcards, Secrets or RBAC; the ClusterRole only reads. Negative tests check that a copy breaking each rule (NodePort, replicas 2, RollingUpdate, a pod deadline, a selector mismatch, a missing targetPort, a bare Pod) fails.
+- `tests/vws/installer.test.sh`: reclaim and confirmation pass (0), a second run is `unchanged` (0), no `--as` inside the pod, `* *` remains (1), `create clusterrolebindings` remains (1), operator rights lost (1), no answer from can-i (3), `--dry-run` makes 0 changes, a wrong subcommand (2).
+- `tests/vws/init.test.sh`, `tests/vws/apply.test.sh`: a second run is `unchanged` with 0 changes, interactive and `--from` give the same CR, bundle order, no status after a helm failure, `--dry-run` only plans, a binding past its TTL is reclaimed and then exits 1.
 
-## 실제 클러스터에서 재야 하는 것 (`/workspace/cluster-verification-list.md` I1, I2, I4)
+## What must be measured on a real cluster (`/workspace/cluster-verification-list.md` I1, I2, I4)
 
-- 실제 RBAC 회수: finish 뒤 `kubectl auth can-i --as=system:serviceaccount:vws:vws-installer '*' '*'`가 `no`, 리퍼가 TTL에 실제로 지우는지(TTL을 짧게 바꿔서), 리퍼 파드 강제 삭제 뒤 시한 유지.
-- cluster-admin으로 번들과 차트가 끝까지 설치되는지, 운영 권한으로 `status`가 되는지(helm 릴리스는 Secret에 있어 운영 권한으로는 `helm list`가 안 된다; status/doctor는 사용자 자격으로 돌리는 것을 전제, #56에서 확인 필요).
-- Deployment와 Service가 실제로 뜨는지, `kubectl -n vws exec deploy/vws-installer`와 `port-forward svc/vws-installer 8443`이 되는지(#140, 미실행).
-- 설치 이미지 빌드와 발행(지금 digest 0), 파드 안에서 helm이 `HOME=/tmp`로 도는지.
+- Real RBAC reclaim: after finish, `kubectl auth can-i --as=system:serviceaccount:vws:vws-installer '*' '*'` is `no`; the reaper actually deletes at the TTL (with a shortened TTL); the deadline holds after the reaper pod is force-deleted.
+- Whether the bundle and chart install completely with cluster-admin, and whether `status` works with operator rights (helm releases live in Secrets, so `helm list` does not work with operator rights; status/doctor assume the user's credentials, to be checked in #56).
+- Whether the Deployment and Service actually come up, and whether `kubectl -n vws exec deploy/vws-installer` and `port-forward svc/vws-installer 8443` work (#140, not run).
+- Building and publishing the installer image (the digest is zeros now), and whether helm runs with `HOME=/tmp` inside the pod.
 
-## 설치 이미지 발행과 digest 고정 (#96)
+## Publishing the installer image and pinning the digest (#96)
 
-`.github/workflows/installer-image.yml`(풀 리퀘스트 빌드)과 `.github/workflows/installer-publish.yml`(main·`v*` 태그 푸시 발행)이 `bootstrap/Containerfile`을 빌드한다. 둘을 나눠 풀 리퀘스트 체크에 건너뛴 잡이 나오지 않는다.
+`.github/workflows/installer-image.yml` (pull request builds) and `.github/workflows/installer-publish.yml` (publishing on pushes to main and `v*` tags) build `bootstrap/Containerfile`. They are split so a pull request check has no skipped job.
 
-- 풀 리퀘스트: 빌드만 한다. 권한은 `contents: read`이고 푸시하지 않는다.
-- main 푸시와 `v*` 태그 푸시: `installer-publish.yml`의 `publish` 잡만 `packages: write`를 받아 `ghcr.io/<owner>/vws/installer:sha-<커밋>`과 `:<브랜치 또는 태그>`로 푸시한다. 잡 요약에 `VWS_INSTALLER_IMAGE=...@sha256:...` 한 줄을 남긴다.
-- CI는 저장소에 커밋하지 않는다. digest 고정은 사람이 한다.
-  1. 발행된 실행의 잡 요약에서 `VWS_INSTALLER_IMAGE` 줄을 복사한다(또는 `crane digest ghcr.io/<owner>/vws/installer:<태그>`).
-  2. 새 브랜치에서 `scripts/versions.env`의 `VWS_INSTALLER_IMAGE`와 "NOT PUBLISHED YET" 주석을 바꾼다. 커밋 제목은 `ci: 설치 이미지 digest를 고정한다`.
-  3. `scripts/bootstrap.sh`로 `bootstrap/bootstrap.yaml`을 다시 만들어 별도 `cli:` 커밋으로 넣고 PR을 연다(`Part of #N`).
-- ghcr 패키지는 비공개로 만들어진다. 공개 여부와 클러스터의 pull 자격은 별도 결정이다(확인 필요).
+- Pull requests: build only. Permission is `contents: read`, and nothing is pushed.
+- Pushes to main and `v*` tags: only the `publish` job of `installer-publish.yml` gets `packages: write` and pushes `ghcr.io/<owner>/vws/installer:sha-<commit>` and `:<branch or tag>`. It leaves one `VWS_INSTALLER_IMAGE=...@sha256:...` line in the job summary.
+- CI never commits to the repository. A person pins the digest.
+  1. Copy the `VWS_INSTALLER_IMAGE` line from the job summary of the publishing run (or `crane digest ghcr.io/<owner>/vws/installer:<tag>`).
+  2. On a new branch, change `VWS_INSTALLER_IMAGE` and the "NOT PUBLISHED YET" comment in `scripts/versions.env`. The commit subject is `ci: pin the installer image digest`.
+  3. Regenerate `bootstrap/bootstrap.yaml` with `scripts/bootstrap.sh`, add it as a separate `cli:` commit and open a PR (`Part of #N`).
+- The ghcr package is created private. Whether to make it public, and the cluster's pull credentials, are separate decisions (needs checking).
