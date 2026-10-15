@@ -13,6 +13,7 @@ on:
       - .github/drift/**
       - .github/golangci-common.yml
       - .github/workflows/drift-check.yml
+      - tests/drift/**
 
 permissions:
   contents: read
@@ -23,14 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --user pyyaml==6.0.2
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/drift -v
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
-        # A pull request only proves the script runs; the schedule is what fails on drift.
+        # Exit 3 is drift, anything else non-zero is an error or a crash (Python exits 1 on a traceback).
+        # The schedule fails on both. A pull request fails on an error or crash, but only warns on drift:
+        # the other repos hold the published guard-agents.sh, so a PR that changes the canonical
+        # checksum always drifts until it merges.
         run: |
           set +e
           .github/drift/drift-check.sh --markdown "$RUNNER_TEMP/drift.md"
           rc=$?
-          cat "$RUNNER_TEMP/drift.md" >> "$GITHUB_STEP_SUMMARY"
-          if [[ $rc -eq 1 && "${{ github.event_name }}" == "pull_request" ]]; then exit 0; fi
+          if [[ -f "$RUNNER_TEMP/drift.md" ]]; then cat "$RUNNER_TEMP/drift.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          if [[ $rc -eq 3 && "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "::warning::guardrail drift (see the job summary); the daily schedule fails on it"
+            exit 0
+          fi
           exit $rc
