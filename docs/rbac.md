@@ -1,78 +1,78 @@
-# 서비스 권한(RBAC) 근거
+# Why each service has its rights (RBAC)
 
-`charts/vws/values.yaml`의 서비스별 `rbac`는 서비스 코드가 실제로 부르는 쿠버네티스 API 호출만 허용한다. 규칙에 `namespace`가 있으면 그 네임스페이스의 Role로, 없으면 ClusterRole로 렌더되고, ClusterRole에는 클러스터 범위 리소스만 둘 수 있다(`scripts/check_render.py`의 `CLUSTER_SCOPED`). 아래는 각 서비스 저장소 `origin/main`의 코드를 읽은 결과다. 실제 클러스터에서 `kubectl auth can-i`로 확인하지 않았다(확인 필요, T1 이상).
+Each service's `rbac` in `charts/vws/values.yaml` allows only the Kubernetes API calls the service code actually makes. A rule with a `namespace` renders as a Role in that namespace, a rule without one as a ClusterRole, and a ClusterRole may hold only cluster-scoped resources (`CLUSTER_SCOPED` in `scripts/check_render.py`). What follows comes from reading the code on `origin/main` of each service repository. It was not checked with `kubectl auth can-i` on a real cluster (needs checking, T1 or above).
 
-읽은 커밋: vws-compute `df28dbd`(#20 머지 후), vws-storage `77450d5`, vws-network `890dbaf`. 규칙의 `namespace`는 `values.yaml` `namespaces`의 키이고(`release`는 릴리스 네임스페이스), 이름은 그 한 곳에만 있다. 서비스 플래그 표는 `docs/service-config.md`다.
+Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`, vws-network `890dbaf`. A rule's `namespace` is a key of `namespaces` in `values.yaml` (`release` is the release namespace), and the name lives only there. The service flag table is in `docs/service-config.md`.
 
 ## compute (`internal/hypervisor/kubevirt/agent.go`, `image.go`)
 
-| 호출 | 리소스 | 동사 | 네임스페이스 |
+| Call | Resource | Verbs | Namespace |
 | --- | --- | --- | --- |
-| `Get`, `Create`, `Delete`, `Patch`(merge), `List` | `kubevirt.io` virtualmachines | get, create, delete, patch, list | VM 네임스페이스 `Config.Namespace` |
-| `Get`(READY 판정, vws-compute#50), `Delete`(재부팅 시) | `kubevirt.io` virtualmachineinstances | get, delete | VM 네임스페이스 |
-| `Create`(VM 생성 전), `Get`/`Update`(생성 재시도), `Delete`(destroy, VM 다음): cloud-init Secret `<instance>-cloudinit`(vws-compute#73, `userDataSecretRef`) | `""` secrets | get, create, update, delete | VM 네임스페이스. list/watch 없음(compute는 캐시 없는 `client.New`). `resourceNames`로 묶지 않는다: 이름이 인스턴스마다 다르고, RBAC은 create를 이름으로 제한하지 못한다. 그래서 이 Role은 VM 네임스페이스의 모든 Secret을 읽고 고치고 지울 수 있다. compute는 자기 managed 라벨이 붙은 Secret만 건드린다(코드 보장, RBAC 보장 아님). VM 네임스페이스에 다른 Secret을 두지 않는다 |
-| `Get`, `Create`, `Delete` | `cdi.kubevirt.io` datavolumes, datasources | get, create, delete | 이미지 네임스페이스 `Config.ImageNamespace` |
-| `Get`(`checkAttachable`, 헬스 프로브) | persistentvolumeclaims | get | VM 네임스페이스(#121) |
-| `Get`(용량 읽기, 헬스 프로브) | persistentvolumeclaims | get | 이미지 네임스페이스 |
-| `Get`, `List`, `Create`, `Update`, `Delete`(ConfigMap 저장소) | configmaps | get, list, create, update, delete | 저장소 네임스페이스 `-namespace`(값에서는 릴리스 네임스페이스, `release`) |
+| `Get`, `Create`, `Delete`, `Patch` (merge), `List` | `kubevirt.io` virtualmachines | get, create, delete, patch, list | VM namespace `Config.Namespace` |
+| `Get` (READY decision, vws-compute#50), `Delete` (on reboot) | `kubevirt.io` virtualmachineinstances | get, delete | VM namespace |
+| `Create` (before creating the VM), `Get`/`Update` (create retry), `Delete` (destroy, after the VM): the cloud-init Secret `<instance>-cloudinit` (vws-compute#73, `userDataSecretRef`) | `""` secrets | get, create, update, delete | VM namespace. No list/watch (compute uses the uncached `client.New`). Not narrowed with `resourceNames`: the name differs per instance, and RBAC cannot limit create by name. So this Role can read, change and delete every Secret in the VM namespace. compute touches only Secrets with its own managed label (guaranteed by code, not by RBAC). Keep no other Secrets in the VM namespace |
+| `Get`, `Create`, `Delete` | `cdi.kubevirt.io` datavolumes, datasources | get, create, delete | image namespace `Config.ImageNamespace` |
+| `Get` (`checkAttachable`, health probe) | persistentvolumeclaims | get | VM namespace (#121) |
+| `Get` (reading capacity, health probe) | persistentvolumeclaims | get | image namespace |
+| `Get`, `List`, `Create`, `Update`, `Delete` (ConfigMap store) | configmaps | get, list, create, update, delete | store namespace `-namespace` (the release namespace in values, `release`) |
 
-- 시작과 정지는 `spec.runStrategy` 패치다. `virtualmachines/start` 같은 하위 리소스를 부르는 코드는 없다.
-- 상태(status)를 쓰는 호출이 없다. 읽기만 한다.
-- 이전 규칙에 있던 `update`, `watch`, `datasources`의 `update/patch`, PVC `list/watch`는 코드에 쓰이는 곳이 없어 뺐다.
+- Start and stop are patches of `spec.runStrategy`. No code calls subresources such as `virtualmachines/start`.
+- No call writes status; it is only read.
+- `update`, `watch`, `update/patch` on `datasources` and PVC `list/watch` from the earlier rules were removed because no code uses them.
 
 ## storage (`internal/backend/kube/kube.go`, `snapshot.go`)
 
-| 호출 | 리소스 | 동사 | 네임스페이스 |
+| Call | Resource | Verbs | Namespace |
 | --- | --- | --- | --- |
-| `Get`, `Create`, `Update`(확장), `Delete` | persistentvolumeclaims | get, create, update, delete | `-kube-namespace` 하나. 값에서는 VM 네임스페이스(`namespaces.vms`)와 같다 |
-| `Get`, `Create`, `Delete` | `snapshot.storage.k8s.io` volumesnapshots | get, create, delete | 같은 네임스페이스(`namespaces.vms`) |
-| `Create`, `Get`, `List`, `Delete`(`-kube-volume-mode=Filesystem`, vws-storage#73 `datavolume.go`) | `cdi.kubevirt.io` datavolumes | get, list, create, delete | 같은 네임스페이스. `spec.storage.driver: nfs`나 `existing` + `volumeMode: Filesystem`일 때만 `vws render`가 넣는다 |
-| `Create`, `Get`, `Delete`(image volume, vws-storage#86) | `cdi.kubevirt.io` datavolumes | get, create, delete | VM 네임스페이스(`namespaces.vms`). 이미지에서 볼륨을 만들 때 DataSource를 원본으로 하는 CDI clone DataVolume을 만든다. 렌더 오버라이드(nfs, existing Filesystem, direct networks)와 상관없이 항상 들어간다(#201) |
-| `Get`(image volume 원본 확인) | `cdi.kubevirt.io` datasources | get | 이미지 네임스페이스(`namespaces.images`) |
-| (CDI clone 인가) | `cdi.kubevirt.io` datavolumes/source | create | 이미지 네임스페이스. CDI가 네임스페이스를 넘는 clone을 허용하기 전에 요청자 SA에 이 subresource `create`가 있는지 SubjectAccessReview로 본다 |
-| `List`(관리 VM, `vws.io/managed=true`) | `kubevirt.io` virtualmachines | list | 같은 네임스페이스(`namespaces.vms`) |
+| `Get`, `Create`, `Update` (expand), `Delete` | persistentvolumeclaims | get, create, update, delete | the single `-kube-namespace`. In values it equals the VM namespace (`namespaces.vms`) |
+| `Get`, `Create`, `Delete` | `snapshot.storage.k8s.io` volumesnapshots | get, create, delete | the same namespace (`namespaces.vms`) |
+| `Create`, `Get`, `List`, `Delete` (`-kube-volume-mode=Filesystem`, vws-storage#73 `datavolume.go`) | `cdi.kubevirt.io` datavolumes | get, list, create, delete | the same namespace. `vws render` adds it only with `spec.storage.driver: nfs` or `existing` + `volumeMode: Filesystem` |
+| `Create`, `Get`, `Delete` (image volume, vws-storage#86) | `cdi.kubevirt.io` datavolumes | get, create, delete | VM namespace (`namespaces.vms`). Creating a volume from an image creates a CDI clone DataVolume with the DataSource as its source. Always added, regardless of render overrides (nfs, existing Filesystem, direct networks) (#201) |
+| `Get` (checking the image volume source) | `cdi.kubevirt.io` datasources | get | image namespace (`namespaces.images`) |
+| (CDI clone authorization) | `cdi.kubevirt.io` datavolumes/source | create | image namespace. Before allowing a cross-namespace clone, CDI checks with a SubjectAccessReview that the requesting SA has `create` on this subresource |
+| `List` (managed VMs, `vws.io/managed=true`) | `kubevirt.io` virtualmachines | list | the same namespace (`namespaces.vms`) |
 
-- 모든 호출이 `b.ns` 한 곳을 가리킨다. 그래서 다른 네임스페이스의 PVC는 지울 수 없다.
-- **readiness(vws-storage#39, 미머지 `feat/grpc-health`)**: `-block-backend=kube`의 readiness가 클러스터 범위 객체를 `get`한다. Namespace `-kube-namespace`(`internal/backend/kube/ready.go:20`), StorageClass `-kube-class-standard`/`-kube-class-ssd`(`:29`), VolumeSnapshotClass `-kube-snapshot-class`(`:33`). 그래서 storage ClusterRole에 셋의 `get`만 둔다(list, watch 없음). `check_render.py`의 `READY_NEEDS_GET`이 `get`이 있고 그 밖의 동사가 없는지 본다(#69). 이 권한은 게이트 없이 렌더된다(읽기 `get`뿐이고, #39 전 이미지는 쓰지 않는다).
-- 그 밖에 StorageClass를 쓰는 코드는 없다. `patch`, `list`, `watch`는 뺐다.
-- 하위 리소스를 부르는 코드는 없다.
-- **VM `list`(#123, vws-storage#68).** `internal/backend/kube/attach.go`가 GetVolume/ListVolumes마다 캐시 없이 관리 VM을 한 번 `List`해 claim을 쓰는 VM으로 `status.instance`를 채운다. `Get`, `Watch`, 인포머를 쓰는 코드는 없어 `list`만 준다. 권한이 없으면 필드가 비고 오류는 로그만 남는다. #68 전 이미지는 이 호출을 하지 않는다.
+- Every call targets the single `b.ns`, so PVCs in other namespaces cannot be deleted.
+- **readiness (vws-storage#39, unmerged `feat/grpc-health`)**: readiness with `-block-backend=kube` does `get` on cluster-scoped objects: Namespace `-kube-namespace` (`internal/backend/kube/ready.go:20`), StorageClass `-kube-class-standard`/`-kube-class-ssd` (`:29`) and VolumeSnapshotClass `-kube-snapshot-class` (`:33`). So the storage ClusterRole has only `get` on those three (no list or watch). `READY_NEEDS_GET` in `check_render.py` checks that `get` is there and no other verb (#69). These rights render without a gate (they are a read-only `get`, and images before #39 do not use them).
+- No other code uses StorageClasses. `patch`, `list` and `watch` were removed.
+- No code calls subresources.
+- **VM `list` (#123, vws-storage#68).** `internal/backend/kube/attach.go` lists the managed VMs once per GetVolume/ListVolumes, without a cache, and fills `status.instance` with the VM that uses the claim. No code uses `Get`, `Watch` or informers, so only `list` is granted. Without the right the field stays empty and the error is only logged. Images before #68 do not make this call.
 
 ## network (`internal/network/dataplane_kubeovn*.go`)
 
-| 호출 | 리소스 | 동사 | 범위 |
+| Call | Resource | Verbs | Scope |
 | --- | --- | --- | --- |
-| `Create`, `Get`(이미 있을 때 `ensure`), `Delete` | `kubeovn.io` vpcs, subnets, ovn-eips, ovn-snat-rules | get, create, delete | 클러스터 |
-| `Get`, `Update`, `Create`, `Delete` | `kubeovn.io` security-groups | get, create, update, delete | 클러스터 |
-| `List`, `Create`, `Get`(`ensure`), `Delete` | `kubeovn.io` ovn-fips | get, list, create, delete | 클러스터 |
-| `List`(`rehomeGateway` → `firstOtherSubnet`, `dataplane_kubeovn_snat.go`) | `kubeovn.io` subnets | list | 클러스터. SNAT를 지울 때 같은 VPC의 다른 Subnet으로 NAT 게이트웨이를 옮기려고 전체를 한 번 나열한다. vws-test에서 이 권한이 없어 실패했다(#164). 캐시가 없어 watch는 주지 않는다 |
-| `Get`, `Create`, `Delete` | `kubeovn.io` vpc-nat-gateways | get, create, delete | 클러스터 |
-| `Get`, `Create` | `kubeovn.io` provider-networks, vlans | get, create | 클러스터 |
-| `Get`, `Patch`(게이트웨이 노드 레이블 reconcile) | nodes | get, patch | 클러스터. vws-network가 외부망 노드에 `ovn.kubernetes.io/external-gw=true`를 다시 붙인다. kube-ovn-controller가 재시작하면 손으로 붙인 레이블을 `false`로 되돌려 SNAT가 끊겼다(vws-test). 이 레이블은 vws-network 담당이다(#164) |
-| `Create`, `Get`(`ensure`), `Delete` | `k8s.cni.cncf.io` network-attachment-definitions | get, create, delete | NAD 네임스페이스 `NADNamespace` |
-| `Create`, `Get`(`ensureDirect`, 시작 때) | `k8s.cni.cncf.io` network-attachment-definitions | get, create | VM 네임스페이스 `vms`. `spec.network.direct`가 있을 때만 `vws render`가 더한다(#131, `docs/node-network.md`) |
-| `Get`(`interfaceAddress`, 주소가 instance에 붙을 때) | `kubevirt.io` virtualmachineinstances | get, list, watch | VM 네임스페이스 `vms`(`-kube-vm-namespace`). 지금은 get만 쓰고 list/watch는 나중 watch용이다(vws-network#87 `docs/rbac.md`) |
+| `Create`, `Get` (`ensure` when it already exists), `Delete` | `kubeovn.io` vpcs, subnets, ovn-eips, ovn-snat-rules | get, create, delete | cluster |
+| `Get`, `Update`, `Create`, `Delete` | `kubeovn.io` security-groups | get, create, update, delete | cluster |
+| `List`, `Create`, `Get` (`ensure`), `Delete` | `kubeovn.io` ovn-fips | get, list, create, delete | cluster |
+| `List` (`rehomeGateway` → `firstOtherSubnet`, `dataplane_kubeovn_snat.go`) | `kubeovn.io` subnets | list | cluster. When an SNAT is deleted it lists everything once to move the NAT gateway to another Subnet of the same VPC. This failed on vws-test without the right (#164). There is no cache, so no watch |
+| `Get`, `Create`, `Delete` | `kubeovn.io` vpc-nat-gateways | get, create, delete | cluster |
+| `Get`, `Create` | `kubeovn.io` provider-networks, vlans | get, create | cluster |
+| `Get`, `Patch` (reconciling the gateway node label) | nodes | get, patch | cluster. vws-network re-applies `ovn.kubernetes.io/external-gw=true` to external-network nodes. When kube-ovn-controller restarted it reset a hand-applied label to `false` and SNAT broke (vws-test). This label belongs to vws-network (#164) |
+| `Create`, `Get` (`ensure`), `Delete` | `k8s.cni.cncf.io` network-attachment-definitions | get, create, delete | NAD namespace `NADNamespace` |
+| `Create`, `Get` (`ensureDirect`, at start) | `k8s.cni.cncf.io` network-attachment-definitions | get, create | VM namespace `vms`. `vws render` adds it only when `spec.network.direct` is set (#131, `docs/node-network.md`) |
+| `Get` (`interfaceAddress`, when an address attaches to an instance) | `kubevirt.io` virtualmachineinstances | get, list, watch | VM namespace `vms` (`-kube-vm-namespace`). Only get is used now; list/watch are for a later watch (vws-network#87 `docs/rbac.md`) |
 
-- **`get`의 근거(vws-network `72bbde9`, #27 머지 후)**: `ensureObject`가 `Create`(`internal/network/dataplane_kubeovn.go:69`) 뒤 `AlreadyExists`면 `Get`(`:74`)으로 id 어노테이션과 spec을 확인한다. `ensure`를 부르는 곳은 vpc `dataplane_kubeovn.go:107`, subnet `:124`, ovn-eip `dataplane_kubeovn_eip.go:18`, ovn-fip `dataplane_kubeovn_eip.go:41`, security-group `dataplane_kubeovn_sg.go:18`, vpc-nat-gateway `dataplane_kubeovn_snat.go:39`, SNAT용 ovn-eip `:47`, ovn-snat-rule `:53`이고, NAD는 `dataplane_kubeovn_nad.go:43`의 `ensureObject`다. security-groups와 vpc-nat-gateways의 `get`은 위 표에 이미 있다(`dataplane_kubeovn_sg.go:67`, `dataplane_kubeovn_snat.go:70`).
-- **provider-networks, vlans(#149)**: vws-network #53(head fe93c1b, 머지 전)이 시작할 때 외부망 underlay의 ProviderNetwork와 Vlan을 `ensure`(Create 뒤 AlreadyExists면 Get)로 만든다(`internal/network/dataplane_kubeovn_underlay.go`, `docs/underlay.md`). 서비스는 이 객체를 지우지 않으므로 delete는 주지 않는다. 외부 Subnet의 create는 위 subnets 규칙에 이미 있다.
-- **vws-network #33**(머지됨, main `005bfca`): `remove`/`removeObject`가 `Get`(`internal/network/dataplane_kubeovn.go:111`) 뒤 id 어노테이션을 확인하고 UID 전제 조건으로 `Delete`(`:118`)한다. 호출하는 곳은 vpc `dataplane_kubeovn.go:129`, subnet `:162`, ovn-eip `dataplane_kubeovn_eip.go:37`, ovn-fip `:49`, security-group `dataplane_kubeovn_sg.go:26`, ovn-snat-rule `dataplane_kubeovn_snat.go:62`, SNAT용 ovn-eip `:65`, vpc-nat-gateway `:77`, NAD `dataplane_kubeovn_nad.go:46`이다. 여덟 리소스 모두 위 표에 `get`과 `delete`가 있다. main 코드의 나머지 호출은 `List` ovn-fips(`dataplane_kubeovn_eip.go:29`), `Update` security-groups(`dataplane_kubeovn_sg.go:84`)뿐이고 `Patch`, `Watch`, `/status` 쓰기는 없다(`rg` 확인). 즉 이 PR 뒤 network Role과 코드의 동사가 일치한다. `check_render.py`가 ensure 대상마다 `get`과 `delete`를 요구한다.
-- 렌더한 Kube-OVN CRD에서 위 kubeovn.io 리소스의 plural 이름이 일치하고 범위가 모두 `Cluster`인 것을 확인했다. NAD CRD는 `Namespaced`다.
-- 모두 `/status` 하위 리소스 없이 본 객체를 쓴다. `subnets/status` 같은 규칙은 코드가 부르지 않아 넣지 않았다(상태는 Kube-OVN 컨트롤러가 쓴다).
+- **Why `get` (vws-network `72bbde9`, after the #27 merge)**: after `Create` (`internal/network/dataplane_kubeovn.go:69`), `ensureObject` handles `AlreadyExists` with a `Get` (`:74`) to check the id annotation and the spec. `ensure` is called for vpc `dataplane_kubeovn.go:107`, subnet `:124`, ovn-eip `dataplane_kubeovn_eip.go:18`, ovn-fip `dataplane_kubeovn_eip.go:41`, security-group `dataplane_kubeovn_sg.go:18`, vpc-nat-gateway `dataplane_kubeovn_snat.go:39`, the SNAT ovn-eip `:47` and ovn-snat-rule `:53`, and for the NAD through `ensureObject` in `dataplane_kubeovn_nad.go:43`. `get` on security-groups and vpc-nat-gateways is already in the table above (`dataplane_kubeovn_sg.go:67`, `dataplane_kubeovn_snat.go:70`).
+- **provider-networks, vlans (#149)**: vws-network #53 (head fe93c1b, unmerged) creates the external-network underlay's ProviderNetwork and Vlan at start with `ensure` (Create, then Get on AlreadyExists) (`internal/network/dataplane_kubeovn_underlay.go`, `docs/underlay.md`). The service never deletes these objects, so no delete is granted. Create on the external Subnet is already in the subnets rule above.
+- **vws-network #33** (merged, main `005bfca`): `remove`/`removeObject` does a `Get` (`internal/network/dataplane_kubeovn.go:111`), checks the id annotation and does a `Delete` (`:118`) with a UID precondition. It is called for vpc `dataplane_kubeovn.go:129`, subnet `:162`, ovn-eip `dataplane_kubeovn_eip.go:37`, ovn-fip `:49`, security-group `dataplane_kubeovn_sg.go:26`, ovn-snat-rule `dataplane_kubeovn_snat.go:62`, the SNAT ovn-eip `:65`, vpc-nat-gateway `:77` and NAD `dataplane_kubeovn_nad.go:46`. All eight resources have `get` and `delete` in the table above. The only other calls in the main code are `List` on ovn-fips (`dataplane_kubeovn_eip.go:29`) and `Update` on security-groups (`dataplane_kubeovn_sg.go:84`); there are no `Patch`, `Watch` or `/status` writes (checked with `rg`). So after this PR the verbs of the network Role match the code. `check_render.py` requires `get` and `delete` for every ensure target.
+- In the rendered Kube-OVN CRDs, the plural names of the kubeovn.io resources above match and their scope is `Cluster`. The NAD CRD is `Namespaced`.
+- All of them write the main object, not a `/status` subresource. Rules such as `subnets/status` were left out because the code does not call them (the Kube-OVN controller writes status).
 
-## 결정 변경: `vws-volumes` 네임스페이스 없음
+## Decision change: no `vws-volumes` namespace
 
-볼륨 PVC는 VM 네임스페이스(`vws-vms`)에 둔다. KubeVirt 핫플러그는 VM과 같은 네임스페이스의 PVC만 붙일 수 있어서다(dr eggbot 결정). 그래서 값의 `vws-volumes`, 그 Namespace, 그 Role을 지웠고 storage의 PVC와 VolumeSnapshot Role은 `namespaces.vms`에 있다. 서비스 코드 쪽은 `-kube-namespace`를 `-vm-namespace`와 같게 맞춰야 한다(확인 필요: 서비스 쪽 변경 이슈 번호는 이 문서에서 확인하지 못했다). 이 차트는 둘 다 `namespaces.vms`에서 가져와 같게 만든다.
+Volume PVCs live in the VM namespace (`vws-vms`), because KubeVirt hotplug can attach only PVCs in the VM's namespace (dr eggbot's decision). So `vws-volumes` in values, its Namespace and its Role were removed, and storage's PVC and VolumeSnapshot Role is in `namespaces.vms`. On the service side, `-kube-namespace` must equal `-vm-namespace` (needs checking: this document could not confirm the issue number of the service-side change). This chart takes both from `namespaces.vms` so they are equal.
 
-## 남은 확인 필요
+## Still needs checking
 
-- 실제 API 서버에서의 권한(`kubectl auth can-i`)은 확인하지 못했다. UNVERIFIED.
-- **compute KubeVirt 에이전트는 기본으로 켜진다(#121).** vws-compute `62d90e7`의 `-hypervisor=kubevirt`와 네임스페이스 플래그가 기본 렌더에 있다(`docs/service-config.md`).
-- **VM 네임스페이스 PVC `get`(#121).** `internal/hypervisor/kubevirt/volumes.go:145` `checkAttachable`(부착과 볼륨 부팅 전에 claim의 access mode를 읽는다)과 `ping.go:23`(헬스, VM·이미지 네임스페이스의 프로브 claim get, NotFound가 정상). 이 규칙이 없으면 vws-test에서 compute 헬스가 forbidden으로 not serving이었다(#51 T1).
-- **VMI `get`(#121, vws-compute#50).** READY 판정이 VMI 단계를 읽는다. 없으면 실행 중인 인스턴스가 RECONCILING에 머문다. vws-compute#50 머지 전 이미지는 이 호출을 하지 않는다(읽기 권한만 늘어난다).
-- 클라이언트가 캐시를 쓰게 되면 `get`/`list`에 `watch`가 추가로 필요하다. 지금 main 코드는 캐시 없는 `client.New`(compute `internal/store/kubestore/cluster.go:20`, network `internal/network/dataplane_kubeovn_open.go:41`)나 `kubernetes.NewForConfig`(storage `internal/backend/kube/config.go:47`)를 쓴다.
-- **교차 네임스페이스 복제(`datavolumes/source`)는 T2 랩 항목이다.** VM의 `dataVolumeTemplates`가 `vws-images`의 DataSource를 `vws-vms`로 복제할 때 CDI가 호출자 권한(`datavolumes/source` create 등)을 요구하는지 코드나 문서로 확인하지 못했다. 실제 클러스터에서 VM을 만들어 보고, 거절되면 compute 규칙에 추가한다.
-- 네임스페이스 값 `vws-vms`, `vws-images`, `vws-nad`는 서비스가 같은 값을 받을 때만 의미가 있다. 값 한 곳에서 플래그로 넘기지만 서비스 이미지가 그 플래그를 받는지는 서비스 저장소 main의 `cmd`를 읽어 확인했다. compute의 세 플래그는 제외다(`docs/service-config.md`).
+- The rights on a real API server (`kubectl auth can-i`) were not checked. UNVERIFIED.
+- **The compute KubeVirt agent is on by default (#121).** vws-compute `62d90e7`'s `-hypervisor=kubevirt` and the namespace flags are in the default render (`docs/service-config.md`).
+- **PVC `get` in the VM namespace (#121).** `internal/hypervisor/kubevirt/volumes.go:145` `checkAttachable` (reads the claim's access mode before attaching and before booting from a volume) and `ping.go:23` (health: gets the probe claim in the VM and image namespaces; NotFound is normal). Without this rule compute health was not serving on vws-test because of forbidden (#51 T1).
+- **VMI `get` (#121, vws-compute#50).** The READY decision reads the VMI phase. Without it, running instances stay in RECONCILING. Images from before the vws-compute#50 merge do not make this call (only a read right is added).
+- If the clients start using a cache, `get`/`list` will also need `watch`. The main code now uses the uncached `client.New` (compute `internal/store/kubestore/cluster.go:20`, network `internal/network/dataplane_kubeovn_open.go:41`) or `kubernetes.NewForConfig` (storage `internal/backend/kube/config.go:47`).
+- **Cross-namespace cloning (`datavolumes/source`) is a T2 lab item.** Neither code nor docs confirmed whether CDI requires caller rights (such as create on `datavolumes/source`) when a VM's `dataVolumeTemplates` clone a DataSource in `vws-images` into `vws-vms`. Create a VM on a real cluster, and if it is refused, add it to the compute rules.
+- The namespace values `vws-vms`, `vws-images` and `vws-nad` mean something only if the services receive the same values. They are passed as flags from the one place in values, and whether each service image accepts the flag was checked by reading `cmd` on the service repository's main. compute's three flags are the exception (`docs/service-config.md`).
 
-## 설치 뒤 운영 역할 (bootstrap, vws-deploy#54, #77)
+## Operator roles after installation (bootstrap, vws-deploy#54, #77)
 
-설치용 임시 cluster-admin을 회수한 뒤 남는 권한은 `bootstrap/bootstrap.yaml`의 Role `vws-operator`(릴리스 네임스페이스)와 ClusterRole `vws-operator-read`(클러스터 범위, 읽기만)다. `vws-operator-read`의 정확한 목록과 근거는 `docs/installer.md`의 표. #77로 추가된 것: `kubevirt.io/kubevirts`, `cdi.kubevirt.io/cdis`, `ceph.rook.io/cephclusters`, 클러스터 범위 `persistentvolumeclaims`, 모두 get, list만. Secret, watch, 쓰기 동사, 와일드카드는 없다(R20).
+After the temporary installation cluster-admin is reclaimed, the remaining rights are Role `vws-operator` (release namespace) and ClusterRole `vws-operator-read` (cluster scope, read only) in `bootstrap/bootstrap.yaml`. The exact list for `vws-operator-read` and its reasons are in the table in `docs/installer.md`. Added by #77: `kubevirt.io/kubevirts`, `cdi.kubevirt.io/cdis`, `ceph.rook.io/cephclusters` and cluster-scoped `persistentvolumeclaims`, all get and list only. No Secrets, watch, write verbs or wildcards (R20).

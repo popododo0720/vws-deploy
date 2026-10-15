@@ -7,8 +7,8 @@
 #   guard-agents.sh archtest [FILE] [HEADING] prints the rules line, then runs go test -v on GUARD_ARCHTEST_PKG
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
-#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N" and no closing keyword
-#   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL)
+#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N", no closing keyword and no Hangul
+#   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
 #   guard-agents.sh verify-gate HEAD LABELS [FILE]
@@ -18,6 +18,8 @@
 #                                           QUALITY.md item, plus a "Codex review: <full path or URL> blocking=0"
 #                                           line. Each comment starts with a "@@comment-by: LOGIN" line;
 #                                           text outside a comment (such as the PR body) never counts
+#   guard-agents.sh english [ALLOWLIST]     no tracked file has Hangul unless a glob in ALLOWLIST (default
+#                                           .github/english-allowlist, lines "<glob> <reason>") covers it
 #   guard-agents.sh selftest                run the guards on bad inputs; every one must fail
 #
 # Environment: GUARD_MAIN_BRANCH (default main), GUARD_HEADING (default "## Insider-risk guardrails"),
@@ -217,6 +219,34 @@ visible_text() {
     }'
 }
 
+# English only: exit 0 when stdin has a Hangul character. perl, because grep -P needs a UTF-8 locale.
+has_hangul() {
+  perl -CSD -ne '$f = 1 if /\p{Hangul}/; END { exit($f ? 0 : 1) }' 2>/dev/null
+}
+
+cmd_english() {
+  local list=${1:-.github/english-allowlist} glob reason f ok
+  local -a globs=() bad=()
+  if [[ -f $list ]]; then
+    while read -r glob reason; do
+      [[ -z $glob || $glob == \#* ]] && continue
+      [[ -n $reason ]] || die "english: ${list}: '${glob}' has no reason"
+      globs+=("$glob")
+    done <"$list"
+  fi
+  while IFS= read -r -d '' f; do
+    [[ -f $f ]] || continue
+    ok=0
+    for glob in "${globs[@]}"; do
+      # shellcheck disable=SC2053
+      [[ $f == $glob ]] && ok=1 && break
+    done
+    [[ $ok -eq 1 ]] && continue
+    has_hangul <"$f" && bad+=("$f")
+  done < <(git ls-files -z)
+  [[ ${#bad[@]} -eq 0 ]] || die "english: Hangul in ${bad[*]}; write English or add '<glob> <reason>' to ${list}"
+}
+
 cmd_pr_body() {
   local body=${PR_BODY:-} seen
   if [[ -n ${1:-} ]]; then
@@ -233,6 +263,7 @@ cmd_pr_body() {
     die "pr-body: 'Part of #0' names no issue; issue numbers start at 1"
   grep -q -i -E "$PART_OF_RE" <<<"$seen" ||
     die "pr-body: the pull request text needs 'Part of #N' outside HTML comments and code fences"
+  ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
 }
 
 cmd_commit_msg() {
@@ -245,6 +276,7 @@ cmd_commit_msg() {
   fi
   ! grep -q -i -E "$PART_OF_ZERO_RE" <<<"$msg" ||
     die "commit-msg: 'Part of #0' names no issue; issue numbers start at 1"
+  ! has_hangul <<<"$msg" || die "commit-msg: write the commit message in English (found Hangul)"
 }
 
 cmd_pr_commits() {
@@ -254,7 +286,7 @@ cmd_pr_commits() {
   trap 'rm -f "$tmp"' RETURN
   for sha in $(git rev-list --no-merges "${base}..${head}"); do
     git log -1 --format=%B "$sha" >"$tmp"
-    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue or names #0; write 'Part of #N'"
+    (cmd_commit_msg "$tmp") 2>/dev/null || die "pr-commits: ${sha:0:12} closes an issue, names #0 or has Hangul; write English with 'Part of #N'"
   done
 }
 
@@ -287,26 +319,31 @@ cmd_push_watch() {
   [[ ${#bad[@]} -eq 0 ]] || die "push-watch: commits on '${MAIN}' without a pull request: ${bad[*]}"
 }
 
-CORRECT_HEADING="## /correct 교정 루프"
+CORRECT_HEADING="## /correct loop"
+# The Korean heading is still accepted until every repo's AGENTS.md is English.
+CORRECT_HEADING_LEGACY="## /correct 교정 루프"
 CORRECT_FIELDS="what-happened impact detection root-cause catching-check follow-ups"
 
 cmd_correct() {
-  local dir=${1:-.} tpl labels id
+  local dir=${1:-.} tpl labels id h=$CORRECT_HEADING
   tpl="${dir}/.github/ISSUE_TEMPLATE/incident.yml"
   labels="${dir}/.github/labels.yml"
   [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
+  if ! tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h"; then
+    tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$CORRECT_HEADING_LEGACY" && h=$CORRECT_HEADING_LEGACY
+  fi
   # CRLF line endings are read as LF, so a heading saved on Windows still matches.
-  tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$CORRECT_HEADING" ||
-    die "correct: AGENTS.md has no line that is exactly '${CORRECT_HEADING}' (trailing spaces or a different heading do not match)"
+  tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h" ||
+    die "correct: AGENTS.md has no line that is exactly '${h}' (trailing spaces or a different heading do not match)"
   # Empty: no content before the next # or ## heading. A ### subheading and a line inside a code fence are
   # content; the fence lines themselves and blank lines are not, so an empty fence is an empty section.
-  tr -d '\r' <"${dir}/AGENTS.md" | awk -v h="$CORRECT_HEADING" '
+  tr -d '\r' <"${dir}/AGENTS.md" | awk -v h="$h" '
     $0 == h { s = 1; next }
     !s { next }
     /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
     !fence && /^##?([[:space:]]|$)/ { exit }
     /[^[:space:]]/ { f = 1; exit }
-    END { exit !f }' || die "correct: AGENTS.md '${CORRECT_HEADING}' section is empty (blank lines and empty code fences do not count)"
+    END { exit !f }' || die "correct: AGENTS.md '${h}' section is empty (blank lines and empty code fences do not count)"
   [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
   grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
   for id in $CORRECT_FIELDS; do
@@ -454,6 +491,29 @@ Part of #0" bash "$0" pr-body
   expect_fail "commit with Part of owner/repo#0" cmd_commit_msg "$tmp/msg-zero2"
   printf 'ci: x\n\nPart of #12\n' >"$tmp/msg-ok"
   expect_pass "commit with Part of #N" cmd_commit_msg "$tmp/msg-ok"
+  # English only: Hangul anywhere in a commit message or pull request text fails.
+  printf 'ci: \352\267\234\354\271\231\n\nPart of #12\n' >"$tmp/msg-ko"
+  expect_fail "commit with Hangul in the subject" cmd_commit_msg "$tmp/msg-ko"
+  printf 'ci: x\n\nVerified-by: \352\262\200\354\246\235\n\nPart of #12\n' >"$tmp/msg-ko2"
+  expect_fail "commit with Hangul in the body" cmd_commit_msg "$tmp/msg-ko2"
+  printf '# \352\267\234\354\271\231\nci: x\n\nPart of #12\n' >"$tmp/msg-ko3"
+  expect_pass "Hangul only in a git comment line" cmd_commit_msg "$tmp/msg-ko3"
+  expect_fail "pr-body with Hangul" env PR_BODY="Part of #12 $(printf '\352\267\234')" bash "$0" pr-body
+  expect_fail "pr-body with Hangul in an HTML comment" env PR_BODY="Part of #12 <!-- $(printf '\352\267\234') -->" bash "$0" pr-body
+  expect_pass "pr-body with other non-ASCII text" env PR_BODY="Part of #12 caf$(printf '\303\251') $(printf '\342\200\224') ok" bash "$0" pr-body
+  # english: tracked files with Hangul fail unless an allowlist glob with a reason covers them.
+  local en="$tmp/en" self
+  self=$(readlink -f "$0")
+  git init -q "$en"
+  printf 'plain\n' >"$en/a.md"; printf 'x \352\267\234\n' >"$en/ko.md"; mkdir "$en/t"; printf '\352\260\222\n' >"$en/t/data.txt"
+  git -C "$en" add -A
+  expect_fail "english with a Hangul file and no allowlist" bash -c 'cd "$1" && bash "$2" english' _ "$en" "$self"
+  printf '# comment\nko.md test input\nt/* locale data\n' >"$en/allow"
+  expect_pass "english with every Hangul file allowlisted" bash -c 'cd "$1" && bash "$2" english allow' _ "$en" "$self"
+  printf 't/* locale data\n' >"$en/allow"
+  expect_fail "english with one Hangul file not allowlisted" bash -c 'cd "$1" && bash "$2" english allow' _ "$en" "$self"
+  printf 'ko.md\nt/* locale data\n' >"$en/allow"
+  expect_fail "english allowlist entry without a reason" bash -c 'cd "$1" && bash "$2" english allow' _ "$en" "$self"
   printf 'ci: x\n\nPart of #TBD\n' >"$tmp/msg-tbd"
   expect_pass "commit with Part of #TBD" cmd_commit_msg "$tmp/msg-tbd"
   printf 'ci: x\n\nCloses #12\n' >"$tmp/msg-closes"
@@ -480,6 +540,8 @@ ${kw} https://github.com/acme/repo/issues/7" bash "$0" pr-body
   { echo "name: incident"; echo "labels: [incident]"; echo "body:"; for id in $CORRECT_FIELDS; do echo "  - type: textarea"; echo "    id: ${id}"; done; } >"$cr/.github/ISSUE_TEMPLATE/incident.yml"
   printf -- '- name: incident\n  color: "b60205"\n' >"$cr/.github/labels.yml"
   expect_pass "complete /correct loop" cmd_correct "$cr"
+  rm -rf "$tmp/legacy"; cp -r "$cr" "$tmp/legacy"; printf '# t\n%s\n1. x\n' "$CORRECT_HEADING_LEGACY" >"$tmp/legacy/AGENTS.md"
+  expect_pass "the Korean /correct heading until every repo is English" cmd_correct "$tmp/legacy"
   local cb="$tmp/correct-bad"
   rm -rf "$cb"; cp -r "$cr" "$cb"; sed -i '/correct/d' "$cb/AGENTS.md"
   expect_fail "no /correct section" cmd_correct "$cb"
@@ -648,6 +710,7 @@ case "$command_name" in
   pr-commits) cmd_pr_commits "$@" ;;
   push-watch) cmd_push_watch "$@" ;;
   correct) cmd_correct "$@" ;;
+  english) cmd_english "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
 esac

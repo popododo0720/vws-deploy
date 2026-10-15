@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Auth holds the one-time access code and the one session (#139 인증).
+// Auth holds the one-time access code and the one session (#139 authentication).
 //
 // The code is 16 characters from crypto/rand. It is never logged: publish hands each new code to
 // the code file that only kubectl exec can read. A successful exchange consumes the code, issues

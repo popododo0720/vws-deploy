@@ -250,7 +250,7 @@ import sys
 from pathlib import Path
 
 text = Path("AGENTS.md").read_text()
-for heading in ("## 규칙", "## 브랜치와 원자적 커밋", "## pstack 사용", "## 명령"):
+for heading in ("## Rules", "## Branches and atomic commits", "## Using pstack", "## Commands"):
     if heading not in text:
         print(f"R2: AGENTS.md is missing {heading}", file=sys.stderr)
         sys.exit(1)
@@ -389,7 +389,7 @@ cmd_cursor() {
     | grep -v 'scripts/guard.sh:'; then
     die "R9: Cursor cloud agents must not be called from this repo"
   fi
-  grep -q 'Cursor 클라우드 에이전트' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
+  grep -q 'Do not use Cursor cloud agents' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
 }
 
 cmd_bundle() {
@@ -997,6 +997,10 @@ cmd_bootstrap() {
   rm -rf "$tmp"
 }
 
+cmd_english() {
+  scripts/guard-agents.sh english .github/english-allowlist || die "R22: the repo is English only; Hangul is allowed only in files that .github/english-allowlist lists with a reason"
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -1014,6 +1018,7 @@ cmd_all() {
   cmd_hooks
   cmd_docs
   cmd_recovery
+  cmd_english
   if [[ -n ${VWS_BASE_REF:-} ]]; then
     cmd_commits "origin/${VWS_BASE_REF}"
   elif git rev-parse --verify origin/main >/dev/null 2>&1; then
@@ -1023,7 +1028,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|bootstrap|crd|profiles|schema|hooks|docs|recovery|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|bootstrap|crd|profiles|schema|hooks|docs|recovery|english|commits|commit-msg|all>
 EOF
 }
 
@@ -1046,6 +1051,7 @@ case "$command_name" in
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
   recovery) cmd_recovery ;;
+  english) cmd_english ;;
   commits) cmd_commits "$@" ;;
   commit-msg) cmd_commit_msg "$@" ;;
   all) cmd_all ;;

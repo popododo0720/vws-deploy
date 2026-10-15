@@ -1,57 +1,57 @@
 # VPC VM MTU (vws-deploy#236, vws-network#93)
 
-AWS와 같게 VPC 안의 VM은 MTU 9001을 받고, IGW/NAT/EIP로 나가는 경로는 1500이다.
-설치기는 어떤 NIC이나 호스트 MTU도 만들거나 바꾸지 않는다. 사용자가 OS에서 미리 설정한 물리(underlay)
-NIC MTU를 읽고, 모자라면 VWSCluster의 VM MTU만 낮춘다. 실제 적용은 vws-network가 Subnet과 DHCP로 한다.
+As on AWS, VMs inside a VPC get MTU 9001, and paths out through the IGW/NAT/EIP are 1500.
+The installer never creates or changes any NIC or host MTU. It reads the physical (underlay) NIC MTU that
+the user set in the OS beforehand and, if it is too small, lowers only the VM MTU in the VWSCluster. vws-network applies it through the Subnet and DHCP.
 
-## 필드
+## Fields
 
-| 필드 | 범위, 기본 | 뜻 |
+| Field | Range, default | Meaning |
 | --- | --- | --- |
-| `spec.network.vmMTU` | 68–9001, 없으면 9001 | VM 인터페이스 MTU. 차트가 vws-network `-vm-mtu`로 넘긴다 |
-| `spec.network.underlayMTU` | 1280–9216 | 터널이 지나가는 노드 NIC의 MTU. preflight가 읽은 값을 쓴다 |
-| `spec.network.tunnelOverhead` | 0–200, 없으면 100 | Geneve가 더하는 바이트 |
-| `spec.network.ipv4Only` | bool | 참이고 `tunnelOverhead`가 없으면 오버헤드 60(IPv4 바깥 헤더 기준 약 58 + 여유) |
+| `spec.network.vmMTU` | 68–9001, 9001 when unset | VM interface MTU. The chart passes it to vws-network as `-vm-mtu` |
+| `spec.network.underlayMTU` | 1280–9216 | MTU of the node NIC the tunnel crosses. Uses the value preflight read |
+| `spec.network.tunnelOverhead` | 0–200, 100 when unset | Bytes Geneve adds |
+| `spec.network.ipv4Only` | bool | When true and `tunnelOverhead` is unset, the overhead is 60 (about 58 for an IPv4 outer header, plus margin) |
 
-스키마에 `default`를 두지 않는다. `vmMTU`가 비어 있어야 "9001을 underlay에 맞게 낮춘다"와 "사용자가 정한 값"을 구분할 수 있기 때문이다.
+The schema has no `default`. `vmMTU` must be able to be empty so that "lower 9001 to fit the underlay" can be told apart from "a value the user chose".
 
-## 계산
+## Calculation
 
-- underlay MTU = `underlayMTU`와 `spec.network.nodes`의 터널 링크(`tunnel`, 없으면 `management`) `mtu` 중 작은 값. 둘 다 없으면 모른다.
-- 상한 = underlay MTU − 오버헤드. 9001에는 9101이 필요하고 9216을 권장한다.
-- `vws render`: `vmMTU`가 없으면 min(9001, 상한), 있으면 그 값. 상한보다 크면 종료 코드 2.
-- kube-ovn-cni `--mtu`도 같은 오버헤드로 터널 MTU − 오버헤드(기본 100이라 기존과 같다).
+- underlay MTU = the smaller of `underlayMTU` and the `mtu` of the tunnel link in `spec.network.nodes` (`tunnel`, else `management`). If neither exists, it is unknown.
+- Upper bound = underlay MTU − overhead. 9001 needs 9101; 9216 is recommended.
+- `vws render`: without `vmMTU`, min(9001, upper bound); with it, that value. Above the upper bound, exit code 2.
+- kube-ovn-cni `--mtu` uses the same overhead: tunnel MTU − overhead (the default of 100 keeps the previous value).
 
 ## preflight
 
-`vws preflight --links FILE`은 노드마다 터널 인터페이스 MTU를 읽어 최솟값을 underlay로 본다. 모자라면
-`vm-mtu` WARN을 내고 `kubectl patch vwsclusters vws`로 `vmMTU`(낮춘 값)와 `underlayMTU`(읽은 값)만 쓴다.
-`--links`가 없으면 `underlayMTU`로 판단하고, 그것도 없으면 WARN(미확인)이다.
+`vws preflight --links FILE` reads the tunnel interface MTU on each node and takes the minimum as the underlay. If it is too small,
+it emits a `vm-mtu` WARN and writes only `vmMTU` (the lowered value) and `underlayMTU` (the read value) with `kubectl patch vwsclusters vws`.
+Without `--links` it decides from `underlayMTU`, and without that it is a WARN (unconfirmed).
 
-예: 터널 NIC이 1500이면 VM MTU 1400(오버헤드 100), `ipv4Only`면 1440.
+Example: with a 1500 tunnel NIC the VM MTU is 1400 (overhead 100), or 1440 with `ipv4Only`.
 
-## vws-test 값
+## vws-test values
 
-제품 기본은 9001이다. vws-test는 OpenStack geneve 위라 노드 NIC MTU가 8942이므로 낮춘 값을 쓴다.
-preflight가 `--links`에서 8942를 읽으면 아래 값을 직접 쓰고, 손으로 넣을 때는 `vws reconfigure --set`을 쓴다.
+The product default is 9001. vws-test runs on OpenStack geneve, where the node NIC MTU is 8942, so it uses a lowered value.
+When preflight reads 8942 from `--links` it writes the values below itself; to set them by hand use `vws reconfigure --set`.
 
 ```yaml
 spec:
   network:
     underlayMTU: 8942
-    vmMTU: 8842        # 8942 - 100. ipv4Only: true면 8882까지 가능
+    vmMTU: 8842        # 8942 - 100. Up to 8882 with ipv4Only: true
 ```
 
 ```sh
 vws reconfigure --set network.underlayMTU=8942 --set network.vmMTU=8842
 ```
 
-## 나가는 1500 경로
+## The 1500 path out
 
-번들의 Kube-OVN(`scripts/versions.env` KUBEOVN_VERSION)은 OVN `gateway_mtu`를 설정하지 않아 VPC 라우터가 1500 외부망으로 가는 큰 DF 패킷에
-ICMP "fragmentation needed"를 보내지 않는다(vws-network `docs/mtu.md`). #237에서 다룬다.
+The bundle's Kube-OVN (`scripts/versions.env` KUBEOVN_VERSION) does not set OVN `gateway_mtu`, so the VPC router does not send
+ICMP "fragmentation needed" for large DF packets headed to the 1500 external network (vws-network `docs/mtu.md`). #237 covers it.
 
-## 확인 필요
+## Needs checking
 
-- vws-test에서 낮아진 MTU로 VM 간 통신(큰 패킷 ping -M do)을 아직 확인하지 않았다.
-- vws-test의 vws-network 이미지는 `-vm-mtu`가 있는 main(#94) 이후로 다시 빌드해야 한다. 그 전 이미지는 플래그를 몰라 시작하지 않는다.
+- VM-to-VM traffic at the lowered MTU on vws-test (large-packet ping -M do) has not been checked yet.
+- The vws-network image on vws-test must be rebuilt from main after #94, which has `-vm-mtu`. Older images do not know the flag and do not start.

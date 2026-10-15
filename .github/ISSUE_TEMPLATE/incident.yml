@@ -1,46 +1,46 @@
 name: incident
-description: 교정받은 실수, 규칙 위반, 사고 기록 (/correct 루프, AGENTS.md)
+description: Record of a corrected mistake, rule violation or incident (/correct loop, AGENTS.md)
 title: "incident: "
 labels: [incident]
 body:
   - type: textarea
     id: what-happened
     attributes:
-      label: 무슨 일이 있었나
-      description: 실제로 일어난 일과 누가 교정했는지(수 님, tmp, eggbot, 실패한 verify). 시각은 KST.
+      label: What happened
+      description: What actually happened and who corrected it (the user, tmp, eggbot, a failed verify). Times in KST.
     validations:
       required: true
   - type: textarea
     id: impact
     attributes:
-      label: 영향
-      description: 영향받은 레포, PR, 클러스터 리소스, 사용자.
+      label: Impact
+      description: Affected repos, PRs, cluster resources and users.
     validations:
       required: true
   - type: textarea
     id: detection
     attributes:
-      label: 발견 경로
-      description: 어떻게 알게 됐나(교정 메시지, CI, verify, 사람).
+      label: How it was detected
+      description: How it came to light (correction message, CI, verify, a person).
     validations:
       required: true
   - type: textarea
     id: root-cause
     attributes:
-      label: 근본 원인
+      label: Root cause
     validations:
       required: true
   - type: textarea
     id: catching-check
     attributes:
-      label: 이걸 잡았을 검사
-      description: 이 실수가 든 입력에서 실제로 실패할 테스트, lint, guard 규칙, archtest.
+      label: The check that would have caught this
+      description: A test, lint, guard rule or archtest that actually fails on an input containing this mistake.
     validations:
       required: true
   - type: textarea
     id: follow-ups
     attributes:
-      label: 후속 이슈와 PR 링크
-      description: 검사로 승격한 PR이나 이슈. 승격되면 이 incident를 그 링크와 함께 닫는다.
+      label: Follow-up issue and PR links
+      description: The PR or issue that promoted this to a check. Once promoted, close this incident with that link.
     validations:
       required: false

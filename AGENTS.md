@@ -1,93 +1,98 @@
-# 에이전트 규칙
+# Agent rules
 
-이 저장소는 VWS 프라이빗 클라우드의 배포 산출물만 다룬다. 제어부는 Helm 차트 하나이고, 호스트에는 우리가 설치하는 프로세스가 없다. 설계는 https://github.com/popododo0720/vws-deploy/issues/2 다. 클러스터에 적용하는 명령은 없다.
+This repository holds only the deployment artifacts of the VWS private cloud. The control plane is one Helm chart, and we install no processes on the hosts. The design is https://github.com/popododo0720/vws-deploy/issues/2. No command here applies anything to a cluster.
 
-## 규칙
+## Rules
 
-| ID | 규칙 | 구조 | 검사 |
+| ID | Rule | Structure | Check |
 | --- | --- | --- | --- |
-| R1 | 브랜치에서 작업하고 main이나 master에 푸시하지 않는다 | `.githooks/pre-push` | `scripts/guard.sh hooks` |
-| R2 | 커밋 하나는 scripts/scopes의 한 스코프만 건드리고, 제목은 `scope: 요약`이다 | `scripts/scopes` | `scripts/guard.sh commits` |
-| R4 | 제어부 워크로드는 startup, liveness, readiness, PodDisruptionBudget, restartPolicy Always를 갖고, state가 있으면 재시작 뒤에도 남는 볼륨을 갖는다 | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
-| R5 | 제어 서비스를 추가하거나 고치는 곳은 values.yaml의 services 맵 하나다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
-| R7 | 로고 파일과 상표 고지를 넣지 않는다 | - | `scripts/guard.sh assets` |
-| R8 | 매니페스트 검사는 helm lint와 kubeconform이고, 클러스터에는 적용하지 않는다. 예외는 일회용 로컬 랩 `scripts/lab/`, 일회용 envtest kube-apiserver에만 `--dry-run=server`로 CRD를 보내는 `scripts/crd-check.sh`(#210), 정확히 `vws_kubectl`, `vws_helm`이라는 이름의 래퍼(`--dry-run` 지원)로 부르는 운영 CLI 호출뿐이다. 다른 접두어나 접미어(`foo_kubectl`, `xhelm`, `my-helm`, `foo_vws_kubectl`, `Vws_helm`)는 직접 호출과 같이 실패한다 | `.github/workflows/ci.yml` `tests/fixtures/r8/` | `scripts/guard.sh ci` (음성 `tests/fixtures/r8/bad/`, 양성 `tests/fixtures/r8/good/`) |
-| R9 | Cursor 클라우드 에이전트를 쓰지 않는다 | `AGENTS.md` | `scripts/guard.sh cursor` |
-| R10 | 호스트에 우리 유닛을 두지 않는다. 저장소에 `.service`, `.target` 파일과 `host/`가 없고, 차트는 호스트 네임스페이스나 hostPath를 쓰지 않는다 | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
-| R11 | 제어 서비스의 쿠버네티스 API 권한은 values.yaml의 서비스별 `rbac`뿐이다. 와일드카드와 escalate, bind 같은 동사를 쓰지 않는다. 네임스페이스 리소스의 규칙에는 `namespace`를 적어 그 네임스페이스의 Role로만 주고, ClusterRole에는 클러스터 범위 리소스만 둔다. 리더 선출용 Lease는 자기 이름의 것만 쓴다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh recovery` |
-| R12 | 플랫폼 번들(KubeVirt, CDI, Multus, Kube-OVN, Rook-Ceph)의 버전은 `scripts/versions.env`에만 쓰고(로컬 랩의 k3s 포함), 필요한 커널 모듈을 문서에 적는다 | `scripts/versions.env` `docs/platform-bundle.md` | `scripts/guard.sh bundle` |
-| R13 | PR은 main을 대상으로 하고 본문에 `Part of #N`이 있고 PR 본문과 커밋 어디에도 `Closes/Fixes/Resolves #N`이 없으며, main에 PR 없이 들어온 커밋은 CI가 알린다. AGENTS.md는 Insider-risk guardrails 1~7을 갖는다 | `.github/workflows/repo-guard.yml` `.github/workflows/direct-push-watch.yml` `scripts/guard-agents.sh` | `scripts/guard.sh agents` |
-| R14 | 서비스 설정은 values.yaml의 `services.*.flags`뿐이고 네임스페이스 이름은 `namespaces` 한 곳뿐이다. 렌더된 args는 값과 같고, 네임스페이스 플래그를 받는 서비스는 그 네임스페이스에 Role이 있다 | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
-| R15 | 모든 서비스의 `-listen` 포트, 컨테이너 포트, 프로브 포트는 서비스의 `port` 하나다. 프로브는 tcpSocket 또는 grpc이고 HTTP가 아니다. network는 `-db`와 `-pool`을 넘긴다 | `charts/vws/values.yaml` `charts/vws/templates/_helpers.tpl` `scripts/check_render.py` | `scripts/guard.sh config` |
-| R16 | network kubeconfig는 operator가 만든 Secret을 읽기 전용으로 마운트하는 임시 방법뿐이다. 차트는 Secret을 렌더하지 않고 자격 증명 값을 values나 env에 두지 않는다 | `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
-| R17 | `scripts/vws`의 모든 명령은 `scripts/vws.d/<이름>.sh` 한 파일이고 `# summary:` 줄, `vws_cmd_main`, `tests/vws/<이름>.test.sh`, `docs/vws-cli.md`의 `### vws <이름>` 항목을 가진다. 명령은 kubectl과 helm을 직접 부르지 않고 `vws_kubectl`, `vws_helm`만 쓴다(`--dry-run`이 변경 호출을 막는다). 하네스는 가짜 kubectl과 helm으로 돌고 클러스터에 닿지 않는다 | `scripts/vws` `scripts/vws.d/lib/common.sh` `tests/vws/run.sh` | `scripts/guard.sh vws` |
-| R18 | VWS 전용 CRD는 `VWSCluster` 하나뿐이고(#2 결정의 예외, `docs/vwscluster.md`), API 그룹은 그 CRD의 `spec.group` 한 곳에만 쓴다(예제 CR의 `apiVersion`은 가드가 대조). CR 스키마에 비밀처럼 보이는 필드 이름이 없고 CR은 Secret 이름만 담는다 | `charts/vws/crds/vwsclusters.yaml` `scripts/vws.d/lib/render.py` | `scripts/guard.sh crd` |
-| R19 | 프로필은 `profiles/<이름>.yaml`의 값 파일이고 세 프로필은 같은 키를 갖는다. 프로필마다 lint, template, kubeconform, check_render가 통과하고, 같은 CR의 `vws render`는 같은 바이트다 | `profiles/` `platform/rook-ceph-cluster.single-node.values.yaml` `platform/rook-ceph-cluster.ha.values.yaml` | `scripts/guard.sh profiles` |
-| R20 | 설치용 cluster-admin은 `vws-installer-temp` 바인딩 하나뿐이고 TTL(`INSTALLER_TTL_SECONDS`) 주석, 시한이 TTL인 설치 파드, TTL에 바인딩을 지우는 리퍼 Job을 갖는다. bootstrap의 이미지는 digest이고 권한 상승, privileged, host 네임스페이스, hostPath가 없다. 회수 뒤 남는 권한에는 와일드카드, Secret, RBAC, 클러스터 쓰기가 없고, ClusterRole `vws-operator-read`는 `docs/installer.md` 표의 그룹/리소스에 get, list만 갖는다(목록 밖은 실패). `vws installer finish`는 auth can-i로 회수를 확인하고 실패하면 1이다 | `bootstrap/bootstrap.yaml` `scripts/bootstrap.sh` `scripts/vws.d/installer.sh` `scripts/vws.d/lib/installer.sh` | `scripts/guard.sh bootstrap` `tests/vws/installer.test.sh` |
-| R21 | 교정받은 실수는 incident 이슈가 되고, 반복되면 검사로 승격한다(/correct 루프). AGENTS.md에 그 절(본문 포함)이 있고 incident 양식이 있으며 `incident` 라벨이 `.github/labels.yml`에 정의되어 있다. GitHub에 라벨이 실제로 만들어졌는지는 검사하지 않는다 | `AGENTS.md` `.github/ISSUE_TEMPLATE/incident.yml` `.github/labels.yml` | `scripts/guard.sh agents` |
+| R1 | Work on a branch; never push to main or master | `.githooks/pre-push` | `scripts/guard.sh hooks` |
+| R2 | A commit touches one scope from scripts/scopes, and its subject is `scope: summary` | `scripts/scopes` | `scripts/guard.sh commits` |
+| R4 | Control-plane workloads have startup, liveness and readiness probes, a PodDisruptionBudget and restartPolicy Always, and a workload with state has a volume that survives a restart | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
+| R5 | The services map in values.yaml is the one place to add or change a control service | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
+| R7 | No logo files and no trademark notices | - | `scripts/guard.sh assets` |
+| R8 | Manifests are checked with helm lint and kubeconform and never applied to a cluster. The only exceptions are the throwaway local lab `scripts/lab/`, `scripts/crd-check.sh`, which sends CRDs with `--dry-run=server` only to a throwaway envtest kube-apiserver (#210), and operator CLI calls through wrappers named exactly `vws_kubectl` and `vws_helm` (which support `--dry-run`). Any other prefix or suffix (`foo_kubectl`, `xhelm`, `my-helm`, `foo_vws_kubectl`, `Vws_helm`) fails like a direct call | `.github/workflows/ci.yml` `tests/fixtures/r8/` | `scripts/guard.sh ci` (negative `tests/fixtures/r8/bad/`, positive `tests/fixtures/r8/good/`) |
+| R9 | Do not use Cursor cloud agents | `AGENTS.md` | `scripts/guard.sh cursor` |
+| R10 | No units of ours on the hosts. The repo has no `.service` or `.target` files and no `host/`, and the chart uses no host namespaces and no hostPath | `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh layout` |
+| R11 | A control service's Kubernetes API rights come only from its `rbac` in values.yaml. No wildcards and no verbs such as escalate or bind. A rule on a namespaced resource names its `namespace` and is granted only through a Role in that namespace; a ClusterRole holds only cluster-scoped resources. A leader-election Lease is used only under the service's own name | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` | `scripts/guard.sh recovery` |
+| R12 | Platform bundle versions (KubeVirt, CDI, Multus, Kube-OVN, Rook-Ceph, and k3s for the local lab) live only in `scripts/versions.env`, and the required kernel modules are documented | `scripts/versions.env` `docs/platform-bundle.md` | `scripts/guard.sh bundle` |
+| R13 | A PR targets main and its body has `Part of #N`; neither the PR body nor any commit has `Closes/Fixes/Resolves #N`; CI reports commits that reached main without a PR. AGENTS.md has Insider-risk guardrails 1-7 | `.github/workflows/repo-guard.yml` `.github/workflows/direct-push-watch.yml` `scripts/guard-agents.sh` | `scripts/guard.sh agents` |
+| R14 | Service configuration lives only in `services.*.flags` in values.yaml, and namespace names live only in `namespaces`. Rendered args equal the values, and a service that takes a namespace flag has a Role in that namespace | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
+| R15 | Every service's `-listen` port, container port and probe port is the service's single `port`. Probes are tcpSocket or grpc, never HTTP. network gets `-db` and `-pool` | `charts/vws/values.yaml` `charts/vws/templates/_helpers.tpl` `scripts/check_render.py` | `scripts/guard.sh config` |
+| R16 | The network kubeconfig comes only from a read-only mount of an operator-created Secret, as a stopgap. The chart renders no Secret and puts no credential values in values or env | `charts/vws/values.schema.json` `charts/vws/templates/control-plane.yaml` `charts/vws/templates/_helpers.tpl` | `scripts/guard.sh config` |
+| R17 | Every `scripts/vws` command is one file `scripts/vws.d/<name>.sh` with a `# summary:` line, `vws_cmd_main`, `tests/vws/<name>.test.sh` and a `### vws <name>` entry in `docs/vws-cli.md`. Commands never call kubectl or helm directly, only `vws_kubectl` and `vws_helm` (`--dry-run` blocks mutating calls). The harness runs on fake kubectl and helm and never reaches a cluster | `scripts/vws` `scripts/vws.d/lib/common.sh` `tests/vws/run.sh` | `scripts/guard.sh vws` |
+| R18 | `VWSCluster` is the only VWS-specific CRD (an exception to the #2 decision, `docs/vwscluster.md`), and the API group is written only in that CRD's `spec.group` (the guard compares the example CR's `apiVersion`). The CR schema has no secret-looking field names, and the CR holds only Secret names | `charts/vws/crds/vwsclusters.yaml` `scripts/vws.d/lib/render.py` | `scripts/guard.sh crd` |
+| R19 | A profile is a values file `profiles/<name>.yaml`, and the three profiles have the same keys. Each profile passes lint, template, kubeconform and check_render, and `vws render` of the same CR gives the same bytes | `profiles/` `platform/rook-ceph-cluster.single-node.values.yaml` `platform/rook-ceph-cluster.ha.values.yaml` | `scripts/guard.sh profiles` |
+| R20 | The only cluster-admin for installation is the `vws-installer-temp` binding, with a TTL (`INSTALLER_TTL_SECONDS`) annotation, an installer pod whose deadline is the TTL, and a reaper Job that deletes the binding at the TTL. The bootstrap image is pinned by digest and has no privilege escalation, privileged mode, host namespaces or hostPath. The rights left after reclaim have no wildcards, Secrets, RBAC or cluster writes, and ClusterRole `vws-operator-read` has only get and list on the groups/resources in the `docs/installer.md` table (anything outside it fails). `vws installer finish` confirms the reclaim with auth can-i and exits 1 on failure | `bootstrap/bootstrap.yaml` `scripts/bootstrap.sh` `scripts/vws.d/installer.sh` `scripts/vws.d/lib/installer.sh` | `scripts/guard.sh bootstrap` `tests/vws/installer.test.sh` |
+| R21 | A corrected mistake becomes an incident issue, and a repeated one is promoted to a check (the /correct loop). AGENTS.md has that section (with a body), the incident form exists, and the `incident` label is defined in `.github/labels.yml`. Whether the label actually exists on GitHub is not checked | `AGENTS.md` `.github/ISSUE_TEMPLATE/incident.yml` `.github/labels.yml` | `scripts/guard.sh agents` |
+| R22 | The repo is English only: README, code comments, docs, AGENTS.md, templates, commit messages, PR and issue text and Verified-by lines. A tracked file may contain Hangul only when `.github/english-allowlist` lists it with a reason (test data, user-facing UI text); commit messages and PR bodies have no exception | `.github/english-allowlist` `scripts/guard-agents.sh` | `scripts/guard.sh english` |
 
-표의 구조 칸과 검사 칸은 실제 경로와 실제 명령을 가리킨다. 문장만 있는 규칙은 규칙이 아니다.
+The structure and check cells point at real paths and real commands. A rule that is only a sentence is not a rule.
 
-## 브랜치와 원자적 커밋
+## English only
 
-main에서 커밋하지 않는다. `git switch -c <branch>`로 갈라진 브랜치에서 고치고, 끝나면 풀 리퀘스트를 연다. main에 직접 푸시하지 않는다. pre-push 훅이 `refs/heads/main`과 `refs/heads/master`를 거절한다.
+Write everything in this repo in English: README, code comments, docs, AGENTS.md, QUALITY.md, PR and issue templates, commit messages, PR and issue bodies, review comments and `Verified-by` sections. `scripts/guard.sh english` (R22) fails on a tracked file with Hangul unless `.github/english-allowlist` lists it as `<glob> <reason>`; only test data and user-facing UI strings belong there. `scripts/guard-agents.sh commit-msg` and `pr-body` (run by `repo-guard.yml`) reject Hangul in commit messages and PR bodies outright.
 
-커밋 하나는 한 가지 변경이다. 어느 경로가 어느 스코프인지는 `scripts/scopes`만 본다. 이 파일에 스코프 목록을 다시 적지 않는다. 제목은 `chart: 서비스 키를 추가한다`처럼 `scope: 요약`이다. 한 커밋이 두 스코프를 건드리면 검사를 통과하지 못하므로 커밋을 나눈다.
+## Branches and atomic commits
 
-훅은 `make check`가 `core.hooksPath`를 `.githooks`로 맞춘다. `--no-verify`로 훅을 건너뛰지 않는다.
+Do not commit on main. Fix things on a branch made with `git switch -c <branch>`, and open a pull request when done. Do not push to main directly; the pre-push hook refuses `refs/heads/main` and `refs/heads/master`.
 
-## pstack 사용
+One commit is one change. Only `scripts/scopes` says which path belongs to which scope; do not repeat the scope list in this file. The subject is `scope: summary`, as in `chart: add one service key`. A commit that touches two scopes fails the check, so split it.
 
-설계와 검토는 아래 순서로 한다. 모델 선택은 사용자 쪽 pstack 규칙을 따르고, 이 파일에 모델 이름을 적지 않는다.
+`make check` sets `core.hooksPath` to `.githooks`. Do not skip hooks with `--no-verify`.
+
+## Using pstack
+
+Design and review go in the order below. Model choice follows the user's pstack rules; do not write model names in this file.
 
 ### architect
 
-값을 받는 표면이나 렌더 방식을 바꾸기 전에 먼저 설계한다. 대상 파일은 `charts/vws/values.schema.json`, `charts/vws/templates/control-plane.yaml`, `charts/vws/templates/_helpers.tpl`다. 고른 안과 버린 안은 `docs/design/`에 남긴다. 구현이 그 설계와 어긋나면 이유를 같은 기록에 적는다.
+Design first, before changing a surface that takes values or the way things render. The files in question are `charts/vws/values.schema.json`, `charts/vws/templates/control-plane.yaml` and `charts/vws/templates/_helpers.tpl`. Record the chosen and rejected options in `docs/design/`. If the implementation departs from that design, write down why in the same record.
 
 ### interrogate
 
-위 파일을 고친 뒤에는 리뷰를 요청하기 전에 그 diff를 적대적으로 검토한다. 검토 결과는 자동으로 전부 적용하지 않는다. 동작이 깨지거나 복구 불변식이 빠지는 항목만 고친다.
+After changing the files above, review that diff adversarially before asking for review. Do not apply every finding automatically; fix only the ones that break behaviour or drop a recovery invariant.
 
 ### correct
 
-같은 실수가 반복되면 문장을 더 쓰지 않는다. 먼저 잘못된 상태를 표현할 수 없게 구조를 바꾸고, 그다음 실패하는 검사를 넣고, 마지막에 이 표를 고친다. 검사는 그 실수가 들어 있는 입력에서 실제로 실패해야 한다. 표만 고친 수정은 규칙 변경이 아니다.
+When the same mistake repeats, do not write more sentences. First change the structure so the bad state cannot be expressed, then add a failing check, and only then update the table. The check must actually fail on an input that contains the mistake. A fix that only edits the table is not a rule change.
 
-## /correct 교정 루프
+## /correct loop
 
-1. 봇이 교정받으면(수 님, tmp, eggbot의 지적이나 실패한 `vws verify`) 같은 날 `incident` 라벨로 `.github/ISSUE_TEMPLATE/incident.yml` 양식의 이슈를 연다. 교정 내용과 "이걸 잡았을 검사"를 반드시 채운다.
-2. 며칠마다 vws-verify가 gardener pass를 돈다. 열린 incident를 원인별로 묶고, 반복된 것은 문장이 아니라 검사(테스트, lint, guard 규칙, archtest)로 승격한다. 검사는 그 실수가 든 입력에서 실제로 실패해야 한다(위 `correct` 절).
-3. 승격한 PR이 머지되면 incident를 그 링크와 함께 닫는다. 승격하지 않기로 한 incident는 이유를 적고 닫는다.
-4. 마일스톤 보고(tmp에게)에 기간 중 incident 수와 승격한 검사 목록을 적는다.
-5. `incident` 라벨은 `.github/labels.yml`에 정의되어 있다(정의는 이 한 곳). 이 파일은 정의일 뿐이고 GitHub에 라벨을 만들지 않는다. `scripts/guard-agents.sh correct`가 이 절과 그 본문, 양식의 필수 항목, 라벨 정의를 검사한다.
+1. When a bot is corrected (by the user Su Kim, tmp or eggbot, or by a failed `vws verify`), it opens an issue the same day with the `incident` label using the `.github/ISSUE_TEMPLATE/incident.yml` form. It must fill in the correction and "the check that would have caught this".
+2. Every few days vws-verify runs a gardener pass. It groups open incidents by cause and promotes repeated ones to a check (test, lint, guard rule, archtest), not a sentence. The check must actually fail on an input that contains the mistake (the `correct` section above).
+3. When the promoting PR is merged, close the incident with its link. An incident that will not be promoted is closed with the reason.
+4. The milestone report (to tmp) lists the number of incidents in the period and the checks promoted.
+5. The `incident` label is defined in `.github/labels.yml` (the only definition). That file is only a definition and does not create the label on GitHub. `scripts/guard-agents.sh correct` checks this section and its body, the required fields of the form and the label definition.
 
-## 작업 방식 (poteto-mode)
+## Way of working (poteto-mode)
 
-- 간결하게 쓰고 코드는 가장 작은 변경으로 푼다. 추상화 계층을 늘리지 않고 지울 수 있으면 지운다.
-- 코드를 쓰기 전에 데이터 모양을 먼저 정한다. 같은 실수가 두 번 나오면 문장 대신 구조나 검사로 막는다.
-- 실제로 돌린 것만 검증했다고 쓴다. 돌리지 못한 것은 "미검증"으로 표시한다. `make check`는 컴파일 증거가 아니라 이 저장소의 T0 검사다.
-- 커밋 메시지와 PR 설명은 짧은 평서문으로 쓴다. 근거 없는 주장과 만들어낸 링크를 넣지 않는다.
-- Cursor 클라우드 에이전트(CloudAgent)를 쓰지 않는다. 사용량이 소진된 상태이고, 작업은 `gh`와 `git`으로 한다. `scripts/guard.sh cursor`가 `.cursor/`와 Cursor 에이전트 호출이 저장소에 들어오는 것을 막는다.
+- Write concisely and solve with the smallest code change. Do not add abstraction layers; delete them when you can.
+- Decide the shape of the data before writing code. When the same mistake shows up twice, block it with structure or a check instead of a sentence.
+- Say something is verified only if you actually ran it. Mark what you could not run as "unverified". `make check` is this repo's T0 check, not evidence that something compiles.
+- Write commit messages and PR descriptions as short plain statements. No unsupported claims and no made-up links.
+- Do not use Cursor cloud agents (CloudAgent). Usage is exhausted; work with `gh` and `git`. `scripts/guard.sh cursor` keeps `.cursor/` and Cursor agent calls out of the repo.
 
 ## Insider-risk guardrails
 
-봇도 내부자 위험이다. 아래는 예외 없는 규칙이다.
+Bots are insider risks too. The rules below have no exceptions.
 
-1. **검증 독립**: 중요 결과(머지, 보안, 데이터)는 작성한 봇/모델이 스스로 검증하지 않는다. 검증은 작성 봇이 아닌 다른 봇(또는 사람)이 한다. (프로세스 규칙, CI로 강제 불가)
-2. **기록**: 모든 변경은 이슈 → PR(`Part of #N`) → 커밋으로 남긴다. 이슈는 사람이 닫으므로 `Closes #N` 같은 닫는 키워드는 PR 본문과 커밋 메시지에 쓰지 않는다. 작업 로그는 PR 본문/이슈 코멘트에 사람이 읽을 수 있게 쓴다. force-push·히스토리 재작성 금지(사용자 승인 시 예외).
-3. **실패 테스트**: 새 기능은 정상 경로만 테스트하지 않는다. 전원 차단/재시작, 멱등 재실행, 악성·경계 입력 케이스를 최소 1개씩 포함하거나 불가 사유를 PR에 적는다.
-4. **최소 권한**: main 직접 푸시 금지. 모든 변경은 main에서 딴 독립 브랜치의 단일 PR. 스택 PR 금지. 로컬 머지 금지. 토큰은 해당 레포 범위만. RBAC은 서비스 코드가 실제 호출하는 리소스만, 가능하면 Role(네임스페이스 범위).
-5. **감사 분리**: 작성 봇 ≠ 검증 봇 ≠ 머지 판단. 작성 봇은 자기 PR을 머지하지 않는다. 머지는 base==main 이고 head 커밋 CI가 전부 success일 때만.
-6. **격리·비상정지**: 봇/에이전트 즉시 중단은 사용자 요청 또는 오케스트레이터가 해당 봇 세션 중단 + 토큰 폐기(`gh auth`/PAT revoke). 위험 작업은 샌드박스(박스/임시 클러스터)에서만. 운영 클러스터 접근 금지.
-7. **사고 공개**: 규칙 위반·사고는 숨기지 않고 이슈에 `원인 / 영향 / 조치 / 재발방지`로 기록한다 (라벨 `incident`).
+1. **Independent verification**: an important result (merge, security, data) is never verified by the bot/model that wrote it. Another bot (or a person) verifies it. (Process rule; CI cannot enforce it.)
+2. **Records**: every change leaves a trail of issue → PR (`Part of #N`) → commits. People close issues, so closing keywords such as `Closes #N` never appear in PR bodies or commit messages. Work logs go in the PR body or issue comments in a form people can read. No force-push or history rewriting (except with the user's approval).
+3. **Failure tests**: a new feature is not tested on the happy path only. Include at least one case each for power loss/restart, idempotent re-run and malicious or boundary input, or state in the PR why that is not possible.
+4. **Least privilege**: no direct pushes to main. Every change is a single PR from its own branch cut from main. No stacked PRs. No local merges. Tokens are scoped to the repo. RBAC covers only the resources the service code actually calls, as a Role (namespace scope) where possible.
+5. **Separated audit**: author bot ≠ verifier bot ≠ merge decision. An author bot never merges its own PR. Merge only when base==main and every CI check on the head commit is success.
+6. **Isolation and emergency stop**: a bot/agent is stopped immediately at the user's request or by the orchestrator stopping that bot's session and revoking its token (`gh auth`/PAT revoke). Risky work happens only in a sandbox (the box or a throwaway cluster). No access to production clusters.
+7. **Incident disclosure**: rule violations and incidents are never hidden; record them in an issue as `Cause / Impact / Action / Prevention` (label `incident`).
 
-이 레포의 서버측 보호는 없다(private, 무료 플랜). 1, 5, 6은 프로세스 규칙이고, 2와 4의 일부는 `.github/workflows/repo-guard.yml`이 PR의 base, 본문의 `Part of #N`, PR 본문과 커밋에 닫는 키워드가 없는지를 검사하고 `.github/workflows/direct-push-watch.yml`이 main에 PR 없이 들어온 커밋을 사후에 알린다. 차단이 아니라 탐지다.
+This repo has no server-side protection (private, free plan). 1, 5 and 6 are process rules. For parts of 2 and 4, `.github/workflows/repo-guard.yml` checks the PR's base, the `Part of #N` in the body, and that neither the PR body nor the commits have a closing keyword, and `.github/workflows/direct-push-watch.yml` reports after the fact any commit that reached main without a PR. This is detection, not blocking.
 
-## 명령
+## Commands
 
-지원하는 진입점은 두 개다.
+There are two supported entry points.
 
-- `make check` — helm lint, kubeconform, envtest kube-apiserver의 CRD 검사(`make crd`), 플랫폼 번들 렌더 검사, 이 파일의 검사
-- `helm template vws charts/vws --namespace vws` — 적용하지 않고 매니페스트를 본다
+- `make check`: helm lint, kubeconform, the CRD check against an envtest kube-apiserver (`make crd`), the platform bundle render check, and the checks on this file
+- `helm template vws charts/vws --namespace vws`: view the manifests without applying them
 
 ## Verify gate
 
