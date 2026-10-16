@@ -133,3 +133,111 @@ func TestPostCRWhileInstalling(t *testing.T) {
 	status, body = h.do("POST", "/api/v1/cr", cr)
 	h.wantError(status, body, 409, ReasonAlreadyInstalled)
 }
+
+func fieldMessage(e map[string]any, field string) string {
+	fields, ok := e["fields"].([]any)
+	if !ok {
+		return ""
+	}
+	var msgs []string
+	for _, f := range fields {
+		m, ok := f.(map[string]any)
+		if !ok || m["field"] != field {
+			continue
+		}
+		s, ok := m["message"].(string)
+		if ok {
+			msgs = append(msgs, s)
+		}
+	}
+	return strings.Join(msgs, "\n")
+}
+
+func TestPostCRReportsJSONTypeErrors(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	good := h.exportCR()
+	cases := []struct {
+		name  string
+		field string
+		set   func(cr map[string]any)
+		want  string
+		clean string
+	}{
+		{
+			name: "apiVersion number", field: "apiVersion", want: "cannot unmarshal number", clean: "kind",
+			set: func(cr map[string]any) { cr["apiVersion"] = 1 },
+		},
+		{
+			name: "kind array", field: "kind", want: "cannot unmarshal array", clean: "apiVersion",
+			set: func(cr map[string]any) { cr["kind"] = []any{"VWSCluster"} },
+		},
+		{
+			name: "metadata number", field: "metadata", want: "cannot unmarshal number", clean: "apiVersion",
+			set: func(cr map[string]any) { cr["metadata"] = 1 },
+		},
+		{
+			name: "apiVersion object", field: "apiVersion", want: "cannot unmarshal object", clean: "kind",
+			set: func(cr map[string]any) { cr["apiVersion"] = map[string]any{"injected": true} },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cr := map[string]any{}
+			if err := json.Unmarshal(mustJSON(t, good), &cr); err != nil {
+				t.Fatal(err)
+			}
+			c.set(cr)
+			var first string
+			for range 2 {
+				status, body := h.do("POST", "/api/v1/cr", cr)
+				if status != 400 {
+					t.Fatalf("status %d body %v", status, body)
+				}
+				e := h.wantError(status, body, 400, ReasonValidationFailed)
+				msg := fieldMessage(e, c.field)
+				if !strings.Contains(msg, c.want) {
+					t.Fatalf("field %s message %q, want %q; fields %v", c.field, msg, c.want, e["fields"])
+				}
+				if clean := fieldMessage(e, c.clean); clean != "" {
+					t.Fatalf("valid %s was rejected because %s failed to decode: %q", c.clean, c.field, clean)
+				}
+				if first == "" {
+					first = msg
+				} else if msg != first {
+					t.Fatalf("second POST changed the error from %q to %q", first, msg)
+				}
+			}
+		})
+	}
+	if h.state() != "editing" {
+		t.Fatal("malformed POST /cr left editing")
+	}
+}
+
+func TestSplitCRReportsInvalidRaw(t *testing.T) {
+	const ver = "demo.example/v1"
+	cr := map[string]json.RawMessage{
+		"apiVersion": json.RawMessage(`not-json`),
+		"kind":       json.RawMessage(`"VWSCluster"`),
+		"metadata":   json.RawMessage(`{"name":"vws"}`),
+		"spec":       json.RawMessage(`{"profile":"small"}`),
+	}
+	_, errs := splitCR(cr, ver, json.RawMessage(`{"nodes":["node1"]}`))
+	var apiMsg, kindMsg string
+	for _, e := range errs {
+		switch e.Field {
+		case "apiVersion":
+			apiMsg = e.Message
+		case "kind":
+			kindMsg = e.Message
+		}
+	}
+	if !strings.Contains(apiMsg, "invalid character") {
+		t.Fatalf("apiVersion message %q", apiMsg)
+	}
+	if kindMsg != "" {
+		t.Fatalf("kind was rejected because apiVersion did not decode: %q", kindMsg)
+	}
+}
