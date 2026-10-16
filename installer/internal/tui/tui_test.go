@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
@@ -183,5 +186,78 @@ func TestClientErrorModel(t *testing.T) {
 	err = c.Do(context.Background(), "PUT", "/steps/roles", map[string]any{"value": map[string]any{"nodes": []string{"nodeX"}}}, nil)
 	if !errors.As(err, &e) || e.Code != "validation_failed" || len(e.Fields) != 1 || e.Fields[0].Field != "roles.nodes[0]" {
 		t.Fatalf("validation error %#v", err)
+	}
+}
+
+func TestMalformedStepJSON(t *testing.T) {
+	cases := []struct {
+		name   string
+		r      stepResult
+		ask    func(*TUI, stepResult) (any, error)
+		want   string
+		prompt string
+	}{
+		{
+			name: "roles defaults",
+			r:    stepResult{Defaults: json.RawMessage(`[]`)},
+			ask:  askRoles, want: "cannot unmarshal array", prompt: "nodes (comma separated)",
+		},
+		{
+			name: "network options",
+			r:    stepResult{Options: json.RawMessage(`"ens3"`)},
+			ask:  askNetwork, want: "cannot unmarshal string", prompt: "management NIC",
+		},
+		{
+			name: "storage options",
+			r:    stepResult{Options: json.RawMessage(`1`)},
+			ask:  askStorage, want: "cannot unmarshal number", prompt: "storage driver",
+		},
+		{
+			name: "storage defaults",
+			r:    stepResult{Options: json.RawMessage(`{"drivers":[]}`), Defaults: json.RawMessage(`[]`)},
+			ask:  askStorage, want: "cannot unmarshal array", prompt: "storage driver",
+		},
+		{
+			name: "profile default",
+			r:    stepResult{Defaults: json.RawMessage(`{}`)},
+			ask:  askProfile, want: "cannot unmarshal object", prompt: "profile",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			tu := New(nil, strings.NewReader("node1\n"), &out)
+			got, err := c.ask(tu, c.r)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("error %v, value %#v, want substring %q\nout:\n%s", err, got, c.want, out.String())
+			}
+			if strings.Contains(out.String(), c.prompt) {
+				t.Fatalf("prompted %q after a JSON error:\n%s", c.prompt, out.String())
+			}
+		})
+	}
+}
+
+func TestSummaryReportsMissingCR(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/summary" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, `{"specHash":"abc","warnings":[]}`); err != nil {
+			t.Errorf("write summary: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := &client.Client{Base: srv.URL, HTTP: srv.Client()}
+	var out bytes.Buffer
+	tu := New(c, strings.NewReader("yes\n"), &out)
+	err := tu.confirmAndInstall(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("err %v\nout:\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "install this?") {
+		t.Fatalf("asked to install a summary with no CR:\n%s", out.String())
 	}
 }
