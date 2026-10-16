@@ -4,7 +4,7 @@ The design is vws-iam#1 and the contract is vws-proto#24 (`vws/iam/v1`, branch `
 
 ## What is in now
 
-- **Chart service `iam`**: `enabled: false`, so the default render still leaves it out. The image is pinned with `services.iam.imageTag: sha-b567471` to `ghcr.io/popododo0720/vws/iam:sha-b567471` (digest `sha256:ea481d637e103b7426e7c9b12b8ea1e9291ab1de65ecfe6ce746f8c6660b231d`). vws-iam#112 published that tag. An anonymous manifest request returned HTTP 200 and that digest on 2026-10-15. `spec.version` does not move it. Port 9095, `-listen=0.0.0.0:9095`. The vws-iam binary's `-listen` default is `127.0.0.1:9095`; `-health-listen` stays `127.0.0.1:9096` and is not passed. console-api connects with CR flags `iam=grpc` plus the three `0.0.0.0` addr flags (`ec2-addr`, `s3-addr`, `iam-addr`), and the chart sets `-iam-endpoint=iam:9095`.
+- **Chart service `iam`**: `enabled: false`, so the default render still leaves it out. The image is pinned with `services.iam.imageTag: sha-74a29dc` to `ghcr.io/popododo0720/vws/iam:sha-74a29dc` (digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`). vws-iam#113 published that tag. The image binary contains go1.26.9. An anonymous manifest request returned HTTP 200 and that digest on 2026-10-16. `spec.version` does not move it. Port 9095, `-listen=0.0.0.0:9095`. The vws-iam binary's `-listen` default is `127.0.0.1:9095`; `-health-listen` stays `127.0.0.1:9096` and is not passed. console-api connects with CR flags `iam=grpc` plus the three `0.0.0.0` addr flags (`ec2-addr`, `s3-addr`, `iam-addr`), and the chart sets `-iam-endpoint=iam:9095`.
 - **`enabled`**: available on every service. With `false` the chart creates none of that service's objects, and `check_render.py`, `vws status`, the profile resource calculation and the Secret step of `vws apply` skip it too.
 - **KEK**: `kekSecret: vws-iam-kek`. `vws apply` creates the Secret in the release namespace only when it does not exist (`kek`: base64 of 32 random bytes, `key-id`: `kek-1`). The value goes only through kubectl stdin and never appears in arguments, output or logs. An existing Secret is left alone (no silent rotation). The pod gets `VWS_IAM_KEK` and `VWS_IAM_KEK_ID` only through secretKeyRef. `check_render.py` fails if the KEK is in args.
 - **Replicas**: `replicas: 1`. Users are in memory, so two replicas would split them (vws-iam#110). One replica does not survive a restart. A shared store is still required. The schema, `check_render.py`, and `vws render` refuse any other count.
@@ -23,6 +23,6 @@ Before touching helm or Secrets, `vws apply` runs `helm template` and `check_ren
 
 ## Needs checking
 
-- Startup of `sha-b567471` on vws-test is not checked here. The anonymous manifest pull of that tag returned HTTP 200 on 2026-10-15. This repo does not apply the chart to a cluster.
+- Startup of `sha-74a29dc` on vws-test is not checked here. The anonymous manifest pull of that tag returned HTTP 200 on 2026-10-16. This repo does not apply the chart to a cluster.
 - Whether NetworkPolicy on Kube-OVN blocks kubelet probes.
 - When `iam` is turned on through the CR, the service list in `vws status` follows the chart default (`enabled: false`). The image pin does not change that. The lists match only after the chart default becomes `true`.
