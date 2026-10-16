@@ -139,17 +139,28 @@ func (t *TUI) preflight(r stepResult) {
 	}
 }
 
-func defaultString(raw json.RawMessage) string {
+func decodeJSON(what string, raw json.RawMessage, dst any) error {
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return nil
+}
+
+func defaultString(raw json.RawMessage) (string, error) {
 	var s string
-	_ = json.Unmarshal(raw, &s)
-	return s
+	if err := decodeJSON("profile default", raw, &s); err != nil {
+		return "", err
+	}
+	return s, nil
 }
 
 func askRoles(t *TUI, r stepResult) (any, error) {
 	var def struct {
 		Nodes []string `json:"nodes"`
 	}
-	_ = json.Unmarshal(r.Defaults, &def)
+	if err := decodeJSON("roles defaults", r.Defaults, &def); err != nil {
+		return nil, err
+	}
 	t.printf("  nodes are used with the roles their labels already give them\n")
 	answer, err := t.ask("nodes (comma separated)", strings.Join(def.Nodes, ","))
 	if err != nil {
@@ -179,15 +190,27 @@ func (t *TUI) attachment(name string, required, gateway bool) (map[string]any, e
 		return nil, err
 	}
 	a["cidr"] = cidr
-	if vlan, err := t.ask("  "+name+" VLAN (0 = untagged)", "0"); err != nil {
+	vlan, err := t.ask("  "+name+" VLAN (0 = untagged)", "0")
+	if err != nil {
 		return nil, err
-	} else if n, _ := strconv.Atoi(vlan); n != 0 {
-		a["vlan"] = n
 	}
-	if mtu, err := t.ask("  "+name+" MTU (0 = NIC default)", "0"); err != nil {
+	vlanN, err := strconv.Atoi(vlan)
+	if err != nil {
+		return nil, fmt.Errorf("%s VLAN: %w", name, err)
+	}
+	if vlanN != 0 {
+		a["vlan"] = vlanN
+	}
+	mtu, err := t.ask("  "+name+" MTU (0 = NIC default)", "0")
+	if err != nil {
 		return nil, err
-	} else if n, _ := strconv.Atoi(mtu); n != 0 {
-		a["mtu"] = n
+	}
+	mtuN, err := strconv.Atoi(mtu)
+	if err != nil {
+		return nil, fmt.Errorf("%s MTU: %w", name, err)
+	}
+	if mtuN != 0 {
+		a["mtu"] = mtuN
 	}
 	if gateway {
 		gw, err := t.ask("  "+name+" gateway", "")
@@ -207,7 +230,9 @@ func askNetwork(t *TUI, r stepResult) (any, error) {
 			Nodes []string `json:"nodes"`
 		} `json:"nics"`
 	}
-	_ = json.Unmarshal(r.Options, &opts)
+	if err := decodeJSON("network options", r.Options, &opts); err != nil {
+		return nil, err
+	}
 	for _, n := range opts.NICs {
 		t.printf("  NIC %s mtu %d on %s\n", n.Name, n.MTU, strings.Join(n.Nodes, ","))
 	}
@@ -251,7 +276,9 @@ func askStorage(t *TUI, r stepResult) (any, error) {
 			Reason   string `json:"reason"`
 		} `json:"drivers"`
 	}
-	_ = json.Unmarshal(r.Options, &opts)
+	if err := decodeJSON("storage options", r.Options, &opts); err != nil {
+		return nil, err
+	}
 	var enabled []string
 	for _, d := range opts.Drivers {
 		if d.Disabled {
@@ -263,7 +290,9 @@ func askStorage(t *TUI, r stepResult) (any, error) {
 	var def struct {
 		Driver string `json:"driver"`
 	}
-	_ = json.Unmarshal(r.Defaults, &def)
+	if err := decodeJSON("storage defaults", r.Defaults, &def); err != nil {
+		return nil, err
+	}
 	driver, err := t.ask("storage driver ("+strings.Join(enabled, ", ")+")", def.Driver)
 	if err != nil {
 		return nil, err
@@ -295,7 +324,11 @@ func askEIP(t *TUI, _ stepResult) (any, error) {
 }
 
 func askProfile(t *TUI, r stepResult) (any, error) {
-	return t.ask("profile (single-node, small, ha)", defaultString(r.Defaults))
+	def, err := defaultString(r.Defaults)
+	if err != nil {
+		return nil, err
+	}
+	return t.ask("profile (single-node, small, ha)", def)
 }
 
 func (t *TUI) confirmAndInstall(ctx context.Context) error {
@@ -308,8 +341,13 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 		return err
 	}
 	var pretty any
-	_ = json.Unmarshal(sum.CR, &pretty)
-	b, _ := json.MarshalIndent(pretty, "", "  ")
+	if err := decodeJSON("summary cr", sum.CR, &pretty); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(pretty, "", "  ")
+	if err != nil {
+		return fmt.Errorf("summary cr: %w", err)
+	}
 	t.printf("\n== summary ==\n%s\n", b)
 	for _, w := range sum.Warnings {
 		t.printf("  warning [%s/%s] %s %s\n", w.Severity, w.Status, w.ID, w.Message)

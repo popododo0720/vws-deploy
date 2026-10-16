@@ -261,3 +261,24 @@ func TestSummaryReportsMissingCR(t *testing.T) {
 		t.Fatalf("asked to install a summary with no CR:\n%s", out.String())
 	}
 }
+
+func TestAttachmentReportsBadNumber(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"vlan", "ens3\n10.0.0.0/24\nnope\n", "VLAN"},
+		{"mtu", "ens3\n10.0.0.0/24\n0\nbogus\n", "MTU"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			tu := New(nil, strings.NewReader(c.input), &out)
+			got, err := tu.attachment("management", true, false)
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "invalid syntax") {
+				t.Fatalf("error %v, value %#v\nout:\n%s", err, got, out.String())
+			}
+		})
+	}
+}

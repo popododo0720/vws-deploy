@@ -28,23 +28,31 @@ var crSpecKeys = []string{"profile", "storage", "network", "observability"}
 // the eip step, and roles keeps the saved value or defaults to every node (roles are not in the CR).
 func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMessage) (map[string]json.RawMessage, []FieldError) {
 	var errs []FieldError
-	var head struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Metadata   struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
-	}
-	b, _ := json.Marshal(cr)
-	_ = json.Unmarshal(b, &head)
-	if head.APIVersion != apiVersion {
+	var gotVersion string
+	if raw := cr["apiVersion"]; len(raw) == 0 {
+		errs = append(errs, FieldError{Field: "apiVersion", Code: "invalid", Message: "want " + apiVersion})
+	} else if err := json.Unmarshal(raw, &gotVersion); err != nil {
+		errs = append(errs, FieldError{Field: "apiVersion", Code: "invalid", Message: err.Error()})
+	} else if gotVersion != apiVersion {
 		errs = append(errs, FieldError{Field: "apiVersion", Code: "invalid", Message: "want " + apiVersion})
 	}
-	if head.Kind != "VWSCluster" {
+	var kind string
+	if raw := cr["kind"]; len(raw) == 0 {
+		errs = append(errs, FieldError{Field: "kind", Code: "invalid", Message: "want VWSCluster"})
+	} else if err := json.Unmarshal(raw, &kind); err != nil {
+		errs = append(errs, FieldError{Field: "kind", Code: "invalid", Message: err.Error()})
+	} else if kind != "VWSCluster" {
 		errs = append(errs, FieldError{Field: "kind", Code: "invalid", Message: "want VWSCluster"})
 	}
-	if head.Metadata.Name != "" && head.Metadata.Name != "vws" {
-		errs = append(errs, FieldError{Field: "metadata.name", Code: "invalid", Message: "the VWSCluster is named vws"})
+	if raw := cr["metadata"]; len(raw) > 0 {
+		var meta struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			errs = append(errs, FieldError{Field: "metadata", Code: "invalid", Message: err.Error()})
+		} else if meta.Name != "" && meta.Name != "vws" {
+			errs = append(errs, FieldError{Field: "metadata.name", Code: "invalid", Message: "the VWSCluster is named vws"})
+		}
 	}
 	var spec map[string]json.RawMessage
 	if err := json.Unmarshal(cr["spec"], &spec); err != nil || spec == nil {
@@ -77,12 +85,24 @@ func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMes
 			if nodes, _ := network["nodes"].(map[string]any); nodes != nil {
 				if ext, _ := nodes["external"].(map[string]any); ext != nil {
 					if pool, ok := ext["eipPool"]; ok {
-						out["eip"], _ = json.Marshal(pool)
+						poolRaw, err := json.Marshal(pool)
+						if err != nil {
+							errs = append(errs, FieldError{
+								Field: "spec.network.nodes.external.eipPool", Code: "invalid", Message: err.Error(),
+							})
+						} else {
+							out["eip"] = poolRaw
+						}
 						delete(ext, "eipPool")
 					}
 				}
 			}
-			out["network"], _ = json.Marshal(network)
+			networkRaw, err := json.Marshal(network)
+			if err != nil {
+				errs = append(errs, FieldError{Field: "spec.network", Code: "invalid", Message: err.Error()})
+			} else {
+				out["network"] = networkRaw
+			}
 		}
 	}
 	return out, errs
@@ -106,7 +126,11 @@ func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 	}
 	roles := srv.s.steps[stepIndex("roles")].raw
 	if srv.s.steps[stepIndex("roles")].status != StepValid {
-		roles, _ = json.Marshal(defaultRoles(nodes))
+		var err error
+		roles, err = json.Marshal(defaultRoles(nodes))
+		if err != nil {
+			return fail(ReasonInternal, "default roles: "+err.Error())
+		}
 	}
 	raws, fields := splitCR(cr, srv.apiVersion, roles)
 	if raws == nil {

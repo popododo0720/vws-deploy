@@ -135,11 +135,19 @@ func TestPostCRWhileInstalling(t *testing.T) {
 }
 
 func fieldMessage(e map[string]any, field string) string {
+	fields, ok := e["fields"].([]any)
+	if !ok {
+		return ""
+	}
 	var msgs []string
-	for _, f := range e["fields"].([]any) {
-		m := f.(map[string]any)
-		if m["field"] == field {
-			msgs = append(msgs, m["message"].(string))
+	for _, f := range fields {
+		m, ok := f.(map[string]any)
+		if !ok || m["field"] != field {
+			continue
+		}
+		s, ok := m["message"].(string)
+		if ok {
+			msgs = append(msgs, s)
 		}
 	}
 	return strings.Join(msgs, "\n")
