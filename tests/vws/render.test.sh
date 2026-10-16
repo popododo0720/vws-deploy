@@ -416,17 +416,17 @@ got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
 expect_text "image pin: console-api renders sha-a003d96" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
 expect_text "image pin: compute renders sha-07b591c" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-07b591c'"
 expect_text "image pin: other services keep appVersion" "$got" "'storage=ghcr.io/popododo0720/vws/storage:0.1.0'"
-# vws-iam#111/#112 published ghcr.io/popododo0720/vws/iam:sha-b567471. The default render
+# vws-iam#113 published ghcr.io/popododo0720/vws/iam:sha-74a29dc. The default render
 # leaves iam out (enabled false). With iam on, the image is that pin and global.tag does not move it.
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true)
-expect_text "image pin: iam renders sha-b567471" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-b567471'"
+expect_text "image pin: iam renders sha-74a29dc" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-74a29dc'"
 run_vws_real render "${EX}/ha.yaml" "${WORK}/pin.yaml"; expect_rc "image pin: ha example renders" 0
 got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9)
 expect_text "image pin: global.tag moves other services" "$got" "'storage=ghcr.io/popododo0720/vws/storage:9.9.9'"
 expect_text "image pin: global.tag does not move compute" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-07b591c'"
 expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true --set global.tag=9.9.9)
-expect_text "image pin: global.tag does not move iam" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-b567471'"
+expect_text "image pin: global.tag does not move iam" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-74a29dc'"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" | python3 -c 'import sys,yaml; print(sum(1 for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ("Deployment","StatefulSet") for c in d["spec"]["template"]["spec"]["containers"] if "command" in c))')
 expect_text "image pin: no workload sets command (ko entrypoint /ko-app/<name> is kept)" "$got" "0"
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.console-api.imageTag=sha-1234567)

@@ -21,7 +21,7 @@ spec:
         iam-addr: 0.0.0.0:8084
 ```
 
-`services.iam.port` stays 9095 and `services.iam.flags.listen` stays `0.0.0.0:9095`. With `enabled: true` the image is `ghcr.io/popododo0720/vws/iam:sha-b567471` (`services.iam.imageTag`, digest `sha256:ea481d637e103b7426e7c9b12b8ea1e9291ab1de65ecfe6ce746f8c6660b231d`). `spec.version` does not move it. `enabled` stays false in the catalog.
+`services.iam.port` stays 9095 and `services.iam.flags.listen` stays `0.0.0.0:9095`. With `enabled: true` the image is `ghcr.io/popododo0720/vws/iam:sha-74a29dc` (`services.iam.imageTag`, digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`, go1.26.9). `spec.version` does not move it. `enabled` stays false in the catalog.
 
 ## Shape
 
@@ -49,7 +49,7 @@ The Service publishes 8081, 8082 and 8084 with numeric targetPorts. The containe
 
 `127.0.0.1` on an `-addr` flag fails the render, so a loopback address cannot look configured while staying unreachable.
 
-`enabled` stays false, so the default render still leaves iam out. With `enabled` true the image is `ghcr.io/popododo0720/vws/iam:sha-b567471`. The digest stays in the comment next to `imageTag`. The template builds `registry/name:tag` and does not take a digest.
+`enabled` stays false, so the default render still leaves iam out. With `enabled` true the image is `ghcr.io/popododo0720/vws/iam:sha-74a29dc`. The digest stays in the comment next to `imageTag`. The template builds `registry/name:tag` and does not take a digest.
 
 ## Alternatives rejected
 
@@ -71,6 +71,6 @@ Teaching the CR a port field would give the listen port a second owner. The port
 | `sts get-caller-identity` with a non-root key | this repo does not apply to a cluster |
 | AWS error shapes | handlers are in vws-console-api, not this chart |
 | one iam replica | mitigation only. Users stay in memory. A restart drops them. The shared store is vws-iam#110 |
-| the default install does not start iam | vws-iam#112 published `sha-b567471` (digest `sha256:ea481d637e103b7426e7c9b12b8ea1e9291ab1de65ecfe6ce746f8c6660b231d`). An anonymous manifest request returned HTTP 200 on 2026-10-15. `services.iam.imageTag` is that tag. `enabled` stays false, so a default install does not pull it |
+| the default install does not start iam | vws-iam#113 published `sha-74a29dc` (digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`, go1.26.9). An anonymous manifest request returned HTTP 200 on 2026-10-16. `services.iam.imageTag` is that tag. `enabled` stays false, so a default install does not pull it |
 | the live Deployment described as `vws-iam-test` is not in this repo | the chart creates Deployment and Service `iam` |
 | the live VWSCluster is not in this repo | nothing here changes vws-test until an operator sets the fields and runs `vws apply` |
