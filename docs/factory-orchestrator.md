@@ -5,7 +5,7 @@ A deterministic script that runs three routine factory steps on GitHub state. It
 | rule | what it does |
 |---|---|
 | A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
-| B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
+| B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
@@ -31,6 +31,10 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   cap still applies. Slots count running dispatches, not items. A running target is never dispatched
   again, even after `/orchestrate reset-failures`. A task in review (Done report, PR open) does not
   hold a slot.
+- **One task per repo:** dsh runs one task per repo at a time and queues the rest, and a queued task
+  could reach the 3h timeout and count as a DeepSeek failure. So a repo with a DeepSeek task in flight
+  or picked in the same tick is skipped (a `note` with kind `repo_busy`), and the free slot goes to the
+  next eligible task from another repo. The skipped task goes out on a later tick, once its repo is free.
 - **History:** candidates (`ready`, `deepseek` or `grok`) get their full comment history, so old
   dispatches and failures are never forgotten. Other items use the repo-wide comment list for the
   last 14 days.
