@@ -16,6 +16,8 @@ on:
       - tests/drift/**
       - .github/workflows/repo-guard.yml
       - tests/workflows/**
+      - .github/orchestrate/**
+      - tests/orchestrate/**
 
 permissions:
   contents: read
@@ -30,6 +32,11 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/drift -v
           python3 -m unittest discover -s tests/workflows -v
+      # The factory orchestrator (vws-deploy#333) reuses repos.tsv; its tests use a stub gh, no network.
+      - name: Orchestrator unit tests
+        run: |
+          python3 -m unittest discover -s tests/orchestrate -v
+          shellcheck .github/orchestrate/box/*.sh
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
