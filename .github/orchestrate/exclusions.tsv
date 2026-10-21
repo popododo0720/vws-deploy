@@ -2,3 +2,6 @@
 # One line per entry: <report or dispatch comment URL><TAB><reason>. Lines starting with # are comments.
 https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481	token permission problem on the runner, not a DeepSeek failure
 https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6310291529	launcher failure (dsh exited with code 1) for the 07:11Z dispatch, not a DeepSeek failure
+https://github.com/popododo0720/vws-console-api/pull/227#issuecomment-6308732030	05:23Z mention predates the dsh poller baseline (05:24:56Z) and never ran, not a DeepSeek failure
+https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6308732408	05:23Z mention predates the dsh poller baseline (05:24:56Z) and never ran, not a DeepSeek failure
+https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6311717414	manual dispatch at 08:36Z, launcher failure (dsh exited with code 1), not a DeepSeek failure
