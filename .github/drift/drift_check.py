@@ -5,7 +5,8 @@ Checks per repo, on its default branch:
   protection  main is protected, admins included, no force push, no deletion
   checks      required status checks include the common set plus the repo's own (repos.tsv)
   workflows   repo-guard.yml and direct-push-watch.yml exist
-  guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256
+  guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
+              full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist
   lint        Go repos: the golangci config enables every linter in .github/golangci-common.yml,
               sets lll to 120 and enables gofumpt and goimports
@@ -98,6 +99,40 @@ def load_common(path):
     return c
 
 
+def load_variants(path):
+    """Accepted guard-agents.sh variants: {repo: sha256}. A missing file means none; a bad row exits 2."""
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    except OSError as e:
+        _bad_baseline(f"drift-check: cannot read {path}: {e}")
+    for n, line in enumerate(lines, 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split("\t")
+        if len(f) != 3 or not f[0] or not f[2].strip():
+            _bad_baseline(f"drift-check: {path}:{n} needs repo<TAB>sha256<TAB>reason")
+        repo, sha = f[0], f[1]
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            _bad_baseline(f"drift-check: {path}:{n} sha256 must be 64 lowercase hex characters")
+        if repo in out:
+            _bad_baseline(f"drift-check: {path}:{n} repeats {repo}; pin exactly one variant per repo")
+        out[repo] = sha
+    return out
+
+
+def guard_status(got, want, variant=None):
+    """(issue or None, ok label) for one repo's guard-agents.sh sha256. Only the exact pinned variant passes."""
+    if got == want:
+        return None, "ok"
+    if variant is not None and got == variant:
+        return None, f"accepted variant ({got[:12]})"
+    return "guard-agents.sh differs from vws-deploy", "ok"
+
+
 def lint_drift(cfg, common):
     try:
         c = yaml.safe_load(cfg)
@@ -128,10 +163,13 @@ def main():
     ap.add_argument("--owner", default="popododo0720")
     ap.add_argument("--repos", default=os.path.join(HERE, "repos.tsv"))
     ap.add_argument("--markdown", help="also write the table to this file")
+    ap.add_argument("--guard-variants", default=os.path.join(HERE, "guard-variants.tsv"),
+                    help="accepted guard-agents.sh variants: repo<TAB>sha256<TAB>reason")
     a = ap.parse_args()
 
     common = load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
     want_sha = open(os.path.join(ROOT, "scripts", "guard-agents.sh.sha256")).read().split()[0]
+    variants = load_variants(a.guard_variants)
 
     rows, drift = [], 0
     for line in open(a.repos):
@@ -169,10 +207,13 @@ def main():
         if wf:
             issues["workflows"] = ["missing " + ",".join(wf)]
         g = content(a.owner, repo, "scripts/guard-agents.sh")
+        guard_ok = "ok"
         if g is None:
             issues["guard"] = ["no scripts/guard-agents.sh"]
-        elif hashlib.sha256(g).hexdigest() != want_sha:
-            issues["guard"] = ["guard-agents.sh differs from vws-deploy"]
+        else:
+            bad_g, guard_ok = guard_status(hashlib.sha256(g).hexdigest(), want_sha, variants.get(repo))
+            if bad_g:
+                issues["guard"] = [bad_g]
         docs = []
         if content(a.owner, repo, "AGENTS.md") is None:
             docs.append("AGENTS.md")
@@ -197,7 +238,7 @@ def main():
             cell("protection", f"ok (force push: {force})"),
             cell("checks", ",".join(sorted(p["checks"]))),
             cell("workflows"),
-            cell("guard"),
+            cell("guard", guard_ok),
             cell("docs"),
             cell("lint", "ok" if kind == "go" else "n/a"),
         ])
