@@ -68,7 +68,7 @@ class RuleA(unittest.TestCase):
     def test_comment_body_and_state(self):
         r = run(snapshot(*prs(5)), {"prev_pending_count": 0})
         a = self.wake(r)[0]
-        self.assertEqual(a["target"], "vws-deploy#337")
+        self.assertEqual(a["target"], "vws-deploy#339")
         lines = a["body"].split("\n")
         self.assertEqual(lines[0], "<!-- vws-orchestrate:verify-wake -->", "routines match the exact first line")
         sha7 = prs(1)[0]["head_sha"][:7]
