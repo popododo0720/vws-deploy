@@ -1,0 +1,252 @@
+{
+ "alerts": [],
+ "archived_skipped": [
+  "vws-hypervisor"
+ ],
+ "ci": {
+  "by_repo": {
+   "vws-conformance": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 16
+    },
+    "conformance": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 15
+    }
+   },
+   "vws-console": {
+    "CI": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 15
+    },
+    "Token badge": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    }
+   },
+   "vws-console-api": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 12
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    }
+   },
+   "vws-deploy": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "installer-image": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "installer-publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    }
+   }
+  },
+  "failure": 0,
+  "failure_rate": 0.0,
+  "separate": {
+   "vws-conformance": {
+    "repo-guard": {
+     "failure": 15,
+     "failure_rate": 1.0,
+     "success": 0
+    }
+   },
+   "vws-console": {
+    "repo-guard": {
+     "failure": 16,
+     "failure_rate": 0.762,
+     "success": 5
+    }
+   },
+   "vws-console-api": {
+    "repo-guard": {
+     "failure": 11,
+     "failure_rate": 0.917,
+     "success": 1
+    }
+   },
+   "vws-deploy": {
+    "repo-guard": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    }
+   }
+  },
+  "success": 86
+ },
+ "codex": {
+  "blocking_sum": 0,
+  "merged_prs_with_codex": 2,
+  "rounds_declared": 0,
+  "verify_reports": 6
+ },
+ "content_sha256": "sha256:55691d7e4c6ab30672b6d433de5e66e57ff3bb3f6047801937a5de098d6b5e08",
+ "day": "2026-10-17",
+ "deepseek": {
+  "by_repo": {},
+  "dispatched": 0,
+  "dispatched_by_orchestrator": null,
+  "done": 0,
+  "failed": 0,
+  "timeout": 0
+ },
+ "generated_at": "2026-10-21T12:09:46Z",
+ "grok_swaps": {
+  "by_orchestrator": null,
+  "labeled": 0
+ },
+ "lead_time_hours": {
+  "all": {
+   "max": 2.19,
+   "median": 1.48,
+   "n": 5,
+   "p90": 2.19
+  },
+  "by_repo": {
+   "vws-console": {
+    "max": 2.19,
+    "median": 2.08,
+    "n": 3,
+    "p90": 2.19
+   },
+   "vws-console-api": {
+    "max": 1.48,
+    "median": 1.48,
+    "n": 1,
+    "p90": 1.48
+   },
+   "vws-deploy": {
+    "max": 1.17,
+    "median": 1.17,
+    "n": 1,
+    "p90": 1.17
+   }
+  }
+ },
+ "orchestrator": null,
+ "prs": {
+  "by_agent": {
+   "merged": {
+    "unattributed": 5
+   },
+   "opened": {
+    "unattributed": 11
+   }
+  },
+  "closed_unmerged": {
+   "vws-console": 3
+  },
+  "merged": {
+   "vws-console": {
+    "unattributed": 3
+   },
+   "vws-console-api": {
+    "unattributed": 1
+   },
+   "vws-deploy": {
+    "unattributed": 1
+   }
+  },
+  "opened": {
+   "vws-conformance": {
+    "unattributed": 1
+   },
+   "vws-console": {
+    "unattributed": 7
+   },
+   "vws-console-api": {
+    "unattributed": 2
+   },
+   "vws-deploy": {
+    "unattributed": 1
+   }
+  },
+  "totals": {
+   "closed_unmerged": 3,
+   "merged": 5,
+   "opened": 11
+  }
+ },
+ "queue_depth": null,
+ "release": "427a56b",
+ "repos": [
+  "vws-compute",
+  "vws-conformance",
+  "vws-console",
+  "vws-console-api",
+  "vws-deploy",
+  "vws-iam",
+  "vws-lib",
+  "vws-network",
+  "vws-proto",
+  "vws-storage"
+ ],
+ "schema": 1,
+ "snapshot_at": null,
+ "source_gaps": [
+  "orchestrator log does not cover the whole day",
+  "queue_depth and stalls are a live snapshot; not available for a back-filled day",
+  "no token-usage input for this day"
+ ],
+ "stalls": null,
+ "timezone": "Asia/Seoul (UTC+9)",
+ "tokens": null,
+ "verify": {
+  "approved_labels": 6,
+  "failure": 5,
+  "first_pass": 2,
+  "first_pass_n": 5,
+  "first_pass_rate": 0.4,
+  "pass_rate": 0.615,
+  "runs": 13,
+  "success": 8
+ },
+ "window_utc": [
+  "2026-10-16T15:00:00Z",
+  "2026-10-17T15:00:00Z"
+ ]
+}
