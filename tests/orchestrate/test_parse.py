@@ -45,6 +45,16 @@ class Comments(unittest.TestCase):
         self.assertEqual(orch.pr_key("https://github.com/popododo0720/vws-iam/pull/130"), "vws-iam#130")
         self.assertEqual(orch.pr_key("https://github.com/someone/vws-iam/pull/130"), "")
 
+    def test_vws_pr_key(self):
+        cases = {"https://github.com/popododo0720/vws-iam/pull/130": "vws-iam#130",
+                 "https://github.com/popododo0720/other-repo/pull/5": "",
+                 "https://github.com/someone/vws-iam/pull/5": "",
+                 "https://github.com/popododo0720/vws-../pull/5": "",
+                 "not a url": ""}
+        for url, want in cases.items():
+            with self.subTest(url):
+                self.assertEqual(orch.vws_pr_key(url), want)
+
 
 class Files(unittest.TestCase):
     def test_exclusions_has_vws_iam_123(self):

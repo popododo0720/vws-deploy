@@ -383,6 +383,14 @@ def pr_key(url):
     return f"{m.group(2)}#{m.group(3)}" if m and m.group(1) == OWNER else ""
 
 
+def vws_pr_key(url):
+    """'repo#n' for a PR URL in popododo0720/vws-*, else '' (the gh allowlist refuses other repos)."""
+    m = URL_RE.match(url or "")
+    if not m or m.group(1) != OWNER or not re.fullmatch(r"vws-[a-z0-9-]+", m.group(2)):
+        return ""
+    return f"{m.group(2)}#{m.group(3)}"
+
+
 def load_exclusions(path):
     out = set()
     try:
@@ -457,6 +465,10 @@ def dispatch_history(item, now, cfg, exclusions):
             h["kind"] = "timeout"
         elif rep[1]["result"] == "failed":
             h["outcome"], h["kind"] = "failed", "failed_report"
+        elif rep[1]["pr"] and not vws_pr_key(rep[1]["pr"]):
+            # The PR cannot be read or checked (outside popododo0720/vws-*): one failed attempt, so the
+            # task is retried or moved to grok instead of waiting for review forever.
+            h["outcome"], h["kind"], h["pr"] = "failed", "pr_outside_vws", rep[1]["pr"]
         else:
             pr = item.get("report_prs", {}).get(rep[1]["pr"], {})
             if pr.get("merged"):
@@ -576,9 +588,15 @@ def decide(snapshot, state, now, cfg, exclusions):
         if it["state"] != "open":
             continue
         hist = dispatch_history(it, now, cfg, exclusions)
+        for h in hist:
+            if h["kind"] == "pr_outside_vws":
+                notes.append({"kind": "report_pr_outside_vws", "target": k, "pr": h["pr"]})
         if any(h["outcome"] == "in_flight" for h in hist):
             in_flight.append(k)
         labels = set(it["labels"])
+        if "grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]:
+            # Moved to grok earlier (or a swap stopped before this label call): DeepSeek review is over.
+            actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
         if "deepseek" not in labels or "ready" not in labels:
             continue
         since = reset_time(it)
@@ -594,6 +612,8 @@ def decide(snapshot, state, now, cfg, exclusions):
                             "remove": "deepseek", "add": "" if "grok" in labels else "grok", "comment": not marker,
                             "body": f"Moving this task from DeepSeek to grok after {len(counted)} failed attempts:\n"
                                     f"{lines}\n\n<!-- orchestrate:swap -->"})
+            if "in-review" in labels and k in owned["in-review"]:
+                actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
             continue
         if "grok" in labels:
             continue
@@ -711,14 +731,14 @@ def collect(gh, repo_names, now, cfg, run_id):
         for c in it["comments"]:
             kind = classify_comment(c["body"])
             if kind and kind[0] == "report" and kind[1]["pr"] and kind[1]["pr"] not in it["report_prs"]:
-                pk = pr_key(kind[1]["pr"])
+                pk = vws_pr_key(kind[1]["pr"])  # other repos are never read; decide counts them as failures
                 if pk:
                     prepo, pnum = pk.split("#")
                     try:
                         pr, _ = gh.get(f"repos/{OWNER}/{prepo}/pulls/{pnum}")
                         it["report_prs"][kind[1]["pr"]] = {"state": pr["state"], "merged": bool(pr.get("merged_at"))}
-                    except GhError:
-                        pass
+                    except (GhError, PermissionError):
+                        pass  # unreadable: the attempt stays in review until the PR can be read
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
@@ -924,6 +944,11 @@ def notify_failure(paths, cfg, args, gh=None, now=None):
     if alert == "never" or (alert == "apply" and cfg["ORCHESTRATE_MODE"] != "apply"):
         log("failure_alert_skipped", reason=f"ORCHESTRATE_FAILURE_ALERT={alert}, mode {cfg['ORCHESTRATE_MODE']}",
             failures=args.failures)
+        return 0
+    scope = cfg["ORCHESTRATE_SCOPE"]
+    if scope and scope != status_target(cfg):
+        # A scoped trial limits every write to one target; the failure comment is no exception.
+        log("failure_alert_skipped", reason=f"ORCHESTRATE_SCOPE is set to {scope}", failures=args.failures)
         return 0
     host = socket.gethostname()
     key = "sha256:" + hashlib.sha256(f"failure:{host}:{args.streak_start}".encode()).hexdigest()

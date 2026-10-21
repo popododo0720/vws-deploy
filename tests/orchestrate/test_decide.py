@@ -250,6 +250,20 @@ class RuleC(unittest.TestCase):
         self.assertEqual(kinds(orch.decide(snapshot(t2), {}, NOW, CFG, set())), [("swap_label", "vws-iam#123")])
 
 
+    def test_done_report_with_pr_outside_vws_counts_as_failure(self):
+        # vws-deploy#341: a Done report whose PR is not popododo0720/vws-* cannot be checked; it is one failure.
+        for url in ("https://github.com/popododo0720/other-repo/pull/5", "https://github.com/someone/vws-iam/pull/5"):
+            with self.subTest(url):
+                one = [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=url)]
+                hist = orch.dispatch_history(ready_task("vws-iam", 1, comments=one), NOW, CFG, EXCL)
+                self.assertEqual([(h["outcome"], h["kind"]) for h in hist], [("failed", "pr_outside_vws")])
+                r = self.failures(one)
+                self.assertEqual(kinds(r), [("dispatch", "vws-iam#1")], "1 failure: redispatch, not stuck in review")
+                self.assertIn({"kind": "report_pr_outside_vws", "target": "vws-iam#1", "pr": url}, r["notes"])
+                two = one + [dispatch(3, "vws-iam", 1, 7), report(4, "vws-iam", 1, 3, "Done", 6, pr=url)]
+                self.assertEqual(kinds(self.failures(two)), [("swap_label", "vws-iam#1")])
+
+
 class Labels(unittest.TestCase):
     PR = "https://github.com/popododo0720/vws-iam/pull/9"
 
@@ -264,3 +278,28 @@ class Labels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InReviewOnSwap(unittest.TestCase):
+    """vws-deploy#341: the in-review label the orchestrator added goes away when the task moves to grok."""
+    PR = "https://github.com/popododo0720/vws-iam/pull/9"
+    TWO = [dispatch(1, "vws-iam", 1, 20), report(2, "vws-iam", 1, 1, "Failed", 19),
+           dispatch(3, "vws-iam", 1, 10), report(4, "vws-iam", 1, 3, "Failed", 9)]
+    OWNED = {"owned_labels": {"in-review": ["vws-iam#1"]}}
+
+    def test_swap_removes_owned_in_review(self):
+        t = ready_task("vws-iam", 1, comments=self.TWO, extra=("in-review",))
+        r = run(snapshot(t), self.OWNED)
+        self.assertEqual([(a["type"], a.get("label") or a.get("remove")) for a in r["actions"]],
+                         [("swap_label", "deepseek"), ("remove_label", "in-review")])
+
+    def test_swap_keeps_human_in_review(self):
+        t = ready_task("vws-iam", 1, comments=self.TWO, extra=("in-review",))
+        self.assertEqual(kinds(run(snapshot(t))), [("swap_label", "vws-iam#1")])
+
+    def test_already_swapped_task_loses_owned_in_review(self):
+        # A swap that ran before this fix, or stopped before the label call, left in-review behind.
+        t = item("vws-iam", 1, labels=("ready", "grok", "in-review"), comments=self.TWO)
+        r = run(snapshot(t), self.OWNED)
+        self.assertEqual([(a["type"], a["label"]) for a in r["actions"]], [("remove_label", "in-review")])
+        self.assertEqual(kinds(run(snapshot(t))), [], "a human-set in-review stays")
