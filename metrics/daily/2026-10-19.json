@@ -1,0 +1,96 @@
+{
+ "alerts": [],
+ "archived_skipped": [
+  "vws-hypervisor"
+ ],
+ "ci": {
+  "by_repo": {},
+  "failure": 0,
+  "failure_rate": null,
+  "separate": {},
+  "success": 0
+ },
+ "codex": {
+  "blocking_sum": 0,
+  "merged_prs_with_codex": 0,
+  "rounds_declared": 0,
+  "verify_reports": 0
+ },
+ "content_sha256": "sha256:dd76673547e29851304a63601620d93ffbe257a67aa8442bf5cc3cb7f110d412",
+ "day": "2026-10-19",
+ "deepseek": {
+  "by_repo": {},
+  "dispatched": 0,
+  "dispatched_by_orchestrator": null,
+  "done": 0,
+  "failed": 0,
+  "timeout": 0
+ },
+ "generated_at": "2026-10-21T12:46:12Z",
+ "grok_swaps": {
+  "by_orchestrator": null,
+  "labeled": 0
+ },
+ "lead_time_hours": {
+  "all": {
+   "max": null,
+   "median": null,
+   "n": 0,
+   "p90": null
+  },
+  "by_repo": {}
+ },
+ "orchestrator": null,
+ "prs": {
+  "by_agent": {
+   "merged": {},
+   "opened": {}
+  },
+  "closed_unmerged": {},
+  "merged": {},
+  "opened": {},
+  "totals": {
+   "closed_unmerged": 0,
+   "merged": 0,
+   "opened": 0
+  }
+ },
+ "queue_depth": null,
+ "release": "427a56b",
+ "repos": [
+  "vws-compute",
+  "vws-conformance",
+  "vws-console",
+  "vws-console-api",
+  "vws-deploy",
+  "vws-iam",
+  "vws-lib",
+  "vws-network",
+  "vws-proto",
+  "vws-storage"
+ ],
+ "schema": 1,
+ "snapshot_at": null,
+ "source_gaps": [
+  "orchestrator log does not cover the whole day",
+  "queue_depth and stalls are a live snapshot; not available for a back-filled day",
+  "no token-usage input for this day"
+ ],
+ "stalls": null,
+ "timezone": "Asia/Seoul (UTC+9)",
+ "tokens": null,
+ "verify": {
+  "approved_labels": 0,
+  "failure": 0,
+  "first_pass": 0,
+  "first_pass_n": 0,
+  "first_pass_rate": null,
+  "pass_rate": null,
+  "runs": 0,
+  "success": 0
+ },
+ "window_utc": [
+  "2026-10-18T15:00:00Z",
+  "2026-10-19T15:00:00Z"
+ ]
+}
