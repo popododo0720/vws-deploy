@@ -174,6 +174,30 @@ DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at
   hand without a reset does not help; the next tick adds it again. The comment counts toward the
   write cap and is skipped while `ORCHESTRATE_SCOPE` is set, like the merge failure comments.
 
+## Board sync (vws-deploy#347)
+
+A one-way mirror of labels and bodies to the [VWS factory queue](https://github.com/users/popododo0720/projects/2).
+Labels stay the source of truth: `decide()` never reads the board, and a field edited by hand on the
+board is overwritten on the next sync. Design: vws-deploy#347.
+
+- **When.** After `apply()`, on the first tick, every `ORCHESTRATE_BOARD_EVERY` (6) ticks, and on the
+  tick after a planned change of `blocked`, `in-review` or `deepseek`. Cadence state is
+  `~/.local/state/vws-orchestrate/board.json`. The STOP file, a GraphQL `rateLimit.remaining` below
+  `ORCHESTRATE_RATE_FLOOR` (read in the same query) and `ORCHESTRATE_SCOPE` are respected.
+- **What.** Status, Owner, Priority and Depends on, per the mapping in `board_values()`; open items not
+  on the board are added; board items whose issue or PR is closed or merged and not Done get Done
+  (fallback for the built-in workflows). Rank and Agent are never touched. Fields and options are
+  not created; a missing one is a `board_sync_error` (run `board-apply.sh`).
+- **Writes.** Only `addProjectV2ItemById`, `updateProjectV2ItemFieldValue` and
+  `clearProjectV2ItemFieldValue`, at most `ORCHESTRATE_BOARD_WRITES` (50) per sync, in aliased batches of
+  20 with a 3 s pause. Order: Status of existing items, adds with Status, Owner and Priority, Depends on;
+  the rest waits for the next sync. `Gh.graphql` refuses any query but the board read and any
+  mutation that is not built verbatim from the three templates (values travel only as variables). It
+  never writes issues, labels, comments or repos.
+- **Modes.** Dry-run by default: planned mutations are logged as `board_plan` and nothing is written.
+  Writes need `ORCHESTRATE_MODE=apply` and `ORCHESTRATE_BOARD=apply`. Errors are logged as
+  `board_sync_error`, counted in `board.json`, and never fail the tick.
+
 ## Safety limits
 
 - **gh login:** the box's existing `gh` login, with `GH_TOKEN` and `GITHUB_TOKEN` removed from every
@@ -264,6 +288,10 @@ Config keys and defaults:
 - `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`
 - `ORCHESTRATE_MERGE_MAX_ATTEMPTS=2`
+- `ORCHESTRATE_BOARD=dry-run` (board_sync: `off`, `dry-run` or `apply`; writes need `apply` here and in `ORCHESTRATE_MODE`)
+- `ORCHESTRATE_BOARD_PROJECT=PVT_kwHOBK54jM4BoB_Z` (the ProjectV2 node id of the board)
+- `ORCHESTRATE_BOARD_EVERY=6` (sync at most every N ticks, plus the tick after a managed label change)
+- `ORCHESTRATE_BOARD_WRITES=50` (board mutations per sync, separate from `ORCHESTRATE_MAX_WRITES`)
 
 ## Install (after this PR merges; from merged main)
 
