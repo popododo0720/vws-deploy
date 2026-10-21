@@ -12,6 +12,9 @@ Rules (see docs/factory-orchestrator.md):
      and one per repo, with an @deepseek-dev comment; a task whose Depends on target is still open is
      never dispatched
   C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok
+  D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
+     is green for the current main head; after a merge the repo is locked until the push CI for the
+     new main head is green (red stops merges there and posts one failure comment)
 
 A failed tick streak is reported the same way, with a failure marker comment on the status thread
 (--notify-failure, called by box/orchestrate-loop.sh).
@@ -48,6 +51,17 @@ CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "s
 # match on it.
 WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
+# Rule D (vws-deploy#346).
+VERIFY_CHECK = "vws-verify"
+VERIFY_APP_ID = 5313004
+CHECK_OK = {"success", "neutral", "skipped"}
+OPT_OUT_LABELS = ("do-not-merge", "hold")
+OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
+MERGEABLE_OK = {"clean", "has_hooks", "unstable"}
+PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
+CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
+AGENT_RE = re.compile(r"(?im)^\s*Agent:\s*(\S.*?)\s*$")
+MERGE_PAYLOAD_KEYS = {"merge_method", "sha", "commit_title"}
 KEY_RE = re.compile(r"^Idempotency key: `(sha256:[0-9a-f]{64})`$", re.M)
 TOKEN_RE = re.compile(r"(gh[opsu]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|Bearer\s+\S+)")
 
@@ -70,6 +84,9 @@ DEFAULTS = {
     "ORCHESTRATE_FAILURE_MIN_GAP_HOURS": "1",
     "ORCHESTRATE_LOG_MAX_BYTES": str(5 * 1024 * 1024),
     "ORCHESTRATE_LOG_KEEP": "5",
+    "ORCHESTRATE_MERGE": "dry-run",
+    "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
+    "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
 }
 
 
@@ -132,8 +149,10 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_DEEPSEEK_CAP must be a positive integer, got {cfg['ORCHESTRATE_DEEPSEEK_CAP']!r}")
     if cfg["ORCHESTRATE_FAILURE_ALERT"] not in ("apply", "always", "never"):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
+    if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
+        raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE")
     for k, v in cfg.items():
         if k not in text_keys:
             float(v)  # raises ValueError on a bad number
@@ -217,10 +236,17 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/(issues|pulls)/[0-9]+(\?.*)?$"),
         re.compile(rf"^{_REPO}/issues/[0-9]+/(events|comments)(\?.*)?$"),
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
+        re.compile(rf"^{_REPO}/branches/main$"),
+        re.compile(rf"^{_REPO}/compare/[0-9a-f]{{40}}\.\.\.[0-9a-f]{{40}}\?per_page=1$"),
+        re.compile(rf"^{_REPO}/branches/main/protection/required_status_checks$"),
+        re.compile(rf"^{_REPO}/rules/branches/main(\?.*)?$"),
+        re.compile(rf"^{_REPO}/actions/runs\?event=push&branch=main&head_sha=[0-9a-f]{{40}}&per_page=100$"),
         re.compile(r"^rate_limit$"),
     ],
     "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
     "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek)$")],
+    # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
+    "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
 }
 
 
@@ -320,6 +346,12 @@ class Gh:
     def write(self, method, path, payload=None):
         if not allowed(method, path):
             raise PermissionError(f"gh call not allowed: {method} {path}")
+        if method == "PUT":
+            # The only PUT is a squash merge pinned to the verified head (GitHub answers 409 if it moved).
+            p = payload or {}
+            if (set(p) - MERGE_PAYLOAD_KEYS or p.get("merge_method") != "squash"
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(p.get("sha", "")))):
+                raise PermissionError("merge refused: squash with a 40-hex head sha only")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -552,6 +584,268 @@ def find_cycles(snapshot):
     return cyclic
 
 
+# ---------------------------------------------------------------- rule D: serialized merges (pure)
+
+def latest_runs(check_runs):
+    """Newest check run per (name, app id); a re-run gets a higher id."""
+    out = {}
+    for r in check_runs or []:
+        k = (r.get("name"), r.get("app_id"))
+        if k not in out or r.get("id", 0) > out[k].get("id", 0):
+            out[k] = r
+    return out
+
+
+def run_state(r):
+    if r.get("status") != "completed":
+        return "pending"
+    return "ok" if r.get("conclusion") in CHECK_OK else "failed"
+
+
+def head_check_reasons(info, required):
+    """Why the PR head's checks do not allow a merge ([] = they do). Pure.
+    info: {"head_sha", "checks": [{"id", "name", "app_id", "status", "conclusion", "head_sha"}],
+    "statuses": [{"context", "state"}], "checks_truncated"}; required: [{"context", "app_id"}] or None."""
+    reasons = []
+    runs = latest_runs([r for r in info.get("checks", []) if r.get("head_sha") == info.get("head_sha")])
+    v = runs.get((VERIFY_CHECK, VERIFY_APP_ID))
+    if v is None:
+        reasons.append("verify_check_missing")
+    elif v.get("status") != "completed" or v.get("conclusion") != "success":
+        reasons.append(f"verify_check_{v.get('conclusion') or v.get('status')}")
+    if info.get("checks_truncated"):
+        reasons.append("checks_truncated")
+    if info.get("statuses_truncated"):
+        reasons.append("statuses_truncated")
+    if info.get("statuses") and info.get("status_state") not in (None, "success"):
+        reasons.append(f"combined_status_{info.get('status_state')}")
+    statuses = {}
+    for st in info.get("statuses", []):
+        statuses.setdefault(st.get("context"), st)  # the combined status lists the newest per context
+    if required is None:
+        reasons.append("required_checks_unreadable")
+    else:
+        for req in sorted(required, key=lambda q: (q["context"], q.get("app_id") or 0)):
+            match = [r for (name, app), r in runs.items() if name == req["context"]
+                     and (req.get("app_id") in (None, -1) or app == req["app_id"])]
+            if match:
+                r = max(match, key=lambda x: x.get("id", 0))
+                if r.get("status") != "completed":
+                    reasons.append(f"required_pending:{req['context']}")
+                elif r.get("conclusion") != "success":
+                    reasons.append(f"required_{r.get('conclusion')}:{req['context']}")
+            elif req["context"] in statuses and req.get("app_id") in (None, -1):
+                # A commit status has no app, so it can only satisfy a requirement not bound to one.
+                state = statuses[req["context"]].get("state")
+                if state != "success":
+                    reasons.append(f"required_{state}:{req['context']}")
+            else:
+                reasons.append(f"required_missing:{req['context']}")
+    # AGENTS.md rule 5: every check on the head is success (skipped and neutral helpers allowed).
+    for (name, _app), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0)):
+        st = run_state(r)
+        if st != "ok":
+            reasons.append(f"check_{st}:{name}")
+    for ctx, st in sorted(statuses.items(), key=lambda kv: str(kv[0])):
+        if st.get("state") != "success":
+            reasons.append(f"status_{st.get('state')}:{ctx}")
+    seen, out = set(), []
+    for r in reasons:
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def main_ci_verdict(runs):
+    """Push CI on one main commit, from the Actions runs for it: green | pending | red | none."""
+    latest = {}
+    for r in runs or []:
+        k = r.get("workflow_id")
+        if k not in latest or r.get("id", 0) > latest[k].get("id", 0):
+            latest[k] = r
+    if not latest:
+        return "none"
+    states = {run_state(r) for r in latest.values()}
+    if "failed" in states:
+        return "red"
+    return "pending" if "pending" in states else "green"
+
+
+def agent_of(body):
+    """The PR body's 'Agent:' value, for the merge log only; no rule depends on it."""
+    m = AGENT_RE.search(body or "")
+    return m.group(1)[:64] if m else ""
+
+
+def merge_reasons(it, ctx, snapshot, repos, cfg, attempts):
+    """Every reason PR item `it` cannot be merged this tick ([] = eligible). Pure.
+    ctx is the repo's merge context from collect (main head, required checks, lock inputs)."""
+    k = f"{it['repo']}#{it['number']}"
+    labels = set(it["labels"])
+    info = it.get("merge_info")
+    reasons = []
+    if it.get("draft"):
+        reasons.append("draft")
+    if it.get("base") != "main":
+        reasons.append("base_not_main")
+    if "verify-approved" not in labels:
+        reasons.append("no_verify_approved")
+    if labels & set(OPT_OUT_LABELS) or OPT_OUT_MARKER in (it.get("body") or "") or k == status_target(cfg):
+        reasons.append("opted_out")
+    if reasons:
+        return reasons  # the cheap rules decide; nothing else was read for this PR
+    if not info:
+        return ["merge_info_unreadable"]
+    if info.get("head_sha") != it.get("head_sha") or not re.fullmatch(r"[0-9a-f]{40}", info.get("head_sha") or ""):
+        reasons.append("head_moved_during_collect")
+    if info.get("state") != "open" or info.get("merged"):
+        reasons.append("not_open")
+    if info.get("draft") or info.get("base") != "main":
+        reasons.append("draft_or_base_changed")
+    if info.get("mergeable") is None:
+        reasons.append("mergeable_unknown")
+    elif info.get("mergeable") is False:
+        reasons.append("conflicts")
+    elif info.get("mergeable_state") not in MERGEABLE_OK:
+        reasons.append(f"mergeable_state:{info.get('mergeable_state')}")
+    if not PART_OF_RE.search(it.get("body") or ""):
+        reasons.append("no_part_of")
+    if CLOSING_RE.search(info.get("title") or ""):
+        reasons.append("closing_keyword_in_title")
+    deps, bad = parse_deps(it.get("body"), it["repo"])
+    reasons += [f"dep_unmet:{d}" for d in deps if dep_state(d, snapshot, repos) != "met"]
+    reasons += [f"dep_unparsed:{b}" for b in bad]
+    reasons += head_check_reasons(info, ctx.get("required"))
+    if attempts.get(f"{k}@{it.get('head_sha')}", 0) >= int(num(cfg, "ORCHESTRATE_MERGE_MAX_ATTEMPTS")):
+        reasons.append("merge_attempts_exhausted")
+    return reasons
+
+
+def merge_status_body(kind, repo, sha, detail, key, run_id):
+    lines = [FAILURE_MARKER,
+             f"vws-orchestrate: {kind} in {repo}; merges in {repo} are stopped.", "",
+             f"Kind: merge-{kind.replace(' ', '-')}", f"Repo: {repo}", f"Main commit: `{sha}`", f"Detail: {detail}", "",
+             "Merges in this repo resume by themselves once a newer main head has a green push CI run.",
+             f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
+    return "\n".join(lines)
+
+
+def status_key(kind, repo, sha):
+    return "sha256:" + hashlib.sha256(f"merge-{kind}:{repo}:{sha}".encode()).hexdigest()
+
+
+def decide_merges(snapshot, new_state, now, cfg, repos):
+    """Rule D. Updates new_state["merge_locks"] / ["merge_attempts"]; returns (actions, notes). Pure."""
+    actions, notes = [], []
+    if cfg.get("ORCHESTRATE_MERGE", "dry-run") == "off":
+        return actions, notes
+    items = snapshot["items"]
+    merge = snapshot.get("merge", {})
+    posted = set(snapshot.get("status", {}).get("keys", []))
+    locks = new_state.setdefault("merge_locks", {})
+    attempts = new_state.setdefault("merge_attempts", {})
+    open_heads = {f"{k}@{it.get('head_sha')}" for k, it in items.items() if it["is_pr"] and it["state"] == "open"}
+    for a in list(attempts):
+        if a not in open_heads:
+            del attempts[a]  # the PR merged, closed or moved: its attempts no longer matter
+    timeout = num(cfg, "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS") * 3600
+
+    def comment(kind, repo, sha, detail):
+        key = status_key(kind, repo, sha)
+        if key in posted:
+            return
+        posted.add(key)
+        actions.append({"type": "merge_status", "target": status_target(cfg), "key": key, "repo": repo,
+                        "reason": f"{kind} in {repo} at {sha[:7]}",
+                        "body": merge_status_body(kind, repo, sha, detail, key, snapshot["run_id"])})
+
+    for repo in sorted(repos):
+        ctx = merge.get(repo)
+        lock = locks.get(repo)
+        prs = sorted((it for it in items.values() if it["repo"] == repo and it["is_pr"] and it["state"] == "open"),
+                     key=lambda it: it["number"])
+        if ctx is None or ctx.get("error"):
+            # Not read (no verify-approved candidate and no lock) or unreadable: nothing merges here.
+            if ctx is not None:
+                notes.append({"kind": "merge_repo_unreadable", "repo": repo, "error": ctx["error"]})
+            elif lock:
+                notes.append({"kind": "merge_lock", "repo": repo, "status": lock.get("status"), "detail": "repo not read"})
+            for it in prs:
+                reasons = merge_reasons(it, {}, snapshot, repos, cfg, attempts)
+                notes.append({"kind": "merge_check", "target": f"{repo}#{it['number']}", "eligible": False,
+                              "reasons": reasons if ctx is None else ["merge_repo_unreadable"] + reasons,
+                              "head": (it.get("head_sha") or "")[:7], "main": "not read"})
+            continue
+        main_sha, main_ci = ctx.get("main_sha", ""), ctx.get("main_ci", "none")
+        held = ""
+        if lock and lock.get("status") == "merging":
+            lp = ctx.get("lock_pr") or {}
+            if lp.get("merged") and re.fullmatch(r"[0-9a-f]{40}", lp.get("merge_commit_sha") or ""):
+                lock = dict(lock, status="waiting", merge_sha=lp["merge_commit_sha"], merged_at=lock.get("at", now))
+                locks[repo] = lock
+                notes.append({"kind": "merge_confirmed", "repo": repo, "pr": lock["pr"], "merge_sha": lock["merge_sha"]})
+            elif lp.get("state") == "open" and not lp.get("merged"):
+                notes.append({"kind": "merge_not_landed", "repo": repo, "pr": lock["pr"]})
+                del locks[repo]
+                lock = None
+            else:
+                held = "merge outcome unknown"
+        if lock and lock.get("status") == "waiting":
+            lci = main_ci if lock["merge_sha"] == main_sha else ctx.get("lock_ci", "none")
+            if lci == "green" or (lci != "red" and ctx.get("lock_ahead") is True and main_ci == "green"):
+                # Green for the squash commit, or a newer main head that contains it is already green. A
+                # different main sha alone is not enough: it may be a stale read of the pre-merge head.
+                notes.append({"kind": "merge_lock_released", "repo": repo, "pr": lock["pr"], "merge_sha": lock["merge_sha"],
+                              "via": "merge commit" if lci == "green" else f"newer main {main_sha[:7]}"})
+                del locks[repo]
+                lock = None
+            elif lci == "red":
+                lock = dict(lock, status="red", red_sha=lock["merge_sha"])
+                locks[repo] = lock
+                comment("main CI red", repo, lock["merge_sha"], f"push CI failed on the squash commit of {lock['pr']}")
+            else:
+                held = f"push CI {lci} for {lock['merge_sha'][:7]}"
+                if now - lock.get("merged_at", now) >= timeout:
+                    comment("main CI wait timeout", repo, lock["merge_sha"],
+                            f"no green push CI {int(timeout // 60)} min after merging {lock['pr']} (now {lci})")
+        if lock and lock.get("status") == "red":
+            if ctx.get("red_ahead") is True and main_ci == "green":
+                notes.append({"kind": "merge_red_cleared", "repo": repo, "red_sha": lock["red_sha"], "main_sha": main_sha})
+                del locks[repo]
+                lock = None
+            else:
+                held = f"main CI red at {lock['red_sha'][:7]}"
+        gate = []
+        if lock:
+            gate.append(f"repo_locked:{held or lock.get('status')}")
+            notes.append({"kind": "merge_lock", "repo": repo, "status": lock.get("status"), "pr": lock.get("pr"),
+                          "detail": held})
+        elif main_ci != "green":
+            gate.append(f"main_ci_{main_ci}")
+            if main_ci == "red":
+                comment("main CI red", repo, main_sha, "the push CI run for the current main head failed")
+        chosen = None
+        for it in prs:
+            k = f"{repo}#{it['number']}"
+            reasons = merge_reasons(it, ctx, snapshot, repos, cfg, attempts)
+            if not reasons and gate:
+                reasons = list(gate)
+            if not reasons and chosen:
+                reasons = [f"one_merge_per_repo:{chosen}"]
+            eligible = not reasons
+            if eligible:
+                chosen = k
+                head = it["head_sha"]
+                actions.append({"type": "merge", "target": k, "repo": repo, "head": head, "reason": "verify PASS for the head, checks green, main green",
+                                "agent": agent_of(it.get("body")),
+                                "payload": {"merge_method": "squash", "sha": head,
+                                            "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
+            notes.append({"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
+                          "head": (it.get("head_sha") or "")[:7], "main": f"{main_sha[:7]} {main_ci}"})
+    return actions, notes
+
+
 def decide(snapshot, state, now, cfg, exclusions):
     """Pure: the same inputs give the same output. Returns {"actions", "notes", "state"}."""
     actions, notes = [], []
@@ -673,6 +967,9 @@ def decide(snapshot, state, now, cfg, exclusions):
         actions.append({"type": "dispatch", "target": q[4],
                         "reason": f"next in queue, DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n<!-- orchestrate:dispatch -->"})
+    merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
+    actions += merge_actions
+    notes += merge_notes
     return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending)}
 
 
@@ -700,13 +997,15 @@ def ci_state(gh, repo, sha):
     return ci_verdict(runs, status)
 
 
-def collect(gh, repo_names, now, cfg, run_id):
+def collect(gh, repo_names, now, cfg, run_id, state=None):
     window = int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS"))
     # A since value floored to the UTC day keeps the URL stable for the day, so ETags can match.
     since = iso((int(now) // 86400 - window) * 86400)
     snap = {"run_id": run_id, "repos": [], "items": {}, "deps": {}, "labels": {}}
     srepo, snum = status_target(cfg).split("#")
-    snap["status"] = {"wakes": status_wakes(gh.get_all(f"repos/{OWNER}/{srepo}/issues/{snum}/comments?per_page=100"))}
+    status_comments = gh.get_all(f"repos/{OWNER}/{srepo}/issues/{snum}/comments?per_page=100")
+    snap["status"] = {"wakes": status_wakes(status_comments),
+                      "keys": sorted({m.group(1) for c in status_comments for m in [KEY_RE.search(c.get("body") or "")] if m})}
     for name in repo_names:
         meta, _ = gh.get(f"repos/{OWNER}/{name}")
         snap["repos"].append({"name": name, "archived": bool(meta.get("archived"))})
@@ -766,20 +1065,127 @@ def collect(gh, repo_names, now, cfg, run_id):
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
+    if cfg.get("ORCHESTRATE_MERGE", "dry-run") != "off":
+        collect_merge(gh, snap, repo_names, state)
     return snap
+
+
+def actions_runs(gh, repo, sha):
+    data, _ = gh.get(f"repos/{OWNER}/{repo}/actions/runs?event=push&branch=main&head_sha={sha}&per_page=100")
+    runs = [{"id": r.get("id", 0), "workflow_id": r.get("workflow_id"), "name": r.get("name"),
+             "status": r.get("status"), "conclusion": r.get("conclusion")} for r in (data or {}).get("workflow_runs", [])]
+    if (data or {}).get("total_count", 0) > len(runs):
+        runs.append({"id": 0, "workflow_id": "truncated", "status": "in_progress", "conclusion": None})
+    return runs
+
+
+def main_ahead_of(gh, repo, old, new):
+    """True when main head `new` strictly contains commit `old` (compare status "ahead")."""
+    data, _ = gh.get(f"repos/{OWNER}/{repo}/compare/{old}...{new}?per_page=1")
+    return (data or {}).get("status") == "ahead"
+
+
+def required_checks(gh, repo):
+    """Required checks on main: classic protection plus effective rulesets. [] if neither exists."""
+    out = []
+    try:
+        data, _ = gh.get(f"repos/{OWNER}/{repo}/branches/main/protection/required_status_checks")
+        checks = data.get("checks") or [{"context": c, "app_id": None} for c in data.get("contexts", [])]
+        out += [{"context": c["context"], "app_id": c.get("app_id")} for c in checks]
+    except GhError as e:
+        if e.status != 404:
+            raise
+    rules, _ = gh.get(f"repos/{OWNER}/{repo}/rules/branches/main?per_page=100")
+    for rule in rules or []:
+        if rule.get("type") == "required_status_checks":
+            for c in (rule.get("parameters") or {}).get("required_status_checks", []):
+                out.append({"context": c["context"], "app_id": c.get("integration_id")})
+    uniq = {(c["context"], c["app_id"]): c for c in out}
+    return [uniq[k] for k in sorted(uniq, key=lambda k: (k[0], k[1] or 0))]
+
+
+def merge_info(gh, repo, number):
+    pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    sha = pr["head"]["sha"]
+    runs, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/check-runs?per_page=100")
+    status, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/status")
+    checks = [{"id": r.get("id", 0), "name": r.get("name"), "app_id": (r.get("app") or {}).get("id"),
+               "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha")}
+              for r in (runs or {}).get("check_runs", [])]
+    return {"head_sha": sha, "state": pr.get("state"), "merged": bool(pr.get("merged")), "draft": bool(pr.get("draft")),
+            "base": pr["base"]["ref"], "mergeable": pr.get("mergeable"), "mergeable_state": pr.get("mergeable_state"),
+            "title": pr.get("title") or "", "checks": checks,
+            "checks_truncated": (runs or {}).get("total_count", 0) > len(checks),
+            "statuses": [{"context": st.get("context"), "state": st.get("state")} for st in (status or {}).get("statuses", [])],
+            # The combined status lists only its first page; more contexts than shown fail closed.
+            "statuses_truncated": (status or {}).get("total_count", 0) > len((status or {}).get("statuses", [])),
+            "status_state": (status or {}).get("state")}
+
+
+def collect_merge(gh, snap, repo_names, state):
+    """Rule D inputs, read only for repos with a verify-approved candidate or a merge lock. A read error
+    makes that repo's context an error (no merge there this tick) instead of failing the tick."""
+    locks = (state or {}).get("merge_locks", {})
+    snap["merge"] = {}
+    for name in repo_names:
+        if not any(r["name"] == name and not r.get("archived") for r in snap["repos"]):
+            continue
+        cands = [it for it in snap["items"].values() if it["repo"] == name and it["is_pr"] and it["state"] == "open"
+                 and not it["draft"] and it["base"] == "main" and "verify-approved" in it["labels"]]
+        lock = locks.get(name)
+        if not cands and not lock:
+            continue
+        ctx = {}
+        try:
+            branch, _ = gh.get(f"repos/{OWNER}/{name}/branches/main")
+            ctx["main_sha"] = branch["commit"]["sha"]
+            ctx["main_ci"] = main_ci_verdict(actions_runs(gh, name, ctx["main_sha"]))
+            if lock and lock.get("status") == "merging":
+                _, num_ = lock["pr"].split("#")
+                pr, _ = gh.get(f"repos/{OWNER}/{name}/pulls/{num_}")
+                ctx["lock_pr"] = {"state": pr.get("state"), "merged": bool(pr.get("merged")),
+                                  "merge_commit_sha": pr.get("merge_commit_sha") or ""}
+            if lock and lock.get("status") == "waiting" and lock.get("merge_sha") != ctx["main_sha"]:
+                ctx["lock_ci"] = main_ci_verdict(actions_runs(gh, name, lock["merge_sha"]))
+                ctx["lock_ahead"] = main_ahead_of(gh, name, lock["merge_sha"], ctx["main_sha"])
+            if lock and lock.get("status") == "red" and lock.get("red_sha") != ctx["main_sha"]:
+                ctx["red_ahead"] = main_ahead_of(gh, name, lock["red_sha"], ctx["main_sha"])
+            if cands:
+                ctx["required"] = required_checks(gh, name)
+            for it in cands:
+                it["merge_info"] = merge_info(gh, name, it["number"])
+                for dep in parse_deps(it["body"], name)[0]:
+                    drepo, dnum = dep.split("#")
+                    if dep in snap["items"] or dep in snap["deps"] or drepo not in repo_names:
+                        continue
+                    try:
+                        d, _ = gh.get(f"repos/{OWNER}/{drepo}/issues/{dnum}")
+                        snap["deps"][dep] = {"state": d["state"], "state_reason": d.get("state_reason"),
+                                             "merged": bool((d.get("pull_request") or {}).get("merged_at"))}
+                    except GhError:
+                        snap["deps"][dep] = {"unreadable": True}
+        except (GhError, PermissionError, KeyError, TypeError, ValueError) as e:
+            ctx = {"error": scrub(e)}
+            for it in cands:
+                it.pop("merge_info", None)
+        snap["merge"][name] = ctx
 
 
 # ---------------------------------------------------------------- apply
 
-def apply(result, snapshot, gh, cfg, paths, log, state):
+def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
     """Run the planned actions. Returns the state to save (dry-run never calls this)."""
+    now = now or time.time()
     max_writes = int(num(cfg, "ORCHESTRATE_MAX_WRITES"))
     scope = cfg["ORCHESTRATE_SCOPE"]
     writes, errors = 0, 0
     new_state = result["state"]
     for a in result["actions"]:
-        if a["type"] == "wake_verify" and scope:
-            log("skipped", action="wake_verify", reason="ORCHESTRATE_SCOPE is set")
+        if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
+            log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
+            continue
+        if a["type"] in ("wake_verify", "merge_status") and scope:
+            log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
             log("skipped", action=a["type"], target=a["target"], reason="outside ORCHESTRATE_SCOPE")
@@ -799,6 +1205,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state):
             calls.append(("POST", f"{base}/labels", {"labels": [a["label"]]}))
         elif a["type"] == "remove_label":
             calls.append(("DELETE", f"{base}/labels/{a['label']}", None))
+        elif a["type"] == "merge_status":
+            calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
+        elif a["type"] == "merge":
+            calls.append(("PUT", f"repos/{OWNER}/{repo}/pulls/{number}/merge", a["payload"]))
         label = a.get("add") or a.get("label")
         if label and label not in snapshot["labels"].get(repo, []):
             log("skipped", action=a["type"], target=a["target"], reason=f"label {label} does not exist on {repo}")
@@ -812,6 +1222,20 @@ def apply(result, snapshot, gh, cfg, paths, log, state):
         if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]]):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
             continue
+        if a["type"] == "merge_status" and not recheck_key(gh, repo, number, a["key"]):
+            log("skipped", action="merge_status", reason="a comment with this key already exists")
+            continue
+        if a["type"] == "merge":
+            why = recheck_merge(gh, repo, number, a["head"], new_state, snapshot.get("merge", {}).get(repo, {}))
+            if why:
+                log("skipped", action="merge", target=a["target"], reason=f"target changed since collect: {why}")
+                continue
+            # Journal the lock and the attempt before the PUT: a crash after a merge that landed still
+            # locks the repo, and the next tick resolves "merging" from the PR's merged state.
+            new_state.setdefault("merge_locks", {})[repo] = {"status": "merging", "pr": a["target"], "head": a["head"], "at": now}
+            att = new_state.setdefault("merge_attempts", {})
+            att[f"{a['target']}@{a['head']}"] = att.get(f"{a['target']}@{a['head']}", 0) + 1
+            write_json(paths.state_file, new_state)
         owned = new_state.setdefault("owned_labels", {})
         if a["type"] == "add_label" and a["label"] in MANAGED_LABELS:
             # Journal ownership before the write, so a crash right after it cannot orphan the label.
@@ -822,11 +1246,20 @@ def apply(result, snapshot, gh, cfg, paths, log, state):
         try:
             for method, path, payload in calls:
                 writes += 1  # counted before the call: a failed POST may still have landed
-                gh.write(method, path, payload)
+                resp = gh.write(method, path, payload)
         except (GhError, PermissionError) as e:
             errors += 1
             log("apply_failed", action=a["type"], target=a["target"], error=str(e))
             continue
+        if a["type"] == "merge":
+            msha = (resp or {}).get("sha") or ""
+            if (resp or {}).get("merged") and re.fullmatch(r"[0-9a-f]{40}", msha):
+                new_state["merge_locks"][repo] = {"status": "waiting", "pr": a["target"], "head": a["head"],
+                                                  "merge_sha": msha, "at": now, "merged_at": now}
+            write_json(paths.state_file, new_state)
+            # The Agent: line is logged as written in the PR body (empty when absent); no rule reads it.
+            log("merged", target=a["target"], head=a["head"], merge_sha=msha, agent=a.get("agent", ""),
+                note="Agent: is informational; eligibility never depends on it", reason=a["reason"])
         if a["type"] == "remove_label" and a["target"] in owned.get(a["label"], []):
             owned[a["label"]].remove(a["target"])
         if a["type"] == "wake_verify":
@@ -838,6 +1271,43 @@ def apply(result, snapshot, gh, cfg, paths, log, state):
 def recheck_wake(gh, repo, number, key):
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     return key not in {w["key"] for w in status_wakes(comments)}
+
+
+def recheck_key(gh, repo, number, key):
+    comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
+    return not any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in comments)
+
+
+def recheck_merge(gh, repo, number, head, new_state, ctx):
+    """Re-read the PR, its head checks and main right before the merge. Returns '' when it may go
+    ahead, else why not. The pinned sha protects only the head, so the CI verdicts are re-read too."""
+    if repo in new_state.get("merge_locks", {}):
+        return "repo is locked"
+    try:
+        branch, _ = gh.get(f"repos/{OWNER}/{repo}/branches/main")
+        if branch["commit"]["sha"] != ctx.get("main_sha"):
+            return "main moved"
+        if main_ci_verdict(actions_runs(gh, repo, ctx["main_sha"])) != "green":
+            return "main push CI is no longer green"
+        info = merge_info(gh, repo, number)
+    except (GhError, PermissionError, KeyError, TypeError) as e:
+        return f"re-read failed: {scrub(e)}"
+    if info["head_sha"] != head:
+        return "head moved"
+    bad = head_check_reasons(info, ctx.get("required"))
+    if bad:
+        return "head checks changed: " + ", ".join(bad[:3])
+    pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    names = {lb["name"] for lb in pr.get("labels", [])}
+    if pr.get("state") != "open" or pr.get("merged"):
+        return "not open"
+    if pr["head"]["sha"] != head:
+        return "head moved"
+    if pr.get("draft") or pr["base"]["ref"] != "main":
+        return "draft or base changed"
+    if "verify-approved" not in names or names & set(OPT_OUT_LABELS) or OPT_OUT_MARKER in (pr.get("body") or ""):
+        return "labels or opt-out changed"
+    return ""
 
 
 def recheck_dispatch(gh, repo, number, item):
@@ -895,7 +1365,7 @@ def tick(paths, cfg, args, gh=None, now=None):
                     write_json(paths.health, health)
                     return 0
                 repos = load_repos(args.repos, cfg["ORCHESTRATE_EXTRA_REPOS"])
-                snapshot = collect(gh, repos, now, cfg, run_id)
+                snapshot = collect(gh, repos, now, cfg, run_id, state)
             except (GhError, PermissionError, KeyError, ValueError) as e:
                 status = getattr(e, "status", 0)
                 event = "auth_failed" if status in (401, 403) else "collect_failed"
@@ -916,7 +1386,7 @@ def tick(paths, cfg, args, gh=None, now=None):
             print(json.dumps({"run_id": run_id, "mode": mode, "pending_count": result["pending_count"],
                               "actions": result["actions"], "notes": result["notes"]}, indent=1, sort_keys=True))
         if mode == "apply":
-            new_state, errors = apply(result, snapshot, gh, cfg, paths, log, state)
+            new_state, errors = apply(result, snapshot, gh, cfg, paths, log, state, now)
             write_json(paths.state_file, new_state)
             if errors:
                 gh.save_cache()

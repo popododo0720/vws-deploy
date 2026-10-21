@@ -1,12 +1,13 @@
 # Factory orchestrator (vws-deploy#333)
 
-A deterministic script that runs three routine factory steps on GitHub state. It never calls an LLM.
+A deterministic script that runs four routine factory steps on GitHub state. It never calls an LLM.
 
 | rule | what it does |
 |---|---|
 | A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
 | B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. |
+| D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and posts one failure comment on #339. See "Rule D" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
@@ -55,15 +56,94 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
 - **Labels:** labels are never created. An action whose label is missing on the repo is skipped and
   logged.
 
+## Rule D: serialized merges (vws-deploy#346)
+
+A GitHub merge queue needs an organization-owned repo, and the vws repos are user-owned, so the
+orchestrator serializes merges itself. `decide()` lists every reason a PR cannot merge. The log has
+one `note` with kind `merge_check` per open PR (`eligible`, `reasons`, head and main state), so each
+tick records why each PR would or would not be merged.
+
+A PR is eligible only when all of these hold:
+
+| rule | reason when it fails |
+|---|---|
+| not a draft, base `main` | `draft`, `base_not_main` (stacked PRs never merge) |
+| label `verify-approved` | `no_verify_approved` |
+| not opted out: no `do-not-merge` or `hold` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status thread | `opted_out` |
+| the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
+| every required check of `main` (classic protection plus rulesets, bound to its app id) is success on the head | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
+| every other check run on the head is success, skipped or neutral, and every commit status is success (AGENTS.md rule 5) | `check_failed:<name>`, `check_pending:<name>`, `status_<state>:<context>`, `combined_status_<state>`, `checks_truncated`, `statuses_truncated` |
+| `mergeable` is true and `mergeable_state` is `clean`, `has_hooks` or `unstable` | `mergeable_unknown` (GitHub is still computing; next tick), `conflicts`, `mergeable_state:<state>` |
+| the head did not move during collect, and the PR is still open | `head_moved_during_collect`, `not_open` |
+| the body has `Part of #N`, and the title has no closing keyword | `no_part_of`, `closing_keyword_in_title` |
+| every `Depends on` is met (same rules as the DeepSeek queue) | `dep_unmet:<ref>` |
+| fewer than `ORCHESTRATE_MERGE_MAX_ATTEMPTS` (2) failed merge attempts for this head | `merge_attempts_exhausted` |
+| the repo is not locked, and main's push CI is green | `repo_locked:<why>`, `main_ci_pending`, `main_ci_none`, `main_ci_red` |
+| no other PR of the repo is chosen this tick (lowest number first) | `one_merge_per_repo:<pr>` |
+
+The `Agent:` line of the PR body is copied into the `merged` log event (`agent`, empty when absent).
+No rule reads it, so a PR without that line merges the same way.
+
+**Merge call.** `PUT repos/O/R/pulls/N/merge` with `{"merge_method": "squash", "sha": "<verified head>",
+"commit_title": "<PR title> (#N)"}`. The squash message stays GitHub's default (the commit messages),
+so the `Part of #N` lines are kept. GitHub refuses the merge if the head moved after verification. The
+gh wrapper accepts no other PUT and no other payload. The code has no `update-branch` and no admin
+merge. Right before the PUT the orchestrator reads again: main must still be at the collected head
+with a green push CI, the head checks must still pass every check rule above, and the PR must still be
+open, at the same head, not a draft, on base `main`, with `verify-approved` and no opt-out. The pinned
+`sha` protects only the head, so the CI verdicts are re-read too.
+
+**Rulesets.** Required checks are the union of classic protection and `rules/branches/main`, so the
+`vws-main` ruleset (squash only, required checks such as `english`) is honored. Each requirement is
+bound to its app id. A commit status can satisfy only a requirement that has no app id. The
+orchestrator always squashes, never updates the branch (no merge commits for guard R2), and never
+bypasses a ruleset or protection.
+
+**Main push CI.** The Actions runs for one commit with `event=push` on `main`, newest run per
+workflow: `green` when every run completed as success, skipped or neutral; `red` when any failed or
+was cancelled; `pending` while any is running; `none` when there is no run yet.
+
+**Lock per repo** (`merge_locks` in `state.json`):
+
+| status | set when | released when |
+|---|---|---|
+| `merging` | journaled right **before** the PUT, with the attempt count | next tick: the PR is merged (the lock becomes `waiting` with GitHub's `merge_commit_sha`), or it is still open and unmerged (the lock is dropped; the attempt counts) |
+| `waiting` | the PUT answered `merged` with the squash sha | the squash commit's push CI is green, or a newer main head that contains it (compare status `ahead`) is green |
+| `red` | the squash commit's push CI is red | a newer main head that contains the red commit has a green push CI (a fix landed). A green re-run of the same commit does not clear it. |
+
+A different main sha alone never releases a lock, because `branches/main` may still show the
+pre-merge head right after a merge. While a repo is locked, nothing in it merges (`repo_locked`).
+
+**Status comments.** A red main (after our merge, or a red current main head in a repo with a
+candidate) posts **one** comment on #339 per repo and commit. Its first line is
+`<!-- vws-orchestrate:failure -->` and it has `Kind: merge-main-CI-red`. A lock still waiting after
+`ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS` (2) posts one `Kind: merge-main-CI-wait-timeout` comment and
+stays locked. The key (sha256 of kind, repo and commit) is checked against #339 before posting, so
+there is no retry loop. These comments count toward the write cap and are skipped while
+`ORCHESTRATE_SCOPE` is set.
+
+**Switches.** Merges need both `ORCHESTRATE_MODE=apply` and `ORCHESTRATE_MERGE=apply`. The default
+`ORCHESTRATE_MERGE=dry-run` plans and logs merges but never calls the merge API, even in apply mode.
+`off` skips rule D and its reads. `ORCHESTRATE_SCOPE=vws-x#N` limits merges to that one PR. The STOP
+file and the write cap apply as for every write (one merge is one write).
+
+**Reads.** Rule D reads only repos with a `verify-approved` candidate or a lock: `branches/main`, the
+push Actions runs for one main commit, `branches/main/protection/required_status_checks` (404 means
+no classic protection), `rules/branches/main`, and for each candidate the PR, its check runs and its
+combined status. A lock also reads `compare/<old>...<main>`. A read error in one repo means no merge
+there this tick (`merge_repo_unreadable`), not a failed tick.
+
 ## Safety limits
 
 - **gh login:** the box's existing `gh` login, with `GH_TOKEN` and `GITHUB_TOKEN` removed from every
   gh call. There are no other secrets.
 - **Allowlist:** every call goes through an allowlist:
   - GET: repo, issues, pulls, labels, repo comments, one issue or PR, issue events and comments,
-    check runs, combined status, `rate_limit`;
+    check runs, combined status, `rate_limit`; for rule D also `branches/main`, its required status
+    checks, `rules/branches/main`, push Actions runs for one main commit, and `compare/<sha>...<sha>`;
   - POST: issue comments and issue labels;
-  - DELETE: only the labels `blocked`, `in-review`, `deepseek`.
+  - DELETE: only the labels `blocked`, `in-review`, `deepseek`;
+  - PUT: only `pulls/N/merge` with `merge_method` squash and a 40-hex `sha` (rule D).
 - **Conditional reads:** reads send `If-None-Match`. A 304 is served from
   `~/.local/state/vws-orchestrate/etag-cache.json` and does not use the primary rate limit. The
   comment `since` value is floored to the UTC day, so its URL and ETag stay stable.
@@ -134,6 +214,9 @@ Config keys and defaults:
 - `VERIFY_WAKE_THRESHOLD=5`
 - `VERIFY_WAKE_EDGE_MIN_HOURS=1`
 - `VERIFY_WAKE_COOLDOWN_HOURS=6`
+- `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
+- `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`
+- `ORCHESTRATE_MERGE_MAX_ATTEMPTS=2`
 
 ## Install (after this PR merges; from merged main)
 
@@ -177,6 +260,9 @@ tail -n 5 "$S/log/orchestrate.jsonl"
 rg -c 'gho_|ghp_|github_pat_|Bearer ' "$S/log"    # no matches
 ```
 
+Merging (rule D) is switched on separately with `ORCHESTRATE_MERGE=apply`, also only with dr eggbot's
+approval, and first with `ORCHESTRATE_SCOPE` set to one verified PR.
+
 Switch to apply only with dr eggbot's approval, first scoped to one throwaway issue
 (`ORCHESTRATE_SCOPE=vws-deploy#<n>`, `ORCHESTRATE_MODE=apply` in the env file), then clear the scope.
 
@@ -190,5 +276,7 @@ Switch to apply only with dr eggbot's approval, first scoped to one throwaway is
 | stop | `kill "$(cat /home/box/.local/state/vws-orchestrate/loop.pid)"` |
 | uninstall | stop, then `rm -rf /home/box/.local/opt/vws-orchestrate /home/box/.local/state/vws-orchestrate /home/box/.config/vws-orchestrate` |
 
-GitHub writes are listed by `"event": "applied"` lines in the log. Reverting them is a manual,
+To unlock a repo by hand, remove its entry from `merge_locks` in `state.json` while the loop is
+stopped or STOP is present. GitHub writes are listed by `"event": "applied"` lines in the log, and each
+merge also has a `"event": "merged"` line. Reverting them is a manual,
 approved step.
