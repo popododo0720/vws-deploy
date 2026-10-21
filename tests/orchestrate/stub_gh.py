@@ -4,7 +4,8 @@
 Answers `gh api -i --method M PATH [-H If-None-Match: E] [--input -]` from $STUB_ROUTES (JSON:
 {"<path without query>": {"status": 200, "body": ...}}) and appends every call, with its stdin and
 whether GH_TOKEN was set, to $STUB_LOG. Unknown GET paths answer []. Writes answer 201 unless
-$STUB_DENY_WRITES is set. A GET whose If-None-Match equals the route's etag answers 304.
+$STUB_DENY_WRITES is set; a "<METHOD> <path>" route overrides a write answer. A GET whose
+If-None-Match equals the route's etag answers 304. A route key with the query string wins over one without.
 """
 import hashlib
 import json
@@ -27,9 +28,13 @@ if method != "GET":
     if os.environ.get("STUB_DENY_WRITES"):
         print("HTTP/2.0 500 Internal Server Error\n\n{}")
         sys.exit(1)
+    w = routes.get(f"{method} {key}")
+    if w:
+        print(f"HTTP/2.0 {w.get('status', 200)} X\n\n{json.dumps(w['body'])}")
+        sys.exit(0 if w.get("status", 200) < 400 else 1)
     print('HTTP/2.0 201 Created\n\n{"id": 1}')
     sys.exit(0)
-r = routes.get(key, {"status": 200, "body": []})
+r = routes.get(path) or routes.get(key, {"status": 200, "body": []})  # an exact path with query wins
 etag = 'W/"' + hashlib.sha256(json.dumps(r["body"], sort_keys=True).encode()).hexdigest()[:16] + '"'
 if inm and inm == etag:
     print("HTTP/2.0 304 Not Modified\nEtag: " + etag + "\n")
