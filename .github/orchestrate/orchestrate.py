@@ -102,6 +102,10 @@ DEFAULTS = {
     "ORCHESTRATE_MERGE": "dry-run",
     "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
     "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
+    "ORCHESTRATE_BOARD": "dry-run",
+    "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
+    "ORCHESTRATE_BOARD_EVERY": "6",
+    "ORCHESTRATE_BOARD_WRITES": "50",
 }
 
 
@@ -143,6 +147,7 @@ class Paths:
         self.failure_file = os.path.join(self.state, "failure.json")
         self.health = os.path.join(self.state, "health.json")
         self.cache = os.path.join(self.state, "etag-cache.json")
+        self.board_file = os.path.join(self.state, "board.json")
         self.lock = os.path.join(self.state, "run.lock")
         self.log_dir = os.path.join(self.state, "log")
         self.log = os.path.join(self.log_dir, "orchestrate.jsonl")
@@ -169,8 +174,15 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
+    if cfg["ORCHESTRATE_BOARD"] not in ("off", "dry-run", "apply"):
+        raise ValueError("ORCHESTRATE_BOARD must be off, dry-run or apply")
+    if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
+        raise ValueError("ORCHESTRATE_BOARD_PROJECT must be a ProjectV2 node id (PVT_...)")
+    for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES"):
+        if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
+            raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -385,6 +397,23 @@ class Gh:
         if status not in (200, 201, 204):
             raise GhError(status, scrub(body[:200]))
         return json.loads(body) if body.strip() else None
+
+    def graphql(self, query, variables, write=False):
+        """Projects v2 (board_sync) only. A write must be a batch of the three item mutations, built from
+        the BOARD_* templates with every value in variables; anything else is refused before the call."""
+        if write:
+            if not board_write_ok(query):
+                raise PermissionError("graphql mutation not allowed")
+        elif query != BOARD_QUERY:
+            raise PermissionError("graphql query not allowed")
+        args = ["gh", "api", "-i", "graphql", "--input", "-"]
+        stdin = json.dumps({"query": query, "variables": variables})
+        status, _headers, body = self._run(args, stdin, tries=1 if write else None)
+        self.stats["write" if write else "get"] += 1
+        out = json.loads(body) if body.strip() else {}
+        if status != 200 or out.get("errors") or "data" not in out:
+            raise GhError(status, scrub(json.dumps(out.get("errors") or body[:200])[:300]))
+        return out["data"]
 
     def save_cache(self):
         if self.cache_path:
@@ -1103,6 +1132,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None):
                 "repo": name, "number": i["number"], "url": i["html_url"], "is_pr": "pull_request" in i,
                 "state": i["state"], "state_reason": i.get("state_reason"), "created_at": i["created_at"],
                 "labels": sorted(lb["name"] for lb in i.get("labels", [])), "body": i.get("body") or "",
+                "node_id": i.get("node_id", ""),
                 "draft": bool(p and p.get("draft")), "base": p["base"]["ref"] if p else "",
                 "head_sha": p["head"]["sha"] if p else "", "comments": [], "events": [], "report_prs": {},
             }
@@ -1407,6 +1437,240 @@ def recheck_dispatch(gh, repo, number, item):
     return issue["state"] == "open" and {"ready", "deepseek"} <= names and not names & {"grok", "blocked"}
 
 
+# ---------------------------------------------------------------- board_sync (vws-deploy#347)
+# One-way mirror of labels and bodies to the user project (Projects v2). It writes project items
+# only; decide() never reads the board. Field and option creation stays with board-apply.sh.
+
+BOARD_FIELDS = ("Status", "Owner", "Priority", "Depends on")
+BOARD_BATCH = 20  # aliased mutations per GraphQL request
+BOARD_PAUSE = 3  # seconds between write requests (secondary rate limit)
+BOARD_LABELS = ("blocked", "in-review", "deepseek")  # a change to these triggers a sync on the next tick
+BOARD_QUERY = (
+    "query($p:ID!,$after:String){ rateLimit{ remaining resetAt } node(id:$p){ ... on ProjectV2{"
+    " fields(first:50){ nodes{ ... on ProjectV2FieldCommon{ id name }"
+    " ... on ProjectV2SingleSelectField{ options{ id name } } } }"
+    " items(first:100, after:$after){ pageInfo{ hasNextPage endCursor } nodes{ id"
+    " content{ ... on Issue{ url state } ... on PullRequest{ url state } }"
+    " fieldValues(first:30){ nodes{"
+    " ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ name } } }"
+    " ... on ProjectV2ItemFieldTextValue{ text field{ ... on ProjectV2FieldCommon{ name } } } } } } } } } }")
+# A write request is built only from these templates; every value travels in GraphQL variables.
+BOARD_ADD = "m{i}: addProjectV2ItemById(input:{{projectId:$p, contentId:$c{i}}}){{ item{{ id }} }}"
+BOARD_SET = ("m{i}: updateProjectV2ItemFieldValue(input:{{projectId:$p, itemId:$i{i}, fieldId:$f{i}, "
+             "value:{{{kind}:$v{i}}}}}){{ clientMutationId }}")
+BOARD_CLEAR = "m{i}: clearProjectV2ItemFieldValue(input:{{projectId:$p, itemId:$i{i}, fieldId:$f{i}}}){{ clientMutationId }}"
+GQL_DECL_RE = re.compile(r"^\$p:ID!(, (\$[cif][0-9]+:ID|\$v[0-9]+:String)!)*$")
+
+
+def board_write_ok(query):
+    """True only for a batch whose every part is one of the BOARD_* templates, verbatim, with its index."""
+    m = re.fullmatch(r"mutation\(([^()]*)\)\{ (.+) \}", query, re.S)
+    if not m or not GQL_DECL_RE.match(m.group(1)):
+        return False
+    for part in re.split(r" (?=m[0-9]+: )", m.group(2)):
+        i = re.match(r"m([0-9]+): ", part)
+        if not i or part not in (BOARD_ADD.format(i=i.group(1)), BOARD_CLEAR.format(i=i.group(1)),
+                                 BOARD_SET.format(i=i.group(1), kind="text"),
+                                 BOARD_SET.format(i=i.group(1), kind="singleSelectOptionId")):
+            return False
+    return True
+
+
+def board_values(it):
+    """The board fields of one open item, from its labels and body only (design table, first match wins)."""
+    L = set(it["labels"])
+    if "blocked" in L:
+        status = "Blocked"
+    elif it["is_pr"] or "in-review" in L:
+        status = "In review"
+    elif "grok" in L:
+        status = "Grok"
+    elif "deepseek" in L:
+        status = "DeepSeek"
+    elif "ready" in L:
+        status = "Ready"
+    else:
+        status = "Backlog"
+    if "grok" in L:
+        owner = "grok"
+    elif "deepseek" in L:
+        owner = "deepseek"
+    elif "in-review" in L or (it["is_pr"] and not it["draft"]):
+        owner = "verify"
+    else:
+        owner = ""
+    return {"Status": status, "Owner": owner, "Priority": "Blocker" if "priority/blocker" in L else "Normal",
+            "Depends on": ", ".join(parse_deps(it.get("body"), it["repo"])[0])}
+
+
+def board_due(bstate, every):
+    """Sync on the first tick, when ORCHESTRATE_BOARD_EVERY ticks have passed, or after a label change."""
+    return bool(bstate.get("dirty")) or "last_sync" not in bstate or bstate.get("ticks", 0) + 1 >= every
+
+
+def board_plan(open_items, board_items, budget, scope=""):
+    """Pure diff. open_items: collect() items (open only). board_items: url -> {id, state, values}.
+    Returns (mutations within the budget, number deferred). A mutation is a dict with op add|set|clear,
+    target, url, field, value and item (a board item id, or None for an item added in the same run).
+    Budget order: Status of existing items (closed -> Done included), adds with their Status, Owner and
+    Priority, Depends on. Every mutation sets the computed value, so a cut-off run converges."""
+    tiers = [[], [], [], []]
+    open_urls = set()
+    for key, it in sorted(open_items.items()):
+        if scope and key != scope:
+            continue
+        open_urls.add(it["url"])
+        cur = board_items.get(it["url"])
+        want = board_values(it)
+        have = cur["values"] if cur else {}
+        if cur is None:
+            tiers[1].append({"op": "add", "target": key, "url": it["url"], "content": it.get("node_id"), "item": None})
+        for name in BOARD_FIELDS:
+            val, was = want[name], have.get(name) or ""
+            if val == was:
+                continue  # empty and unset compare equal, so clearing an unset field costs nothing
+            m = {"op": "set" if val else "clear", "target": key, "url": it["url"], "field": name, "value": val,
+                 "was": was, "item": cur["id"] if cur else None}
+            tier = {"Status": 0 if cur else 1, "Owner": 2, "Priority": 2, "Depends on": 3}[name]
+            tiers[tier].append(m)
+    for url, cur in sorted(board_items.items()):
+        # Fallback for the built-in Done workflows: a closed or merged item not marked Done gets Done.
+        if url in open_urls or cur.get("state") not in ("CLOSED", "MERGED") or cur["values"].get("Status") == "Done":
+            continue
+        m = URL_RE.match(url)
+        if not m or m.group(1) != OWNER or not m.group(2).startswith("vws-"):
+            continue
+        key = f"{m.group(2)}#{m.group(3)}"
+        if scope and key != scope:
+            continue
+        tiers[0].append({"op": "set", "target": key, "url": url, "field": "Status", "value": "Done",
+                         "was": cur["values"].get("Status") or "", "item": cur["id"]})
+    out, added, deferred = [], set(), 0
+    for tier in tiers:
+        for m in tier:
+            if m["item"] is None and m["op"] != "add" and m["url"] not in added:
+                deferred += 1  # its add did not fit the budget
+                continue
+            if len(out) >= budget:
+                deferred += 1
+                continue
+            if m["op"] == "add":
+                added.add(m["url"])
+            out.append(m)
+    return out, deferred
+
+
+def board_read(gh, project):
+    """Fields and items of the project, plus the GraphQL rate limit from the same query."""
+    fields, items, after, remaining = {}, {}, None, None
+    for _ in range(20):
+        data = gh.graphql(BOARD_QUERY, {"p": project, "after": after})
+        remaining = (data.get("rateLimit") or {}).get("remaining")
+        node = data.get("node") or {}
+        if "items" not in node:
+            raise GhError(0, f"project {project} not found or not readable")
+        for f in node["fields"]["nodes"]:
+            if f and f.get("name"):
+                fields[f["name"]] = {"id": f["id"], "options": {o["name"]: o["id"] for o in f.get("options") or []}}
+        for n in node["items"]["nodes"]:
+            url = (n.get("content") or {}).get("url")
+            if not url:
+                continue
+            vals = {}
+            for v in n["fieldValues"]["nodes"]:
+                if v and v.get("field"):
+                    vals[v["field"]["name"]] = v.get("name", v.get("text"))
+            items[url] = {"id": n["id"], "state": n["content"].get("state"), "values": vals}
+        page = node["items"]["pageInfo"]
+        if not page["hasNextPage"]:
+            return fields, items, remaining
+        after = page["endCursor"]
+    raise GhError(0, "more than 20 pages of board items")
+
+
+def board_write(gh, project, fields, muts, sleep):
+    """Run the planned mutations in aliased batches: adds first (they give the new item ids), then sets."""
+    for name in {m["field"] for m in muts if m["op"] != "add"}:
+        if name not in fields:
+            raise ValueError(f"board field {name!r} is missing; create it with board-apply.sh")
+    new_ids, done = {}, 0
+    adds = [m for m in muts if m["op"] == "add"]
+    sets = [m for m in muts if m["op"] != "add"]
+    for group in (adds, sets):
+        for start in range(0, len(group), BOARD_BATCH):
+            chunk = group[start:start + BOARD_BATCH]
+            decl, parts, variables = ["$p:ID!"], [], {"p": project}
+            for i, m in enumerate(chunk):
+                if m["op"] == "add":
+                    if not m.get("content"):
+                        raise ValueError(f"{m['target']}: no node id to add")
+                    decl.append(f"$c{i}:ID!")
+                    variables[f"c{i}"] = m["content"]
+                    parts.append(BOARD_ADD.format(i=i))
+                    continue
+                f = fields[m["field"]]
+                decl += [f"$i{i}:ID!", f"$f{i}:ID!"]
+                variables[f"i{i}"] = m["item"] or new_ids[m["url"]]
+                variables[f"f{i}"] = f["id"]
+                if m["op"] == "clear":
+                    parts.append(BOARD_CLEAR.format(i=i))
+                    continue
+                if f["options"]:
+                    if m["value"] not in f["options"]:
+                        raise ValueError(f"board field {m['field']!r} has no option {m['value']!r}; run board-apply.sh")
+                    kind, val = "singleSelectOptionId", f["options"][m["value"]]
+                else:
+                    kind, val = "text", m["value"]
+                decl.append(f"$v{i}:String!")  # ProjectV2FieldValue: text and singleSelectOptionId are String
+                variables[f"v{i}"] = val
+                parts.append(BOARD_SET.format(i=i, kind=kind))
+            if done:
+                sleep(BOARD_PAUSE)
+            data = gh.graphql(f"mutation({', '.join(decl)}){{ {' '.join(parts)} }}", variables, write=True)
+            done += len(chunk)
+            for i, m in enumerate(chunk):
+                if m["op"] == "add":
+                    new_ids[m["url"]] = data[f"m{i}"]["item"]["id"]
+    return done
+
+
+def board_sync(gh, snapshot, cfg, paths, log, mode, label_change):
+    """After apply(): mirror labels to the board on sync ticks. Never raises and never fails the tick."""
+    if cfg["ORCHESTRATE_BOARD"] == "off":
+        return
+    bstate = read_json(paths.board_file, {})
+    if not board_due(bstate, int(num(cfg, "ORCHESTRATE_BOARD_EVERY"))):
+        bstate["ticks"] = bstate.get("ticks", 0) + 1
+    else:
+        bstate.update(ticks=0, dirty=False, last_sync=iso(time.time()))
+        try:
+            fields, items, remaining = board_read(gh, cfg["ORCHESTRATE_BOARD_PROJECT"])
+            if remaining is not None and remaining < num(cfg, "ORCHESTRATE_RATE_FLOOR"):
+                log("board_skipped", reason="GraphQL rate limit below the floor", remaining=remaining)
+            else:
+                open_items = {k: it for k, it in snapshot["items"].items() if it["state"] == "open"}
+                muts, deferred = board_plan(open_items, items, int(num(cfg, "ORCHESTRATE_BOARD_WRITES")),
+                                            cfg["ORCHESTRATE_SCOPE"])
+                for m in muts:
+                    log("board_plan", op=m["op"], target=m["target"], field=m.get("field"), value=m.get("value"),
+                        was=m.get("was"))
+                write = mode == "apply" and cfg["ORCHESTRATE_BOARD"] == "apply"
+                if write and muts and os.path.exists(paths.stop):
+                    log("board_skipped", reason="STOP file present")
+                elif write and muts:
+                    n = board_write(gh, cfg["ORCHESTRATE_BOARD_PROJECT"], fields, muts, gh.sleep)
+                    log("board_synced", writes=n, deferred=deferred, rate_remaining=remaining)
+                else:
+                    log("board_synced", writes=0, planned=len(muts), deferred=deferred, rate_remaining=remaining,
+                        dry_run=not write)
+        except Exception as e:  # noqa: BLE001 - a board outage must never fail the tick or stop dispatch
+            bstate["errors"] = bstate.get("errors", 0) + 1
+            log("board_sync_error", error=scrub(e))
+    if label_change:
+        bstate["dirty"] = True
+    write_json(paths.board_file, bstate)
+
+
 # ---------------------------------------------------------------- commands
 
 def run_id_now(now):
@@ -1472,6 +1736,13 @@ def tick(paths, cfg, args, gh=None, now=None):
         if mode == "apply":
             new_state, errors = apply(result, snapshot, gh, cfg, paths, log, state, now)
             write_json(paths.state_file, new_state)
+        if gh is not None:
+            # Over-counting is harmless: a planned label action only brings the next sync forward.
+            label_change = mode == "apply" and any(
+                a["type"] in ("add_label", "remove_label", "swap_label")
+                and {a.get("label"), a.get("add"), a.get("remove")} & set(BOARD_LABELS) for a in result["actions"])
+            board_sync(gh, snapshot, cfg, paths, log, mode, label_change)
+        if mode == "apply":
             if errors:
                 gh.save_cache()
                 prev_errors = read_json(paths.health, {}).get("recent_errors", [])
