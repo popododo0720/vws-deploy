@@ -74,6 +74,59 @@ class LoadCommon(unittest.TestCase):
         dc.load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
 
 
+class GuardVariants(unittest.TestCase):
+    WANT = "a" * 64
+    VARIANT = "7070d89befc2ef534ea190006cad968d425a5793c416c33bc4daa275b5de2383"
+
+    def load(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            f.write(text)
+        self.addCleanup(os.unlink, f.name)
+        return dc.load_variants(f.name)
+
+    def test_canonical_sha_is_ok(self):
+        self.assertEqual(dc.guard_status(self.WANT, self.WANT, self.VARIANT), (None, "ok"))
+
+    def test_accepted_variant(self):
+        self.assertEqual(dc.guard_status(self.VARIANT, self.WANT, self.VARIANT), (None, "accepted variant (7070d89befc2)"))
+
+    def test_unexpected_sha_with_a_variant_is_drift(self):
+        issue, _ = dc.guard_status("b" * 64, self.WANT, self.VARIANT)
+        self.assertEqual(issue, "guard-agents.sh differs from vws-deploy")
+
+    def test_repo_without_an_exception_is_drift(self):
+        variants = self.load("vws-conformance\t%s\treason\n" % self.VARIANT)
+        issue, _ = dc.guard_status(self.VARIANT, self.WANT, variants.get("vws-lib"))
+        self.assertEqual(issue, "guard-agents.sh differs from vws-deploy")
+
+    def test_load(self):
+        text = "# comment\n\nvws-conformance\t%s\tcheck-run variant\n" % self.VARIANT
+        self.assertEqual(self.load(text), {"vws-conformance": self.VARIANT})
+
+    def test_missing_file_means_no_variants(self):
+        self.assertEqual(dc.load_variants("/nonexistent/guard-variants.tsv"), {})
+
+    def test_bad_rows(self):
+        bad = (
+            "vws-conformance\t%s\n" % self.VARIANT,  # no reason
+            "vws-conformance\t%s\t \n" % self.VARIANT,  # blank reason
+            "vws-conformance\t7070d89b\treason\n",  # short sha
+            "vws-conformance\t%s\treason\n" % self.VARIANT.upper(),  # not lowercase
+            "\t%s\treason\n" % self.VARIANT,  # no repo
+            "vws-conformance\t%s\tr\nvws-conformance\t%s\tr\n" % (self.VARIANT, "c" * 64),  # repeated repo
+        )
+        for text in bad:
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(err):
+                self.load(text)
+            self.assertEqual(cm.exception.code, 2, text)
+            self.assertIn("drift-check:", err.getvalue())
+
+    def test_repo_file_pins_the_conformance_variant(self):
+        variants = dc.load_variants(os.path.join(ROOT, ".github", "drift", "guard-variants.tsv"))
+        self.assertEqual(variants, {"vws-conformance": self.VARIANT})
+
+
 class ExitStatus(unittest.TestCase):
     def test_drift_is_not_a_crash_status(self):
         # 1 is what Python returns on a traceback; drift must not share it with a crash.
