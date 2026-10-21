@@ -8,7 +8,9 @@ box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from
 Rules (see docs/factory-orchestrator.md):
   A  wake vws-verify with one marker comment on the status thread (draft PR vws-deploy#339) when
      >= VERIFY_WAKE_THRESHOLD PRs wait for verify (edge-triggered, one comment per pending set)
-  B  hand the next ready+deepseek task to DeepSeek, one at a time, with an @deepseek-dev comment
+  B  hand the next ready+deepseek tasks to DeepSeek, at most ORCHESTRATE_DEEPSEEK_CAP (2) in flight
+     and one per repo, with an @deepseek-dev comment; a task whose Depends on target is still open is
+     never dispatched
   C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok
 
 A failed tick streak is reported the same way, with a failure marker comment on the status thread
@@ -58,6 +60,7 @@ DEFAULTS = {
     "ORCHESTRATE_COMMENT_WINDOW_DAYS": "14",
     "DEEPSEEK_TIMEOUT_HOURS": "3",
     "DEEPSEEK_MAX_FAILURES": "2",
+    "ORCHESTRATE_DEEPSEEK_CAP": "2",
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
     "VERIFY_WAKE_COOLDOWN_HOURS": "6",
@@ -125,6 +128,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_SCOPE must look like vws-deploy#123")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_STATUS_PR"]):
         raise ValueError(f"ORCHESTRATE_STATUS_PR must be a positive integer, got {cfg['ORCHESTRATE_STATUS_PR']!r}")
+    if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_DEEPSEEK_CAP"]):
+        raise ValueError(f"ORCHESTRATE_DEEPSEEK_CAP must be a positive integer, got {cfg['ORCHESTRATE_DEEPSEEK_CAP']!r}")
     if cfg["ORCHESTRATE_FAILURE_ALERT"] not in ("apply", "always", "never"):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
@@ -559,6 +564,7 @@ def decide(snapshot, state, now, cfg, exclusions):
         # (the write never happened, or a human removed it).
         owned[name] = [k for k in owned.get(name, []) if k in items and name in items[k]["labels"]]
     max_fail = int(num(cfg, "DEEPSEEK_MAX_FAILURES"))
+    cap = int(num(cfg, "ORCHESTRATE_DEEPSEEK_CAP"))
     cycles = find_cycles(snapshot)
 
     # Rule A: pending PRs and the verify wake
@@ -582,7 +588,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     new_state["prev_pending_count"] = len(pending)
 
     # Rules B and C
-    in_flight, queue = [], []
+    in_flight, queue, slots_used = [], [], 0
     for k in sorted(items):
         it = items[k]
         if it["state"] != "open":
@@ -591,8 +597,10 @@ def decide(snapshot, state, now, cfg, exclusions):
         for h in hist:
             if h["kind"] == "pr_outside_vws":
                 notes.append({"kind": "report_pr_outside_vws", "target": k, "pr": h["pr"]})
-        if any(h["outcome"] == "in_flight" for h in hist):
+        running = sum(1 for h in hist if h["outcome"] == "in_flight")
+        if running:
             in_flight.append(k)
+            slots_used += running
         labels = set(it["labels"])
         if "grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]:
             # Moved to grok earlier (or a swap stopped before this label call): DeepSeek review is over.
@@ -634,7 +642,8 @@ def decide(snapshot, state, now, cfg, exclusions):
             actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
         if (latest and latest["outcome"] in ("done", "failed") and "in-review" in labels and k in owned["in-review"]):
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
-        eligible = (not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
+        # A running target is never dispatched again, even after a failure reset.
+        eligible = (not running and not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
                     and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since))
         if eligible:
             prio = 0 if "priority/blocker" in labels else 1
@@ -644,10 +653,25 @@ def decide(snapshot, state, now, cfg, exclusions):
         queue = [q for q in queue if q[4] == scope]
     if in_flight:
         notes.append({"kind": "in_flight", "targets": in_flight})
-    elif queue:
-        queue.sort()
-        k = queue[0][4]
-        actions.append({"type": "dispatch", "target": k, "reason": "next in queue, nothing in flight",
+    # Dependent tasks never run together without an extra guard: a queued task has every Depends on
+    # target met (closed as completed or merged), while an in-flight or same-tick target is an open item,
+    # so its dependents are blocked above.
+    # dsh runs one task per repo at a time and queues the rest, and a queued task could hit the 3h
+    # timeout and count as a failure. So one DeepSeek task per repo: a repo with a task in flight or
+    # picked in this tick is skipped, and the slot goes to the next task from another repo.
+    busy = {items[k]["repo"] for k in in_flight}
+    free = max(0, cap - slots_used)
+    picked = 0
+    for q in sorted(queue):
+        if picked >= free:
+            break
+        if q[2] in busy:
+            notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
+            continue
+        busy.add(q[2])
+        picked += 1
+        actions.append({"type": "dispatch", "target": q[4],
+                        "reason": f"next in queue, DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n<!-- orchestrate:dispatch -->"})
     return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending)}
 

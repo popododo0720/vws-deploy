@@ -100,11 +100,12 @@ class RuleB(unittest.TestCase):
             ("grok is skipped", [ready_task("vws-iam", 1, extra=("grok",))], []),
             ("draft PR is skipped", [ready_task("vws-iam", 1, is_pr=True, draft=True)], []),
             ("PR target works", [ready_task("vws-proto", 51, is_pr=True)], [("dispatch", "vws-proto#51")]),
-            ("oldest ready first", [ready_task("vws-iam", 1, 5), ready_task("vws-deploy", 9, 8)], [("dispatch", "vws-deploy#9")]),
-            ("priority/blocker first", [ready_task("vws-iam", 1, 50), ready_task("vws-iam", 2, 1, extra=("priority/blocker",))],
-             [("dispatch", "vws-iam#2")]),
+            ("oldest ready first", [ready_task("vws-iam", 1, 5), ready_task("vws-deploy", 9, 8)],
+             [("dispatch", "vws-deploy#9"), ("dispatch", "vws-iam#1")]),
+            ("priority/blocker first", [ready_task("vws-iam", 1, 50), ready_task("vws-deploy", 2, 1, extra=("priority/blocker",))],
+             [("dispatch", "vws-deploy#2"), ("dispatch", "vws-iam#1")]),
             ("tie: repo then number", [ready_task("vws-iam", 3, 5), ready_task("vws-iam", 2, 5), ready_task("vws-deploy", 7, 5)],
-             [("dispatch", "vws-deploy#7")]),
+             [("dispatch", "vws-deploy#7"), ("dispatch", "vws-iam#2")]),
             ("human blocked label", [ready_task("vws-iam", 1, extra=("blocked",))], []),
             ("closed is skipped", [ready_task("vws-iam", 1, state="closed")], []),
         ]
@@ -112,11 +113,12 @@ class RuleB(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(kinds(run(snapshot(*items))), want)
 
-    def test_one_in_flight_anywhere_blocks(self):
-        busy = item("vws-proto", 51, is_pr=True, comments=[dispatch(1, "vws-proto", 51, 1)])
-        r = run(snapshot(busy, ready_task("vws-iam", 1)))
+    def test_full_cap_in_flight_anywhere_blocks(self):
+        busy = [item("vws-proto", 51, is_pr=True, comments=[dispatch(1, "vws-proto", 51, 1)]),
+                item("vws-deploy", 8, comments=[dispatch(2, "vws-deploy", 8, 2)])]
+        r = run(snapshot(*busy, ready_task("vws-iam", 1)))
         self.assertEqual(kinds(r), [])
-        self.assertIn({"kind": "in_flight", "targets": ["vws-proto#51"]}, r["notes"])
+        self.assertIn({"kind": "in_flight", "targets": ["vws-deploy#8", "vws-proto#51"]}, r["notes"])
 
     def test_after_report_next_target(self):
         for result in ("Done", "Failed"):
@@ -140,6 +142,131 @@ class RuleB(unittest.TestCase):
         cfg = dict(CFG, ORCHESTRATE_SCOPE="vws-iam#2")
         r = run(snapshot(ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 1)), cfg=cfg)
         self.assertEqual(kinds(r), [("dispatch", "vws-iam#2")])
+
+
+def with_repo(snap, name):
+    snap["repos"].append({"name": name, "archived": False})
+    return snap
+
+
+class DeepSeekCap(unittest.TestCase):
+    """ORCHESTRATE_DEEPSEEK_CAP (default 2) DeepSeek dispatches in flight at once."""
+
+    def test_default_cap_is_2(self):
+        self.assertEqual(CFG["ORCHESTRATE_DEEPSEEK_CAP"], "2")
+
+    def test_cap_2_dispatches_two_independent_tasks(self):
+        r = run(snapshot(ready_task("vws-iam", 1, 9), ready_task("vws-deploy", 2, 8), ready_task("vws-proto", 3, 7)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#1"), ("dispatch", "vws-deploy#2")])
+        self.assertEqual([a["reason"] for a in r["actions"]],
+                         ["next in queue, DeepSeek slot 1 of 2", "next in queue, DeepSeek slot 2 of 2"])
+
+    def test_cap_is_configurable(self):
+        names = ("vws-iam", "vws-deploy", "vws-proto", "vws-network")
+        tasks = [ready_task(name, n, 10 - n) for n, name in enumerate(names, 1)]
+        for cap, want in (("1", 1), ("3", 3), ("9", 4)):
+            with self.subTest(cap=cap):
+                r = run(with_repo(snapshot(*tasks), "vws-network"), cfg=dict(CFG, ORCHESTRATE_DEEPSEEK_CAP=cap))
+                self.assertEqual(len(kinds(r)), want)
+
+    def test_one_in_flight_leaves_one_slot(self):
+        busy = item("vws-proto", 51, is_pr=True, comments=[dispatch(1, "vws-proto", 51, 1)])
+        r = run(snapshot(busy, ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 8)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#1")])
+        self.assertEqual(r["actions"][0]["reason"], "next in queue, DeepSeek slot 2 of 2")
+        self.assertIn({"kind": "in_flight", "targets": ["vws-proto#51"]}, r["notes"])
+
+    def test_cap_respected_across_ticks(self):
+        tasks = {1: ready_task("vws-iam", 1, 9), 2: ready_task("vws-deploy", 2, 8), 3: ready_task("vws-proto", 3, 7)}
+        first = run(snapshot(*tasks.values()))
+        self.assertEqual(kinds(first), [("dispatch", "vws-iam#1"), ("dispatch", "vws-deploy#2")])
+        # The next tick sees both dispatch comments: the cap is full, nothing goes out.
+        tasks[1]["comments"] = [dispatch(11, "vws-iam", 1, 0.1)]
+        tasks[2]["comments"] = [dispatch(12, "vws-deploy", 2, 0.1)]
+        second = run(snapshot(*tasks.values()), first["state"])
+        self.assertEqual(kinds(second), [])
+        self.assertIn({"kind": "in_flight", "targets": ["vws-deploy#2", "vws-iam#1"]}, second["notes"])
+        # One slot frees up when a report lands; only the third task is dispatched.
+        tasks[1]["comments"].append(report(13, "vws-iam", 1, 11, "Done", 0.05))
+        third = run(snapshot(*tasks.values()), second["state"])
+        self.assertEqual(kinds(third), [("dispatch", "vws-proto#3")])
+
+    def test_running_target_not_redispatched_after_reset(self):
+        reset = {"id": 2, "url": "u2", "created_at": orch.iso(NOW - 1800), "body": "/orchestrate reset-failures runner fixed"}
+        t = ready_task("vws-iam", 1, comments=[dispatch(1, "vws-iam", 1, 1), reset])
+        r = run(snapshot(t, ready_task("vws-deploy", 2, 5)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-deploy#2")], "the free slot goes to another task")
+        self.assertEqual(r["actions"][0]["reason"], "next in queue, DeepSeek slot 2 of 2")
+
+    def test_slots_count_dispatches_not_targets(self):
+        # Two running dispatches on one item (for example a manual one) fill both slots.
+        busy = item("vws-proto", 51, comments=[dispatch(1, "vws-proto", 51, 2), dispatch(2, "vws-proto", 51, 1)])
+        self.assertEqual(kinds(run(snapshot(busy, ready_task("vws-iam", 1)))), [])
+
+    def test_same_repo_pair_dispatches_one(self):
+        r = run(snapshot(ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 8)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#1")])
+        self.assertIn({"kind": "repo_busy", "target": "vws-iam#2", "repo": "vws-iam"}, r["notes"])
+
+    def test_same_repo_skipped_for_the_next_other_repo(self):
+        r = run(snapshot(ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 8), ready_task("vws-proto", 3, 7)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#1"), ("dispatch", "vws-proto#3")])
+        self.assertEqual(r["actions"][1]["reason"], "next in queue, DeepSeek slot 2 of 2")
+
+    def test_repo_with_a_task_in_flight_is_skipped(self):
+        busy = item("vws-iam", 7, comments=[dispatch(1, "vws-iam", 7, 1)])
+        r = run(snapshot(busy, ready_task("vws-iam", 1, 9), ready_task("vws-deploy", 2, 8)))
+        self.assertEqual(kinds(r), [("dispatch", "vws-deploy#2")])
+        self.assertIn({"kind": "repo_busy", "target": "vws-iam#1", "repo": "vws-iam"}, r["notes"])
+
+    def test_same_repo_task_goes_out_when_its_repo_frees(self):
+        a, b = ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 8)
+        first = run(snapshot(a, b))
+        self.assertEqual(kinds(first), [("dispatch", "vws-iam#1")])
+        a["comments"] = [dispatch(11, "vws-iam", 1, 0.5)]
+        second = run(snapshot(a, b), first["state"])
+        self.assertEqual(kinds(second), [], "a slot is free, but vws-iam is busy")
+        a["comments"].append(report(12, "vws-iam", 1, 11, "Done", 0.1))
+        third = run(snapshot(a, b), second["state"])
+        self.assertEqual(kinds(third), [("dispatch", "vws-iam#2")])
+
+    def test_dependent_pair_dispatches_only_the_dependency(self):
+        proto = ready_task("vws-proto", 51, 1, is_pr=True)
+        api = ready_task("vws-console-api", 227, 50, body="Depends on vws-proto#51")
+        r = run(with_repo(snapshot(proto, api), "vws-console-api"))
+        self.assertEqual(kinds(r), [("add_label", "vws-console-api#227"), ("dispatch", "vws-proto#51")])
+        self.assertIn({"kind": "dep_unmet", "target": "vws-console-api#227", "dep": "vws-proto#51", "state": "open"},
+                      r["notes"])
+
+    def test_dependency_in_flight_blocks_dependent_with_a_free_slot(self):
+        proto = ready_task("vws-proto", 51, 9, is_pr=True, comments=[dispatch(1, "vws-proto", 51, 1)])
+        api = ready_task("vws-console-api", 227, 50, body="Depends on vws-proto#51")
+        other = ready_task("vws-iam", 1, 2)
+        r = run(with_repo(snapshot(proto, api, other), "vws-console-api"))
+        self.assertEqual(kinds(r), [("add_label", "vws-console-api#227"), ("dispatch", "vws-iam#1")],
+                         "the free slot goes to the independent task")
+
+    def test_dependency_in_review_still_blocks(self):
+        pr = "https://github.com/popododo0720/vws-proto/pull/60"
+        proto = ready_task("vws-proto", 51, 9, comments=[dispatch(1, "vws-proto", 51, 3), report(2, "vws-proto", 51, 1, "Done", 2, pr=pr)],
+                           report_prs={pr: {"state": "open", "merged": False}}, extra=("in-review",))
+        api = ready_task("vws-console-api", 227, 50, body="Depends on vws-proto#51")
+        r = run(with_repo(snapshot(proto, api), "vws-console-api"))
+        self.assertEqual(kinds(r), [("add_label", "vws-console-api#227")])
+
+    def test_met_dependency_runs_alongside_another_task(self):
+        api = ready_task("vws-console-api", 227, 50, body="Depends on vws-proto#51")
+        deps = {"vws-proto#51": {"state": "closed", "merged": True}}
+        r = run(with_repo(snapshot(api, ready_task("vws-iam", 1, 2), deps=deps), "vws-console-api"))
+        self.assertEqual(kinds(r), [("dispatch", "vws-console-api#227"), ("dispatch", "vws-iam#1")])
+
+    def test_cap_must_be_a_positive_integer(self):
+        env = {"ORCHESTRATE_CONFIG_DIR": "/nonexistent/vws-orchestrate-test"}
+        paths = orch.Paths(env)
+        for bad in ("0", "-1", "1.5", "two", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                orch.load_config(paths, dict(env, ORCHESTRATE_DEEPSEEK_CAP=bad))
+        self.assertEqual(orch.load_config(paths, dict(env, ORCHESTRATE_DEEPSEEK_CAP="3"))["ORCHESTRATE_DEEPSEEK_CAP"], "3")
 
 
 class Dependencies(unittest.TestCase):
