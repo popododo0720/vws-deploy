@@ -288,6 +288,13 @@ class GhError(Exception):
         self.status = status
 
 
+def label_absent(method, path, err):
+    """A label DELETE that GitHub answers 404 "Label does not exist": the label is already off the item
+    (removed by someone else after collect), so the removal is done."""
+    return (method == "DELETE" and "/labels/" in path and isinstance(err, GhError) and err.status == 404
+            and "Label does not exist" in str(err))
+
+
 def allowed(method, path):
     return any(p.match(path) for p in ALLOWED.get(method, []))
 
@@ -1400,10 +1407,16 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             if a["target"] not in owned[a["label"]]:
                 owned[a["label"]].append(a["target"])
             write_json(paths.state_file, new_state)
+        absent = []
         try:
             for method, path, payload in calls:
                 writes += 1  # counted before the call: a failed POST may still have landed
-                resp = gh.write(method, path, payload)
+                try:
+                    resp = gh.write(method, path, payload)
+                except GhError as e:
+                    if not label_absent(method, path, e):
+                        raise
+                    absent.append(path.rsplit("/", 1)[1])
         except (GhError, PermissionError) as e:
             errors += 1
             log("apply_failed", action=a["type"], target=a["target"], error=str(e))
@@ -1419,6 +1432,12 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 note="Agent: is informational; eligibility never depends on it", reason=a["reason"])
         if a["type"] == "remove_label" and a["target"] in owned.get(a["label"], []):
             owned[a["label"]].remove(a["target"])
+        if absent:
+            # Idempotent: the label was already gone, which is the state this action wanted.
+            log("skipped", action=a["type"], target=a["target"],
+                reason=f"label {', '.join(absent)} already absent (404 Label does not exist)")
+            if a["type"] == "remove_label":
+                continue
         if a["type"] == "wake_verify":
             log("wake_posted", target=a["target"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
