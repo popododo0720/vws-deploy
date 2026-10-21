@@ -1,0 +1,266 @@
+"""decide() table tests for .github/orchestrate/orchestrate.py (vws-deploy#333).
+Run: python3 -m unittest discover -s tests/orchestrate"""
+import json
+import socket
+import subprocess
+import unittest
+from unittest import mock
+
+from orch_testlib import CFG, NOW, dispatch, event, item, orch, ready_task, report, snapshot
+
+EXCL = {"https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481"}
+
+
+def run(snap, state=None, cfg=None, now=NOW, excl=EXCL):
+    return orch.decide(snap, state or {}, now, cfg or CFG, excl)
+
+
+def kinds(result):
+    return [(a["type"], a["target"]) for a in result["actions"]]
+
+
+def prs(n, **kw):
+    return [item("vws-deploy", 400 + i, is_pr=True, **kw) for i in range(n)]
+
+
+class Purity(unittest.TestCase):
+    def test_same_input_same_output_no_io(self):
+        snap = snapshot(*prs(5), ready_task("vws-iam", 1))
+        state = {"prev_pending_count": 2}
+        before = json.dumps([snap, state], sort_keys=True)
+        with mock.patch.object(socket, "socket", side_effect=AssertionError("network")), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("subprocess")), \
+                mock.patch("builtins.open", side_effect=AssertionError("file")):
+            a = run(snap, state)
+            b = run(snap, state)
+        self.assertEqual(json.dumps(a, sort_keys=True), json.dumps(b, sort_keys=True))
+        self.assertEqual(json.dumps([snap, state], sort_keys=True), before, "decide mutated its input")
+
+
+class RuleA(unittest.TestCase):
+    def wake(self, result):
+        return [a for a in result["actions"] if a["type"] == "wake_verify"]
+
+    def test_threshold_table(self):
+        key5 = orch.pending_key([{"repo": p["repo"], "number": p["number"], "head_sha": p["head_sha"]} for p in prs(5)])
+        cases = [
+            ("4 pending", prs(4), {}, [], 0),
+            ("5 pending, first run", prs(5), {}, [], 1),
+            ("5 pending, rising edge", prs(5), {"prev_pending_count": 3}, [], 1),
+            ("same set already posted", prs(5), {"prev_pending_count": 3}, [{"key": key5, "at": NOW - 99999}], 0),
+            ("changed set inside cooldown", prs(6), {"prev_pending_count": 5}, [{"key": key5, "at": NOW - 3600}], 0),
+            ("changed set after cooldown", prs(6), {"prev_pending_count": 5}, [{"key": key5, "at": NOW - 7 * 3600}], 1),
+            ("rising edge inside 1h", prs(6)[1:], {"prev_pending_count": 4}, [{"key": key5, "at": NOW - 600}], 0),
+            ("rising edge after 1h", prs(6)[1:], {"prev_pending_count": 4}, [{"key": key5, "at": NOW - 3700}], 1),
+        ]
+        for name, items, state, wakes, want in cases:
+            with self.subTest(name):
+                self.assertEqual(len(self.wake(run(snapshot(*items, wakes=wakes), state))), want)
+
+    def test_not_counted(self):
+        extra = [item("vws-iam", 1, is_pr=True, draft=True), item("vws-iam", 2, is_pr=True, base="release"),
+                 item("vws-iam", 3, is_pr=True, labels=("verify-approved",)), item("vws-iam", 4, is_pr=True, ci="failing"),
+                 item("vws-iam", 5)]
+        r = run(snapshot(*prs(4), *extra))
+        self.assertEqual(r["pending_count"], 4)
+        self.assertEqual(self.wake(r), [])
+
+    def test_comment_body_and_state(self):
+        r = run(snapshot(*prs(5)), {"prev_pending_count": 0})
+        a = self.wake(r)[0]
+        self.assertEqual(a["target"], "vws-deploy#337")
+        lines = a["body"].split("\n")
+        self.assertEqual(lines[0], "<!-- vws-orchestrate:verify-wake -->", "routines match the exact first line")
+        sha7 = prs(1)[0]["head_sha"][:7]
+        self.assertIn(f"- vws-deploy#400 https://github.com/popododo0720/vws-deploy/pull/400 `{sha7}`", lines)
+        self.assertIn(f"Idempotency key: `{a['key']}`", lines)
+        self.assertIn("Run id: `20261021T120000Z-abcdef`", lines)
+        self.assertIn("Repos scanned: vws-deploy, vws-iam, vws-proto", lines, "archived repos are not listed")
+        self.assertNotIn("@deepseek-dev", a["body"])
+        self.assertEqual(orch.status_wakes([{"body": a["body"], "created_at": "2026-10-21T12:00:00Z"}])[0]["key"], a["key"],
+                         "the key is read back from the posted comment")
+        self.assertEqual(r["state"]["prev_pending_count"], 5)
+
+    def test_marker_must_be_first_line(self):
+        body = "hello\n<!-- vws-orchestrate:verify-wake -->\nIdempotency key: `sha256:" + "a" * 64 + "`"
+        self.assertEqual(orch.status_wakes([{"body": body, "created_at": "2026-10-21T12:00:00Z"}]), [])
+
+    def test_cap_50(self):
+        a = self.wake(run(snapshot(*prs(60))))[0]
+        self.assertIn("60 PRs wait for verify", a["body"])
+        self.assertEqual(a["body"].count("\n- vws-deploy#"), 50)
+        self.assertIn("- ... and 10 more", a["body"])
+
+
+class RuleB(unittest.TestCase):
+    def test_queue_table(self):
+        cases = [
+            ("idle, one ready", [ready_task("vws-iam", 1)], [("dispatch", "vws-iam#1")]),
+            ("needs both labels", [item("vws-iam", 1, labels=("ready",)), item("vws-iam", 2, labels=("deepseek",))], []),
+            ("grok is skipped", [ready_task("vws-iam", 1, extra=("grok",))], []),
+            ("draft PR is skipped", [ready_task("vws-iam", 1, is_pr=True, draft=True)], []),
+            ("PR target works", [ready_task("vws-proto", 51, is_pr=True)], [("dispatch", "vws-proto#51")]),
+            ("oldest ready first", [ready_task("vws-iam", 1, 5), ready_task("vws-deploy", 9, 8)], [("dispatch", "vws-deploy#9")]),
+            ("priority/blocker first", [ready_task("vws-iam", 1, 50), ready_task("vws-iam", 2, 1, extra=("priority/blocker",))],
+             [("dispatch", "vws-iam#2")]),
+            ("tie: repo then number", [ready_task("vws-iam", 3, 5), ready_task("vws-iam", 2, 5), ready_task("vws-deploy", 7, 5)],
+             [("dispatch", "vws-deploy#7")]),
+            ("human blocked label", [ready_task("vws-iam", 1, extra=("blocked",))], []),
+            ("closed is skipped", [ready_task("vws-iam", 1, state="closed")], []),
+        ]
+        for name, items, want in cases:
+            with self.subTest(name):
+                self.assertEqual(kinds(run(snapshot(*items))), want)
+
+    def test_one_in_flight_anywhere_blocks(self):
+        busy = item("vws-proto", 51, is_pr=True, comments=[dispatch(1, "vws-proto", 51, 1)])
+        r = run(snapshot(busy, ready_task("vws-iam", 1)))
+        self.assertEqual(kinds(r), [])
+        self.assertIn({"kind": "in_flight", "targets": ["vws-proto#51"]}, r["notes"])
+
+    def test_after_report_next_target(self):
+        for result in ("Done", "Failed"):
+            with self.subTest(result):
+                done = item("vws-proto", 51, comments=[dispatch(1, "vws-proto", 51, 2), report(2, "vws-proto", 51, 1, result, 1)])
+                r = run(snapshot(done, ready_task("vws-iam", 1)))
+                self.assertEqual(kinds(r), [("dispatch", "vws-iam#1")])
+
+    def test_done_target_not_redispatched(self):
+        t = ready_task("vws-iam", 1, comments=[dispatch(1, "vws-iam", 1, 2),
+                                                report(2, "vws-iam", 1, 1, "Done", 1, pr="https://github.com/popododo0720/vws-iam/pull/9")],
+                       report_prs={"https://github.com/popododo0720/vws-iam/pull/9": {"state": "open", "merged": False}})
+        self.assertEqual(kinds(run(snapshot(t))), [("add_label", "vws-iam#1")])
+
+    def test_dispatch_body_has_marker(self):
+        a = run(snapshot(ready_task("vws-iam", 1)))["actions"][0]
+        self.assertTrue(a["body"].startswith("@deepseek-dev please take this issue"))
+        self.assertIn("<!-- orchestrate:dispatch -->", a["body"])
+
+    def test_scope_limits_queue(self):
+        cfg = dict(CFG, ORCHESTRATE_SCOPE="vws-iam#2")
+        r = run(snapshot(ready_task("vws-iam", 1, 9), ready_task("vws-iam", 2, 1)), cfg=cfg)
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#2")])
+
+
+class Dependencies(unittest.TestCase):
+    def test_table(self):
+        cases = [
+            ("open same-repo dep", "Depends on #2", [item("vws-iam", 2)], {}, [("add_label", "vws-iam#1")]),
+            ("closed completed", "Depends on #2", [], {"vws-iam#2": {"state": "closed", "state_reason": "completed"}},
+             [("dispatch", "vws-iam#1")]),
+            ("closed not planned", "Depends on #2", [], {"vws-iam#2": {"state": "closed", "state_reason": "not_planned"}},
+             [("add_label", "vws-iam#1")]),
+            ("cross-repo merged PR", "Depends on vws-proto#51", [], {"vws-proto#51": {"state": "closed", "merged": True}},
+             [("dispatch", "vws-iam#1")]),
+            ("cross-repo open PR", "Depends on vws-proto#51", [item("vws-proto", 51, is_pr=True, ci="failing")], {},
+             [("add_label", "vws-iam#1")]),
+            ("unreadable", "Depends on #77", [], {"vws-iam#77": {"unreadable": True}}, [("add_label", "vws-iam#1")]),
+            ("outside the repo list", "Depends on vws-other#1", [], {}, [("add_label", "vws-iam#1")]),
+            ("archived repo", "Depends on vws-hypervisor#1", [], {}, [("add_label", "vws-iam#1")]),
+        ]
+        for name, body, extra, deps, want in cases:
+            with self.subTest(name):
+                r = run(snapshot(ready_task("vws-iam", 1, body=body), *extra, deps=deps))
+                self.assertEqual(kinds(r), want)
+
+    def test_cycle_reported_not_dispatched(self):
+        a = ready_task("vws-iam", 1, body="Depends on #2")
+        b = ready_task("vws-iam", 2, body="Depends on #1")
+        r = run(snapshot(a, b))
+        self.assertNotIn("dispatch", [t for t, _ in kinds(r)])
+        self.assertIn({"kind": "dep_cycle", "target": "vws-iam#1"}, r["notes"])
+
+    def test_cycle_detection_is_linear(self):
+        chain = [ready_task("vws-iam", n, body=f"Depends on #{n + 1}, #{n + 2}") for n in range(1, 80)]
+        start = orch.time.time()
+        self.assertEqual(orch.find_cycles(snapshot(*chain)), set())
+        self.assertLess(orch.time.time() - start, 1.0)
+        loop = [ready_task("vws-iam", 1, body="Depends on #2"), ready_task("vws-iam", 2, body="Depends on #3"),
+                ready_task("vws-iam", 3, body="Depends on #1"), ready_task("vws-iam", 4, body="Depends on #1")]
+        self.assertEqual(orch.find_cycles(snapshot(*loop)), {"vws-iam#1", "vws-iam#2", "vws-iam#3"})
+
+    def test_stale_ownership_is_pruned(self):
+        r = run(snapshot(ready_task("vws-iam", 1)), {"owned_labels": {"blocked": ["vws-iam#1", "vws-iam#9"]}})
+        self.assertEqual(r["state"]["owned_labels"]["blocked"], [], "label absent: the journaled write never landed")
+
+    def test_blocked_removed_only_when_owned(self):
+        t = ready_task("vws-iam", 1, extra=("blocked",))
+        self.assertEqual(kinds(run(snapshot(t), {"owned_labels": {"blocked": ["vws-iam#1"]}})), [("remove_label", "vws-iam#1")])
+        self.assertEqual(kinds(run(snapshot(t), {"owned_labels": {"blocked": []}})), [])
+
+
+class RuleC(unittest.TestCase):
+    PR = "https://github.com/popododo0720/vws-iam/pull/9"
+
+    def failures(self, comments, report_prs=None, events=(), extra=()):
+        t = ready_task("vws-iam", 1, comments=comments, report_prs=report_prs, events=list(events), extra=extra)
+        return run(snapshot(t))
+
+    def test_each_failure_kind_counts_once(self):
+        one = {
+            "failed report": [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Failed", 8)],
+            "timeout": [dispatch(1, "vws-iam", 1, 4)],
+            "closed unmerged": [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=self.PR)],
+        }
+        prs = {self.PR: {"state": "closed", "merged": False}}
+        for name, comments in one.items():
+            with self.subTest(name):
+                self.assertEqual(kinds(self.failures(comments, prs)), [("dispatch", "vws-iam#1")], "1 failure: redispatch")
+
+    def test_not_yet_timed_out_is_in_flight(self):
+        self.assertEqual(kinds(self.failures([dispatch(1, "vws-iam", 1, 2.9)])), [])
+
+    def test_two_failures_swap(self):
+        r = self.failures([dispatch(1, "vws-iam", 1, 20), report(2, "vws-iam", 1, 1, "Failed", 19), dispatch(3, "vws-iam", 1, 10)])
+        self.assertEqual(kinds(r), [("swap_label", "vws-iam#1")])
+        a = r["actions"][0]
+        self.assertEqual((a["remove"], a["add"], a["comment"]), ("deepseek", "grok", True))
+        self.assertNotIn("@deepseek-dev", a["body"], "the poller must not see the notice as a task")
+        self.assertIn("<!-- orchestrate:swap -->", a["body"])
+
+    def test_swap_notice_not_repeated(self):
+        from orch_testlib import comment
+        notice = comment(9, "vws-iam", 1, "Moving this task\n<!-- orchestrate:swap -->", 1)
+        r = self.failures([dispatch(1, "vws-iam", 1, 20), report(2, "vws-iam", 1, 1, "Failed", 19), dispatch(3, "vws-iam", 1, 10), notice])
+        self.assertFalse(r["actions"][0]["comment"])
+
+    def test_resets(self):
+        two = [dispatch(1, "vws-iam", 1, 20), report(2, "vws-iam", 1, 1, "Failed", 19),
+               dispatch(3, "vws-iam", 1, 10), report(4, "vws-iam", 1, 3, "Failed", 9)]
+        from orch_testlib import comment
+        relabel = [event("labeled", "grok", 8), event("unlabeled", "grok", 7), event("labeled", "deepseek", 7)]
+        self.assertEqual(kinds(self.failures(two, events=relabel)), [("dispatch", "vws-iam#1")], "grok to deepseek relabel")
+        marker = comment(5, "vws-iam", 1, "/orchestrate reset-failures runner fixed", 5)
+        self.assertEqual(kinds(self.failures(two + [marker])), [("dispatch", "vws-iam#1")], "reset marker")
+
+    def test_vws_iam_123_excluded(self):
+        # The real comments: dispatch 6309138804, then the Failed report 6309297481 (token problem).
+        from orch_testlib import comment
+        d = {"id": 6309138804, "url": "https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309138804",
+             "created_at": "2026-10-21T05:54:25Z", "body": orch.DISPATCH_TEXT}
+        f = {"id": 6309297481, "url": "https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481",
+             "created_at": "2026-10-21T06:06:11Z",
+             "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309138804: dsh exited with code 0."}
+        t = ready_task("vws-iam", 123, comments=[d, f])
+        hist = orch.dispatch_history(t, NOW, CFG, EXCL)
+        self.assertEqual([h["outcome"] for h in hist], ["excluded"])
+        second = comment(7, "vws-iam", 123, "[deepseek-dev] Failed for https://github.com/popododo0720/vws-iam/issues/123#issuecomment-8: x", 1)
+        t2 = ready_task("vws-iam", 123, comments=[d, f, dispatch(8, "vws-iam", 123, 2), second])
+        self.assertEqual(kinds(run(snapshot(t2))), [("dispatch", "vws-iam#123")], "only 1 counted failure")
+        self.assertEqual(kinds(orch.decide(snapshot(t2), {}, NOW, CFG, set())), [("swap_label", "vws-iam#123")])
+
+
+class Labels(unittest.TestCase):
+    PR = "https://github.com/popododo0720/vws-iam/pull/9"
+
+    def test_in_review_add_and_owned_remove(self):
+        done = [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=self.PR)]
+        t = ready_task("vws-iam", 1, comments=done, report_prs={self.PR: {"state": "open", "merged": False}})
+        self.assertEqual(kinds(run(snapshot(t))), [("add_label", "vws-iam#1")])
+        merged = ready_task("vws-iam", 1, comments=done, extra=("in-review",), report_prs={self.PR: {"state": "closed", "merged": True}})
+        self.assertEqual(kinds(run(snapshot(merged), {"owned_labels": {"in-review": ["vws-iam#1"]}})), [("remove_label", "vws-iam#1")])
+        self.assertEqual(kinds(run(snapshot(merged))), [], "a human-set in-review stays")
+
+
+if __name__ == "__main__":
+    unittest.main()
