@@ -212,6 +212,12 @@ board is overwritten on the next sync. Design: vws-deploy#347.
 - **Conditional reads:** reads send `If-None-Match`. A 304 is served from
   `~/.local/state/vws-orchestrate/etag-cache.json` and does not use the primary rate limit. The
   comment `since` value is floored to the UTC day, so its URL and ETag stay stable.
+- **History cache:** a candidate's (`ready`/`deepseek`/`grok`) comments and label events are read
+  only when its `updated_at` in the issue list moved since the copy in `history-cache.json` (a new
+  comment or label change bumps it), so a quiet tick makes no per-item reads. An entry is re-read in
+  full after 6 hours (plus up to 1 hour of per-item jitter) to catch edits and deletes, when it was
+  updated in the last 2 minutes, and when the file is missing or has another `version`. Items that
+  lose their labels or close are dropped. Deleting the file forces a full read on the next tick.
 - **Rate floor:** a tick is skipped when `core.remaining` < `ORCHESTRATE_RATE_FLOOR` (1000), because
   other agents share the login.
 - **Write cap:** at most `ORCHESTRATE_MAX_WRITES` (5) GitHub writes per tick. The verify-wake comment
@@ -265,7 +271,7 @@ never counts as a failed tick. On an abnormal day that script posts its own aler
 | `/home/box/.local/opt/vws-orchestrate/current` | symlink to the active release |
 | `/home/box/.config/vws-orchestrate/env` | `KEY=VALUE` config, re-read every tick (no shell evaluation) |
 | `/home/box/.config/vws-orchestrate/STOP` | if present, ticks are skipped |
-| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `etag-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
+| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `etag-cache.json`, `history-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
 | `/home/box/.local/state/vws-orchestrate/log/orchestrate.jsonl` | one JSON object per event; rotated at 5 MiB, keeps 5 |
 | `/home/box/.local/state/vws-orchestrate/log/loop.log` | loop output; rotated at 1 MiB, keeps 1 |
 
