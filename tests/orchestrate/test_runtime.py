@@ -407,6 +407,94 @@ class Ticks(Env):
         self.assertNotIn("abc.def", text)
 
 
+class HistoryCache(Env):
+    """Candidate comments and events are re-read only when the issue's updated_at moved."""
+    HIST = (f"{O}/vws-iam/issues/1/comments", f"{O}/vws-iam/issues/1/events")
+
+    def set_updated(self, ts):
+        r = routes()
+        r[f"{O}/vws-iam/issues"]["body"][0]["updated_at"] = ts
+        self.set_routes(r)
+        return r
+
+    def history_reads(self):
+        return [c["path"].split("?")[0] for c in self.calls() if c["path"].split("?")[0] in self.HIST]
+
+    def plan(self):
+        return [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
+
+    def test_unchanged_issue_skips_history_reads(self):
+        self.set_updated("2026-10-01T00:00:00Z")
+        self.tick()
+        first = len(self.calls())
+        self.assertEqual(len(self.history_reads()), 2, "first tick (no cache) reads the history")
+        os.remove(self.calls_file)
+        self.tick()
+        self.assertEqual(self.history_reads(), [], "unchanged issue: no comments/events reads")
+        self.assertEqual(len(self.calls()), first - 2)
+        cache = load(orch.history_path(self.paths))
+        self.assertEqual((cache["version"], sorted(cache["items"])), (1, ["vws-iam#1"]))
+        self.assertIn("last_tick", cache)
+
+    def test_same_plan_from_cache(self):
+        self.set_updated("2026-10-01T00:00:00Z")
+        self.tick()
+        first = self.plan()
+        self.tick()
+        self.assertEqual(self.plan()[len(first):], first)
+
+    def test_updated_issue_is_read_again(self):
+        r = self.set_updated("2026-10-01T00:00:00Z")
+        self.tick()
+        u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
+        r[f"{O}/vws-iam/issues"]["body"][0]["updated_at"] = "2026-10-02T00:00:00Z"
+        r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
+            {"id": 1, "html_url": u + "1", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
+        self.set_routes(r)
+        os.remove(self.calls_file)
+        self.tick()
+        self.assertEqual(len(self.history_reads()), 2)
+        self.assertEqual(load(orch.history_path(self.paths))["items"]["vws-iam#1"]["comments"][0]["id"], 1)
+
+    def test_missing_bad_or_expired_cache_reads_in_full(self):
+        self.set_updated("2026-10-01T00:00:00Z")
+        for spoil in ("missing", "version", "expired"):
+            with self.subTest(spoil):
+                self.tick()
+                cache = load(orch.history_path(self.paths))
+                if spoil == "missing":
+                    os.remove(orch.history_path(self.paths))
+                elif spoil == "version":
+                    orch.write_json(orch.history_path(self.paths), dict(cache, version=0))
+                else:
+                    cache["items"]["vws-iam#1"]["fetched_at"] -= orch.HISTORY_REFRESH_S + 3600
+                    orch.write_json(orch.history_path(self.paths), cache)
+                os.remove(self.calls_file)
+                self.tick()
+                self.assertEqual(len(self.history_reads()), 2)
+
+    def test_recent_update_is_not_trusted(self):
+        self.set_updated(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        self.tick()
+        os.remove(self.calls_file)
+        self.tick()
+        self.assertEqual(len(self.history_reads()), 2, "a same-second change could hide behind updated_at")
+
+    def test_no_updated_at_always_reads(self):
+        self.tick()
+        os.remove(self.calls_file)
+        self.tick()
+        self.assertEqual(len(self.history_reads()), 2)
+
+    def test_unlabeled_item_is_dropped(self):
+        r = self.set_updated("2026-10-01T00:00:00Z")
+        self.tick()
+        r[f"{O}/vws-iam/issues"]["body"][0]["labels"] = []
+        self.set_routes(r)
+        self.tick()
+        self.assertEqual(load(orch.history_path(self.paths))["items"], {})
+
+
 class FailureComments(Env):
     def notify(self, failures, start=1000.0, **env):
         return orch.main(["--notify-failure", "--failures", str(failures), "--exit-code", "4",
