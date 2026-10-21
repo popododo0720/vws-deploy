@@ -7,3 +7,4 @@ docs README.md QUALITY.md docs/
 repo .gitignore LICENSE
 platform platform/
 installer installer/
+metrics metrics/

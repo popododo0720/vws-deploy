@@ -211,6 +211,10 @@ DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at
 `orchestrate-loop.sh` runs every tick as a new process, so a crash ends one tick, not the loop.
 Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children never hold
 `loop.lock`.
+With `METRICS_ENABLED=1` in the env file, each iteration also runs the daily metrics script
+(`.github/metrics/metrics.py --if-due`, see [factory-metrics.md](factory-metrics.md)). Its exit status
+never counts as a failed tick. On an abnormal day that script posts its own alert on #339 (first line
+`<!-- vws-orchestrate:metrics-alert -->`); see [factory-metrics.md](factory-metrics.md#alerts).
 - **Backoff:** after a failed tick (exit status not 0) the loop waits `ORCHESTRATE_BACKOFF_BASE`
   (60 s) times 2^(failures-1), capped at `ORCHESTRATE_BACKOFF_MAX` (1800 s).
 - **Failure comment:** after each failed tick the loop runs `orchestrate.py --notify-failure`. At
@@ -233,7 +237,7 @@ Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children
 
 | path | content |
 |---|---|
-| `/home/box/.local/opt/vws-orchestrate/releases/<sha7>/` | `.github/orchestrate/` and `.github/drift/repos.tsv` from merged `main` |
+| `/home/box/.local/opt/vws-orchestrate/releases/<sha7>/` | `.github/orchestrate/`, `.github/metrics/` and `.github/drift/repos.tsv` from merged `main` |
 | `/home/box/.local/opt/vws-orchestrate/current` | symlink to the active release |
 | `/home/box/.config/vws-orchestrate/env` | `KEY=VALUE` config, re-read every tick (no shell evaluation) |
 | `/home/box/.config/vws-orchestrate/STOP` | if present, ticks are skipped |
@@ -275,7 +279,7 @@ install -d -m 0700 /home/box/.local/opt/vws-orchestrate/releases /home/box/.conf
   /home/box/.local/state/vws-orchestrate/log
 REL=/home/box/.local/opt/vws-orchestrate/releases/$SHA
 install -d -m 0700 "$REL"
-git archive --format=tar origin/main .github/orchestrate .github/drift/repos.tsv | tar -x -C "$REL"
+git archive --format=tar origin/main .github/orchestrate .github/metrics .github/drift/repos.tsv | tar -x -C "$REL"
 ln -sfn "releases/$SHA" /home/box/.local/opt/vws-orchestrate/current
 printf 'ORCHESTRATE_MODE=dry-run\nORCHESTRATE_INTERVAL=600\n' > /home/box/.config/vws-orchestrate/env
 # one manual dry-run tick, then start the loop

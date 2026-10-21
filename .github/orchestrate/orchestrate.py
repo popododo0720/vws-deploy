@@ -171,9 +171,11 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE")
-    for k, v in cfg.items():
+    for k in DEFAULTS:
         if k not in text_keys:
-            float(v)  # raises ValueError on a bad number
+            float(cfg[k])  # raises ValueError on a bad number
+    # Other keys in the shared env file (METRICS_* for .github/metrics) belong to other scripts,
+    # which validate them; they must not stop a tick.
     return cfg
 
 
@@ -297,8 +299,10 @@ class Gh:
     """Every GitHub call goes through here. Reads use If-None-Match; 304 answers come from the cache
     and do not count against the primary rate limit."""
 
-    def __init__(self, cache_path=None, runner=subprocess.run, sleep=time.sleep, timeout=30, tries=3):
+    def __init__(self, cache_path=None, runner=subprocess.run, sleep=time.sleep, timeout=30, tries=3, allow=None):
         self.cache_path = cache_path
+        # allow(method, path) -> bool. Another box script (.github/metrics) passes its own, narrower list.
+        self.allow = allow or allowed
         self.cache = read_json(cache_path, {}) if cache_path else {}
         self.used = {}
         self.runner, self.sleep, self.timeout, self.tries = runner, sleep, timeout, tries
@@ -328,7 +332,7 @@ class Gh:
         raise last
 
     def get(self, path):
-        if not allowed("GET", path):
+        if not self.allow("GET", path):
             raise PermissionError(f"gh call not allowed: GET {path}")
         args = ["gh", "api", "-i", "--method", "GET", path]
         cached = self.cache.get(path)
@@ -362,7 +366,7 @@ class Gh:
             page += 1
 
     def write(self, method, path, payload=None):
-        if not allowed(method, path):
+        if not self.allow(method, path):
             raise PermissionError(f"gh call not allowed: {method} {path}")
         if method == "PUT":
             # The only PUT is a squash merge pinned to the verified head (GitHub answers 409 if it moved).
