@@ -203,7 +203,8 @@ class Ticks(Env):
         self.assertTrue(any(e["event"] == "skipped" and "write cap" in e.get("reason", "") for e in self.log()))
 
     def test_two_dispatches_and_the_write_cap(self):
-        # Planned: wake, blocked on #3, #4 and #5 (they depend on the open #1), dispatch #1, dispatch #2.
+        # Planned: wake, blocked on vws-iam #3, #4 and #5 (they depend on the open #1), dispatch vws-deploy#10
+        # and vws-iam#1 (one per repo; vws-iam#2 waits for its repo).
         r = routes()
         ready = [{"name": "ready"}, {"name": "deepseek"}]
         def issue(n, body=""):
@@ -212,17 +213,21 @@ class Ticks(Env):
         r[f"{O}/vws-iam/issues"] = {"body": [issue(1), issue(2)] + [issue(n, "Depends on #1") for n in (3, 4, 5)]}
         for n in (1, 2):
             r[f"{O}/vws-iam/issues/{n}"] = {"body": {"state": "open", "labels": ready}}
+        task = {"number": 10, "html_url": "https://github.com/popododo0720/vws-deploy/issues/10", "state": "open",
+                "created_at": "2026-09-30T00:00:00Z", "body": "", "labels": ready}
+        r[f"{O}/vws-deploy/issues"]["body"].append(task)
+        r[f"{O}/vws-deploy/issues/10"] = {"body": {"state": "open", "labels": ready}}
         self.set_routes(r)
         self.tick(ORCHESTRATE_MODE="apply")
         planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
         self.assertEqual(planned, [("wake_verify", "vws-deploy#339")] +
                          [("add_label", f"vws-iam#{n}") for n in (3, 4, 5)] +
-                         [("dispatch", "vws-iam#1"), ("dispatch", "vws-iam#2")])
+                         [("dispatch", "vws-deploy#10"), ("dispatch", "vws-iam#1")])
         self.assertEqual([(c["method"], c["path"]) for c in self.writes()],
                          [("POST", f"{O}/vws-deploy/issues/339/comments")] +
                          [("POST", f"{O}/vws-iam/issues/{n}/labels") for n in (3, 4, 5)] +
-                         [("POST", f"{O}/vws-iam/issues/1/comments")], "at most 5 writes per tick")
-        self.assertTrue(any(e["event"] == "skipped" and e.get("target") == "vws-iam#2"
+                         [("POST", f"{O}/vws-deploy/issues/10/comments")], "at most 5 writes per tick")
+        self.assertTrue(any(e["event"] == "skipped" and e.get("target") == "vws-iam#1"
                             and "write cap 5" in e.get("reason", "") for e in self.log()))
 
     def test_failed_writes_count_and_fail_the_tick(self):
