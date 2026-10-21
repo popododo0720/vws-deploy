@@ -153,9 +153,11 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE")
-    for k, v in cfg.items():
+    for k in DEFAULTS:
         if k not in text_keys:
-            float(v)  # raises ValueError on a bad number
+            float(cfg[k])  # raises ValueError on a bad number
+    # Other keys in the shared env file (METRICS_* for .github/metrics) belong to other scripts,
+    # which validate them; they must not stop a tick.
     return cfg
 
 
