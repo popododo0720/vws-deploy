@@ -151,6 +151,65 @@ class GhWrapper(Env):
         self.assertEqual(len(self.calls()), 1)
 
 
+class LabelAbsent(Env):
+    """A label removed by someone else between collect and apply (vws-deploy tick 12:57Z, 2026-10-21)."""
+
+    def apply_remove(self, status, body):
+        r = routes()
+        r[f"DELETE {O}/vws-iam/issues/7/labels/in-review"] = {"status": status, "body": body}
+        self.set_routes(r)
+        cfg = orch.load_config(self.paths, self.env)
+        state = {"owned_labels": {"in-review": ["vws-iam#7"]}}
+        action = {"type": "remove_label", "target": "vws-iam#7", "label": "in-review", "reason": "DeepSeek PR closed_unmerged"}
+        events = []
+        new_state, errors = orch.apply({"actions": [action], "state": state}, {"labels": {"vws-iam": ["in-review"]}},
+                                       orch.Gh(sleep=lambda s: None), cfg, self.paths,
+                                       lambda ev, **kw: events.append(dict(kw, event=ev)), state)
+        return new_state, errors, events
+
+    def test_label_does_not_exist_is_a_skip(self):
+        new_state, errors, events = self.apply_remove(
+            404, {"message": "Label does not exist", "status": "404"})
+        self.assertEqual(errors, 0)
+        self.assertEqual([e["event"] for e in events], ["skipped"])
+        self.assertIn("already absent", events[0]["reason"])
+        self.assertEqual(new_state["owned_labels"]["in-review"], [], "ownership is dropped")
+
+    def test_other_404_still_fails(self):
+        _state, errors, events = self.apply_remove(404, {"message": "Not Found", "status": "404"})
+        self.assertEqual(errors, 1)
+        self.assertEqual([e["event"] for e in events], ["apply_failed"])
+
+    def test_label_absent_only_for_label_delete(self):
+        err = orch.GhError(404, '{"message":"Label does not exist"}')
+        self.assertTrue(orch.label_absent("DELETE", f"{O}/vws-iam/issues/7/labels/blocked", err))
+        self.assertFalse(orch.label_absent("POST", f"{O}/vws-iam/issues/7/labels", err))
+        self.assertFalse(orch.label_absent("DELETE", f"{O}/vws-iam/issues/7/labels/blocked",
+                                           orch.GhError(500, "Label does not exist")))
+
+
+class TickEndBreakdown(Env):
+    def test_tick_end_has_pending_and_get_classes(self):
+        self.tick()
+        self.tick()
+        end = [e for e in self.log() if e["event"] == "tick_end"][-1]
+        self.assertEqual(end["pending"], 5)
+        by = end["gh_get_by_class"]
+        self.assertTrue({"issues", "pulls", "labels", "comments"} <= set(by), by)
+        self.assertGreater(by["labels"].get("304", 0), 0, "second tick answers labels from the ETag cache")
+        self.assertEqual(sum(n for c in by.values() for n in c.values()), end["gh"]["get"])
+
+    def test_get_class(self):
+        for path, want in [(f"{O}/vws-iam/issues?state=open&per_page=100", "issues"),
+                           (f"{O}/vws-iam/issues/3", "issues"), (f"{O}/vws-iam/issues/3/comments?per_page=100", "comments"),
+                           (f"{O}/vws-iam/issues/comments?since=x", "comments"), (f"{O}/vws-iam/issues/3/events", "events"),
+                           (f"{O}/vws-iam/pulls/2", "pulls"), (f"{O}/vws-iam/labels", "labels"),
+                           (f"{O}/vws-iam/commits/{'a' * 40}/check-runs", "checks"), (f"{O}/vws-iam", "repo"),
+                           (f"{O}/vws-iam/branches/main", "repo"), ("graphql", "graphql"), ("rate_limit", "other")]:
+            with self.subTest(path):
+                self.assertEqual(orch.get_class(path), want)
+
+
 class Ticks(Env):
     def test_dry_run_plans_and_never_writes(self):
         self.assertEqual(self.tick(), 0)
