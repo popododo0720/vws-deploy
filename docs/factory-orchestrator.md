@@ -28,6 +28,14 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   last 14 days.
 - **Completion signal:** only the poller's `[deepseek-dev] Done for <url>` and
   `[deepseek-dev] Failed for <url>` comments. A Done report with an open PR adds `in-review`.
+- **Done report with a PR outside `popododo0720/vws-*`:** that PR is never read (the gh allowlist
+  refuses it). The attempt counts as one failure (kind `pr_outside_vws`) and each tick logs a
+  `note` with kind `report_pr_outside_vws`, so the task is retried or moved to grok instead of
+  waiting for review forever. The tick itself does not fail. If such a report was a real mistake,
+  `/orchestrate reset-failures` or an exclusions.tsv entry clears it.
+- **Move to grok and `in-review`:** when a task moves to grok, the orchestrator also removes
+  `in-review` if it added that label itself; a human-set `in-review` stays. A task already on grok
+  that still has an orchestrator-owned `in-review` loses it on the next tick.
 - **Failure resets** (failures before them do not count):
   - `deepseek` re-added after `grok`;
   - a comment starting `/orchestrate reset-failures`;
@@ -75,6 +83,9 @@ Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children
   `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it posts one comment on #339 whose first line
   is `<!-- vws-orchestrate:failure -->`, with the count, host, last exit code and the last 3 errors
   (redacted).
+- **Scoped trials:** while `ORCHESTRATE_SCOPE` is set, the failure comment is skipped and logged
+  (`failure_alert_skipped`), like every other write outside the scope, unless the scope is the status
+  thread itself. Watch `health.json` during a scoped trial.
 - **Once per streak:** the key is sha256 of host and streak start, stored in `failure.json` only after
   a successful POST. A good tick deletes `failure.json`. A 1h minimum gap stops a restarted loop from
   posting again for the same outage.
@@ -98,7 +109,7 @@ Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children
 
 Config keys and defaults:
 - `ORCHESTRATE_MODE=dry-run`
-- `ORCHESTRATE_SCOPE=` (for example `vws-deploy#999` limits writes to one target and skips the wake)
+- `ORCHESTRATE_SCOPE=` (for example `vws-deploy#999` limits writes to one target and skips the wake and the failure comment)
 - `ORCHESTRATE_INTERVAL=600`
 - `ORCHESTRATE_MAX_WRITES=5`
 - `ORCHESTRATE_RATE_FLOOR=1000`
