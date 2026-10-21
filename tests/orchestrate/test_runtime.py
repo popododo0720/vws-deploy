@@ -38,9 +38,9 @@ def pr_issue(repo, n):
 
 def routes():
     pulls = [{"number": n, "draft": False, "base": {"ref": "main"}, "head": {"sha": f"{n:040x}"}} for n in range(400, 405)]
-    issues = [pr_issue("vws-deploy", n) for n in range(400, 405)] + [
-        {"number": 337, "html_url": "https://github.com/popododo0720/vws-deploy/issues/337", "state": "open",
-         "created_at": "2026-10-01T00:00:00Z", "labels": [], "body": ""}]
+    # The status thread is a never-merged draft PR; a draft never counts as pending.
+    pulls.append({"number": 339, "draft": True, "base": {"ref": "main"}, "head": {"sha": f"{339:040x}"}})
+    issues = [pr_issue("vws-deploy", n) for n in range(400, 405)] + [pr_issue("vws-deploy", 339)]
     labels = [{"name": n} for n in ("ready", "deepseek", "grok", "blocked", "in-review", "verify-approved")]
     r = {
         "rate_limit": {"body": {"resources": {"core": {"remaining": 4000}}}},
@@ -156,7 +156,7 @@ class Ticks(Env):
         self.assertEqual(self.tick(), 0)
         self.assertEqual(self.writes(), [])
         planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
-        self.assertEqual(planned, [("wake_verify", "vws-deploy#337"), ("dispatch", "vws-iam#1")])
+        self.assertEqual(planned, [("wake_verify", "vws-deploy#339"), ("dispatch", "vws-iam#1")])
         self.assertFalse(os.path.exists(self.paths.state_file), "dry-run writes no decision state")
         health = load(self.paths.health)
         self.assertEqual((health["result"], health["pending"]), ("ok", 5))
@@ -172,7 +172,7 @@ class Ticks(Env):
         self.assertEqual(self.tick(ORCHESTRATE_MODE="apply"), 0)
         w = self.writes()
         self.assertEqual([(c["method"], c["path"]) for c in w],
-                         [("POST", f"{O}/vws-deploy/issues/337/comments"), ("POST", f"{O}/vws-iam/issues/1/comments")])
+                         [("POST", f"{O}/vws-deploy/issues/339/comments"), ("POST", f"{O}/vws-iam/issues/1/comments")])
         wake = json.loads(w[0]["stdin"])["body"]
         self.assertEqual(wake.split("\n")[0], "<!-- vws-orchestrate:verify-wake -->")
         self.assertTrue(json.loads(w[1]["stdin"])["body"].startswith("@deepseek-dev please take this issue"))
@@ -183,7 +183,7 @@ class Ticks(Env):
         self.tick(ORCHESTRATE_MODE="apply")
         wake = json.loads(self.writes()[0]["stdin"])["body"]
         r = routes()
-        r[f"{O}/vws-deploy/issues/337/comments"] = {"body": [{"id": 5, "created_at": NOWISO, "body": wake}]}
+        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 5, "created_at": NOWISO, "body": wake}]}
         disp = [{"id": 6, "issue_url": "x/vws-iam/issues/1", "created_at": NOWISO,
                  "html_url": "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-6", "body": orch.DISPATCH_TEXT}]
         r[f"{O}/vws-iam/issues/comments"] = {"body": disp}
@@ -296,6 +296,19 @@ class Ticks(Env):
         with open(self.paths.env_file, "w") as f:
             f.write("ORCHESTRATE_MODE=yes\n")
         self.assertEqual(self.tick(), 2)
+        for bad in ("0", "-1", "3.5", "vws-deploy#339", "abc", ""):
+            with open(self.paths.env_file, "w") as f:
+                f.write(f"ORCHESTRATE_STATUS_PR={bad}\n")
+            self.assertEqual(self.tick(), 2, f"ORCHESTRATE_STATUS_PR={bad!r} is refused")
+
+    def test_status_pr_is_configurable(self):
+        r = routes()
+        r[f"{O}/vws-deploy/issues/12/comments"] = {"body": []}
+        self.set_routes(r)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_STATUS_PR="12"), 0)
+        self.assertIn(("POST", f"{O}/vws-deploy/issues/12/comments"),
+                      [(c["method"], c["path"]) for c in self.writes()])
+        self.assertNotIn(f"{O}/vws-deploy/issues/339/comments", [c["path"] for c in self.calls()])
 
     def test_fixture_mode(self):
         snap = os.path.join(self.tmp, "snap.json")
@@ -333,7 +346,7 @@ class FailureComments(Env):
         self.notify(3, ORCHESTRATE_MODE="apply")
         self.notify(4, ORCHESTRATE_MODE="apply")
         w = self.writes()
-        self.assertEqual([c["path"] for c in w], [f"{O}/vws-deploy/issues/337/comments"])
+        self.assertEqual([c["path"] for c in w], [f"{O}/vws-deploy/issues/339/comments"])
         body = json.loads(w[0]["stdin"])["body"]
         self.assertEqual(body.split("\n")[0], "<!-- vws-orchestrate:failure -->")
         self.assertIn("3 failed ticks in a row", body)
@@ -355,10 +368,10 @@ class FailureComments(Env):
         self.notify(3, ORCHESTRATE_FAILURE_ALERT="always")
         self.assertEqual(len(self.writes()), 1)
 
-    def test_key_already_on_status_issue_is_not_reposted(self):
+    def test_key_already_on_status_thread_is_not_reposted(self):
         key = "sha256:" + orch.hashlib.sha256(f"failure:{orch.socket.gethostname()}:1000.0".encode()).hexdigest()
         r = routes()
-        r[f"{O}/vws-deploy/issues/337/comments"] = {"body": [{"id": 1, "created_at": NOWISO,
+        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 1, "created_at": NOWISO,
                                                              "body": f"<!-- vws-orchestrate:failure -->\nIdempotency key: `{key}`"}]}
         self.set_routes(r)
         self.notify(3, ORCHESTRATE_MODE="apply")
