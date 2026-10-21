@@ -1110,7 +1110,30 @@ def ci_state(gh, repo, sha):
     return ci_verdict(runs, status)
 
 
-def collect(gh, repo_names, now, cfg, run_id, state=None):
+# Candidate history (comments and label events) is re-read only when the issue's updated_at moved
+# since the copy in history-cache.json (a new comment or label change bumps it), so a quiet tick costs
+# no per-item reads. A full re-read every HISTORY_REFRESH_S (plus up to an hour of per-item jitter,
+# so entries do not all expire on one tick) catches edits and deletes, which do not bump updated_at.
+HISTORY_VERSION = 1
+HISTORY_REFRESH_S = 6 * 3600
+
+
+def history_path(paths):
+    return os.path.join(paths.state, "history-cache.json")
+
+
+def history_fresh(entry, issue, now):
+    if not entry or not issue.get("updated_at") or entry.get("updated_at") != issue["updated_at"]:
+        return False
+    return now - entry.get("fetched_at", 0) < HISTORY_REFRESH_S + (issue["number"] % 60) * 60
+
+
+def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
+    # history: the history-cache.json dict, updated in place. None or empty means a full read.
+    if history is not None and history.get("version") != HISTORY_VERSION:
+        history.clear()
+    hist_items = history.setdefault("items", {}) if history is not None else {}
+    updated = {}
     window = int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS"))
     # A since value floored to the UTC day keeps the URL stable for the day, so ETags can match.
     since = iso((int(now) // 86400 - window) * 86400)
@@ -1128,6 +1151,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None):
         pulls = {p["number"]: p for p in gh.get_all(f"repos/{OWNER}/{name}/pulls?state=open&per_page=100")}
         for i in gh.get_all(f"repos/{OWNER}/{name}/issues?state=open&per_page=100"):
             p = pulls.get(i["number"])
+            updated[f"{name}#{i['number']}"] = {"number": i["number"], "updated_at": i.get("updated_at") or ""}
             snap["items"][f"{name}#{i['number']}"] = {
                 "repo": name, "number": i["number"], "url": i["html_url"], "is_pr": "pull_request" in i,
                 "state": i["state"], "state_reason": i.get("state_reason"), "created_at": i["created_at"],
@@ -1145,14 +1169,17 @@ def collect(gh, repo_names, now, cfg, run_id, state=None):
         labels = set(it["labels"])
         if labels & {"ready", "deepseek", "grok"}:
             # Candidates get their full comment history (the repo-wide list only covers the window),
-            # so old dispatches and failures are never forgotten. ETags keep this cheap.
-            it["comments"] = [{"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or ""}
-                              for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
-                              if classify_comment(c.get("body"))]
-            it["events"] = [{"event": e["event"], "label": {"name": (e.get("label") or {}).get("name")},
-                             "created_at": e["created_at"]}
-                            for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
-                            if e.get("event") in ("labeled", "unlabeled")]
+            # so old dispatches and failures are never forgotten. Unchanged issues reuse the cached copy.
+            cached = hist_items.get(k)
+            if history_fresh(cached, updated.get(k, {}), now):
+                it["comments"], it["events"] = cached["comments"], cached["events"]
+            else:
+                it["comments"], it["events"] = candidate_history(gh, it)
+                seen = updated.get(k, {}).get("updated_at", "")
+                if seen and now - utc(seen) < 120:
+                    seen = ""  # GitHub stamps whole seconds: a same-second change could hide; re-read next tick
+                hist_items[k] = {"updated_at": seen, "fetched_at": now,
+                                 "comments": it["comments"], "events": it["events"]}
             for dep in parse_deps(it["body"], it["repo"])[0]:
                 if dep in snap["items"] or dep in snap["deps"]:
                     continue
@@ -1179,9 +1206,25 @@ def collect(gh, repo_names, now, cfg, run_id, state=None):
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
+    if history is not None:
+        live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}}
+        for k in list(hist_items):
+            if k not in live:
+                del hist_items[k]  # closed or unlabeled: re-read in full if it comes back
+        history.update(version=HISTORY_VERSION, last_tick=iso(now))
     if cfg.get("ORCHESTRATE_MERGE", "dry-run") != "off":
         collect_merge(gh, snap, repo_names, state)
     return snap
+
+
+def candidate_history(gh, it):
+    comments = [{"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or ""}
+                for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
+                if classify_comment(c.get("body"))]
+    events = [{"event": e["event"], "label": {"name": (e.get("label") or {}).get("name")}, "created_at": e["created_at"]}
+              for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
+              if e.get("event") in ("labeled", "unlabeled")]
+    return comments, events
 
 
 def actions_runs(gh, repo, sha):
@@ -1713,7 +1756,9 @@ def tick(paths, cfg, args, gh=None, now=None):
                     write_json(paths.health, health)
                     return 0
                 repos = load_repos(args.repos, cfg["ORCHESTRATE_EXTRA_REPOS"])
-                snapshot = collect(gh, repos, now, cfg, run_id, state)
+                history = read_json(history_path(paths), {})
+                snapshot = collect(gh, repos, now, cfg, run_id, state, history)
+                write_json(history_path(paths), history)
             except (GhError, PermissionError, KeyError, ValueError) as e:
                 status = getattr(e, "status", 0)
                 event = "auth_failed" if status in (401, 403) else "collect_failed"
