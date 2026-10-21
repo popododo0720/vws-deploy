@@ -1493,7 +1493,9 @@ BOARD_QUERY = (
     " fields(first:50){ nodes{ ... on ProjectV2FieldCommon{ id name }"
     " ... on ProjectV2SingleSelectField{ options{ id name } } } }"
     " items(first:100, after:$after){ pageInfo{ hasNextPage endCursor } nodes{ id"
-    " content{ ... on Issue{ url state } ... on PullRequest{ url state } }"
+    # Issue.state and PullRequest.state have different enum types, so one response name for both
+    # breaks the GraphQL field-merge rule; each gets its own alias.
+    " content{ ... on Issue{ url issueState: state } ... on PullRequest{ url prState: state } }"
     " fieldValues(first:30){ nodes{"
     " ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ name } } }"
     " ... on ProjectV2ItemFieldTextValue{ text field{ ... on ProjectV2FieldCommon{ name } } } } } } } } } }")
@@ -1623,7 +1625,8 @@ def board_read(gh, project):
             for v in n["fieldValues"]["nodes"]:
                 if v and v.get("field"):
                     vals[v["field"]["name"]] = v.get("name", v.get("text"))
-            items[url] = {"id": n["id"], "state": n["content"].get("state"), "values": vals}
+            c = n["content"]
+            items[url] = {"id": n["id"], "state": c.get("issueState") or c.get("prState"), "values": vals}
         page = node["items"]["pageInfo"]
         if not page["hasNextPage"]:
             return fields, items, remaining

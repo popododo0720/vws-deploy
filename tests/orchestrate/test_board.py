@@ -1,5 +1,6 @@
 """board_sync plan tests for .github/orchestrate/orchestrate.py (vws-deploy#347).
 Run: python3 -m unittest discover -s tests/orchestrate"""
+import re
 import unittest
 
 from orch_testlib import U, orch
@@ -115,6 +116,34 @@ class Cadence(unittest.TestCase):
         for bstate, due in cases:
             with self.subTest(bstate=bstate):
                 self.assertEqual(orch.board_due(bstate, 6), due)
+
+
+class Read(unittest.TestCase):
+    def fragment_names(self, kind):
+        body = re.search(r"\.\.\. on " + kind + r"\{([^}]*)\}", orch.BOARD_QUERY).group(1)
+        return {t.split(":")[0] for t in re.findall(r"\w+:\s*\w+|\w+", body)}
+
+    def test_issue_and_pr_state_use_distinct_response_names(self):
+        # IssueState and PullRequestState differ, so a shared unaliased `state` is an invalid merge.
+        shared = self.fragment_names("Issue") & self.fragment_names("PullRequest")
+        self.assertEqual(shared, {"url"})
+
+    def test_board_read_parses_the_aliased_states(self):
+        class FakeGh:
+            def graphql(self, query, variables, write=False):
+                assert query == orch.BOARD_QUERY and not write
+                node = lambda i, c: {"id": i, "content": c, "fieldValues": {"nodes": [
+                    {"name": "Done", "field": {"name": "Status"}}]}}
+                return {"rateLimit": {"remaining": 4000}, "node": {
+                    "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o", "name": "Done"}]}]},
+                    "items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [
+                        node("A", {"url": f"{U}/vws-deploy/issues/1", "issueState": "CLOSED"}),
+                        node("B", {"url": f"{U}/vws-deploy/pull/2", "prState": "MERGED"}),
+                        node("C", {})]}}}
+        fields, items, remaining = orch.board_read(FakeGh(), "PVT_x")
+        self.assertEqual({u: i["state"] for u, i in items.items()},
+                         {f"{U}/vws-deploy/issues/1": "CLOSED", f"{U}/vws-deploy/pull/2": "MERGED"})
+        self.assertEqual((items[f"{U}/vws-deploy/pull/2"]["values"], remaining), ({"Status": "Done"}, 4000))
 
 
 class Guard(unittest.TestCase):
