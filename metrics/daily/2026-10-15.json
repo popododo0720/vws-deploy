@@ -1,0 +1,481 @@
+{
+ "alerts": [],
+ "archived_skipped": [
+  "vws-hypervisor"
+ ],
+ "ci": {
+  "by_repo": {
+   "vws-compute": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 38
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    }
+   },
+   "vws-conformance": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    },
+    "conformance": {
+     "failure": 1,
+     "failure_rate": 0.25,
+     "success": 3
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    }
+   },
+   "vws-console": {
+    "CI": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 11
+    },
+    "Token badge": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    }
+   },
+   "vws-console-api": {
+    "ci": {
+     "failure": 2,
+     "failure_rate": 0.095,
+     "success": 19
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 13
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    }
+   },
+   "vws-deploy": {
+    "ci": {
+     "failure": 4,
+     "failure_rate": 0.111,
+     "success": 32
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 13
+    },
+    "drift-check": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    },
+    "installer-image": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 23
+    },
+    "installer-publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 13
+    }
+   },
+   "vws-iam": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 31
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 12
+    }
+   },
+   "vws-lib": {
+    "ci": {
+     "failure": 1,
+     "failure_rate": 0.042,
+     "success": 23
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 6
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    }
+   },
+   "vws-network": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 17
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 11
+    }
+   },
+   "vws-proto": {
+    "buf": {
+     "failure": 1,
+     "failure_rate": 0.062,
+     "success": 15
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 11
+    }
+   },
+   "vws-storage": {
+    "ci": {
+     "failure": 1,
+     "failure_rate": 0.023,
+     "success": 42
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 10
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 16
+    }
+   }
+  },
+  "failure": 10,
+  "failure_rate": 0.023,
+  "separate": {
+   "vws-compute": {
+    "repo-guard": {
+     "failure": 10,
+     "failure_rate": 0.345,
+     "success": 19
+    }
+   },
+   "vws-conformance": {
+    "repo-guard": {
+     "failure": 1,
+     "failure_rate": 1.0,
+     "success": 0
+    }
+   },
+   "vws-console": {
+    "repo-guard": {
+     "failure": 3,
+     "failure_rate": 0.273,
+     "success": 8
+    }
+   },
+   "vws-console-api": {
+    "repo-guard": {
+     "failure": 10,
+     "failure_rate": 0.476,
+     "success": 11
+    }
+   },
+   "vws-deploy": {
+    "repo-guard": {
+     "failure": 34,
+     "failure_rate": 0.576,
+     "success": 25
+    }
+   },
+   "vws-iam": {
+    "repo-guard": {
+     "failure": 4,
+     "failure_rate": 0.25,
+     "success": 12
+    }
+   },
+   "vws-lib": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.417,
+     "success": 7
+    }
+   },
+   "vws-network": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.357,
+     "success": 9
+    }
+   },
+   "vws-proto": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.385,
+     "success": 8
+    }
+   },
+   "vws-storage": {
+    "repo-guard": {
+     "failure": 9,
+     "failure_rate": 0.375,
+     "success": 15
+    }
+   }
+  },
+  "success": 434
+ },
+ "codex": {
+  "blocking_sum": 0,
+  "merged_prs_with_codex": 29,
+  "rounds_declared": 0,
+  "verify_reports": 52
+ },
+ "content_sha256": "sha256:4c80620a912ab0a97eed4517e8e9271b121af8d41832c4c499e004985263ddad",
+ "day": "2026-10-15",
+ "deepseek": {
+  "by_repo": {},
+  "dispatched": 0,
+  "dispatched_by_orchestrator": null,
+  "done": 0,
+  "failed": 0,
+  "timeout": 0
+ },
+ "generated_at": "2026-10-21T11:20:35Z",
+ "grok_swaps": {
+  "by_orchestrator": null,
+  "labeled": 0
+ },
+ "lead_time_hours": {
+  "all": {
+   "max": 9.37,
+   "median": 0.26,
+   "n": 71,
+   "p90": 0.94
+  },
+  "by_repo": {
+   "vws-compute": {
+    "max": 4.14,
+    "median": 0.22,
+    "n": 8,
+    "p90": 4.14
+   },
+   "vws-console": {
+    "max": 7.28,
+    "median": 0.28,
+    "n": 5,
+    "p90": 7.28
+   },
+   "vws-console-api": {
+    "max": 5.79,
+    "median": 0.27,
+    "n": 7,
+    "p90": 5.79
+   },
+   "vws-deploy": {
+    "max": 8.83,
+    "median": 0.27,
+    "n": 13,
+    "p90": 1.5
+   },
+   "vws-iam": {
+    "max": 9.37,
+    "median": 0.3,
+    "n": 8,
+    "p90": 9.37
+   },
+   "vws-lib": {
+    "max": 0.62,
+    "median": 0.22,
+    "n": 6,
+    "p90": 0.62
+   },
+   "vws-network": {
+    "max": 0.61,
+    "median": 0.17,
+    "n": 7,
+    "p90": 0.61
+   },
+   "vws-proto": {
+    "max": 0.61,
+    "median": 0.17,
+    "n": 7,
+    "p90": 0.61
+   },
+   "vws-storage": {
+    "max": 0.94,
+    "median": 0.28,
+    "n": 10,
+    "p90": 0.61
+   }
+  }
+ },
+ "orchestrator": null,
+ "prs": {
+  "by_agent": {
+   "merged": {
+    "unattributed": 71
+   },
+   "opened": {
+    "unattributed": 101
+   }
+  },
+  "closed_unmerged": {
+   "vws-compute": 3,
+   "vws-console": 1,
+   "vws-console-api": 2,
+   "vws-deploy": 9,
+   "vws-iam": 2,
+   "vws-lib": 2,
+   "vws-network": 3,
+   "vws-proto": 2,
+   "vws-storage": 5
+  },
+  "merged": {
+   "vws-compute": {
+    "unattributed": 8
+   },
+   "vws-console": {
+    "unattributed": 5
+   },
+   "vws-console-api": {
+    "unattributed": 7
+   },
+   "vws-deploy": {
+    "unattributed": 13
+   },
+   "vws-iam": {
+    "unattributed": 8
+   },
+   "vws-lib": {
+    "unattributed": 6
+   },
+   "vws-network": {
+    "unattributed": 7
+   },
+   "vws-proto": {
+    "unattributed": 7
+   },
+   "vws-storage": {
+    "unattributed": 10
+   }
+  },
+  "opened": {
+   "vws-compute": {
+    "unattributed": 10
+   },
+   "vws-conformance": {
+    "unattributed": 2
+   },
+   "vws-console": {
+    "unattributed": 5
+   },
+   "vws-console-api": {
+    "unattributed": 12
+   },
+   "vws-deploy": {
+    "unattributed": 20
+   },
+   "vws-iam": {
+    "unattributed": 10
+   },
+   "vws-lib": {
+    "unattributed": 8
+   },
+   "vws-network": {
+    "unattributed": 10
+   },
+   "vws-proto": {
+    "unattributed": 9
+   },
+   "vws-storage": {
+    "unattributed": 15
+   }
+  },
+  "totals": {
+   "closed_unmerged": 29,
+   "merged": 71,
+   "opened": 101
+  }
+ },
+ "queue_depth": null,
+ "release": "427a56b",
+ "repos": [
+  "vws-compute",
+  "vws-conformance",
+  "vws-console",
+  "vws-console-api",
+  "vws-deploy",
+  "vws-iam",
+  "vws-lib",
+  "vws-network",
+  "vws-proto",
+  "vws-storage"
+ ],
+ "schema": 1,
+ "snapshot_at": null,
+ "source_gaps": [
+  "orchestrator log does not cover the whole day",
+  "queue_depth and stalls are a live snapshot; not available for a back-filled day",
+  "no token-usage input for this day"
+ ],
+ "stalls": null,
+ "timezone": "Asia/Seoul (UTC+9)",
+ "tokens": null,
+ "verify": {
+  "approved_labels": 65,
+  "failure": 30,
+  "first_pass": 58,
+  "first_pass_n": 71,
+  "first_pass_rate": 0.817,
+  "pass_rate": 0.727,
+  "runs": 110,
+  "success": 80
+ },
+ "window_utc": [
+  "2026-10-14T15:00:00Z",
+  "2026-10-15T15:00:00Z"
+ ]
+}
