@@ -1,0 +1,308 @@
+{
+ "alerts": [],
+ "archived_skipped": [
+  "vws-hypervisor"
+ ],
+ "ci": {
+  "by_repo": {
+   "vws-compute": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    }
+   },
+   "vws-conformance": {
+    "ci": {
+     "failure": 2,
+     "failure_rate": 0.095,
+     "success": 19
+    },
+    "conformance": {
+     "failure": 3,
+     "failure_rate": 0.429,
+     "success": 4
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 21
+    }
+   },
+   "vws-console-api": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 10
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 14
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    }
+   },
+   "vws-deploy": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    },
+    "installer-image": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 4
+    },
+    "installer-publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    }
+   },
+   "vws-iam": {
+    "ci": {
+     "failure": 2,
+     "failure_rate": 0.2,
+     "success": 8
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    }
+   }
+  },
+  "failure": 7,
+  "failure_rate": 0.053,
+  "separate": {
+   "vws-compute": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.833,
+     "success": 1
+    }
+   },
+   "vws-conformance": {
+    "repo-guard": {
+     "failure": 20,
+     "failure_rate": 1.0,
+     "success": 0
+    }
+   },
+   "vws-console-api": {
+    "repo-guard": {
+     "failure": 8,
+     "failure_rate": 0.571,
+     "success": 6
+    }
+   },
+   "vws-deploy": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.556,
+     "success": 4
+    }
+   },
+   "vws-iam": {
+    "repo-guard": {
+     "failure": 6,
+     "failure_rate": 0.75,
+     "success": 2
+    }
+   }
+  },
+  "success": 125
+ },
+ "codex": {
+  "blocking_sum": 0,
+  "merged_prs_with_codex": 4,
+  "rounds_declared": 0,
+  "verify_reports": 11
+ },
+ "content_sha256": "sha256:90e1dc6d786f1d5dd6a68f30da344d3630761b505bb29b69d961a945db25dcbe",
+ "day": "2026-10-16",
+ "deepseek": {
+  "by_repo": {},
+  "dispatched": 0,
+  "dispatched_by_orchestrator": null,
+  "done": 0,
+  "failed": 0,
+  "timeout": 0
+ },
+ "generated_at": "2026-10-21T11:36:36Z",
+ "grok_swaps": {
+  "by_orchestrator": null,
+  "labeled": 0
+ },
+ "lead_time_hours": {
+  "all": {
+   "max": 22.71,
+   "median": 4.33,
+   "n": 12,
+   "p90": 9.96
+  },
+  "by_repo": {
+   "vws-compute": {
+    "max": 0.81,
+    "median": 0.81,
+    "n": 1,
+    "p90": 0.81
+   },
+   "vws-conformance": {
+    "max": 22.71,
+    "median": 22.71,
+    "n": 1,
+    "p90": 22.71
+   },
+   "vws-console-api": {
+    "max": 5.75,
+    "median": 4.63,
+    "n": 5,
+    "p90": 5.75
+   },
+   "vws-deploy": {
+    "max": 9.96,
+    "median": 5.54,
+    "n": 3,
+    "p90": 9.96
+   },
+   "vws-iam": {
+    "max": 4.03,
+    "median": 2.17,
+    "n": 2,
+    "p90": 4.03
+   }
+  }
+ },
+ "orchestrator": null,
+ "prs": {
+  "by_agent": {
+   "merged": {
+    "unattributed": 12
+   },
+   "opened": {
+    "unattributed": 9
+   }
+  },
+  "closed_unmerged": {
+   "vws-conformance": 1,
+   "vws-console-api": 1
+  },
+  "merged": {
+   "vws-compute": {
+    "unattributed": 1
+   },
+   "vws-conformance": {
+    "unattributed": 1
+   },
+   "vws-console-api": {
+    "unattributed": 5
+   },
+   "vws-deploy": {
+    "unattributed": 3
+   },
+   "vws-iam": {
+    "unattributed": 2
+   }
+  },
+  "opened": {
+   "vws-compute": {
+    "unattributed": 1
+   },
+   "vws-conformance": {
+    "unattributed": 1
+   },
+   "vws-console-api": {
+    "unattributed": 3
+   },
+   "vws-deploy": {
+    "unattributed": 2
+   },
+   "vws-iam": {
+    "unattributed": 2
+   }
+  },
+  "totals": {
+   "closed_unmerged": 2,
+   "merged": 12,
+   "opened": 9
+  }
+ },
+ "queue_depth": null,
+ "release": "427a56b",
+ "repos": [
+  "vws-compute",
+  "vws-conformance",
+  "vws-console",
+  "vws-console-api",
+  "vws-deploy",
+  "vws-iam",
+  "vws-lib",
+  "vws-network",
+  "vws-proto",
+  "vws-storage"
+ ],
+ "schema": 1,
+ "snapshot_at": null,
+ "source_gaps": [
+  "orchestrator log does not cover the whole day",
+  "queue_depth and stalls are a live snapshot; not available for a back-filled day",
+  "no token-usage input for this day"
+ ],
+ "stalls": null,
+ "timezone": "Asia/Seoul (UTC+9)",
+ "tokens": null,
+ "verify": {
+  "approved_labels": 11,
+  "failure": 1,
+  "first_pass": 9,
+  "first_pass_n": 11,
+  "first_pass_rate": 0.818,
+  "pass_rate": 0.917,
+  "runs": 12,
+  "success": 11
+ },
+ "window_utc": [
+  "2026-10-15T15:00:00Z",
+  "2026-10-16T15:00:00Z"
+ ]
+}
