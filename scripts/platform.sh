@@ -31,7 +31,7 @@ sed -e '0,/memory: "50Mi"/s//memory: "100Mi"/' -e '0,/memory: "50Mi"/s//memory: 
   .cache/platform/multus.yaml > "$out/10-multus.yaml"
 grep -q 'memory: "300Mi"' "$out/10-multus.yaml" && grep -q 'memory: "100Mi"' "$out/10-multus.yaml" \
   || { echo "platform: multus memory patch did not apply" >&2; exit 1; }
-helm template kube-ovn kube-ovn --repo https://kubeovn.github.io/kube-ovn/ --version "$KUBEOVN_VERSION" \
+helm template kube-ovn oci://ghcr.io/kubeovn/charts/kube-ovn --version "$KUBEOVN_VERSION" \
   --namespace kube-system -f platform/kube-ovn.values.yaml > "$out/20-kube-ovn.yaml"
 helm template rook-ceph rook-ceph --repo https://charts.rook.io/release --version "$ROOK_VERSION" \
   --namespace rook-ceph -f platform/rook-ceph.values.yaml > "$out/30-rook-ceph-operator.yaml"
