@@ -202,6 +202,29 @@ class Ticks(Env):
         self.assertEqual(len(self.writes()), 1)
         self.assertTrue(any(e["event"] == "skipped" and "write cap" in e.get("reason", "") for e in self.log()))
 
+    def test_two_dispatches_and_the_write_cap(self):
+        # Planned: wake, blocked on #3, #4 and #5 (they depend on the open #1), dispatch #1, dispatch #2.
+        r = routes()
+        ready = [{"name": "ready"}, {"name": "deepseek"}]
+        def issue(n, body=""):
+            return {"number": n, "html_url": f"https://github.com/popododo0720/vws-iam/issues/{n}", "state": "open",
+                    "created_at": f"2026-10-0{n}T00:00:00Z", "body": body, "labels": ready}
+        r[f"{O}/vws-iam/issues"] = {"body": [issue(1), issue(2)] + [issue(n, "Depends on #1") for n in (3, 4, 5)]}
+        for n in (1, 2):
+            r[f"{O}/vws-iam/issues/{n}"] = {"body": {"state": "open", "labels": ready}}
+        self.set_routes(r)
+        self.tick(ORCHESTRATE_MODE="apply")
+        planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
+        self.assertEqual(planned, [("wake_verify", "vws-deploy#339")] +
+                         [("add_label", f"vws-iam#{n}") for n in (3, 4, 5)] +
+                         [("dispatch", "vws-iam#1"), ("dispatch", "vws-iam#2")])
+        self.assertEqual([(c["method"], c["path"]) for c in self.writes()],
+                         [("POST", f"{O}/vws-deploy/issues/339/comments")] +
+                         [("POST", f"{O}/vws-iam/issues/{n}/labels") for n in (3, 4, 5)] +
+                         [("POST", f"{O}/vws-iam/issues/1/comments")], "at most 5 writes per tick")
+        self.assertTrue(any(e["event"] == "skipped" and e.get("target") == "vws-iam#2"
+                            and "write cap 5" in e.get("reason", "") for e in self.log()))
+
     def test_failed_writes_count_and_fail_the_tick(self):
         with mock.patch.dict(os.environ, {"STUB_DENY_WRITES": "1"}):
             rc = self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_MAX_WRITES="1")
@@ -336,6 +359,9 @@ class Ticks(Env):
             with open(self.paths.env_file, "w") as f:
                 f.write(f"ORCHESTRATE_STATUS_PR={bad}\n")
             self.assertEqual(self.tick(), 2, f"ORCHESTRATE_STATUS_PR={bad!r} is refused")
+        with open(self.paths.env_file, "w") as f:
+            f.write("ORCHESTRATE_DEEPSEEK_CAP=0\n")
+        self.assertEqual(self.tick(), 2, "ORCHESTRATE_DEEPSEEK_CAP=0 is refused")
 
     def test_status_pr_is_configurable(self):
         r = routes()
