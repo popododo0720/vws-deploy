@@ -1,0 +1,14 @@
+not json
+{"event": "tick_start", "mode": "apply", "run_id": "b", "ts": "2026-10-19T15:05:00Z"}
+{"action": "dispatch", "event": "applied", "mode": "apply", "run_id": "b", "target": "vws-deploy#20", "ts": "2026-10-19T15:06:00Z"}
+{"action": "swap_label", "event": "applied", "mode": "apply", "run_id": "b", "target": "vws-deploy#20", "ts": "2026-10-19T15:06:01Z"}
+{"actions": 2, "event": "tick_end", "gh": {"get": 10, "not_modified": 4, "write": 2}, "mode": "apply", "run_id": "b", "ts": "2026-10-19T15:06:02Z"}
+{"event": "tick_start", "mode": "apply", "run_id": "c", "ts": "2026-10-20T01:00:00Z"}
+{"error": "HTTP 502", "event": "collect_failed", "mode": "apply", "run_id": "c", "ts": "2026-10-20T01:00:01Z"}
+{"event": "tick_start", "mode": "apply", "run_id": "d", "ts": "2026-10-20T02:00:00Z"}
+{"action": "dispatch", "event": "apply_failed", "mode": "apply", "run_id": "d", "ts": "2026-10-20T02:00:01Z"}
+{"errors": 1, "event": "tick_end", "gh": {"get": 5, "not_modified": 5, "write": 1}, "mode": "apply", "run_id": "d", "ts": "2026-10-20T02:00:02Z"}
+{"event": "rate_low", "mode": "apply", "remaining": 10, "run_id": "e", "ts": "2026-10-20T03:00:00Z"}
+{"event": "failure_alerted", "mode": "apply", "run_id": "f", "ts": "2026-10-20T04:00:00Z"}
+{"action": "dispatch", "event": "applied", "mode": "dry-run", "run_id": "g", "ts": "2026-10-20T05:00:00Z"}
+{"event": "tick_start", "mode": "apply", "run_id": "h", "ts": "2026-10-20T15:00:00Z"}

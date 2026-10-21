@@ -358,6 +358,12 @@ class Ticks(Env):
         self.tick()
         self.assertEqual(len(self.writes()), 2, "the env file switches to apply without a restart")
         with open(self.paths.env_file, "w") as f:
+            f.write("ORCHESTRATE_MODE=dry-run\nMETRICS_ENABLED=1\nMETRICS_MODE=apply\nMETRICS_TIME=00:20\n")
+        self.assertEqual(self.tick(), 0, "METRICS_* keys in the shared env file belong to the metrics script")
+        with open(self.paths.env_file, "w") as f:
+            f.write("ORCHESTRATE_RATE_FLOOR=soon\n")
+        self.assertEqual(self.tick(), 2, "an orchestrator number is still checked")
+        with open(self.paths.env_file, "w") as f:
             f.write("ORCHESTRATE_MODE=yes\n")
         self.assertEqual(self.tick(), 2)
         for bad in ("0", "-1", "3.5", "vws-deploy#339", "abc", ""):
