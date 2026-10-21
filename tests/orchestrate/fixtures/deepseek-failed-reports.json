@@ -1,0 +1,38 @@
+{
+ "_note": "[deepseek-dev] Failed reports for the infra retry tests (vws-deploy#333). 'real' entries are copied verbatim from GitHub on 2026-10-21: the two vws-proto#51 provider errors (429, 503) and vws-iam#123 (not infra). 'synthetic' entries follow the poller format confirmed by the VM owner; no real mid-job provider failure or first-line provider form had been posted when this was written.",
+ "reports": [
+  {
+   "url": "https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6310291529",
+   "created_at": "2026-10-21T07:13:03Z",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6310262061: dsh exited with code 1.\n\nLast output:\n```\n{\"type\":\"status\",\"phase\":\"step_start\",\"turn\":1,\"step\":3}\n{\"type\":\"status\",\"phase\":\"step_end\",\"turn\":1,\"step\":3,\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0}}\n{\"type\":\"status\",\"phase\":\"turn_end\",\"turn\":1,\"reason\":{\"kind\":\"error\",\"error\":{\"message\":\"429: {\\\"type\\\":\\\"server_error\\\",\\\"message\\\":\\\"Upstream request failed: Endpoint is unavailable.\\\"}\",\"code\":\"RATE_LIMIT\"}}}\n{\"type\":\"final\",\"text\":\"I'll start by reading the required skill and repo state.\"}\ndsh: RATE_LIMIT: 429: {\"type\":\"server_error\",\"message\":\"Upstream request failed: Endpoint is unavailable.\"}\n```\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-071221-vws-proto-51-ic6310262061.log.",
+   "source": "real"
+  },
+  {
+   "url": "https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6311725351",
+   "created_at": "2026-10-21T08:37:07Z",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-proto/pull/51#issuecomment-6311717414: dsh exited with code 1.\n\nLast output:\n```\n{\"type\":\"status\",\"phase\":\"step_start\",\"turn\":1,\"step\":1}\n{\"type\":\"status\",\"phase\":\"step_end\",\"turn\":1,\"step\":1,\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0}}\n{\"type\":\"status\",\"phase\":\"turn_end\",\"turn\":1,\"reason\":{\"kind\":\"error\",\"error\":{\"message\":\"503: {\\\"type\\\":\\\"server_error\\\",\\\"message\\\":\\\"Upstream request failed: Endpoint is unavailable.\\\"}\",\"code\":\"SERVER\"}}}\n{\"type\":\"final\",\"text\":\"\"}\ndsh: SERVER: 503: {\"type\":\"server_error\",\"message\":\"Upstream request failed: Endpoint is unavailable.\"}\n```\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-083643-vws-proto-51-ic6311717414.log.",
+   "source": "real"
+  },
+  {
+   "url": "https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481",
+   "created_at": "2026-10-21T06:06:11Z",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309138804: dsh exited with code 0.\n\nNo new commit or PR was detected.\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-055617-vws-iam-123-ic6309138804.log.",
+   "source": "real"
+  },
+  {
+   "source": "synthetic",
+   "kind": "mid-job 503",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-conformance/issues/17#issuecomment-6311900001: dsh exited with code 1.\n\nLast output:\n```\n{\"type\":\"status\",\"phase\":\"step_end\",\"turn\":7,\"step\":42,\"usage\":{\"inputTokens\":183211,\"outputTokens\":9120,\"totalTokens\":192331}}\n{\"type\":\"tool\",\"name\":\"bash\",\"text\":\"go test ./... -run TestConformance\"}\n{\"type\":\"status\",\"phase\":\"turn_end\",\"turn\":7,\"reason\":{\"kind\":\"error\",\"error\":{\"message\":\"503: {\\\"type\\\":\\\"server_error\\\",\\\"message\\\":\\\"Upstream request failed: Endpoint is unavailable.\\\"}\",\"code\":\"SERVER\"}}}\n{\"type\":\"final\",\"text\":\"Pushed the first two commits; continuing with the tests.\"}\ndsh: SERVER: 503: {\"type\":\"server_error\",\"message\":\"Upstream request failed: Endpoint is unavailable.\"}\n```\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-090000-vws-conformance-17-ic6311900001.log."
+  },
+  {
+   "source": "synthetic",
+   "kind": "first-line provider form",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-conformance/issues/18#issuecomment-6311900002: provider 503 (SERVER)\n\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-090500-vws-conformance-18-ic6311900002.log."
+  },
+  {
+   "source": "synthetic",
+   "kind": "task failure with HTTP statuses in test output",
+   "body": "[deepseek-dev] Failed for https://github.com/popododo0720/vws-conformance/issues/16#issuecomment-6311900003: dsh exited with code 1.\n\nLast output:\n```\n--- FAIL: TestThrottle (0.01s)\n    throttle_test.go:41: got 429: {\"code\":\"Throttling\"}, want 200\n    server_test.go:12: upstream returned 503: Upstream request failed\nFAIL\n```\nLogs are on deepseek-dev under /root/work/logs/jobs/20261021-091000-vws-conformance-16-ic6311900003.log."
+  }
+ ]
+}

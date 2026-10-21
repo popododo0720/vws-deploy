@@ -6,7 +6,7 @@ A deterministic script that runs four routine factory steps on GitHub state. It 
 |---|---|
 | A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
 | B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
-| C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. |
+| C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. A Failed report that shows a provider error is an infra failure instead: never counted, re-mentioned after 5 minutes, at most 3 times. See "Infra retries" below. |
 | D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and posts one failure comment on #339. See "Rule D" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
@@ -133,6 +133,47 @@ no classic protection), `rules/branches/main`, and for each candidate the PR, it
 combined status. A lock also reads `compare/<old>...<main>`. A read error in one repo means no merge
 there this tick (`merge_repo_unreadable`), not a failed tick.
 
+## Infra retries (provider errors)
+
+DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at 07:12Z and a 503 at
+08:37Z killed vws-proto#51 jobs on the first turn). Those are not task failures.
+
+- **Classification:** a `[deepseek-dev] Failed for <dispatch url>: ...` report is an infra failure
+  when its body matches `INFRA_ERROR_RE` (one multiline constant in `orchestrate.py`):
+  - a line `dsh: RATE_LIMIT: <code>:` or `dsh: SERVER: <code>:` (`^dsh: (RATE_LIMIT|SERVER): (\d{3}):`).
+    The poller's first line is only `dsh exited with code 1.`; the provider error is the last dsh
+    line inside the `Last output` block, for a first-turn death and a mid-job death alike;
+  - or the first-line form `Failed for <url>: provider 503 (SERVER)` (not posted yet; accepted for when
+    the poller adopts it).
+
+  Real examples (vws-proto#51 comments 6310291529 and 6311725351):
+  `dsh: RATE_LIMIT: 429: {"type":"server_error","message":"Upstream request failed: Endpoint is unavailable."}`
+  and `dsh: SERVER: 503: {...}`. A plain `dsh exited with code 1` without that line is a task failure
+  and counts as before. HTTP statuses or `Upstream request failed` elsewhere in the output are not
+  matched, because a task's own test output can print them. Other dsh codes (for example `TIMEOUT` or
+  an auth error) are task failures until evidence says otherwise. An `exclusions.tsv` entry still wins
+  over the classification.
+- **Never counted:** infra failures do not count toward the 2-failure grok swap. Task failures
+  around them still do.
+- **Retry:** while the newest attempt on an item is an infra failure, the item is dispatched again
+  `ORCHESTRATE_INFRA_RETRY_DELAY_MIN` (5) minutes after the failure report, as a normal dispatch
+  comment (same text and marker) with a `Retry N/3 after provider error.` line. After a mid-job death
+  DeepSeek continues on the same item, including a PR branch the partial run already pushed. Until then each tick
+  logs a `note` with kind `infra_wait` and the due time. Ticks run every `ORCHESTRATE_INTERVAL`
+  (600 s), so the effective delay is 5 to 10 minutes. A retry is subject to the DeepSeek cap, one task
+  per repo, dependencies and the write cap, like any dispatch.
+- **Count:** N is the number of infra failures since the last failure reset, read from the comments
+  every tick, so a restart or a rerun never repeats or skips a retry.
+- **Exhausted:** when the newest attempt is the 4th infra failure since the last reset (the first
+  dispatch plus 3 retries), the item is not dispatched again. The orchestrator posts one comment on #339 whose first line is
+  `<!-- vws-orchestrate:failure -->`, with `Kind: infra-retries-exhausted`, the item, the last report
+  and the last error (redacted), and an idempotency key (sha256 of the item and the last report URL),
+  so a rerun never posts it twice. It also adds `blocked` (owned, so it stays until a reset). It never
+  swaps to grok. To retry after the provider recovers, comment `/orchestrate reset-failures` on the
+  item: the next tick removes `blocked`, and the tick after that dispatches it. Removing `blocked` by
+  hand without a reset does not help; the next tick adds it again. The comment counts toward the
+  write cap and is skipped while `ORCHESTRATE_SCOPE` is set, like the merge failure comments.
+
 ## Safety limits
 
 - **gh login:** the box's existing `gh` login, with `GH_TOKEN` and `GITHUB_TOKEN` removed from every
@@ -160,7 +201,8 @@ there this tick (`merge_repo_unreadable`), not a failed tick.
   - Ownership of `blocked` and `in-review` is journaled in `state.json` before the write, and pruned
     when the label is not on the item.
 - **Re-check before posting:** a dispatch is skipped if the target got a new dispatch, lost its
-  labels, or got `blocked` or `grok` since collect. A wake is skipped if #339 already has a comment with its key.
+  labels, or got `blocked` or `grok` since collect. A wake, a merge failure comment or an
+  infra-retries-exhausted comment is skipped if #339 already has a comment with its key.
 - **One tick at a time:** each tick takes `run.lock` (non-blocking), so overlapping or manual runs log
   `skipped` and exit 0.
 
@@ -211,6 +253,7 @@ Config keys and defaults:
 - `DEEPSEEK_TIMEOUT_HOURS=3`
 - `DEEPSEEK_MAX_FAILURES=2`
 - `ORCHESTRATE_DEEPSEEK_CAP=2` (DeepSeek dispatches in flight at once; a positive integer)
+- `ORCHESTRATE_INFRA_RETRY_DELAY_MIN=5` (minutes after a provider-error report before the retry; a positive integer; with the 600 s tick the effective delay is 5 to 10 minutes)
 - `VERIFY_WAKE_THRESHOLD=5`
 - `VERIFY_WAKE_EDGE_MIN_HOURS=1`
 - `VERIFY_WAKE_COOLDOWN_HOURS=6`
