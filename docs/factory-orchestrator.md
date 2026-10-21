@@ -4,7 +4,7 @@ A deterministic script that runs three routine factory steps on GitHub state. It
 
 | rule | what it does |
 |---|---|
-| A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on vws-deploy#337. The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
+| A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
 | B, DeepSeek queue | When no `@deepseek-dev` dispatch is in flight in any repo, it comments `@deepseek-dev please take this issue ...` on the first open issue or PR that has `ready` and `deepseek`, has no `grok` or `blocked` label, is not a draft, and has every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. |
 
@@ -60,7 +60,7 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   - Ownership of `blocked` and `in-review` is journaled in `state.json` before the write, and pruned
     when the label is not on the item.
 - **Re-check before posting:** a dispatch is skipped if the target got a new dispatch, lost its
-  labels, or got `blocked` or `grok` since collect. A wake is skipped if #337 already has a comment with its key.
+  labels, or got `blocked` or `grok` since collect. A wake is skipped if #339 already has a comment with its key.
 - **One tick at a time:** each tick takes `run.lock` (non-blocking), so overlapping or manual runs log
   `skipped` and exit 0.
 
@@ -72,7 +72,7 @@ Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children
 - **Backoff:** after a failed tick (exit status not 0) the loop waits `ORCHESTRATE_BACKOFF_BASE`
   (60 s) times 2^(failures-1), capped at `ORCHESTRATE_BACKOFF_MAX` (1800 s).
 - **Failure comment:** after each failed tick the loop runs `orchestrate.py --notify-failure`. At
-  `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it posts one comment on #337 whose first line
+  `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it posts one comment on #339 whose first line
   is `<!-- vws-orchestrate:failure -->`, with the count, host, last exit code and the last 3 errors
   (redacted).
 - **Once per streak:** the key is sha256 of host and streak start, stored in `failure.json` only after
@@ -102,7 +102,7 @@ Config keys and defaults:
 - `ORCHESTRATE_INTERVAL=600`
 - `ORCHESTRATE_MAX_WRITES=5`
 - `ORCHESTRATE_RATE_FLOOR=1000`
-- `ORCHESTRATE_STATUS_ISSUE=vws-deploy#337`
+- `ORCHESTRATE_STATUS_PR=339` (the status thread: a never-merged draft PR in vws-deploy; a positive integer)
 - `ORCHESTRATE_FAILURE_ALERT=apply`
 - `ORCHESTRATE_FAILURE_THRESHOLD=3`
 - `DEEPSEEK_TIMEOUT_HOURS=3`
