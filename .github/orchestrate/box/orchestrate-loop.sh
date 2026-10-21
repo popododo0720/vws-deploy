@@ -9,7 +9,12 @@
 # Environment (tests override these): ORCHESTRATE_STATE_DIR, ORCHESTRATE_CONFIG_DIR,
 # ORCHESTRATE_INTERVAL (default 600 s), ORCHESTRATE_BACKOFF_BASE (default 60 s),
 # ORCHESTRATE_BACKOFF_MAX (default 1800 s), ORCHESTRATE_LOOP_ITERATIONS (default 0 = forever),
-# ORCHESTRATE_PY (default: orchestrate.py next to this directory).
+# ORCHESTRATE_PY (default: orchestrate.py next to this directory), METRICS_ENABLED (default 0; the env
+# file's value wins), METRICS_PY (default: ../../metrics/metrics.py).
+#
+# Daily metrics (vws-deploy#345): with METRICS_ENABLED=1, every iteration also runs metrics.py --if-due,
+# which returns at once unless a day is due. It has its own lock and log (log/metrics.log), and its exit
+# status never counts as a failed tick, so it cannot start backoff or a failure comment.
 set -uo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 
@@ -21,7 +26,10 @@ base=${ORCHESTRATE_BACKOFF_BASE:-60}
 cap=${ORCHESTRATE_BACKOFF_MAX:-1800}
 iterations=${ORCHESTRATE_LOOP_ITERATIONS:-0}
 py=${ORCHESTRATE_PY:-$here/../orchestrate.py}
+metrics_enabled=${METRICS_ENABLED:-0}
+metrics_py=${METRICS_PY:-$here/../../metrics/metrics.py}
 loop_log=$state/log/loop.log
+metrics_log=$state/log/metrics.log
 
 umask 077
 mkdir -p "$state/log"
@@ -53,11 +61,11 @@ run() {
   child=""
 }
 
-rotate_loop_log() {
+rotate_log() {
   local size
-  size=$(stat -c %s "$loop_log" 2>/dev/null || echo 0)
+  size=$(stat -c %s "$1" 2>/dev/null || echo 0)
   if ((size > 1048576)); then
-    mv -f "$loop_log" "$loop_log.1"
+    mv -f "$1" "$1.1"
   fi
 }
 
@@ -66,11 +74,14 @@ streak_start=0
 n=0
 while :; do
   n=$((n + 1))
-  rotate_loop_log
-  # The interval in the env file wins over the environment, so it can change without a restart.
+  rotate_log "$loop_log"
+  # The interval and METRICS_ENABLED in the env file win over the environment, so they can change
+  # without a restart.
   if [[ -f $config/env ]]; then
     v=$(sed -n 's/^ORCHESTRATE_INTERVAL=\([0-9][0-9]*\)$/\1/p' "$config/env" | tail -n 1)
     [[ -n $v ]] && interval=$v
+    v=$(sed -n 's/^METRICS_ENABLED=\([01]\)$/\1/p' "$config/env" | tail -n 1)
+    [[ -n $v ]] && metrics_enabled=$v
   fi
   run python3 "$py" --once >>"$loop_log" 2>&1
   if ((rc == 0)); then
@@ -87,6 +98,11 @@ while :; do
       --last-error "$last" >>"$loop_log" 2>&1
     delay=$((base * (1 << (failures > 6 ? 6 : failures - 1))))
     ((delay > cap)) && delay=$cap
+  fi
+  if [[ $metrics_enabled == 1 && -f $metrics_py ]]; then
+    rotate_log "$metrics_log"
+    run python3 "$metrics_py" --if-due >>"$metrics_log" 2>&1
+    ((rc == 0)) || echo "$(date -u +%FT%TZ) metrics rc=$rc (not a failed tick)" >>"$metrics_log"
   fi
   if ((iterations > 0 && n >= iterations)); then
     break
