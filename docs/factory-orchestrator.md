@@ -5,7 +5,7 @@ A deterministic script that runs three routine factory steps on GitHub state. It
 | rule | what it does |
 |---|---|
 | A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
-| B, DeepSeek queue | When no `@deepseek-dev` dispatch is in flight in any repo, it comments `@deepseek-dev please take this issue ...` on the first open issue or PR that has `ready` and `deepseek`, has no `grok` or `blocked` label, is not a draft, and has every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
+| B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
@@ -23,6 +23,14 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   - An open, unreadable, outside, archived or cyclic reference blocks the task. The orchestrator adds
     `blocked` and logs a `note`.
   - It removes `blocked` only if it added the label itself.
+  - Dependent tasks never run at the same time. A task in flight, in review or dispatched in the same
+    tick is an open item, so every task that depends on it is blocked until it closes as completed or
+    merges (for example vws-console-api#227 waits for vws-proto#51).
+- **DeepSeek slots:** a dispatch is in flight until its Done or Failed report lands or it times out
+  (3h). A tick dispatches at most `ORCHESTRATE_DEEPSEEK_CAP` minus the in-flight count, and the write
+  cap still applies. Slots count running dispatches, not items. A running target is never dispatched
+  again, even after `/orchestrate reset-failures`. A task in review (Done report, PR open) does not
+  hold a slot.
 - **History:** candidates (`ready`, `deepseek` or `grok`) get their full comment history, so old
   dispatches and failures are never forgotten. Other items use the repo-wide comment list for the
   last 14 days.
@@ -118,6 +126,7 @@ Config keys and defaults:
 - `ORCHESTRATE_FAILURE_THRESHOLD=3`
 - `DEEPSEEK_TIMEOUT_HOURS=3`
 - `DEEPSEEK_MAX_FAILURES=2`
+- `ORCHESTRATE_DEEPSEEK_CAP=2` (DeepSeek dispatches in flight at once; a positive integer)
 - `VERIFY_WAKE_THRESHOLD=5`
 - `VERIFY_WAKE_EDGE_MIN_HOURS=1`
 - `VERIFY_WAKE_COOLDOWN_HOURS=6`
