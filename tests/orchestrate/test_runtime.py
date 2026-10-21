@@ -240,6 +240,42 @@ class Ticks(Env):
         self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1")
         self.assertEqual([(c["method"], c["path"]) for c in self.writes()], [("DELETE", f"{O}/vws-iam/issues/1/labels/deepseek")])
 
+    def test_done_report_with_pr_outside_vws_does_not_fail_the_tick(self):
+        # vws-deploy#341: the PR is never read (the allowlist would refuse it); the item counts one failure.
+        r = routes()
+        u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
+        r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
+            {"id": 1, "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 2, "html_url": u + "2", "created_at": "2026-10-01T01:00:00Z",
+             "body": f"[deepseek-dev] Done for {u}1\nPR: https://github.com/popododo0720/other-repo/pull/5"},
+            {"id": 3, "html_url": u + "3", "created_at": "2026-10-01T02:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 4, "html_url": u + "4", "created_at": "2026-10-01T03:00:00Z",
+             "body": f"[deepseek-dev] Done for {u}3\nPR: https://github.com/someone/vws-iam/pull/6"}]}
+        self.set_routes(r)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1"), 0)
+        self.assertFalse([c for c in self.calls() if "other-repo" in c["path"] or "someone" in c["path"]])
+        self.assertEqual(load(self.paths.health)["result"], "ok")
+        notes = [e for e in self.log() if e.get("kind") == "report_pr_outside_vws"]
+        self.assertEqual(len(notes), 2)
+        self.assertIn(("DELETE", f"{O}/vws-iam/issues/1/labels/deepseek"),
+                      [(c["method"], c["path"]) for c in self.writes()], "2 failures: moved to grok")
+
+    def test_swap_removes_owned_in_review(self):
+        r = routes()
+        u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
+        r[f"{O}/vws-iam/issues"]["body"][0]["labels"].append({"name": "in-review"})
+        r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
+            {"id": 1, "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 2, "html_url": u + "2", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
+        self.set_routes(r)
+        orch.write_json(self.paths.state_file, {"owned_labels": {"in-review": ["vws-iam#1"], "blocked": []}})
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1"), 0)
+        self.assertEqual([(c["method"], c["path"]) for c in self.writes()],
+                         [("POST", f"{O}/vws-iam/issues/1/comments"), ("POST", f"{O}/vws-iam/issues/1/labels"),
+                          ("DELETE", f"{O}/vws-iam/issues/1/labels/deepseek"),
+                          ("DELETE", f"{O}/vws-iam/issues/1/labels/in-review")])
+        self.assertEqual(load(self.paths.state_file)["owned_labels"]["in-review"], [])
+
     def test_label_ownership_is_journaled_before_the_write(self):
         r = routes()
         r[f"{O}/vws-iam/issues"]["body"][0]["body"] = "Depends on #99"
@@ -367,6 +403,17 @@ class FailureComments(Env):
         self.assertEqual(self.writes(), [], "dry-run with ORCHESTRATE_FAILURE_ALERT=apply posts nothing")
         self.notify(3, ORCHESTRATE_FAILURE_ALERT="always")
         self.assertEqual(len(self.writes()), 1)
+
+    def test_scoped_trial_posts_no_failure_comment(self):
+        # vws-deploy#341: ORCHESTRATE_SCOPE limits every write, the failure comment included.
+        self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1")
+        self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1", ORCHESTRATE_FAILURE_ALERT="always")
+        self.assertEqual(self.writes(), [])
+        self.assertTrue(any(e.get("event") == "failure_alert_skipped" and "ORCHESTRATE_SCOPE" in e.get("reason", "")
+                            for e in self.log()))
+        self.assertFalse(os.path.exists(self.paths.failure_file), "a later unscoped streak still posts")
+        self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-deploy#339")
+        self.assertEqual(len(self.writes()), 1, "a scope on the status thread itself allows the comment")
 
     def test_key_already_on_status_thread_is_not_reposted(self):
         key = "sha256:" + orch.hashlib.sha256(f"failure:{orch.socket.gethostname()}:1000.0".encode()).hexdigest()
