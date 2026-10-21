@@ -1,0 +1,23 @@
+{
+ "days": [
+  {
+   "alerts": [],
+   "ci_failure_rate": 0.018,
+   "day": "2026-10-14",
+   "deepseek_dispatched": 0,
+   "deepseek_done": 0,
+   "deepseek_failed": 0,
+   "deepseek_timeout": 0,
+   "grok_swaps": 0,
+   "lead_time_median_h": 0.05,
+   "prs_merged": 129,
+   "prs_opened": 151,
+   "stalls": null,
+   "tokens": null,
+   "verify_backlog": null,
+   "verify_pass_rate": 0.615
+  }
+ ],
+ "schema": 1,
+ "through": "2026-10-14"
+}
