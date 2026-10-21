@@ -11,7 +11,10 @@ Rules (see docs/factory-orchestrator.md):
   B  hand the next ready+deepseek tasks to DeepSeek, at most ORCHESTRATE_DEEPSEEK_CAP (2) in flight
      and one per repo, with an @deepseek-dev comment; a task whose Depends on target is still open is
      never dispatched
-  C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok
+  C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok.
+     A Failed report that shows a provider error (INFRA_ERROR_RE) is an infra failure instead: never
+     counted, re-mentioned ORCHESTRATE_INFRA_RETRY_DELAY_MIN after the report, at most
+     INFRA_MAX_RETRIES times; then one failure comment on the status thread and the item gets blocked
   D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
      is green for the current main head; after a merge the repo is locked until the push CI for the
      new main head is green (red stops merges there and posts one failure comment)
@@ -63,6 +66,17 @@ CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w
 AGENT_RE = re.compile(r"(?im)^\s*Agent:\s*(\S.*?)\s*$")
 MERGE_PAYLOAD_KEYS = {"merge_method", "sha", "commit_title"}
 KEY_RE = re.compile(r"^Idempotency key: `(sha256:[0-9a-f]{64})`$", re.M)
+# A [deepseek-dev] Failed report is a provider (infra) failure, not a task failure, when its body has
+# the last dsh line of the "Last output" block, `dsh: SERVER: 503: {...}` or `dsh: RATE_LIMIT: 429: ...`
+# (the real reports on vws-proto#51, comments 6310291529 and 6311725351; the poller's format per the VM
+# owner), or the first-line form `Failed for <url>: provider 503 (SERVER)`. A plain "dsh exited with
+# code 1" without that line is a task failure. Bare HTTP statuses are never matched: a task's own test
+# output can print them.
+INFRA_ERROR_RE = re.compile(
+    r"^dsh: (?:RATE_LIMIT|SERVER): \d{3}:"
+    r"|^\[deepseek-dev\] Failed for \S+: provider \d{3} \((?:RATE_LIMIT|SERVER)\)",
+    re.M)
+INFRA_MAX_RETRIES = 3
 TOKEN_RE = re.compile(r"(gh[opsu]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|Bearer\s+\S+)")
 
 DEFAULTS = {
@@ -75,6 +89,7 @@ DEFAULTS = {
     "DEEPSEEK_TIMEOUT_HOURS": "3",
     "DEEPSEEK_MAX_FAILURES": "2",
     "ORCHESTRATE_DEEPSEEK_CAP": "2",
+    "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
     "VERIFY_WAKE_COOLDOWN_HOURS": "6",
@@ -147,6 +162,9 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_STATUS_PR must be a positive integer, got {cfg['ORCHESTRATE_STATUS_PR']!r}")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_DEEPSEEK_CAP"]):
         raise ValueError(f"ORCHESTRATE_DEEPSEEK_CAP must be a positive integer, got {cfg['ORCHESTRATE_DEEPSEEK_CAP']!r}")
+    if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_INFRA_RETRY_DELAY_MIN"]):
+        raise ValueError("ORCHESTRATE_INFRA_RETRY_DELAY_MIN must be a positive integer (minutes), "
+                         f"got {cfg['ORCHESTRATE_INFRA_RETRY_DELAY_MIN']!r}")
     if cfg["ORCHESTRATE_FAILURE_ALERT"] not in ("apply", "always", "never"):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
@@ -480,8 +498,20 @@ def pending_key(prs):
     return "sha256:" + hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
+def infra_error(body):
+    """The provider error a Failed report shows, as one redacted line ('' = not an infra failure)."""
+    text = body or ""
+    if not INFRA_ERROR_RE.search(text):
+        return ""
+    for line in reversed(text.splitlines()):
+        if INFRA_ERROR_RE.search(line):
+            return scrub(line.strip())[:200]
+    return ""
+
+
 def dispatch_history(item, now, cfg, exclusions):
-    """Per dispatch on one item: outcome in in_flight | done | review | failed | excluded."""
+    """Per dispatch on one item: outcome in in_flight | done | review | failed | infra | excluded.
+    infra: a Failed report that shows a provider error; it never counts toward the grok swap."""
     timeout = num(cfg, "DEEPSEEK_TIMEOUT_HOURS") * 3600
     comments = sorted(item.get("comments", []), key=lambda c: (c["created_at"], c["id"]))
     dispatches, reports = [], {}
@@ -502,6 +532,11 @@ def dispatch_history(item, now, cfg, exclusions):
             h["kind"] = "timeout"
         elif rep[1]["result"] == "failed":
             h["outcome"], h["kind"] = "failed", "failed_report"
+            err = infra_error(rep[0]["body"])
+            if err and not (h["url"] in exclusions or h["report"] in exclusions):
+                # An exclusions.tsv entry still wins: that attempt is ignored, not retried with a delay.
+                h["outcome"], h["kind"], h["error"] = "infra", "provider_error", err
+                h["report_at"] = utc(rep[0]["created_at"])
         elif rep[1]["pr"] and not vws_pr_key(rep[1]["pr"]):
             # The PR cannot be read or checked (outside popododo0720/vws-*): one failed attempt, so the
             # task is retried or moved to grok instead of waiting for review forever.
@@ -731,6 +766,23 @@ def merge_status_body(kind, repo, sha, detail, key, run_id):
     return "\n".join(lines)
 
 
+def infra_status_body(target, hist, key, run_id):
+    last = hist[-1]
+    lines = [FAILURE_MARKER,
+             f"vws-orchestrate: {target} failed {len(hist)} times on provider errors; "
+             f"{INFRA_MAX_RETRIES} infra retries are used up. The item is now `blocked` for a human.", "",
+             "Kind: infra-retries-exhausted", f"Item: {target}", f"Last report: {last['report']}",
+             f"Last error (redacted): {scrub(last.get('error', '')).replace(chr(10), ' ')}", "",
+             "These failures did not count toward the grok swap. To retry, fix the provider and comment "
+             "`/orchestrate reset-failures` on the item (the orchestrator then removes its `blocked`).",
+             f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
+    return "\n".join(lines)
+
+
+def infra_key(target, report_url):
+    return "sha256:" + hashlib.sha256(f"infra-exhausted:{target}:{report_url}".encode()).hexdigest()
+
+
 def status_key(kind, repo, sha):
     return "sha256:" + hashlib.sha256(f"merge-{kind}:{repo}:{sha}".encode()).hexdigest()
 
@@ -859,6 +911,8 @@ def decide(snapshot, state, now, cfg, exclusions):
         owned[name] = [k for k in owned.get(name, []) if k in items and name in items[k]["labels"]]
     max_fail = int(num(cfg, "DEEPSEEK_MAX_FAILURES"))
     cap = int(num(cfg, "ORCHESTRATE_DEEPSEEK_CAP"))
+    infra_delay = int(num(cfg, "ORCHESTRATE_INFRA_RETRY_DELAY_MIN")) * 60
+    posted = set(snapshot.get("status", {}).get("keys", []))
     cycles = find_cycles(snapshot)
 
     # Rule A: pending PRs and the verify wake
@@ -919,6 +973,28 @@ def decide(snapshot, state, now, cfg, exclusions):
             continue
         if "grok" in labels:
             continue
+        # Infra failures (provider 429/503) since the last reset: never counted above. While the latest
+        # attempt is one, re-mention it after the delay, at most INFRA_MAX_RETRIES times; the count
+        # comes from the comments, so a restart or rerun sees the same number.
+        infra = [h for h in hist if h["outcome"] == "infra" and h["at"] > since]
+        retry, exhausted = 0, False
+        if latest and latest["outcome"] == "infra" and latest["at"] > since:
+            if len(infra) > INFRA_MAX_RETRIES:
+                exhausted = True
+                notes.append({"kind": "infra_exhausted", "target": k, "failures": len(infra), "report": latest["report"]})
+                key = infra_key(k, latest["report"])
+                if key not in posted:
+                    posted.add(key)
+                    actions.append({"type": "infra_status", "target": status_target(cfg), "key": key, "item": k,
+                                    "reason": f"{k}: infra retries exhausted",
+                                    "body": infra_status_body(k, infra, key, snapshot["run_id"])})
+            else:
+                due = latest["report_at"] + infra_delay
+                if now < due:
+                    notes.append({"kind": "infra_wait", "target": k, "retry": len(infra), "due": iso(due),
+                                  "error": latest.get("error", "")})
+                else:
+                    retry = len(infra)
         deps, bad = parse_deps(it.get("body"), it["repo"])
         unmet = [d for d in deps if dep_state(d, snapshot, repos) != "met"]
         for d in unmet:
@@ -927,21 +1003,23 @@ def decide(snapshot, state, now, cfg, exclusions):
             notes.append({"kind": "dep_unparsed", "target": k, "token": b})
         if k in cycles:
             notes.append({"kind": "dep_cycle", "target": k})
-        blocked = bool(unmet or bad or k in cycles)
+        blocked = bool(unmet or bad or k in cycles or exhausted)
         if blocked and "blocked" not in labels:
-            actions.append({"type": "add_label", "target": k, "label": "blocked", "reason": "unmet dependency"})
+            actions.append({"type": "add_label", "target": k, "label": "blocked",
+                            "reason": "infra retries exhausted" if exhausted else "unmet dependency"})
         if not blocked and "blocked" in labels and k in owned["blocked"]:
             actions.append({"type": "remove_label", "target": k, "label": "blocked", "reason": "dependencies met"})
         if latest and latest["outcome"] == "review" and "in-review" not in labels:
             actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
-        if (latest and latest["outcome"] in ("done", "failed") and "in-review" in labels and k in owned["in-review"]):
+        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels and k in owned["in-review"]):
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
         # A running target is never dispatched again, even after a failure reset.
         eligible = (not running and not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
-                    and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since))
+                    and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since
+                         or retry > 0))
         if eligible:
             prio = 0 if "priority/blocker" in labels else 1
-            queue.append((prio, ready_time(it), it["repo"], it["number"], k))
+            queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry))
     scope = cfg.get("ORCHESTRATE_SCOPE", "")
     if scope:
         queue = [q for q in queue if q[4] == scope]
@@ -964,9 +1042,11 @@ def decide(snapshot, state, now, cfg, exclusions):
             continue
         busy.add(q[2])
         picked += 1
+        retry_line = f"Retry {q[5]}/{INFRA_MAX_RETRIES} after provider error.\n\n" if q[5] else ""
         actions.append({"type": "dispatch", "target": q[4],
-                        "reason": f"next in queue, DeepSeek slot {slots_used + picked} of {cap}",
-                        "body": f"{DISPATCH_TEXT}\n\n<!-- orchestrate:dispatch -->"})
+                        "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
+                        + f"DeepSeek slot {slots_used + picked} of {cap}",
+                        "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
@@ -1184,7 +1264,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
-        if a["type"] in ("wake_verify", "merge_status") and scope:
+        if a["type"] in ("wake_verify", "merge_status", "infra_status") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
@@ -1205,7 +1285,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             calls.append(("POST", f"{base}/labels", {"labels": [a["label"]]}))
         elif a["type"] == "remove_label":
             calls.append(("DELETE", f"{base}/labels/{a['label']}", None))
-        elif a["type"] == "merge_status":
+        elif a["type"] in ("merge_status", "infra_status"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "merge":
             calls.append(("PUT", f"repos/{OWNER}/{repo}/pulls/{number}/merge", a["payload"]))
@@ -1222,8 +1302,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]]):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
             continue
-        if a["type"] == "merge_status" and not recheck_key(gh, repo, number, a["key"]):
-            log("skipped", action="merge_status", reason="a comment with this key already exists")
+        if a["type"] in ("merge_status", "infra_status") and not recheck_key(gh, repo, number, a["key"]):
+            log("skipped", action=a["type"], reason="a comment with this key already exists")
             continue
         if a["type"] == "merge":
             why = recheck_merge(gh, repo, number, a["head"], new_state, snapshot.get("merge", {}).get(repo, {}))
