@@ -9,3 +9,4 @@ vws-compute	go	.golangci.yml	lint test
 vws-console-api	go	.golangci.yml	lint test
 vws-console	node	-	quality
 vws-hypervisor	go	.golangci.yml	lint test
+vws-conformance	go	.golangci.yml	lint test

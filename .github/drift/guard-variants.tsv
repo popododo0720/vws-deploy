@@ -1,0 +1,3 @@
+# Accepted scripts/guard-agents.sh variants for the drift check (drift_check.py).
+# repo<TAB>full sha256<TAB>reason. Only this exact digest passes; any other digest is drift.
+vws-conformance	7070d89befc2ef534ea190006cad968d425a5793c416c33bc4daa275b5de2383	check-run verify-gate variant (vws-conformance#3); port to vws-deploy: https://github.com/popododo0720/vws-deploy/issues/338
