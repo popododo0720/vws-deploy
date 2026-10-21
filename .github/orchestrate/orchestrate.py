@@ -6,12 +6,12 @@ when ORCHESTRATE_MODE=apply). It never calls an LLM. It runs on the shared box u
 box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from the gh environment.
 
 Rules (see docs/factory-orchestrator.md):
-  A  wake vws-verify with one marker comment on the status issue (vws-deploy#337) when
+  A  wake vws-verify with one marker comment on the status thread (draft PR vws-deploy#339) when
      >= VERIFY_WAKE_THRESHOLD PRs wait for verify (edge-triggered, one comment per pending set)
   B  hand the next ready+deepseek task to DeepSeek, one at a time, with an @deepseek-dev comment
   C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok
 
-A failed tick streak is reported the same way, with a failure marker comment on the status issue
+A failed tick streak is reported the same way, with a failure marker comment on the status thread
 (--notify-failure, called by box/orchestrate-loop.sh).
 
 Exit status: 0 tick done or skipped on purpose, 2 usage error, 4 tick failed (auth, API or
@@ -31,6 +31,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OWNER = "popododo0720"
+STATUS_REPO = "vws-deploy"  # the status thread lives here; ORCHESTRATE_STATUS_PR picks the number
 FAIL_EXIT = 4
 DEEPSEEK = "@deepseek-dev"
 DISPATCH_TEXT = (
@@ -60,7 +61,7 @@ DEFAULTS = {
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
     "VERIFY_WAKE_COOLDOWN_HOURS": "6",
-    "ORCHESTRATE_STATUS_ISSUE": "vws-deploy#337",
+    "ORCHESTRATE_STATUS_PR": "339",
     "ORCHESTRATE_FAILURE_ALERT": "apply",
     "ORCHESTRATE_FAILURE_THRESHOLD": "3",
     "ORCHESTRATE_FAILURE_MIN_GAP_HOURS": "1",
@@ -122,16 +123,21 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_MODE must be dry-run or apply, got {cfg['ORCHESTRATE_MODE']!r}")
     if cfg["ORCHESTRATE_SCOPE"] and not re.fullmatch(r"vws-[a-z0-9-]+#[0-9]+", cfg["ORCHESTRATE_SCOPE"]):
         raise ValueError("ORCHESTRATE_SCOPE must look like vws-deploy#123")
-    if not re.fullmatch(r"vws-[a-z0-9-]+#[0-9]+", cfg["ORCHESTRATE_STATUS_ISSUE"]):
-        raise ValueError("ORCHESTRATE_STATUS_ISSUE must look like vws-deploy#337")
+    if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_STATUS_PR"]):
+        raise ValueError(f"ORCHESTRATE_STATUS_PR must be a positive integer, got {cfg['ORCHESTRATE_STATUS_PR']!r}")
     if cfg["ORCHESTRATE_FAILURE_ALERT"] not in ("apply", "always", "never"):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
-    text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
+    text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
                  "ORCHESTRATE_FAILURE_ALERT")
     for k, v in cfg.items():
         if k not in text_keys:
             float(v)  # raises ValueError on a bad number
     return cfg
+
+
+def status_target(cfg):
+    """The status thread: a never-merged draft PR in vws-deploy. PR comments use the issues API."""
+    return f"{STATUS_REPO}#{int(cfg['ORCHESTRATE_STATUS_PR'])}"
 
 
 def num(cfg, key):
@@ -414,7 +420,7 @@ def wake_body(pending, key, run_id, threshold, repos):
 
 
 def status_wakes(comments):
-    """Verify-wake comments already on the status issue: [{"key", "at"}]."""
+    """Verify-wake comments already on the status thread: [{"key", "at"}]."""
     out = []
     for c in comments:
         body = c.get("body") or ""
@@ -558,7 +564,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     rising = prev is None or prev < threshold
     gap = num(cfg, "VERIFY_WAKE_EDGE_MIN_HOURS" if rising else "VERIFY_WAKE_COOLDOWN_HOURS") * 3600
     if len(pending) >= threshold and key not in {w["key"] for w in wakes} and now - last_at >= gap:
-        actions.append({"type": "wake_verify", "target": cfg["ORCHESTRATE_STATUS_ISSUE"],
+        actions.append({"type": "wake_verify", "target": status_target(cfg),
                         "reason": f"{len(pending)} PRs pending, threshold {threshold}", "key": key,
                         "body": wake_body(pending, key, snapshot["run_id"], threshold, sorted(repos))})
     new_state["prev_pending_count"] = len(pending)
@@ -655,7 +661,7 @@ def collect(gh, repo_names, now, cfg, run_id):
     # A since value floored to the UTC day keeps the URL stable for the day, so ETags can match.
     since = iso((int(now) // 86400 - window) * 86400)
     snap = {"run_id": run_id, "repos": [], "items": {}, "deps": {}, "labels": {}}
-    srepo, snum = cfg["ORCHESTRATE_STATUS_ISSUE"].split("#")
+    srepo, snum = status_target(cfg).split("#")
     snap["status"] = {"wakes": status_wakes(gh.get_all(f"repos/{OWNER}/{srepo}/issues/{snum}/comments?per_page=100"))}
     for name in repo_names:
         meta, _ = gh.get(f"repos/{OWNER}/{name}")
@@ -928,14 +934,14 @@ def notify_failure(paths, cfg, args, gh=None, now=None):
     if now - prev.get("at", 0) < num(cfg, "ORCHESTRATE_FAILURE_MIN_GAP_HOURS") * 3600:
         log("failure_alert_skipped", reason="minimum gap between failure comments", failures=args.failures)
         return 0
-    repo, number = cfg["ORCHESTRATE_STATUS_ISSUE"].split("#")
+    repo, number = status_target(cfg).split("#")
     gh = gh or Gh()
     try:
         # A POST that timed out may have landed; never post the same key twice.
         posted = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
         if any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in posted):
             write_json(paths.failure_file, {"key": key, "at": now})
-            log("failure_alert_skipped", reason="the status issue already has this key", failures=args.failures)
+            log("failure_alert_skipped", reason="the status thread already has this key", failures=args.failures)
             return 0
     except (GhError, PermissionError) as e:
         log("failure_alert_recheck_failed", error=str(e))  # GitHub may be down; still try the POST
@@ -947,7 +953,7 @@ def notify_failure(paths, cfg, args, gh=None, now=None):
         log("failure_alert_failed", error=str(e), failures=args.failures)
         return 0
     write_json(paths.failure_file, {"key": key, "at": now})
-    log("failure_alerted", target=cfg["ORCHESTRATE_STATUS_ISSUE"], failures=args.failures, key=key)
+    log("failure_alerted", target=status_target(cfg), failures=args.failures, key=key)
     return 0
 
 

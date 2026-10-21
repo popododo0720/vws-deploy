@@ -3,7 +3,7 @@
 # One loop per box: it holds loop.lock for its lifetime. Each tick runs orchestrate.py in a fresh
 # process, so a crash ends only that tick. Failed ticks back off exponentially (capped); after each
 # failed tick orchestrate.py --notify-failure runs, and at ORCHESTRATE_FAILURE_THRESHOLD failures in a
-# row it posts one failure comment on the status issue per streak. Start it with
+# row it posts one failure comment on the status thread (draft PR) per streak. Start it with
 # orchestrate-ensure.sh, not by hand.
 #
 # Environment (tests override these): ORCHESTRATE_STATE_DIR, ORCHESTRATE_CONFIG_DIR,
