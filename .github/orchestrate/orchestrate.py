@@ -99,6 +99,7 @@ DEFAULTS = {
     "ORCHESTRATE_FAILURE_MIN_GAP_HOURS": "1",
     "ORCHESTRATE_LOG_MAX_BYTES": str(5 * 1024 * 1024),
     "ORCHESTRATE_LOG_KEEP": "5",
+    "ORCHESTRATE_DISPATCH": "on",
     "ORCHESTRATE_MERGE": "dry-run",
     "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
     "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
@@ -172,6 +173,8 @@ def load_config(paths, environ):
                          f"got {cfg['ORCHESTRATE_INFRA_RETRY_DELAY_MIN']!r}")
     if cfg["ORCHESTRATE_FAILURE_ALERT"] not in ("apply", "always", "never"):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
+    if cfg["ORCHESTRATE_DISPATCH"] not in ("on", "off"):
+        raise ValueError("ORCHESTRATE_DISPATCH must be on or off")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     if cfg["ORCHESTRATE_BOARD"] not in ("off", "dry-run", "apply"):
@@ -182,7 +185,7 @@ def load_config(paths, environ):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -1103,6 +1106,8 @@ def decide(snapshot, state, now, cfg, exclusions):
     # picked in this tick is skipped, and the slot goes to the next task from another repo.
     busy = {items[k]["repo"] for k in in_flight}
     free = max(0, cap - slots_used)
+    if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
+        free = 0  # pause switch: no new dispatches; in-flight, verify-wake and merges carry on
     picked = 0
     for q in sorted(queue):
         if picked >= free:
