@@ -492,7 +492,7 @@ class HistoryCache(Env):
         self.assertEqual(self.history_reads(), [], "unchanged issue: no comments/events reads")
         self.assertEqual(len(self.calls()), first - 2)
         cache = load(orch.history_path(self.paths))
-        self.assertEqual((cache["version"], sorted(cache["items"])), (1, ["vws-iam#1"]))
+        self.assertEqual((cache["version"], sorted(cache["items"])), (orch.HISTORY_VERSION, ["vws-iam#1"]))
         self.assertIn("last_tick", cache)
 
     def test_same_plan_from_cache(self):
