@@ -703,11 +703,15 @@ spec = importlib.util.spec_from_file_location("render", root / "scripts/vws.d/li
 render = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render)
 crd_path = root / "charts/vws/crds/vwsclusters.yaml"
+# iam.yaml is the vws-iam store (vws-deploy#369): a copy of vws-iam deploy/crds/iam.yaml, group
+# iam.<VWSCluster group>. It is optional so a clean copy without it still passes.
+iam_path = root / "charts/vws/crds/iam.yaml"
 skip = {".git", "build", ".cache", "node_modules"}
 files = [p for p in root.rglob("*") if p.is_file() and not skip & set(p.relative_to(root).parts)]
 crds = [p for p in files if p.suffix in (".yaml", ".yml") and re.search(r"^kind:\s*CustomResourceDefinition\s*$", p.read_text(errors="ignore"), re.M)]
-if [p.relative_to(root) for p in crds] != [crd_path.relative_to(root)]:
-    sys.exit(f"R18: the only VWS CRD is {crd_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
+allowed = [crd_path] + ([iam_path] if iam_path in crds else [])
+if sorted(p.relative_to(root) for p in crds) != sorted(p.relative_to(root) for p in allowed):
+    sys.exit(f"R18: the VWS CRDs are {crd_path.relative_to(root)} and {iam_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
 docs = [d for d in yaml.safe_load_all(crd_path.read_text()) if d]
 if len(docs) != 1 or docs[0]["spec"]["names"]["kind"] != "VWSCluster":
     sys.exit("R18: vwsclusters.yaml must hold one CRD, kind VWSCluster")
@@ -738,6 +742,20 @@ def structural(schema, path):
 for version in crd["spec"]["versions"]:
     structural(version["schema"]["openAPIV3Schema"], "")
 
+if iam_path in crds:
+    for doc in (d for d in yaml.safe_load_all(iam_path.read_text()) if d):
+        names = doc["spec"]["names"]
+        if doc["spec"].get("group") != f"iam.{group}":
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} group must be iam.{group}")
+        if not names["plural"].startswith("iam") or doc["metadata"]["name"] != f"{names['plural']}.iam.{group}":
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} must be iam<kind>s.iam.{group}")
+        if doc.get("apiVersion") != "apiextensions.k8s.io/v1" or doc["spec"].get("scope") != "Namespaced":
+            sys.exit(f"R18: {iam_path.name} CRDs must be apiextensions.k8s.io/v1 and Namespaced")
+        if [v["name"] for v in doc["spec"]["versions"] if v.get("storage")] != ["v1alpha1"]:
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']}: v1alpha1 must be the one storage version")
+        for version in doc["spec"]["versions"]:
+            structural(version["schema"]["openAPIV3Schema"], "")
+
 def walk(schema, path):
     for key, sub in (schema.get("properties") or {}).items():
         if key not in render.REFERENCE_NAMES and render.SECRET_NAME.search(key):
@@ -753,7 +771,8 @@ examples = sorted((root / "examples/vwscluster").glob("*.yaml"))
 for p in files:
     if p == crd_path or p in examples:
         continue
-    if group in p.read_text(errors="ignore"):
+    # A bare match only: iam.<group> (the vws-iam API group) is a different group.
+    if re.search(r"(?<![\w.-])" + re.escape(group), p.read_text(errors="ignore")):
         sys.exit(f"R18: the API group {group} is written in {p.relative_to(root)}; read it from {crd_path.relative_to(root)}")
 for p in examples:
     if yaml.safe_load(p.read_text()).get("apiVersion") != f"{group}/v1alpha1":
@@ -798,6 +817,15 @@ PY
   rm "$tmp/scripts/group.txt"
   sed -i 's#^apiVersion: .*#apiVersion: example.com/v1alpha1#' "$tmp/examples/vwscluster/ha.yaml"
   ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an example CR with another group was accepted"; }
+  sed -i "s#^apiVersion: .*#apiVersion: $(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)/v1alpha1#" "$tmp/examples/vwscluster/ha.yaml"
+  if [[ -f charts/vws/crds/iam.yaml ]]; then
+    sed 's/group: iam\./group: other./' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
+    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an IAM CRD in another group was accepted"; }
+    sed 's/scope: Namespaced/scope: Cluster/' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
+    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a cluster-scoped IAM CRD was accepted"; }
+    cp charts/vws/crds/iam.yaml "$tmp/charts/vws/crds/"
+    crd_check "$tmp" || { rm -rf "$tmp"; die "R18: a clean copy with the IAM CRDs was rejected"; }
+  fi
   rm -rf "$tmp"
 }
 
