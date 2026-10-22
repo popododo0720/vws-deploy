@@ -57,6 +57,7 @@ FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
 # Rule D (vws-deploy#346).
 VERIFY_CHECK = "vws-verify"
 VERIFY_APP_ID = 5313004
+ACTIONS_APP_ID = 15368  # GitHub Actions
 CHECK_OK = {"success", "neutral", "skipped"}
 OPT_OUT_LABELS = ("do-not-merge", "hold")
 OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
@@ -276,6 +277,7 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/branches/main/protection/required_status_checks$"),
         re.compile(rf"^{_REPO}/rules/branches/main(\?.*)?$"),
         re.compile(rf"^{_REPO}/actions/runs\?event=push&branch=main&head_sha=[0-9a-f]{{40}}&per_page=100$"),
+        re.compile(rf"^{_REPO}/actions/runs\?head_sha=[0-9a-f]{{40}}&per_page=100$"),
         re.compile(r"^rate_limit$"),
     ],
     "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
@@ -694,12 +696,28 @@ def find_cycles(snapshot):
 
 # ---------------------------------------------------------------- rule D: serialized merges (pure)
 
+def run_order(r):
+    # A queued run has no started_at yet; it counts as the newest so it holds the gate.
+    return (r.get("started_at") or "9999", r.get("id", 0))
+
+
+def check_key(r):
+    """(name, app id, source). An Actions re-run gets a new check suite, so Actions runs are keyed by their
+    workflow (path or id, plus event); a suite not mapped to a workflow stays alone (an old failure there keeps blocking).
+    Other apps keep (name, app id)."""
+    if r.get("app_id") != ACTIONS_APP_ID:
+        return (r.get("name"), r.get("app_id"), "")
+    if r.get("workflow"):
+        return (r.get("name"), r.get("app_id"), f"wf:{r['workflow']}")
+    return (r.get("name"), r.get("app_id"), f"suite:{r.get('suite_id')}")
+
+
 def latest_runs(check_runs):
-    """Newest check run per (name, app id); a re-run gets a higher id."""
+    """Newest check run (started_at, then id) per check_key."""
     out = {}
     for r in check_runs or []:
-        k = (r.get("name"), r.get("app_id"))
-        if k not in out or r.get("id", 0) > out[k].get("id", 0):
+        k = check_key(r)
+        if k not in out or run_order(r) > run_order(out[k]):
             out[k] = r
     return out
 
@@ -712,11 +730,12 @@ def run_state(r):
 
 def head_check_reasons(info, required):
     """Why the PR head's checks do not allow a merge ([] = they do). Pure.
-    info: {"head_sha", "checks": [{"id", "name", "app_id", "status", "conclusion", "head_sha"}],
+    info: {"head_sha", "checks": [{"id", "name", "app_id", "suite_id", "status", "conclusion", "head_sha"}],
     "statuses": [{"context", "state"}], "checks_truncated"}; required: [{"context", "app_id"}] or None."""
     reasons = []
     runs = latest_runs([r for r in info.get("checks", []) if r.get("head_sha") == info.get("head_sha")])
-    v = runs.get((VERIFY_CHECK, VERIFY_APP_ID))
+    vs = [r for (name, app, _s), r in runs.items() if name == VERIFY_CHECK and app == VERIFY_APP_ID]
+    v = max(vs, key=run_order) if vs else None
     if v is None:
         reasons.append("verify_check_missing")
     elif v.get("status") != "completed" or v.get("conclusion") != "success":
@@ -734,10 +753,12 @@ def head_check_reasons(info, required):
         reasons.append("required_checks_unreadable")
     else:
         for req in sorted(required, key=lambda q: (q["context"], q.get("app_id") or 0)):
-            match = [r for (name, app), r in runs.items() if name == req["context"]
+            match = [r for (name, app, _s), r in runs.items() if name == req["context"]
                      and (req.get("app_id") in (None, -1) or app == req["app_id"])]
             if match:
-                r = max(match, key=lambda x: x.get("id", 0))
+                # Every distinct check with this name must pass; a success elsewhere cannot hide a failure.
+                bad = [x for x in match if x.get("status") != "completed" or x.get("conclusion") != "success"]
+                r = max(bad or match, key=run_order)
                 if r.get("status") != "completed":
                     reasons.append(f"required_pending:{req['context']}")
                 elif r.get("conclusion") != "success":
@@ -750,7 +771,7 @@ def head_check_reasons(info, required):
             else:
                 reasons.append(f"required_missing:{req['context']}")
     # AGENTS.md rule 5: every check on the head is success (skipped and neutral helpers allowed).
-    for (name, _app), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0)):
+    for (name, _app, _s), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0, kv[0][2])):
         st = run_state(r)
         if st != "ok":
             reasons.append(f"check_{st}:{name}")
@@ -966,8 +987,12 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
                                 "agent": agent_of(it.get("body")),
                                 "payload": {"merge_method": "squash", "sha": head,
                                             "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
-            notes.append({"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
-                          "head": (it.get("head_sha") or "")[:7], "main": f"{main_sha[:7]} {main_ci}"})
+            note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
+                    "head": (it.get("head_sha") or "")[:7], "main": f"{main_sha[:7]} {main_ci}"}
+            unmapped = (it.get("merge_info") or {}).get("unmapped")
+            if unmapped:
+                note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
+            notes.append(note)
     return actions, notes
 
 
@@ -1308,12 +1333,19 @@ def merge_info(gh, repo, number):
     sha = pr["head"]["sha"]
     runs, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/check-runs?per_page=100")
     status, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/status")
+    # One GET maps each Actions check suite to its workflow and event (a re-run gets a new suite, same both).
+    wruns, _ = gh.get(f"repos/{OWNER}/{repo}/actions/runs?head_sha={sha}&per_page=100")
+    workflow = {w["check_suite_id"]: f'{w.get("path") or w.get("workflow_id")}@{w.get("event")}'
+                for w in (wruns or {}).get("workflow_runs", []) if w.get("check_suite_id")}
     checks = [{"id": r.get("id", 0), "name": r.get("name"), "app_id": (r.get("app") or {}).get("id"),
-               "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha")}
+               "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha"),
+               "started_at": r.get("started_at"), "suite_id": (r.get("check_suite") or {}).get("id"),
+               "workflow": workflow.get((r.get("check_suite") or {}).get("id"))}
               for r in (runs or {}).get("check_runs", [])]
+    unmapped = sorted({c["name"] for c in checks if c["app_id"] == ACTIONS_APP_ID and not c["workflow"]})
     return {"head_sha": sha, "state": pr.get("state"), "merged": bool(pr.get("merged")), "draft": bool(pr.get("draft")),
             "base": pr["base"]["ref"], "mergeable": pr.get("mergeable"), "mergeable_state": pr.get("mergeable_state"),
-            "title": pr.get("title") or "", "checks": checks,
+            "title": pr.get("title") or "", "checks": checks, "unmapped": unmapped,
             "checks_truncated": (runs or {}).get("total_count", 0) > len(checks),
             "statuses": [{"context": st.get("context"), "state": st.get("state")} for st in (status or {}).get("statuses", [])],
             # The combined status lists only its first page; more contexts than shown fail closed.
