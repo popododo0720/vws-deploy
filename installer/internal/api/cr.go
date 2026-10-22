@@ -16,8 +16,7 @@ func (srv *Server) getCR(w http.ResponseWriter, _ *http.Request) error {
 		return fail(ReasonStepOutOfOrder, "step "+Steps[j].Name+" is not valid; every step must be valid to export the CR")
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="vwscluster.json"`)
-	writeJSON(w, http.StatusOK, srv.s.cr(srv.apiVersion))
-	return nil
+	return writeJSON(w, http.StatusOK, srv.s.cr(srv.apiVersion))
 }
 
 // crSpecKeys are the spec fields the draft holds. version, services and secrets are not wizard
@@ -86,9 +85,13 @@ func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMes
 		if err := json.Unmarshal(raw, &network); err != nil {
 			errs = append(errs, FieldError{Field: "spec.network", Code: "invalid", Message: err.Error()})
 		} else {
-			if nodes, _ := network["nodes"].(map[string]any); nodes != nil {
-				if ext, _ := nodes["external"].(map[string]any); ext != nil {
-					if pool, ok := ext["eipPool"]; ok {
+			if rawNodes, ok := network["nodes"]; ok {
+				if nodes, ok := rawNodes.(map[string]any); !ok {
+					errs = append(errs, FieldError{Field: "spec.network.nodes", Code: "invalid", Message: "want an object"})
+				} else if rawExt, ok := nodes["external"]; ok {
+					if ext, ok := rawExt.(map[string]any); !ok {
+						errs = append(errs, FieldError{Field: "spec.network.nodes.external", Code: "invalid", Message: "want an object"})
+					} else if pool, ok := ext["eipPool"]; ok {
 						poolRaw, err := json.Marshal(pool)
 						if err != nil {
 							errs = append(errs, FieldError{
@@ -178,8 +181,7 @@ func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 	if len(fields) > 0 {
 		return fail(ReasonValidationFailed, "the CR has invalid or missing fields", fields...)
 	}
-	writeJSON(w, http.StatusOK, srv.stateView())
-	return nil
+	return writeJSON(w, http.StatusOK, srv.stateView())
 }
 
 func stepField(step string) string {

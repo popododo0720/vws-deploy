@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,6 +72,13 @@ func (l *eventLog) after(id uint64) ([]event, uint64, <-chan struct{}) {
 // heartbeat keeps proxies from closing an idle stream.
 var heartbeat = 15 * time.Second
 
+func sendEvent(w io.Writer, format string, a ...any) error {
+	if _, err := fmt.Fprintf(w, format, a...); err != nil {
+		return fmt.Errorf("write event stream: %w", err)
+	}
+	return nil
+}
+
 // getEvents streams the install as server-sent events. Last-Event-ID (header, or the
 // lastEventId query for clients that cannot set it) resumes after that id; if the ring no longer
 // holds the next one, a gap event says how many were dropped. The stream ends once no install is
@@ -97,17 +105,23 @@ func (srv *Server) getEvents(w http.ResponseWriter, r *http.Request) error {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "retry: 5000\n\n")
+	if err := sendEvent(w, "retry: 5000\n\n"); err != nil {
+		return internal(err)
+	}
 	flusher.Flush()
 	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
 	for {
 		evs, gap, changed := srv.events.after(id)
 		if gap > 0 {
-			fmt.Fprintf(w, "event: gap\ndata: %d\n\n", gap)
+			if err := sendEvent(w, "event: gap\ndata: %d\n\n", gap); err != nil {
+				return internal(err)
+			}
 		}
 		for _, e := range evs {
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Data)
+			if err := sendEvent(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Data); err != nil {
+				return internal(err)
+			}
 			id = e.ID
 		}
 		flusher.Flush()
@@ -126,7 +140,9 @@ func (srv *Server) getEvents(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		case <-changed:
 		case <-tick.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			if err := sendEvent(w, ": keepalive\n\n"); err != nil {
+				return internal(err)
+			}
 			flusher.Flush()
 		}
 	}

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -95,12 +96,17 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var body wireError
 	body.Error.Code, body.Error.Message, body.Error.Fields = e.Reason, e.Message, e.Fields
 	body.Error.Retryable = e.Code.Retryable()
-	writeJSON(w, reasons[e.Reason].status, body)
+	if err := writeJSON(w, reasons[e.Reason].status, body); err != nil {
+		slog.LogAttrs(r.Context(), slog.LevelError, "installer api", slog.String("err", err.Error()))
+	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, status int, v any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		return fmt.Errorf("write JSON response: %w", err)
+	}
+	return nil
 }
