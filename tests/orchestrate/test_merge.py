@@ -165,15 +165,54 @@ class Eligibility(unittest.TestCase):
         checks = [dict(c, suite_id=1) for c in green_checks(sha)] + [dict(check(0, "lint", sha, "failure"), suite_id=1)]
         self.assertEqual(merges(run(snap(candidate(info={"checks": checks})))), ["vws-deploy#500"])
 
+    def test_actions_rerun_in_new_suite_same_workflow(self):
+        # An Actions re-run gets a new check suite; the same workflow makes the newest run decide.
+        sha = candidate()["head_sha"]
+        wf = ".github/workflows/verify-gate.yml"
+        old = dict(check(10, "verify-gate", sha, "failure"), suite_id=1, workflow=wf, started_at="2026-10-22T01:00:00Z")
+        new = dict(check(11, "verify-gate", sha), suite_id=2, workflow=wf, started_at="2026-10-22T02:00:00Z")
+        base = [c for c in green_checks(sha) if c["name"] != "verify-gate"]
+        self.assertEqual(merges(run(snap(candidate(info={"checks": base + [old, new]})))), ["vws-deploy#500"],
+                         "older failure superseded by newer success")
+        old2 = dict(old, conclusion="success")
+        new2 = dict(new, conclusion="failure")
+        r = run(snap(candidate(info={"checks": base + [new2, old2]})))
+        self.assertEqual(merges(r), [])
+        self.assertIn("check_failed:verify-gate", reasons(r, "vws-deploy#500"))
+        queued = dict(new, id=12, status="queued", conclusion=None, started_at=None)
+        r = run(snap(candidate(info={"checks": base + [old, new, queued]})))
+        self.assertEqual(merges(r), [], "a queued re-run holds the gate")
+
+    def test_unmapped_suite_keeps_old_failure_blocking(self):
+        sha = candidate()["head_sha"]
+        base = [c for c in green_checks(sha) if c["name"] != "verify-gate"]
+        old = dict(check(10, "verify-gate", sha, "failure"), suite_id=1, workflow=None, started_at="2026-10-22T01:00:00Z")
+        new = dict(check(11, "verify-gate", sha), suite_id=2, workflow=".github/workflows/verify-gate.yml",
+                   started_at="2026-10-22T02:00:00Z")
+        r = run(snap(candidate(info={"checks": base + [old, new], "unmapped": ["verify-gate"]})))
+        self.assertEqual(merges(r), [])
+        self.assertIn("check_failed:verify-gate", reasons(r, "vws-deploy#500"))
+        note = [n for n in r["notes"] if n.get("kind") == "merge_check" and n["target"] == "vws-deploy#500"][0]
+        self.assertEqual(note["unmapped_suite_checks"], ["verify-gate"])
+
     def test_merge_info_reads_check_suite(self):
         gh = mock.Mock()
         sha = "a" * 40
         gh.get.side_effect = [
             ({"head": {"sha": sha}, "base": {"ref": "main"}}, None),
             ({"total_count": 1, "check_runs": [{"id": 1, "name": "lint", "app": {"id": 15368}, "status": "completed",
-                                                "conclusion": "success", "head_sha": sha, "check_suite": {"id": 77}}]}, None),
-            ({"state": "success", "statuses": [], "total_count": 0}, None)]
-        self.assertEqual(orch.merge_info(gh, "vws-deploy", 1)["checks"][0]["suite_id"], 77)
+                                                "conclusion": "success", "head_sha": sha, "check_suite": {"id": 77}},
+                                               {"id": 2, "name": "x", "app": {"id": 15368}, "status": "completed",
+                                                "conclusion": "success", "head_sha": sha, "check_suite": {"id": 78}}]}, None),
+            ({"state": "success", "statuses": [], "total_count": 0}, None),
+            ({"total_count": 1, "workflow_runs": [{"id": 5, "check_suite_id": 77, "workflow_id": 9,
+                                                   "path": ".github/workflows/ci.yml", "event": "pull_request"}]}, None)]
+        info = orch.merge_info(gh, "vws-deploy", 1)
+        self.assertEqual([(c["suite_id"], c["workflow"]) for c in info["checks"]],
+                         [(77, ".github/workflows/ci.yml@pull_request"), (78, None)])
+        self.assertEqual(info["unmapped"], ["x"])
+        self.assertEqual(gh.get.call_args_list[3].args[0],
+                         f"repos/popododo0720/vws-deploy/actions/runs?head_sha={sha}&per_page=100")
 
     def test_dependency_met_and_required_unreadable(self):
         c = candidate(body="Part of #1\nDepends on vws-iam#7")
