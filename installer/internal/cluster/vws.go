@@ -147,7 +147,7 @@ func (v VWS) run(ctx context.Context, log func(string), args ...string) error {
 		_, _ = io.Copy(io.Discard, pr) //nolint:errcheck // pr only fails once pw is closed
 	}()
 	err := cmd.Run()
-	pw.Close()
+	pw.Close() //nolint:errcheck // io.PipeWriter.Close always returns nil
 	<-done
 	if err != nil {
 		return fmt.Errorf("vws %s: %w", args[0], err)
