@@ -46,6 +46,18 @@ DISPATCH_TEXT = (
     "@deepseek-dev please take this issue: one small PR per the acceptance criteria above. "
     "Small diff, no unrelated changes, no closing keywords."
 )
+# Rework (vws-deploy#373): a verify FAIL on the current head of a DeepSeek PR is re-dispatched on the
+# same branch with the verdict quoted. The marker keys it to the head, so one head is reworked once.
+REWORK_TEXT = (
+    "@deepseek-dev please rework this PR: push new commits to this branch (no force-push, no new PR) "
+    "that fix every blocking point of the verify verdict below. Small diff, no unrelated changes, no closing keywords."
+)
+REWORK_MARKER = "<!-- orchestrate:rework head="
+VERIFY_LOGIN = "vws-verify[bot]"
+# A verify verdict comment or review body: "# vws-iam#127 @ <40-hex head>" then "Result: FAIL ...".
+VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s*\n+Result:\s*(PASS|FAIL)\b")
+# Conflict-only verdicts are a rebuild for eggbot, not a DeepSeek rework.
+CONFLICT_RE = re.compile(r"(?i)conflicts? with main|merge conflict|needs? (?:a )?rebase|rebase onto main")
 MANAGED_LABELS = ("blocked", "in-review")
 # These checks fail by design until vws-verify approves, so they never make a PR "CI failing".
 VERIFY_CHECKS = {"verify-gate", "vws-verify"}
@@ -269,6 +281,7 @@ ALLOWED = {
         re.compile(rf"^{_REPO}(\?.*)?$"),
         re.compile(rf"^{_REPO}/(issues|pulls|labels|issues/comments)(\?.*)?$"),
         re.compile(rf"^{_REPO}/(issues|pulls)/[0-9]+(\?.*)?$"),
+        re.compile(rf"^{_REPO}/pulls/[0-9]+/reviews(\?.*)?$"),
         re.compile(rf"^{_REPO}/issues/[0-9]+/(events|comments)(\?.*)?$"),
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
         re.compile(rf"^{_REPO}/branches/main$"),
@@ -500,6 +513,9 @@ def classify_comment(body):
                           "pr": pr.group(1) if pr else ""}
     if text.startswith("/orchestrate reset-failures"):
         return "reset", {}
+    m = VERDICT_RE.match(text)
+    if m:
+        return "verdict", {"target": f"{m.group(1)}#{m.group(2)}", "sha": m.group(3), "result": m.group(4).lower()}
     m = re.search(r"<!-- orchestrate:([a-z-]+)", text)
     if m:
         return "marker", {"marker": m.group(1)}
@@ -971,6 +987,66 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
     return actions, notes
 
 
+def conflict_only(body):
+    """True when every blocking bullet of a FAIL verdict is a merge conflict / rebase request."""
+    bullets = [ln.strip()[2:] for ln in (body or "").splitlines() if ln.strip().startswith("- ")]
+    blocking = [b for b in bullets if not re.match(r"(?i)(codex|follow-?ups?|non-blocking)\b", b)] or [body or ""]
+    return all(CONFLICT_RE.search(b) for b in blocking)
+
+
+def head_verdict(pr):
+    """The newest vws-verify verdict (review or verdict comment) on the PR's current head, or None."""
+    k = f"{pr['repo']}#{pr['number']}"
+    vs = [v for v in pr.get("reviews", []) if v["sha"] == pr["head_sha"]]
+    for c in pr.get("comments", []):
+        kind = classify_comment(c["body"])
+        if kind and kind[0] == "verdict" and kind[1]["target"] == k and kind[1]["sha"] == pr["head_sha"]:
+            vs.append({"id": c["id"], "url": c["url"], "at": c["created_at"], "sha": kind[1]["sha"],
+                       "result": kind[1]["result"], "body": c["body"]})
+    return max(vs, key=lambda v: (v["at"], v["id"]), default=None)
+
+
+def rework_prs(k, it, items):
+    """Open PRs a ready+deepseek item owns: the item itself when it is a PR, else the open vws PRs its
+    DeepSeek reports named."""
+    if not {"ready", "deepseek"} <= set(it["labels"]) or "grok" in it["labels"]:
+        return []
+    if it["is_pr"]:
+        return [k]
+    keys = [vws_pr_key(u) for u, p in sorted(it.get("report_prs", {}).items()) if p.get("state") == "open"]
+    return [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
+
+
+def rework_plan(k, it, items, since):
+    """Rework state of the item's DeepSeek PR (vws-deploy#373). counted: the reworks already dispatched
+    since the last reset plus a pending FAIL, each one failure toward the grok swap. state: pending |
+    done (this head was reworked already) | conflict_only (left to eggbot) | None (no FAIL on the head)."""
+    plan = {"target": "", "verdict": None, "state": None, "counted": []}
+    for pk in rework_prs(k, it, items):
+        pr = items[pk]
+        dispatches = [c for c in pr.get("comments", []) if (classify_comment(c["body"]) or ("",))[0] == "dispatch"]
+        plan["counted"] += [{"url": c["url"], "kind": "verify_fail_rework", "report": ""} for c in dispatches
+                            if REWORK_MARKER in c["body"] and utc(c["created_at"]) > since]
+        v = head_verdict(pr)
+        if plan["state"] or not v or v["result"] != "fail":
+            continue
+        plan["target"], plan["verdict"] = pk, v
+        if conflict_only(v["body"]):
+            plan["state"] = "conflict_only"
+        elif any(f"{REWORK_MARKER}{pr['head_sha']} " in c["body"] or c["created_at"] >= v["at"] for c in dispatches):
+            plan["state"] = "done"
+        else:
+            plan["state"] = "pending"
+            plan["counted"].append({"url": v["url"], "kind": "verify_fail", "report": ""})
+    return plan
+
+
+def rework_body(pr, v):
+    quoted = "\n".join("> " + ln for ln in scrub(v["body"])[:3000].splitlines())
+    return (f"{REWORK_TEXT}\n\nVerify verdict: {v['url']} (head `{pr['head_sha'][:7]}`)\n\n{quoted}\n\n"
+            f"{REWORK_MARKER}{pr['head_sha']} verdict={v['id']} -->")
+
+
 def decide(snapshot, state, now, cfg, exclusions):
     """Pure: the same inputs give the same output. Returns {"actions", "notes", "state"}."""
     actions, notes = [], []
@@ -1029,7 +1105,8 @@ def decide(snapshot, state, now, cfg, exclusions):
         if "deepseek" not in labels or "ready" not in labels:
             continue
         since = reset_time(it)
-        counted = [h for h in hist if h["outcome"] == "failed" and h["at"] > since]
+        rw = rework_plan(k, it, items, since)
+        counted = [h for h in hist if h["outcome"] == "failed" and h["at"] > since] + rw["counted"]
         latest = hist[-1] if hist else None
         if len(counted) >= max_fail:
             marker = any((classify_comment(c["body"]) or ("",))[0] == "marker"
@@ -1086,13 +1163,23 @@ def decide(snapshot, state, now, cfg, exclusions):
             actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
         if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels and k in owned["in-review"]):
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
+        if rw["state"]:
+            # A FAIL on the PR head replaces the issue-style dispatch with a rework of that PR.
+            pr = items[rw["target"]]
+            pr_running = any(h["outcome"] == "in_flight" for h in dispatch_history(pr, now, cfg, exclusions))
+            if rw["state"] == "pending" and not (running or pr_running or blocked or "blocked" in labels or pr.get("draft")):
+                queue.append((1, ready_time(it), pr["repo"], pr["number"], rw["target"], 0, k))
+            else:
+                notes.append({"kind": "rework_skipped", "target": rw["target"], "verdict": rw["verdict"]["url"],
+                              "reason": "in flight or blocked" if rw["state"] == "pending" else rw["state"]})
+            continue
         # A running target is never dispatched again, even after a failure reset.
         eligible = (not running and not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
                     and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since
                          or retry > 0))
         if eligible:
-            prio = 0 if "priority/blocker" in labels else 1
-            queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry))
+            prio = 0 if "priority/blocker" in labels else 2
+            queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry, k))
     scope = cfg.get("ORCHESTRATE_SCOPE", "")
     if scope:
         queue = [q for q in queue if q[4] == scope]
@@ -1108,15 +1195,25 @@ def decide(snapshot, state, now, cfg, exclusions):
     free = max(0, cap - slots_used)
     if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
         free = 0  # pause switch: no new dispatches; in-flight, verify-wake and merges carry on
-    picked = 0
+    picked, seen = 0, set()
     for q in sorted(queue):
         if picked >= free:
             break
+        if q[4] in seen:
+            continue  # a PR queued by both itself and its issue
+        seen.add(q[4])
         if q[2] in busy:
             notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
             continue
         busy.add(q[2])
         picked += 1
+        if q[0] == 1:
+            pr = items[q[4]]
+            v = rework_plan(q[6], items[q[6]], items, reset_time(items[q[6]]))["verdict"]
+            actions.append({"type": "dispatch", "target": q[4], "owner": q[6], "head": pr["head_sha"],
+                            "reason": f"rework after verify FAIL {v['url']}, DeepSeek slot {slots_used + picked} of {cap}",
+                            "body": rework_body(pr, v)})
+            continue
         retry_line = f"Retry {q[5]}/{INFRA_MAX_RETRIES} after provider error.\n\n" if q[5] else ""
         actions.append({"type": "dispatch", "target": q[4],
                         "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
@@ -1156,7 +1253,7 @@ def ci_state(gh, repo, sha):
 # since the copy in history-cache.json (a new comment or label change bumps it), so a quiet tick costs
 # no per-item reads. A full re-read every HISTORY_REFRESH_S (plus up to an hour of per-item jitter,
 # so entries do not all expire on one tick) catches edits and deletes, which do not bump updated_at.
-HISTORY_VERSION = 1
+HISTORY_VERSION = 2  # 2: verdict comments are kept (vws-deploy#373)
 HISTORY_REFRESH_S = 6 * 3600
 
 
@@ -1248,6 +1345,10 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
+    for k, it in sorted(snap["items"].items()):
+        for pk in rework_prs(k, it, snap["items"]):
+            if "reviews" not in snap["items"][pk]:
+                snap["items"][pk]["reviews"] = verify_reviews(gh, snap["items"][pk])
     if history is not None:
         live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}}
         for k in list(hist_items):
@@ -1267,6 +1368,18 @@ def candidate_history(gh, it):
               for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
               if e.get("event") in ("labeled", "unlabeled")]
     return comments, events
+
+
+def verify_reviews(gh, pr):
+    """vws-verify verdict reviews on one PR (ETag-cached), for the rework rule."""
+    out = []
+    for r in gh.get_all(f"repos/{OWNER}/{pr['repo']}/pulls/{pr['number']}/reviews?per_page=100"):
+        if ((r.get("user") or {}).get("login") == VERIFY_LOGIN and r.get("submitted_at")
+                and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")):
+            out.append({"id": r["id"], "url": r.get("html_url") or pr["url"], "at": r["submitted_at"],
+                        "sha": r.get("commit_id") or "", "result": "fail" if r["state"] == "CHANGES_REQUESTED" else "pass",
+                        "body": r.get("body") or ""})
+    return out
 
 
 def actions_runs(gh, repo, sha):
@@ -1418,7 +1531,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "wake_verify" and not recheck_wake(gh, repo, number, a["key"]):
             log("skipped", action="wake_verify", reason="a comment with this key already exists")
             continue
-        if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]]):
+        if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]],
+                                                            a.get("owner"), a.get("head")):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
             continue
         if a["type"] in ("merge_status", "infra_status") and not recheck_key(gh, repo, number, a["key"]):
@@ -1521,15 +1635,21 @@ def recheck_merge(gh, repo, number, head, new_state, ctx):
     return ""
 
 
-def recheck_dispatch(gh, repo, number, item):
-    """Re-read the target right before the dispatch comment: no new dispatch since collect."""
+def recheck_dispatch(gh, repo, number, item, owner=None, head=None):
+    """Re-read the target right before the dispatch comment: no new dispatch since collect. A rework also
+    needs its PR head unchanged and its owner (the PR or its issue) still ready+deepseek."""
     known = {c["id"] for c in item["comments"]}
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     for c in comments:
         kind = classify_comment(c.get("body"))
         if c["id"] not in known and kind and kind[0] == "dispatch":
             return False
-    issue, _ = gh.get(f"repos/{OWNER}/{repo}/issues/{number}")
+    if head:
+        pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+        if pr.get("state") != "open" or pr["head"]["sha"] != head:
+            return False
+    orepo, onum = (owner or f"{repo}#{number}").split("#")
+    issue, _ = gh.get(f"repos/{OWNER}/{orepo}/issues/{onum}")
     names = {lb["name"] for lb in issue.get("labels", [])}
     return issue["state"] == "open" and {"ready", "deepseek"} <= names and not names & {"grok", "blocked"}
 
