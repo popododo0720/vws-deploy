@@ -216,6 +216,39 @@ func TestPostCRReportsJSONTypeErrors(t *testing.T) {
 	}
 }
 
+func TestPostCRReportsSpecDecodeError(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	good := h.exportCR()
+	cr := map[string]any{}
+	if err := json.Unmarshal(mustJSON(t, good), &cr); err != nil {
+		t.Fatal(err)
+	}
+	cr["spec"] = 1
+	status, body := h.do("POST", "/api/v1/cr", cr)
+	e := h.wantError(status, body, 400, ReasonValidationFailed)
+	fields, ok := e["fields"].([]any)
+	if !ok || len(fields) != 1 {
+		t.Fatalf("fields %v, want one spec error", e["fields"])
+	}
+	f, ok := fields[0].(map[string]any)
+	if !ok || f["field"] != "spec" || f["code"] != "invalid" {
+		t.Fatalf("field %v, want spec invalid", fields[0])
+	}
+	msg, ok := f["message"].(string)
+	if !ok || !strings.Contains(msg, "cannot unmarshal number") {
+		t.Fatalf("spec message %q, want the JSON error", msg)
+	}
+	// A missing spec is a required field, not a decode error.
+	delete(cr, "spec")
+	status, body = h.do("POST", "/api/v1/cr", cr)
+	e = h.wantError(status, body, 400, ReasonValidationFailed)
+	if msg := fieldMessage(e, "spec"); msg != "spec is required" {
+		t.Fatalf("missing spec message %q", msg)
+	}
+}
+
 func TestSplitCRReportsInvalidRaw(t *testing.T) {
 	const ver = "demo.example/v1"
 	cr := map[string]json.RawMessage{
