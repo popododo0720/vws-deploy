@@ -97,17 +97,29 @@ func (srv *Server) getEvents(w http.ResponseWriter, r *http.Request) error {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "retry: 5000\n\n")
+	// send writes one SSE frame. A failed write means the client is gone; the status is
+	// already committed, so stop the stream instead of writing an error body into it.
+	send := func(format string, a ...any) bool {
+		_, err := fmt.Fprintf(w, format, a...)
+		return err == nil
+	}
+	if !send("retry: 5000\n\n") {
+		return nil
+	}
 	flusher.Flush()
 	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
 	for {
 		evs, gap, changed := srv.events.after(id)
 		if gap > 0 {
-			fmt.Fprintf(w, "event: gap\ndata: %d\n\n", gap)
+			if !send("event: gap\ndata: %d\n\n", gap) {
+				return nil
+			}
 		}
 		for _, e := range evs {
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Data)
+			if !send("id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Data) {
+				return nil
+			}
 			id = e.ID
 		}
 		flusher.Flush()
@@ -126,7 +138,9 @@ func (srv *Server) getEvents(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		case <-changed:
 		case <-tick.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			if !send(": keepalive\n\n") {
+				return nil
+			}
 			flusher.Flush()
 		}
 	}
