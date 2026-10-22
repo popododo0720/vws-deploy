@@ -144,11 +144,18 @@ services:
       resources: [virtualmachineinstances]
       verbs: [get, delete]
     # get: volumes.go checkAttachable reads a volume claim's access modes before attach and boot,
-    # and the health check gets a probe claim in the VM namespace (#121).
+    # and the health check gets a probe claim in the VM namespace (#121). delete: instance destroy
+    # removes the root claim (vws-compute#105).
     - namespace: vms
       apiGroups: [""]
       resources: [persistentvolumeclaims]
-      verbs: [get]
+      verbs: [get, delete]
+    # vws-compute#105 instance destroy deletes the root DataVolume in the VM namespace; get reads
+    # it before delete, and no list or watch is used.
+    - namespace: vms
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datavolumes]
+      verbs: [get, delete]
     # vws-compute#73 cloudinit.go: the cloud-init user data of a machine is Secret <instance>-cloudinit,
     # referenced by cloudInitNoCloud.userDataSecretRef. create: before the VM; get and update: a retried
     # create; delete: destroy, after the VM. The client is uncached (client.New), so no list or watch.
