@@ -291,6 +291,7 @@ Config keys and defaults:
 - `VERIFY_WAKE_THRESHOLD=5`
 - `VERIFY_WAKE_EDGE_MIN_HOURS=1`
 - `VERIFY_WAKE_COOLDOWN_HOURS=6`
+- `ORCHESTRATE_DISPATCH=on` (`on` or `off`; `off` pauses new DeepSeek dispatches, including infra retries, while in-flight tracking, verify-wake and merges continue)
 - `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`
 - `ORCHESTRATE_MERGE_MAX_ATTEMPTS=2`
