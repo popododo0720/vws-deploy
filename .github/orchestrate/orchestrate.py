@@ -288,6 +288,13 @@ class GhError(Exception):
         self.status = status
 
 
+def label_absent(method, path, err):
+    """A label DELETE that GitHub answers 404 "Label does not exist": the label is already off the item
+    (removed by someone else after collect), so the removal is done."""
+    return (method == "DELETE" and "/labels/" in path and isinstance(err, GhError) and err.status == 404
+            and "Label does not exist" in str(err))
+
+
 def allowed(method, path):
     return any(p.match(path) for p in ALLOWED.get(method, []))
 
@@ -307,6 +314,27 @@ def _parse_include(out):
     return status, headers, body
 
 
+def get_class(path):
+    """Endpoint class of a GET path, for the per-tick request breakdown in the tick_end log."""
+    p = path.split("?", 1)[0]
+    if p == "graphql":
+        return "graphql"
+    m = re.match(r"^repos/[^/]+/[^/]+(/.*)?$", p)
+    rest = (m.group(1) or "") if m else None
+    if rest is None:
+        return "other"
+    if re.match(r"^/issues/[0-9]+/comments$|^/issues/comments$", rest):
+        return "comments"
+    if re.match(r"^/issues/[0-9]+/events$", rest):
+        return "events"
+    for name in ("issues", "pulls", "labels"):
+        if rest == f"/{name}" or rest.startswith(f"/{name}/"):
+            return name
+    if re.match(r"^/commits/[0-9a-f]+/(check-runs|status)$|^/actions/runs$", rest):
+        return "checks"
+    return "repo"
+
+
 class Gh:
     """Every GitHub call goes through here. Reads use If-None-Match; 304 answers come from the cache
     and do not count against the primary rate limit."""
@@ -319,6 +347,12 @@ class Gh:
         self.used = {}
         self.runner, self.sleep, self.timeout, self.tries = runner, sleep, timeout, tries
         self.stats = {"get": 0, "not_modified": 0, "write": 0}
+        # GETs per endpoint class and status ("200", "304", or the error status), for the tick_end log.
+        self.by_class = {}
+
+    def _count_get(self, path, status):
+        c = self.by_class.setdefault(get_class(path), {})
+        c[str(status)] = c.get(str(status), 0) + 1
 
     def _env(self):
         env = dict(os.environ)
@@ -352,6 +386,7 @@ class Gh:
             args += ["-H", f"If-None-Match: {cached['etag']}"]
         status, headers, body = self._run(args)
         self.stats["get"] += 1
+        self._count_get(path, status)
         if status == 304 and cached:
             self.stats["not_modified"] += 1
             self.used[path] = cached
@@ -410,6 +445,8 @@ class Gh:
         stdin = json.dumps({"query": query, "variables": variables})
         status, _headers, body = self._run(args, stdin, tries=1 if write else None)
         self.stats["write" if write else "get"] += 1
+        if not write:
+            self._count_get("graphql", status)
         out = json.loads(body) if body.strip() else {}
         if status != 200 or out.get("errors") or "data" not in out:
             raise GhError(status, scrub(json.dumps(out.get("errors") or body[:200])[:300]))
@@ -1400,10 +1437,16 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             if a["target"] not in owned[a["label"]]:
                 owned[a["label"]].append(a["target"])
             write_json(paths.state_file, new_state)
+        absent = []
         try:
             for method, path, payload in calls:
                 writes += 1  # counted before the call: a failed POST may still have landed
-                resp = gh.write(method, path, payload)
+                try:
+                    resp = gh.write(method, path, payload)
+                except GhError as e:
+                    if not label_absent(method, path, e):
+                        raise
+                    absent.append(path.rsplit("/", 1)[1])
         except (GhError, PermissionError) as e:
             errors += 1
             log("apply_failed", action=a["type"], target=a["target"], error=str(e))
@@ -1419,6 +1462,12 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 note="Agent: is informational; eligibility never depends on it", reason=a["reason"])
         if a["type"] == "remove_label" and a["target"] in owned.get(a["label"], []):
             owned[a["label"]].remove(a["target"])
+        if absent:
+            # Idempotent: the label was already gone, which is the state this action wanted.
+            log("skipped", action=a["type"], target=a["target"],
+                reason=f"label {', '.join(absent)} already absent (404 Label does not exist)")
+            if a["type"] == "remove_label":
+                continue
         if a["type"] == "wake_verify":
             log("wake_posted", target=a["target"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
@@ -1798,7 +1847,8 @@ def tick(paths, cfg, args, gh=None, now=None):
                 health.update(result="apply_failed", last_error=msg, recent_errors=(prev_errors + [msg])[-3:],
                               gh=gh.stats, actions=len(result["actions"]), pending=result["pending_count"])
                 write_json(paths.health, health)
-                log("tick_end", actions=len(result["actions"]), errors=errors, gh=gh.stats)
+                log("tick_end", actions=len(result["actions"]), errors=errors, pending=result["pending_count"],
+                    gh=gh.stats, gh_get_by_class=gh.by_class)
                 return FAIL_EXIT
         if gh is not None:
             gh.save_cache()
@@ -1807,7 +1857,8 @@ def tick(paths, cfg, args, gh=None, now=None):
         write_json(paths.health, health)
         if os.path.exists(paths.failure_file):
             os.remove(paths.failure_file)  # a good tick ends the failure streak
-        log("tick_end", actions=len(result["actions"]), gh=gh.stats if gh else {})
+        log("tick_end", actions=len(result["actions"]), pending=result["pending_count"],
+            gh=gh.stats if gh else {}, gh_get_by_class=gh.by_class if gh else {})
         return 0
     finally:
         os.close(lock_fd)
