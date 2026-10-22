@@ -151,7 +151,6 @@ API_CLIENT_ENV = ("VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN")
 # ALLOWED_KINDS (R10).
 SINGLE_REPLICA = {
     "console-api": "sessions are held in memory (popododo0720/vws-console-api#95)",
-    "iam": "users are held in memory until a shared store (vws-iam#110); one replica does not survive a restart",
 }
 
 
@@ -812,7 +811,8 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         )
 
     with_cluster = service_with(lambda rule: "namespace" not in rule)
-    with_ns = service_with(lambda rule: "namespace" in rule)
+    # A rule in a chart-created namespace: the self-test below breaks that Namespace's Role.
+    with_ns = service_with(lambda rule: rule.get("namespace") not in (None, "release"))
     with_rbac = with_cluster or with_ns
 
     def without(kind, name, namespace=None):

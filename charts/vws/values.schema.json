@@ -80,25 +80,6 @@
         ]
       },
       "properties": {
-        "iam": {
-          "description": "iam holds users in memory, so it runs exactly one replica until a shared store exists (vws-iam#110). One replica does not survive a restart.",
-          "allOf": [
-            {
-              "$ref": "#/definitions/service"
-            },
-            {
-              "properties": {
-                "replicas": {
-                  "const": 1,
-                  "description": "Exactly 1 until vws-iam#110. One replica does not survive a restart."
-                }
-              },
-              "required": [
-                "replicas"
-              ]
-            }
-          ]
-        },
         "console-api": {
           "description": "console-api holds sessions in memory, so it runs exactly one replica (popododo0720/vws-console-api#95).",
           "allOf": [
@@ -434,7 +415,7 @@
       }
     },
     "deployment-replicas": {
-      "description": "A stateless service runs at least two replicas, except console-api and iam.",
+      "description": "A stateless service runs at least two replicas, except console-api.",
       "if": {
         "not": {
           "required": [

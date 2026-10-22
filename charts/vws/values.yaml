@@ -42,13 +42,24 @@ services:
   # is not passed. kekSecret: the key-encryption key of
   # access-key secrets and TOTP seeds comes by secretKeyRef as env VWS_IAM_KEK / VWS_IAM_KEK_ID,
   # never in args or values; vws apply creates the Secret once and never rotates it. allowFrom: a
-  # NetworkPolicy admits only console-api. No rbac and no CRDs yet: the IAM CRDs and their API group
-  # come with vws-iam#2 (AGENTS.md R18).
+  # NetworkPolicy admits only console-api. State: every replica reads and writes the vws-iam kube store,
+  # the custom resources of charts/vws/crds/iam.yaml (a copy of vws-iam deploy/crds/iam.yaml) in the
+  # release namespace, so no volume holds state (#369). -namespace selects that store; without it the
+  # image keeps state in process memory (vws-iam cmd/vws-iam/main.go openStore).
   iam:
     enabled: false
     port: 9095
     flags:
       listen: 0.0.0.0:9095
+      namespace: {namespace: release}
+    # The calls of vws-iam internal/store/kubestore (uncached client, CAS on resourceVersion): get,
+    # list, create, update and delete of its own resources, no watch, patch or status subresource.
+    # Same list as vws-iam deploy/rbac/role.yaml.
+    rbac:
+    - namespace: release
+      apiGroups: [iam.vws.popododo0720.io]
+      resources: [iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters]
+      verbs: [get, list, create, update, delete]
     # imageTag pins iam to one published build (vws-deploy#280 mechanism). sha-74a29dc is
     # vws-iam#113. vws-iam publish.yml pushed
     # ghcr.io/popododo0720/vws/iam:sha-74a29dc
@@ -57,9 +68,8 @@ services:
     # The image binary contains go1.26.9. spec.version does not move it. enabled stays false, so the
     # default render still leaves iam out.
     imageTag: sha-74a29dc
-    # One replica until vws-iam#110 has a shared store. A second replica would split
-    # in-memory users, and this one replica is still lost on restart.
-    replicas: 1
+    # Two replicas share the kube store, so a write on one is read on the other and survives a restart.
+    replicas: 2
     kekSecret: vws-iam-kek
     allowFrom: [console-api]
   console:
