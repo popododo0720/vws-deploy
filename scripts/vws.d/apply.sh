@@ -45,11 +45,11 @@ vws_cmd_main() {
   fi
   vws_installer_namespace
   vws_installer_guard_ttl
-  # The CRD before the CR is read: an older CRD prunes fields a newer chart added (spec.storage.s3),
+  # The CRDs before the CR is read: an older CRD prunes fields a newer chart added (spec.storage.s3),
   # and the values rendered from that CR would turn them off (#114). Helm never upgrades crds/ (#112).
   if ! vws_crd_current; then
     vws_apply_crd
-    vws_emit OK crd "VWSCluster CRD applied from charts/vws/crds"
+    vws_emit OK crd "chart CRDs applied from charts/vws/crds"
   fi
   cr=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) || vws_usage "no VWSCluster vws in ${VWS_NAMESPACE}; run vws init first"
   tmp=$(mktemp -d)

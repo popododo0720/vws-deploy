@@ -17,7 +17,7 @@ if [[ $order == "$want" ]]; then ok "the bundle goes in file number order"; else
 applies=$(grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG")
 # The cluster has the chart's CRD: no CRD apply, one apply per bundle file (#114).
 if [[ $applies -eq 3 ]]; then ok "one apply per bundle file, none for a current CRD"; else bad "one apply per bundle file" "$applies"; fi
-expect_text "the CRD is read before the CR" "$(calls)" "get crd vwsclusters.${GROUP}"
+expect_text "the CRD is read before the CR" "$(calls)" "get crd -o json"
 # Bundle files carry their own namespaces; -n vws on their apply makes kubectl refuse them.
 if grep $'^kubectl\tapply' "$VWS_FAKE_LOG" | grep -q -e '--namespace' -e $'\t-n '; then bad "bundle apply has no namespace flag" "$(grep $'^kubectl\tapply' "$VWS_FAKE_LOG")"; else ok "bundle apply has no namespace flag"; fi
 if grep $'^kubectl\twait' "$VWS_FAKE_LOG" | grep -e ' -A' | grep -q -e '--namespace'; then bad "the -A wait has no namespace flag" "$(grep $'^kubectl\twait' "$VWS_FAKE_LOG")"; else ok "the -A wait has no namespace flag"; fi
@@ -136,7 +136,8 @@ expect_text "a foreign ConfigMap is a WARN" "$OUT" "WARN  extgw"
 
 # #114: an older CRD (no spec.storage.s3) is applied before the CR is read, so the CR keeps the field.
 installer_scenario oldcrd
-jq 'del(.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.storage.properties.s3)' \
+jq --arg c "vwsclusters.${GROUP}" \
+  'del(.items[] | select(.metadata.name == $c) | .spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.storage.properties.s3)' \
   "${VWS_FAKE_DIR}/kubectl/get_crd.json" >"${WORK}/oldcrd.json" && mv "${WORK}/oldcrd.json" "${VWS_FAKE_DIR}/kubectl/get_crd.json"
 run_vws_real apply --unattended;                 expect_rc "apply over an older CRD exits 0" 0
 expect_text "the CRD step is reported" "$OUT" "OK    crd"
@@ -146,6 +147,25 @@ if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRD
 # grep -c reads to the end: grep -q would close the pipe early and, under pipefail, fail on sed's SIGPIPE
 # once the CRD outgrows the pipe buffer.
 if (( $(sed -n '2,/^---/p' "${VWS_FAKE_LOG}.stdin" | grep -c '^kind: CustomResourceDefinition') > 0 )); then ok "the first applied document is the CRD"; else bad "first document" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+
+# #382: a release installed before #369 has no iam CRDs. vws apply notices the chart CRDs differ,
+# applies every CRD file, waits for Established, and only then reads the CR and upgrades the workload.
+installer_scenario missing-iam-crds
+jq 'del(.items[] | select(.spec.group | startswith("iam.")))' \
+  "${VWS_FAKE_DIR}/kubectl/get_crd.json" >"${WORK}/crds.json" && mv "${WORK}/crds.json" "${VWS_FAKE_DIR}/kubectl/get_crd.json"
+run_vws_real apply --unattended;                 expect_rc "apply to a release without iam CRDs exits 0" 0
+expect_text "apply reports the CRD step" "$OUT" "OK    crd"
+iam_docs=$(grep -c 'group: iam\.' "${VWS_FAKE_LOG}.stdin" || true)
+if ((iam_docs >= 11)); then ok "apply adds the iam CRDs"; else bad "iam CRDs applied" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+wait_line=$(grep -n $'^kubectl\twait.*condition=Established crd --all' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+if [[ -n $wait_line && -n $cr_line && -n $helm_line ]] && ((wait_line < cr_line && wait_line < helm_line)); then
+  ok "apply waits for Established before the CR and helm"
+else
+  bad "CRD wait before CR and helm" "$(calls)"
+fi
+if grep -q $'^kubectl\tdelete' "$VWS_FAKE_LOG"; then bad "no CRD is deleted" "$(calls)"; else ok "no CRD is deleted"; fi
 
 # #144: apply -f FILE saves the file as the CR first (vws init --from), then applies; twice is unchanged.
 EX="${VWS_TEST_ROOT}/examples/vwscluster"

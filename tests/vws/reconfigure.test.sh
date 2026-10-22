@@ -22,9 +22,10 @@ run_vws_real reconfigure --set spec.version=v2;   expect_rc "--set exits 0" 0
 expect_text "the change is summarised" "$OUT" 'spec.version: (unset) -> "v2"'
 expect_text "the CR is saved server-side" "$(calls)" "apply --server-side --field-manager=vws"
 expect_text "apply runs after the save" "$(calls)" "upgrade --install vws"
-# The CRD goes in before the CR, so a field a newer chart added is not rejected (#112).
-kinds=$(grep -o -E '^kind: CustomResourceDefinition|"kind": "VWSCluster"' "${VWS_FAKE_LOG}.stdin" | head -2 | paste -sd' ')
-if [[ $kinds == 'kind: CustomResourceDefinition "kind": "VWSCluster"' ]]; then ok "the CRD is applied before the CR is saved"; else bad "CRD before CR" "$kinds"; fi
+# The CRDs go in before the CR, so a field a newer chart added is not rejected (#112).
+crd_line=$(grep -n -m1 -E '^kind: CustomResourceDefinition' "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
+cr_line=$(grep -n -m1 -E '"kind": "VWSCluster"' "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
+if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRDs are applied before the CR is saved"; else bad "CRD before CR" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 expect_text "apply results are folded in" "$OUT" "OK    helm"
 
 installer_scenario same
@@ -101,7 +102,10 @@ expect_text "the previous spec is restored" "$OUT" "the VWSCluster spec is back 
 specs=$(python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
 import json, re, sys, yaml
 for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read()):
-    d = yaml.safe_load(doc) if doc.strip() else None
+    try:
+        d = yaml.safe_load(doc)
+    except yaml.YAMLError:
+        continue
     if isinstance(d, dict) and d.get("kind") == "VWSCluster":
         print(json.dumps(d["spec"], sort_keys=True))
 PY
