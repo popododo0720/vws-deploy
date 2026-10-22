@@ -448,6 +448,19 @@ expect_text "compute: secrets get/create/update/delete in vws-vms" "$secret_rule
 if [[ $(wc -l <<<"$secret_rules") == 1 ]]; then ok "compute: that is the only rule on secrets"; else bad "secrets rules" "$secret_rules"; fi
 if ! grep -qE "list|watch" <<<"$secret_rules"; then ok "compute: no list or watch on secrets"; else bad "secrets list/watch" "$secret_rules"; fi
 
+# vws-compute#105: instance destroy removes the root claim and DataVolume in the VM namespace. get
+# stays for checkAttachable and the health probe; the DataVolume get reads it before delete.
+vm_rights=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
+import sys, yaml
+rights = {}
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["name"] == "vws-compute" and d["metadata"].get("namespace") == "vws-vms":
+        for r in d["rules"]:
+            for key in ((g, res) for g in r["apiGroups"] for res in r["resources"]):
+                rights.setdefault(key, set()).update(r["verbs"])
+print(sorted((g, res, sorted(v)) for (g, res), v in rights.items()))')
+expect_text "compute: exact rights in vws-vms, including datavolume and PVC delete (vws-compute#105)" "$vm_rights" "[('', 'persistentvolumeclaims', ['delete', 'get']), ('', 'secrets', ['create', 'delete', 'get', 'update']), ('cdi.kubevirt.io', 'datavolumes', ['delete', 'get']), ('kubevirt.io', 'virtualmachineinstances', ['delete', 'get']), ('kubevirt.io', 'virtualmachines', ['create', 'delete', 'get', 'list', 'patch'])]"
+
 image_rights=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
 import sys, yaml
 rights = {}
