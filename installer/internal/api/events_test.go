@@ -2,9 +2,11 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -159,5 +161,34 @@ func TestEventsBeforeAnInstall(t *testing.T) {
 	status, evs, raw := h.stream("")
 	if status != 200 || len(evs) != 0 || !strings.Contains(raw, "retry: 5000") {
 		t.Fatalf("%d %v %q", status, evs, raw)
+	}
+}
+
+// brokenWriter commits the stream and then fails every write, as a dropped client does.
+type brokenWriter struct {
+	header http.Header
+	status int
+	writes int
+}
+
+func (w *brokenWriter) Header() http.Header       { return w.header }
+func (w *brokenWriter) WriteHeader(status int)    { w.status = status }
+func (w *brokenWriter) Write([]byte) (int, error) { w.writes++; return 0, io.ErrClosedPipe }
+func (w *brokenWriter) Flush()                    {}
+
+func TestEventsStopOnAWriteError(t *testing.T) {
+	srv := New(Config{})
+	srv.events.add("state", "installing")
+	w := &brokenWriter{header: make(http.Header)}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/install/events", nil)
+	err := srv.getEvents(w, req)
+	if err != nil {
+		t.Fatalf("getEvents: %v", err)
+	}
+	if w.status != http.StatusOK {
+		t.Fatalf("status %d", w.status)
+	}
+	if w.writes != 1 {
+		t.Fatalf("%d writes; the stream kept writing after the client was gone", w.writes)
 	}
 }
