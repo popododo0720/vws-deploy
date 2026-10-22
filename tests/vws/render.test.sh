@@ -542,8 +542,8 @@ PY
 expect_text "iam listeners: Service iam is ClusterIP" "$got" "iam-type ClusterIP"
 expect_text "iam listeners: Service iam is http 9095" "$got" "iam-ports [{'name': 'http', 'port': 9095, 'targetPort': 'http'}]"
 expect_text "iam listeners: Deployment iam containerPorts are 9095" "$got" "iam-cports [9095]"
-expect_text "iam listeners: Deployment iam has one replica" "$got" "iam-replicas 1"
-expect_text "iam listeners: Deployment iam args are the listen flag" "$got" "iam-args ['-listen=0.0.0.0:9095']"
+expect_text "iam listeners: Deployment iam has two replicas" "$got" "iam-replicas 2"
+expect_text "iam listeners: Deployment iam args are listen and the store namespace" "$got" "iam-args ['-listen=0.0.0.0:9095', '-namespace=vws']"
 expect_text "iam listeners: NetworkPolicy port is numeric 9095" "$got" "iam-policy-ports [9095]"
 expect_text "iam listeners: console-api Service ports" "$got" "ca-ports [('http', 8080, 'http'), ('ec2', 8081, 8081), ('s3', 8082, 8082), ('iam', 8084, 8084)]"
 expect_text "iam listeners: console-api containerPorts stay 8080" "$got" "ca-cports [8080]"
@@ -596,15 +596,16 @@ if python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/iam-listeners.out
 else
   expect_text "iam listeners: a non-TCP NetworkPolicy protocol fails" "$(cat "${WORK}/iam-udp.check")" "must be TCP"
 fi
-if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.iam.replicas=1 >/dev/null 2>"${WORK}/iam-r1.err"; then
-  ok "iam: schema allows replicas 1"
+# #369: iam shares its kube store, so it is a normal stateless service with at least two replicas.
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.iam.enabled=true --set services.iam.replicas=1 >/dev/null 2>"${WORK}/iam-r1.err"; then
+  bad "iam: one replica rendered" "exit 0"
 else
-  bad "iam: schema allows replicas 1" "$(cat "${WORK}/iam-r1.err")"
+  ok "iam: schema refuses one replica"
 fi
-if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.iam.enabled=true --set services.iam.replicas=2 >/dev/null 2>"${WORK}/iam-r2.err"; then
-  bad "iam: two replicas rendered" "exit 0"
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.iam.enabled=true --set services.iam.replicas=3 >/dev/null 2>"${WORK}/iam-r3.err"; then
+  ok "iam: schema allows three replicas"
 else
-  ok "iam: schema refuses replicas other than 1"
+  bad "iam: schema allows three replicas" "$(cat "${WORK}/iam-r3.err")"
 fi
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.iam=grpc >/dev/null 2>"${WORK}/iam-off.err"; then
   bad "iam listeners: grpc with iam disabled rendered" "exit 0"
@@ -665,7 +666,7 @@ doc = yaml.safe_load(open(sys.argv[1]))
 doc["spec"]["services"]["iam"] = {"enabled": True, "replicas": 2}
 yaml.safe_dump(doc, open(sys.argv[2], "w"), sort_keys=False)
 PY
-run_vws_real render "${WORK}/iam-r2.yaml" "${WORK}/iam-r2.values.yaml"; expect_rc "iam: a CR with replicas 2 exits 2" 2
-expect_text "iam: the CR error names the in-memory store" "$ERR" "vws-iam#110"
+run_vws_real render "${WORK}/iam-r2.yaml" "${WORK}/iam-r2.values.yaml"; expect_rc "iam: a CR with replicas 2 exits 0" 0
+expect_text "iam: the CR replicas reach the values" "$(cat "${WORK}/iam-r2.values.yaml")" "replicas: 2"
 
 finish_tests
