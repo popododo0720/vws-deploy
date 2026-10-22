@@ -14,7 +14,7 @@ The design is vws-iam#1 and the contract is vws-proto#24 (`vws/iam/v1`, branch `
 
 ## What is missing and why
 
-- **IAM CRDs on an existing release**: `vws apply` server-side applies only `vwsclusters.yaml` (`scripts/vws.d/lib/applyrun.sh`), so it does not yet add `iam.yaml` to a cluster installed before #369.
+- **IAM CRDs on an existing release**: `vws apply` and `vws upgrade` apply every `charts/vws/crds/*.yaml` with server-side apply (`scripts/vws.d/lib/applyrun.sh`) and wait for the CRDs to be Established before the workload upgrade, so a cluster installed before #369 gains `iam.yaml` on its next apply or upgrade (#382).
 - **Bootstrap (root/admin user, importing the existing `vws-console-api-credentials` keys, the `vws-initial-admin` password)**: it needs the vws-iam API (vws-iam#3). Plan: after helm, once vws-iam is Ready, `vws apply` runs a one-shot Job inside the cluster, passing secrets only as Secret references. If everything already exists it does nothing.
 - **Connecting console-api**: the chart sets `-iam-endpoint=iam:9095` when `flags.iam` is `grpc`. The three `0.0.0.0` addr flags publish Service ports 8081, 8082 and 8084. Live AWS CLI calls are outside this repo (it does not apply to a cluster).
 

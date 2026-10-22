@@ -18,5 +18,5 @@
 
 ## Limits
 
-- Helm installs `crds/` only on the first install. An existing release needs `iam.yaml` applied once before iam is enabled; `vws apply` does not do that yet.
+- Helm installs `crds/` only on the first install. `vws apply` and `vws upgrade` apply every `charts/vws/crds/*.yaml` with server-side apply and wait for Established before the workload upgrade, so an existing release gains `iam.yaml` on its next apply or upgrade (#382).
 - Store writes retry without backoff (vws-iam#51).
