@@ -13,13 +13,14 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 | `Create` (before creating the VM), `Get`/`Update` (create retry), `Delete` (destroy, after the VM): the cloud-init Secret `<instance>-cloudinit` (vws-compute#73, `userDataSecretRef`) | `""` secrets | get, create, update, delete | VM namespace. No list/watch (compute uses the uncached `client.New`). Not narrowed with `resourceNames`: the name differs per instance, and RBAC cannot limit create by name. So this Role can read, change and delete every Secret in the VM namespace. compute touches only Secrets with its own managed label (guaranteed by code, not by RBAC). Keep no other Secrets in the VM namespace |
 | `Get`, `Create`, `Delete` | `cdi.kubevirt.io` datavolumes | get, create, delete | image namespace `Config.ImageNamespace` |
 | `Get`, `List`, `Create`, `Patch` (merge), `Delete`. `image_auth.go` `AuthorizeImages` lists managed DataSources on every sweep and merge-patches their authorization labels (vws-compute#93, a31223a). The client is uncached, so no watch. Pin `sha-07b591c` does not make this call | `cdi.kubevirt.io` datasources | get, list, create, patch, delete | image namespace `Config.ImageNamespace`. datavolumes do not get `list` or `patch` |
-| `Get` (`checkAttachable`, health probe) | persistentvolumeclaims | get | VM namespace (#121) |
+| `Get` (`checkAttachable`, health probe), `Delete` (instance destroy removes the root claim, vws-compute#105) | persistentvolumeclaims | get, delete | VM namespace (#121) |
 | `Get` (reading capacity, health probe) | persistentvolumeclaims | get | image namespace |
+| `Get`, `Delete` (instance destroy cleanup, vws-compute#105) | `cdi.kubevirt.io` datavolumes | get, delete | VM namespace. No `create` or `list` |
 | `Get`, `List`, `Create`, `Update`, `Delete` (ConfigMap store) | configmaps | get, list, create, update, delete | store namespace `-namespace` (the release namespace in values, `release`) |
 
 - Start and stop are patches of `spec.runStrategy`. No code calls subresources such as `virtualmachines/start`.
 - No call writes status; it is only read.
-- `update` and `watch` on `datasources`, and PVC `list` and `watch`, stay off because no code uses them. `list` and `patch` on `datasources` are the image sweep in vws-compute#93. datavolumes stay `get`, `create`, and `delete`.
+- `update` and `watch` on `datasources`, and PVC `list` and `watch`, stay off because no code uses them. `list` and `patch` on `datasources` are the image sweep in vws-compute#93. In the image namespace datavolumes stay `get`, `create`, and `delete`; in the VM namespace they are `get` and `delete` (vws-compute#105).
 
 ## storage (`internal/backend/kube/kube.go`, `snapshot.go`)
 
