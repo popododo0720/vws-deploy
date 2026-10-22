@@ -108,15 +108,36 @@ func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMes
 	return out, errs
 }
 
-// POST /cr fills every step from a CR file and checks them all (#144). Invalid steps keep their
-// value and status invalid; the answer lists every field error.
+// validateCR decodes every CR step except roles. It needs no cluster, so a body error is found
+// before the node lookup and a failing lookup cannot turn a 400 into a 500.
+func validateCR(raws map[string]json.RawMessage) []FieldError {
+	var fields []FieldError
+	var network Network
+	for _, s := range Steps {
+		if s.Name == "roles" {
+			continue
+		}
+		raw := raws[s.Name]
+		if raw == nil {
+			fields = append(fields, required(stepField(s.Name)))
+			continue
+		}
+		v, errs := s.Decode(raw, Input{Network: network})
+		fields = append(fields, errs...)
+		if s.Name == "network" {
+			if n, ok := v.(Network); ok {
+				network = n
+			}
+		}
+	}
+	return fields
+}
+
+// POST /cr fills every step from a CR file and checks them all (#144). A body with an invalid
+// field is refused before the node lookup and changes no step; the answer lists every field error.
 func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 	var cr map[string]json.RawMessage
 	if err := decode(r, &cr); err != nil {
-		return err
-	}
-	nodes, err := srv.nodes(r.Context())
-	if err != nil {
 		return err
 	}
 	srv.mu.Lock()
@@ -125,22 +146,26 @@ func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	roles := srv.s.steps[stepIndex("roles")].raw
-	if srv.s.steps[stepIndex("roles")].status != StepValid {
-		var err error
-		roles, err = json.Marshal(defaultRoles(nodes))
-		if err != nil {
-			return fail(ReasonInternal, "default roles: "+err.Error())
-		}
-	}
 	raws, fields := splitCR(cr, srv.apiVersion, roles)
 	if raws == nil {
 		return fail(ReasonValidationFailed, "the CR is not a VWSCluster", fields...)
 	}
+	if fields = append(fields, validateCR(raws)...); len(fields) > 0 {
+		return fail(ReasonValidationFailed, "the CR has invalid or missing fields", fields...)
+	}
+	nodes, err := srv.nodes(r.Context())
+	if err != nil {
+		return err
+	}
+	if srv.s.steps[stepIndex("roles")].status != StepValid {
+		roles, err = json.Marshal(defaultRoles(nodes))
+		if err != nil {
+			return fail(ReasonInternal, "default roles: "+err.Error())
+		}
+		raws["roles"] = roles
+	}
 	for i, s := range Steps {
 		srv.s.steps[i] = step{status: StepPending, raw: raws[s.Name]}
-		if raws[s.Name] == nil {
-			fields = append(fields, required(stepField(s.Name)))
-		}
 	}
 	for i := range Steps {
 		srv.evaluate(r.Context(), i, nodes)

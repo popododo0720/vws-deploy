@@ -144,7 +144,11 @@ func TestPostCRValidatesBeforeNodeLookup(t *testing.T) {
 	if err := json.Unmarshal(mustJSON(t, good), &badStorage); err != nil {
 		t.Fatal(err)
 	}
-	badStorage["spec"].(map[string]any)["storage"] = map[string]any{"driver": "minio"}
+	spec, ok := badStorage["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("exported CR has no spec object")
+	}
+	spec["storage"] = map[string]any{"driver": "minio"}
 	h.cluster.nodesErr = errors.New("kube-apiserver is unavailable")
 
 	for _, c := range []struct {

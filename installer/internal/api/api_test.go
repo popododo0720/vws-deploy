@@ -649,6 +649,7 @@ func TestUnsupportedMethodIs405(t *testing.T) {
 		{"PATCH", "/api/v1/steps/roles", "GET, PUT"},
 		{"GET", "/api/v1/install", "POST"},
 		{"POST", "/api/v1/state", "GET"},
+		{"GET", "/api/v1/session", "POST"},
 	} {
 		status, body := h.do(c.method, c.path, nil)
 		h.wantError(status, body, 405, Reason("method_not_allowed"))
