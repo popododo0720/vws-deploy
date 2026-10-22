@@ -75,6 +75,5 @@ func (srv *Server) postCredential(w http.ResponseWriter, r *http.Request) error 
 	}
 	srv.s.state = StateFinished
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]string{"adminUser": user, "password": pw})
-	return nil
+	return writeJSON(w, http.StatusOK, map[string]string{"adminUser": user, "password": pw})
 }

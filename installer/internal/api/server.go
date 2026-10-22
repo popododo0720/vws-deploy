@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -173,7 +174,10 @@ func (srv *Server) postSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: tok, Path: "/api/v1", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
-	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "idleTimeoutSeconds": int(IdleTimeout.Seconds())})
+	view := map[string]any{"token": tok, "idleTimeoutSeconds": int(IdleTimeout.Seconds())}
+	if err := writeJSON(w, http.StatusOK, view); err != nil {
+		slog.LogAttrs(r.Context(), slog.LevelError, "installer api", slog.String("err", err.Error()))
+	}
 }
 
 type stepSummary struct {
@@ -190,8 +194,7 @@ type stateView struct {
 func (srv *Server) getState(w http.ResponseWriter, _ *http.Request) error {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	writeJSON(w, http.StatusOK, srv.stateView())
-	return nil
+	return writeJSON(w, http.StatusOK, srv.stateView())
 }
 
 // stateView needs srv.mu.
@@ -253,8 +256,7 @@ func (srv *Server) getStep(w http.ResponseWriter, r *http.Request) error {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	writeJSON(w, http.StatusOK, srv.result(i, nodes))
-	return nil
+	return writeJSON(w, http.StatusOK, srv.result(i, nodes))
 }
 
 // evaluate decodes and preflights the saved value of step i and sets its status.
@@ -318,8 +320,7 @@ func (srv *Server) putStep(w http.ResponseWriter, r *http.Request) error {
 	if len(res.Errors) > 0 {
 		return fail(ReasonValidationFailed, "step "+Steps[i].Name+" has invalid fields", res.Errors...)
 	}
-	writeJSON(w, http.StatusOK, res)
-	return nil
+	return writeJSON(w, http.StatusOK, res)
 }
 
 func (srv *Server) postPreflight(w http.ResponseWriter, r *http.Request) error {
@@ -340,8 +341,7 @@ func (srv *Server) postPreflight(w http.ResponseWriter, r *http.Request) error {
 		return fail(ReasonInstallInProgress, "an install is running")
 	}
 	srv.evaluate(r.Context(), i, nodes)
-	writeJSON(w, http.StatusOK, srv.result(i, nodes))
-	return nil
+	return writeJSON(w, http.StatusOK, srv.result(i, nodes))
 }
 
 type summaryView struct {
@@ -376,8 +376,7 @@ func (srv *Server) getSummary(w http.ResponseWriter, _ *http.Request) error {
 		}
 	}
 	srv.s.state = StateConfirming
-	writeJSON(w, http.StatusOK, summaryView{CR: cr, SpecHash: hash, Warnings: warnings})
-	return nil
+	return writeJSON(w, http.StatusOK, summaryView{CR: cr, SpecHash: hash, Warnings: warnings})
 }
 
 func (srv *Server) postInstall(w http.ResponseWriter, r *http.Request) error {
@@ -413,8 +412,7 @@ func (srv *Server) postInstall(w http.ResponseWriter, r *http.Request) error {
 	done := make(chan struct{})
 	srv.installed = done
 	go srv.install(cr, done)
-	writeJSON(w, http.StatusAccepted, map[string]any{"state": StateInstalling, "specHash": hash})
-	return nil
+	return writeJSON(w, http.StatusAccepted, map[string]any{"state": StateInstalling, "specHash": hash})
 }
 
 // secrets are the literal values the event stream masks.
@@ -476,6 +474,5 @@ func (srv *Server) getResult(w http.ResponseWriter, _ *http.Request) error {
 	v := srv.s.result
 	v.State, v.Error = srv.s.state, srv.s.lastErr
 	v.CredentialAvailable = srv.credentials != nil && srv.s.state == StateSucceeded
-	writeJSON(w, http.StatusOK, v)
-	return nil
+	return writeJSON(w, http.StatusOK, v)
 }
