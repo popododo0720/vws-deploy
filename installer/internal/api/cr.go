@@ -55,7 +55,11 @@ func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMes
 		}
 	}
 	var spec map[string]json.RawMessage
-	if err := json.Unmarshal(cr["spec"], &spec); err != nil || spec == nil {
+	if raw := cr["spec"]; len(raw) == 0 {
+		return nil, append(errs, required("spec"))
+	} else if err := json.Unmarshal(raw, &spec); err != nil {
+		return nil, append(errs, FieldError{Field: "spec", Code: "invalid", Message: err.Error()})
+	} else if spec == nil {
 		return nil, append(errs, required("spec"))
 	}
 	var extra []string
