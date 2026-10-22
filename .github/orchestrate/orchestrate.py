@@ -692,10 +692,11 @@ def find_cycles(snapshot):
 # ---------------------------------------------------------------- rule D: serialized merges (pure)
 
 def latest_runs(check_runs):
-    """Newest check run per (name, app id); a re-run gets a higher id."""
+    """Newest check run per (name, app id, check suite); a re-run gets a higher id in the same suite.
+    The suite is the workflow run, so same-named jobs in different workflows stay separate."""
     out = {}
     for r in check_runs or []:
-        k = (r.get("name"), r.get("app_id"))
+        k = (r.get("name"), r.get("app_id"), r.get("suite_id"))
         if k not in out or r.get("id", 0) > out[k].get("id", 0):
             out[k] = r
     return out
@@ -709,11 +710,12 @@ def run_state(r):
 
 def head_check_reasons(info, required):
     """Why the PR head's checks do not allow a merge ([] = they do). Pure.
-    info: {"head_sha", "checks": [{"id", "name", "app_id", "status", "conclusion", "head_sha"}],
+    info: {"head_sha", "checks": [{"id", "name", "app_id", "suite_id", "status", "conclusion", "head_sha"}],
     "statuses": [{"context", "state"}], "checks_truncated"}; required: [{"context", "app_id"}] or None."""
     reasons = []
     runs = latest_runs([r for r in info.get("checks", []) if r.get("head_sha") == info.get("head_sha")])
-    v = runs.get((VERIFY_CHECK, VERIFY_APP_ID))
+    vs = [r for (name, app, _s), r in runs.items() if name == VERIFY_CHECK and app == VERIFY_APP_ID]
+    v = max(vs, key=lambda x: x.get("id", 0)) if vs else None
     if v is None:
         reasons.append("verify_check_missing")
     elif v.get("status") != "completed" or v.get("conclusion") != "success":
@@ -731,10 +733,12 @@ def head_check_reasons(info, required):
         reasons.append("required_checks_unreadable")
     else:
         for req in sorted(required, key=lambda q: (q["context"], q.get("app_id") or 0)):
-            match = [r for (name, app), r in runs.items() if name == req["context"]
+            match = [r for (name, app, _s), r in runs.items() if name == req["context"]
                      and (req.get("app_id") in (None, -1) or app == req["app_id"])]
             if match:
-                r = max(match, key=lambda x: x.get("id", 0))
+                # Every distinct check with this name must pass; a success elsewhere cannot hide a failure.
+                bad = [x for x in match if x.get("status") != "completed" or x.get("conclusion") != "success"]
+                r = max(bad or match, key=lambda x: x.get("id", 0))
                 if r.get("status") != "completed":
                     reasons.append(f"required_pending:{req['context']}")
                 elif r.get("conclusion") != "success":
@@ -747,7 +751,7 @@ def head_check_reasons(info, required):
             else:
                 reasons.append(f"required_missing:{req['context']}")
     # AGENTS.md rule 5: every check on the head is success (skipped and neutral helpers allowed).
-    for (name, _app), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0)):
+    for (name, _app, _s), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0, kv[0][2] or 0)):
         st = run_state(r)
         if st != "ok":
             reasons.append(f"check_{st}:{name}")
@@ -1304,7 +1308,8 @@ def merge_info(gh, repo, number):
     runs, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/check-runs?per_page=100")
     status, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/status")
     checks = [{"id": r.get("id", 0), "name": r.get("name"), "app_id": (r.get("app") or {}).get("id"),
-               "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha")}
+               "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha"),
+               "suite_id": (r.get("check_suite") or {}).get("id")}
               for r in (runs or {}).get("check_runs", [])]
     return {"head_sha": sha, "state": pr.get("state"), "merged": bool(pr.get("merged")), "draft": bool(pr.get("draft")),
             "base": pr["base"]["ref"], "mergeable": pr.get("mergeable"), "mergeable_state": pr.get("mergeable_state"),
