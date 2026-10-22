@@ -151,6 +151,30 @@ class Eligibility(unittest.TestCase):
         self.assertEqual(merges(run(snap(candidate(info={"checks": checks})))), ["vws-deploy#500"],
                          "an older failed verify-gate run is superseded by the newer success")
 
+    def test_same_name_failure_in_another_workflow_blocks(self):
+        # Two workflows (check suites) both have a job "lint"; the newer success must not hide the failure.
+        sha = candidate()["head_sha"]
+        checks = [dict(c, suite_id=1) for c in green_checks(sha)] + [dict(check(0, "lint", sha, "failure"), suite_id=2)]
+        r = run(snap(candidate(info={"checks": checks})))
+        self.assertEqual(merges(r), [])
+        self.assertIn("check_failed:lint", reasons(r, "vws-deploy#500"))
+        self.assertIn("required_failure:lint", reasons(r, "vws-deploy#500"))
+
+    def test_rerun_in_same_suite_still_supersedes(self):
+        sha = candidate()["head_sha"]
+        checks = [dict(c, suite_id=1) for c in green_checks(sha)] + [dict(check(0, "lint", sha, "failure"), suite_id=1)]
+        self.assertEqual(merges(run(snap(candidate(info={"checks": checks})))), ["vws-deploy#500"])
+
+    def test_merge_info_reads_check_suite(self):
+        gh = mock.Mock()
+        sha = "a" * 40
+        gh.get.side_effect = [
+            ({"head": {"sha": sha}, "base": {"ref": "main"}}, None),
+            ({"total_count": 1, "check_runs": [{"id": 1, "name": "lint", "app": {"id": 15368}, "status": "completed",
+                                                "conclusion": "success", "head_sha": sha, "check_suite": {"id": 77}}]}, None),
+            ({"state": "success", "statuses": [], "total_count": 0}, None)]
+        self.assertEqual(orch.merge_info(gh, "vws-deploy", 1)["checks"][0]["suite_id"], 77)
+
     def test_dependency_met_and_required_unreadable(self):
         c = candidate(body="Part of #1\nDepends on vws-iam#7")
         self.assertEqual(merges(run(snap(c, deps={"vws-iam#7": {"state": "closed", "merged": True}}))), ["vws-deploy#500"])
