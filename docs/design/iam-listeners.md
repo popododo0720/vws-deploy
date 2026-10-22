@@ -39,7 +39,7 @@ Extra ports are appended only on the client Service. The headless `-peers` Servi
 
 The NetworkPolicy `ports` entry is the integer `services.iam.port`. kube-ovn with `--np-enforcement=standard` does not resolve a named port, so `port: http` blocks console-api from `iam:9095`. `check_render.py` rejects a NetworkPolicy port that is not that integer, a port range (`endPort`), and a protocol other than TCP.
 
-`services.iam.replicas` is 1. Users are in memory, so a second replica would split them (vws-iam#110). One replica does not survive a restart. A shared store is still required.
+`services.iam.replicas` is 2. Both replicas share the vws-iam kube store in the release namespace (#369, `docs/design/iam-store.md`).
 
 ## Tradeoffs
 
@@ -70,7 +70,6 @@ Teaching the CR a port field would give the listen port a second owner. The port
 | live AWS CLI `iam create-user` and `list-users` | console-api#198. Those operations return `InvalidAction` over gRPC. This chart does not implement them |
 | `sts get-caller-identity` with a non-root key | this repo does not apply to a cluster |
 | AWS error shapes | handlers are in vws-console-api, not this chart |
-| one iam replica | mitigation only. Users stay in memory. A restart drops them. The shared store is vws-iam#110 |
 | the default install does not start iam | vws-iam#113 published `sha-74a29dc` (digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`, go1.26.9). An anonymous manifest request returned HTTP 200 on 2026-10-16. `services.iam.imageTag` is that tag. `enabled` stays false, so a default install does not pull it |
 | the live Deployment described as `vws-iam-test` is not in this repo | the chart creates Deployment and Service `iam` |
 | the live VWSCluster is not in this repo | nothing here changes vws-test until an operator sets the fields and runs `vws apply` |

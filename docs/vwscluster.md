@@ -7,6 +7,7 @@ The design is vws-deploy#43 (sections 0 and 2). The source of truth for configur
 The vws-deploy#2 decision (no VWS-specific CRDs; service metadata goes in annotations and ConfigMaps) is about the service metadata store. The user **approved one deployment-configuration CRD as an explicit exception** (#43 section 0). Scope:
 
 - Allowed: the single `VWSCluster` CRD in `charts/vws/crds/vwsclusters.yaml`, `v1alpha1`, a namespaced singleton `vws`, deployment configuration only.
+- Also allowed (#369): the vws-iam store CRDs in `charts/vws/crds/iam.yaml`, a copy of vws-iam `deploy/crds/iam.yaml`, Namespaced, group `iam.<VWSCluster group>`. They are the vws-iam data store (vws-iam#2), not deployment configuration, and only vws-iam reads or writes them.
 - Forbidden: storing service metadata in the CR, any other VWS-specific CRD, service code reading or writing the CR (no `vwsclusters` in service RBAC), a controller that acts on the CR.
 - `status` holds only `observedGeneration`, `appliedValuesHash` and `conditions`, written by the installer at the end of `vws apply` (#54).
 - The CRD and CR survive an uninstall. Helm only installs files in `crds/` and never deletes them, and the CRD also carries `helm.sh/resource-policy: keep`.
@@ -31,7 +32,7 @@ The API group is written in **one place only**: `spec.group` in `charts/vws/crds
 | `spec.network.nodes`, `spec.network.direct` | per-NIC node networks and direct provider networks. Rules and examples in `docs/node-network.md` (#125) | Kube-OVN and Ceph bundle settings and `services.network.flags` |
 | `spec.network.vmMTU`, `underlayMTU`, `tunnelOverhead`, `ipv4Only` | VPC VM MTU (#236, vws-network#93). `vmMTU` 68–9001; when unset, 9001 (AWS) is lowered to what the underlay can carry. `underlayMTU` is the tunnel NIC MTU the OS already set (1280–9216). `tunnelOverhead` 0–200, 100 when unset, 60 with `ipv4Only: true`. 9001 needs an underlay of 9101 or more; 9216 is recommended. The installer does not change NIC MTUs. Details in `docs/vm-mtu.md` | `services.network.flags.vm-mtu` (`-vm-mtu`). If `vmMTU` exceeds underlay − overhead, exit code 2. The same overhead is used for kube-ovn-cni `--mtu` |
 | `spec.observability.otlpEndpoint` | must be empty | the chart has no observability values yet, so a value is exit code 2 |
-| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in `charts/vws/values.yaml`. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95). `iam.replicas` must be 1 (in-memory users, vws-iam#110; one replica does not survive a restart). render refuses other values with exit code 2 | the `services.<name>` key of the same name; `flags` are merged |
+| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in `charts/vws/values.yaml`. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95). render refuses other values with exit code 2. `iam.replicas` is at least 2 like any stateless service (#369) | the `services.<name>` key of the same name; `flags` are merged |
 | `spec.secrets.<name>.secretName` | Secret name references only | no values take it yet, so it must be empty |
 
 - There are no secret value fields. If a field or flag name looks secret (`password`, `token`, `secret`, `credential`, `key` and so on, except `secrets`/`secretName`/`existingSecret`), `vws render` refuses it and the guard refuses it in the CRD schema.
@@ -70,13 +71,12 @@ console-api holds sessions in memory. With a second pod or an HPA, requests land
 - `lib/render.py`: if the CR's `spec.services.console-api.replicas` is not 1, exit code 2.
 - Limit: with one replica, sessions drop during a console-api rollout or a node failure, and the PDB (maxUnavailable 1) does not stop that pod's eviction. Lift this pin once there is a shared session store.
 
-## iam has one replica (vws-iam#110)
+## iam has two replicas on a shared store (#369)
 
-iam holds users in memory. Two replicas would split that state. The chart sets `services.iam.replicas: 1` so the vws-test enable path does not start a second pod. One replica does not survive a restart. A shared store is still required.
+iam keeps its state in the vws-iam kube store in the release namespace (`-namespace`, `docs/iam-install.md`), so the chart runs `services.iam.replicas: 2` like any stateless service.
 
-- `values.schema.json`: `services.iam.replicas` is `const: 1`.
-- `scripts/check_render.py` R4: a Deployment iam that is not 1 fails.
-- `lib/render.py`: a CR `spec.services.iam.replicas` other than 1 exits 2.
+- `values.schema.json` and `scripts/check_render.py` R4: at least 2 replicas.
+- `scripts/guard.sh config`: the iam render has the IAM CRDs, the Role, the API token, `-namespace` and no state volume.
 - The NetworkPolicy listener port is the integer `9095`, with no `endPort` and no protocol other than TCP.
 
 ## console-api -console-origins (required), -trusted-proxies (optional) (popododo0720/vws-console-api#137)

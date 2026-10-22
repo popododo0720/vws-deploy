@@ -61,6 +61,16 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 - In the rendered Kube-OVN CRDs, the plural names of the kubeovn.io resources above match and their scope is `Cluster`. The NAD CRD is `Namespaced`.
 - All of them write the main object, not a `/status` subresource. Rules such as `subnets/status` were left out because the code does not call them (the Kube-OVN controller writes status).
 
+## iam (vws-iam `internal/store/kubestore`, #369)
+
+| Call | Resource | Verbs | Namespace |
+| --- | --- | --- | --- |
+| `Get`, `List` (two call sites), `Create`, `Update` (CAS on resourceVersion), `Delete` | `iam.vws.popododo0720.io` iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters | get, list, create, update, delete | the store namespace `-namespace` (the release namespace in values, `release`) |
+
+- Read from vws-iam `iam-110-durable-store` (main plus vws-iam#110); the store code and `deploy/rbac/role.yaml` are the same on vws-iam main and at the pinned `74a29dc`.
+- The client is uncached (no informer), so no watch. No patch, no status subresource, no Secrets: the KEK comes by secretKeyRef env.
+- Like every service with `rbac`, the chart also renders the `iam-leader` Lease Role. vws-iam does not use leader election.
+
 ## Decision change: no `vws-volumes` namespace
 
 Volume PVCs live in the VM namespace (`vws-vms`), because KubeVirt hotplug can attach only PVCs in the VM's namespace (dr eggbot's decision). So `vws-volumes` in values, its Namespace and its Role were removed, and storage's PVC and VolumeSnapshot Role is in `namespaces.vms`. On the service side, `-kube-namespace` must equal `-vm-namespace` (needs checking: this document could not confirm the issue number of the service-side change). This chart takes both from `namespaces.vms` so they are equal.
