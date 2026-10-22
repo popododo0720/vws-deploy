@@ -137,8 +137,25 @@
    "tokens": null,
    "verify_backlog": 10,
    "verify_pass_rate": 0.641
+  },
+  {
+   "alerts": [],
+   "ci_failure_rate": 0.0,
+   "day": "2026-10-22",
+   "deepseek_dispatched": 31,
+   "deepseek_done": 31,
+   "deepseek_failed": 2,
+   "deepseek_timeout": 0,
+   "grok_swaps": 32,
+   "lead_time_median_h": 0.27,
+   "prs_merged": 49,
+   "prs_opened": 61,
+   "stalls": 0,
+   "tokens": null,
+   "verify_backlog": 4,
+   "verify_pass_rate": 0.818
   }
  ],
  "schema": 1,
- "through": "2026-10-21"
+ "through": "2026-10-22"
 }
