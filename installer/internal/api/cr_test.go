@@ -281,6 +281,71 @@ func TestPostCRReportsSpecDecodeError(t *testing.T) {
 	}
 }
 
+func crNetwork(t *testing.T, cr map[string]any) map[string]any {
+	t.Helper()
+	spec, ok := cr["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("exported CR has no spec object")
+	}
+	network, ok := spec["network"].(map[string]any)
+	if !ok {
+		t.Fatal("exported CR has no network object")
+	}
+	return network
+}
+
+func crNodes(t *testing.T, cr map[string]any) map[string]any {
+	t.Helper()
+	nodes, ok := crNetwork(t, cr)["nodes"].(map[string]any)
+	if !ok {
+		t.Fatal("exported CR has no nodes object")
+	}
+	return nodes
+}
+
+func TestPostCRReportsNonObjectNetworkNodes(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	good := h.exportCR()
+	cases := []struct {
+		name  string
+		field string
+		set   func(cr map[string]any)
+	}{
+		{
+			name: "nodes string", field: "spec.network.nodes",
+			set: func(cr map[string]any) { crNetwork(t, cr)["nodes"] = "nope" },
+		},
+		{
+			name: "nodes null", field: "spec.network.nodes",
+			set: func(cr map[string]any) { crNetwork(t, cr)["nodes"] = nil },
+		},
+		{
+			name: "external string", field: "spec.network.nodes.external",
+			set: func(cr map[string]any) { crNodes(t, cr)["external"] = "nope" },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cr := map[string]any{}
+			if err := json.Unmarshal(mustJSON(t, good), &cr); err != nil {
+				t.Fatal(err)
+			}
+			c.set(cr)
+			status, body := h.do("POST", "/api/v1/cr", cr)
+			e := h.wantError(status, body, 400, ReasonValidationFailed)
+			msg := fieldMessage(e, c.field)
+			if !strings.Contains(msg, "object") {
+				t.Fatalf("field %s message %q, want a non-object error; fields %v", c.field, msg, e["fields"])
+			}
+		})
+	}
+	if h.state() != "editing" {
+		t.Fatal("malformed POST /cr left editing")
+	}
+}
+
 func TestSplitCRReportsInvalidRaw(t *testing.T) {
 	const ver = "demo.example/v1"
 	cr := map[string]json.RawMessage{
