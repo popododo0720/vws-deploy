@@ -20,9 +20,17 @@ installer_scenario() {
   export VWS_BUNDLE_DIR="${WORK}/$1/bundle"
   jq --arg v "${GROUP}/v1alpha1" '.apiVersion = $v' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
   mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
-  # The cluster already has the chart's CRD; a test edits this file for an older one (#114).
-  python3 -c 'import json,sys,yaml; json.dump(yaml.safe_load(open(sys.argv[1])), open(sys.argv[2], "w"))' \
-    "${VWS_TEST_ROOT}/charts/vws/crds/vwsclusters.yaml" "${VWS_FAKE_DIR}/kubectl/get_crd.json"
+  # The cluster already has every chart CRD; a test edits this list for an older one (#114).
+  python3 - "${VWS_TEST_ROOT}/charts/vws/crds" "${VWS_FAKE_DIR}/kubectl/get_crd.json" <<'PY'
+import json, sys
+from pathlib import Path
+import yaml
+
+items = []
+for path in sorted(Path(sys.argv[1]).glob("*.yaml")):
+    items += [doc for doc in yaml.safe_load_all(path.read_text()) if doc]
+json.dump({"apiVersion": "v1", "kind": "List", "items": items}, open(sys.argv[2], "w"))
+PY
   installer_template
 }
 

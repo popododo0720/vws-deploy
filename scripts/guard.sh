@@ -570,6 +570,69 @@ ok = (len(ports) == 1 and ports[0].get("name") == "http" and ports[0].get("port"
 sys.exit(0 if ok else 1)
 PY
   console_api_closed "$tmp/default.yaml" || die "R15: the default render publishes an AWS listener or an iam endpoint"
+  # vws-iam store (#369): two replicas share the kube store in the release namespace. No volume
+  # holds state; the CRDs, a Role on exactly those resources and the API token make it work.
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace acme-sys --include-crds \
+    --set services.iam.enabled=true > "$tmp/iam-store.yaml"
+  python3 - "$tmp/iam-store.yaml" charts/vws/crds <<'PY' || die "R4: vws-iam does not render a shared kube store"
+import sys
+from pathlib import Path
+
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+crd_file = Path(sys.argv[2]) / "iam.yaml"
+group = "iam." + yaml.safe_load((Path(sys.argv[2]) / "vwsclusters.yaml").read_text())["spec"]["group"]
+def one(kind, name, ns="acme-sys"):
+    found = [d for d in docs if d.get("kind") == kind and d["metadata"]["name"] == name
+             and d["metadata"].get("namespace", ns) == ns]
+    return found[0] if len(found) == 1 else None
+errors = []
+want_crds = sorted(d["metadata"]["name"] for d in yaml.safe_load_all(crd_file.read_text()) if d) if crd_file.exists() else []
+plurals = sorted(n.split(".", 1)[0] for n in want_crds)
+got_crds = sorted(d["metadata"]["name"] for d in docs if d.get("kind") == "CustomResourceDefinition"
+                  and d["spec"]["group"] == group)
+if not want_crds or got_crds != want_crds:
+    errors.append(f"IAM CRDs rendered {got_crds}, want those of {crd_file}")
+if len(plurals) != 11:
+    errors.append(f"want the 11 vws-iam kube store resources, got {plurals}")
+deploy = one("Deployment", "iam")
+if deploy is None or one("StatefulSet", "iam") is not None:
+    errors.append("iam must be one Deployment and no StatefulSet")
+else:
+    spec = deploy["spec"]
+    pod = spec["template"]["spec"]
+    container = pod["containers"][0]
+    if spec.get("replicas") != 2:
+        errors.append(f"iam replicas {spec.get('replicas')}, want 2")
+    if pod.get("automountServiceAccountToken") is not True:
+        errors.append("iam pod must mount its API token")
+    if "-namespace=acme-sys" not in (container.get("args") or []):
+        errors.append(f"iam args {container.get('args')} lack -namespace=acme-sys")
+    volumes = pod.get("volumes") or []
+    if volumes != [{"name": "tmp", "emptyDir": {}}] or "volumeClaimTemplates" in spec:
+        errors.append(f"iam volumes {volumes}: only the /tmp scratch dir, no state volume")
+    if [m["mountPath"] for m in container.get("volumeMounts") or []] != ["/tmp"]:
+        errors.append("iam mounts something besides /tmp")
+sa = one("ServiceAccount", "iam")
+if sa is None or sa.get("automountServiceAccountToken") is not True:
+    errors.append("iam ServiceAccount must mount its API token")
+if any(d.get("kind") == "PersistentVolumeClaim" for d in docs):
+    errors.append("the render has a PersistentVolumeClaim")
+role = one("Role", "vws-iam")
+want_rules = [{"apiGroups": [group], "resources": plurals, "verbs": ["get", "list", "create", "update", "delete"]}]
+if role is None or [dict(r, resources=sorted(r["resources"])) for r in role.get("rules") or []] != want_rules:
+    errors.append(f"Role vws-iam in acme-sys has {role and role.get('rules')}, want {want_rules}")
+binding = one("RoleBinding", "vws-iam")
+if binding is None or binding["roleRef"]["name"] != "vws-iam" or binding.get("subjects") != [
+        {"kind": "ServiceAccount", "name": "iam", "namespace": "acme-sys"}]:
+    errors.append("RoleBinding vws-iam must bind only ServiceAccount acme-sys/iam")
+if one("ClusterRole", "vws-iam", None) is not None:
+    errors.append("iam needs no ClusterRole")
+for e in errors:
+    print("iam store:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
 
   cat > "$tmp/override.yaml" <<'YAML'
 global:
@@ -703,11 +766,15 @@ spec = importlib.util.spec_from_file_location("render", root / "scripts/vws.d/li
 render = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render)
 crd_path = root / "charts/vws/crds/vwsclusters.yaml"
+# iam.yaml is the vws-iam store (vws-deploy#369): a copy of vws-iam deploy/crds/iam.yaml, group
+# iam.<VWSCluster group>. It is optional so a clean copy without it still passes.
+iam_path = root / "charts/vws/crds/iam.yaml"
 skip = {".git", "build", ".cache", "node_modules"}
 files = [p for p in root.rglob("*") if p.is_file() and not skip & set(p.relative_to(root).parts)]
 crds = [p for p in files if p.suffix in (".yaml", ".yml") and re.search(r"^kind:\s*CustomResourceDefinition\s*$", p.read_text(errors="ignore"), re.M)]
-if [p.relative_to(root) for p in crds] != [crd_path.relative_to(root)]:
-    sys.exit(f"R18: the only VWS CRD is {crd_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
+allowed = [crd_path] + ([iam_path] if iam_path in crds else [])
+if sorted(p.relative_to(root) for p in crds) != sorted(p.relative_to(root) for p in allowed):
+    sys.exit(f"R18: the VWS CRDs are {crd_path.relative_to(root)} and {iam_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
 docs = [d for d in yaml.safe_load_all(crd_path.read_text()) if d]
 if len(docs) != 1 or docs[0]["spec"]["names"]["kind"] != "VWSCluster":
     sys.exit("R18: vwsclusters.yaml must hold one CRD, kind VWSCluster")
@@ -738,6 +805,20 @@ def structural(schema, path):
 for version in crd["spec"]["versions"]:
     structural(version["schema"]["openAPIV3Schema"], "")
 
+if iam_path in crds:
+    for doc in (d for d in yaml.safe_load_all(iam_path.read_text()) if d):
+        names = doc["spec"]["names"]
+        if doc["spec"].get("group") != f"iam.{group}":
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} group must be iam.{group}")
+        if not names["plural"].startswith("iam") or doc["metadata"]["name"] != f"{names['plural']}.iam.{group}":
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} must be iam<kind>s.iam.{group}")
+        if doc.get("apiVersion") != "apiextensions.k8s.io/v1" or doc["spec"].get("scope") != "Namespaced":
+            sys.exit(f"R18: {iam_path.name} CRDs must be apiextensions.k8s.io/v1 and Namespaced")
+        if [v["name"] for v in doc["spec"]["versions"] if v.get("storage")] != ["v1alpha1"]:
+            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']}: v1alpha1 must be the one storage version")
+        for version in doc["spec"]["versions"]:
+            structural(version["schema"]["openAPIV3Schema"], "")
+
 def walk(schema, path):
     for key, sub in (schema.get("properties") or {}).items():
         if key not in render.REFERENCE_NAMES and render.SECRET_NAME.search(key):
@@ -753,7 +834,8 @@ examples = sorted((root / "examples/vwscluster").glob("*.yaml"))
 for p in files:
     if p == crd_path or p in examples:
         continue
-    if group in p.read_text(errors="ignore"):
+    # A bare match only: iam.<group> (the vws-iam API group) is a different group.
+    if re.search(r"(?<![\w.-])" + re.escape(group), p.read_text(errors="ignore")):
         sys.exit(f"R18: the API group {group} is written in {p.relative_to(root)}; read it from {crd_path.relative_to(root)}")
 for p in examples:
     if yaml.safe_load(p.read_text()).get("apiVersion") != f"{group}/v1alpha1":
@@ -798,6 +880,15 @@ PY
   rm "$tmp/scripts/group.txt"
   sed -i 's#^apiVersion: .*#apiVersion: example.com/v1alpha1#' "$tmp/examples/vwscluster/ha.yaml"
   ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an example CR with another group was accepted"; }
+  sed -i "s#^apiVersion: .*#apiVersion: $(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)/v1alpha1#" "$tmp/examples/vwscluster/ha.yaml"
+  if [[ -f charts/vws/crds/iam.yaml ]]; then
+    sed 's/group: iam\./group: other./' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
+    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an IAM CRD in another group was accepted"; }
+    sed 's/scope: Namespaced/scope: Cluster/' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
+    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a cluster-scoped IAM CRD was accepted"; }
+    cp charts/vws/crds/iam.yaml "$tmp/charts/vws/crds/"
+    crd_check "$tmp" || { rm -rf "$tmp"; die "R18: a clean copy with the IAM CRDs was rejected"; }
+  fi
   rm -rf "$tmp"
 }
 

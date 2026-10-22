@@ -1,32 +1,60 @@
 #!/usr/bin/env bash
 # Shared by vws reconfigure, upgrade, init, apply and restore. Source after common.sh.
 
-# vws_apply_crd: server-side apply charts/vws/crds/vwsclusters.yaml. Helm installs crds/ on the first
-# install only and never upgrades them, so a cluster keeps the CRD of the chart it was installed with
-# and rejects a VWSCluster field a newer chart added ("field not declared in schema", #112). Every
-# command that writes the CR (or applies a newer chart) calls this first. --force-conflicts takes
-# .spec over from whoever created the CRD (helm, or kubectl client-side apply). Cluster-scoped: no -n.
-# vws_crd_current: 0 when the cluster's VWSCluster CRD has the group and versions (schemas
-# included) of charts/vws/crds/vwsclusters.yaml. Read only; vws apply uses it to stay at zero
-# writes when nothing changed (#114).
+# vws_crd_files: every CRD file of the chart, in name order. Helm installs crds/ on the first install
+# only and never upgrades them, so a cluster keeps the CRDs of the chart it was installed with (#112,
+# #382).
+vws_crd_files() {
+  local file
+  for file in "${VWS_ROOT}"/charts/vws/crds/*.yaml; do
+    [[ -f $file ]] && printf '%s\n' "$file"
+  done
+}
+
+# vws_crd_current: 0 when every CRD in charts/vws/crds/*.yaml has the group and versions (schemas
+# included) the chart ships. Read only; vws apply uses it to stay at zero writes when nothing changed
+# (#114).
 vws_crd_current() {
-  local crd have
-  crd=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["metadata"]["name"])' "${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml")
-  have=$(VWS_NAMESPACE='' vws_kubectl get crd "$crd" -o json 2>/dev/null) || return 1
-  python3 - "$have" "${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" <<'PY'
-import json, sys, yaml
-have = json.loads(sys.argv[1]).get("spec") or {}
-want = yaml.safe_load(open(sys.argv[2]))["spec"]
-def key(s):
-    return s.get("group"), [(v.get("name"), v.get("served"), v.get("storage"), v.get("schema"), v.get("subresources")) for v in s.get("versions") or []]
-sys.exit(0 if key(have) == key(want) else 1)
+  local have
+  have=$(VWS_NAMESPACE='' vws_kubectl get crd -o json 2>/dev/null) || return 1
+  python3 - "$have" "${VWS_ROOT}/charts/vws/crds" <<'PY'
+import json, sys
+from pathlib import Path
+import yaml
+
+have = {item["metadata"]["name"]: item.get("spec") or {} for item in json.loads(sys.argv[1]).get("items") or []}
+want = {}
+for path in sorted(Path(sys.argv[2]).glob("*.yaml")):
+    for doc in yaml.safe_load_all(path.read_text()):
+        if doc and doc.get("kind") == "CustomResourceDefinition":
+            want[doc["metadata"]["name"]] = doc.get("spec") or {}
+
+def key(spec):
+    return spec.get("group"), [
+        (v.get("name"), v.get("served"), v.get("storage"), v.get("schema"), v.get("subresources"))
+        for v in spec.get("versions") or []
+    ]
+
+sys.exit(0 if want and all(name in have and key(have[name]) == key(spec) for name, spec in want.items()) else 1)
 PY
 }
 
+# vws_apply_crd: server-side apply every charts/vws/crds/*.yaml, then wait for the CRDs to be
+# Established. A cluster installed before a newer CRD file was added has no such CRD, and Helm never
+# installs crds/ on upgrade (#382). --force-conflicts takes .spec over from whoever created the CRD
+# (helm, or kubectl client-side apply). Cluster-scoped: no -n. Never deletes a CRD.
 vws_apply_crd() {
-  VWS_NAMESPACE='' vws_kubectl apply --server-side --field-manager=vws --force-conflicts -f - \
-    <"${VWS_ROOT}/charts/vws/crds/vwsclusters.yaml" >/dev/null ||
-    vws_die_env "cannot apply the VWSCluster CRD from charts/vws/crds/vwsclusters.yaml"
+  local file
+  local -a files
+  mapfile -t files < <(vws_crd_files)
+  ((${#files[@]} > 0)) || vws_die_env "charts/vws/crds holds no CRD files"
+  for file in "${files[@]}"; do
+    VWS_NAMESPACE='' vws_kubectl apply --server-side --field-manager=vws --force-conflicts -f - <"$file" >/dev/null ||
+      vws_die_env "cannot apply $(basename "$file") from charts/vws/crds"
+  done
+  [[ -z $VWS_DRY_RUN ]] || return 0
+  VWS_NAMESPACE='' vws_kubectl wait --for=condition=Established crd --all --timeout=300s >/dev/null ||
+    vws_die_env "CRDs from charts/vws/crds are not Established"
 }
 
 # vws_save_spec CR_JSON SPEC_JSON: server-side apply the VWSCluster of CR_JSON with that spec.

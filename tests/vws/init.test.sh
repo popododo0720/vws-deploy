@@ -11,8 +11,9 @@ installer_scenario fresh
 rm "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real init --from "${EX}/small.yaml";     expect_rc "init --from saves" 0
 expect_text "init saves" "$OUT" "saved VWSCluster vws"
-kinds=$(grep "^kind:" "${VWS_FAKE_LOG}.stdin" | head -2 | paste -sd" ")
-if [[ $kinds == "kind: CustomResourceDefinition kind: VWSCluster" ]]; then ok "init applies the CRD before the CR (#112)"; else bad "init CRD before CR" "$kinds"; fi
+crd_line=$(grep -n -m1 "^kind: CustomResourceDefinition" "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
+cr_line=$(grep -n -m1 "^kind: VWSCluster" "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
+if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "init applies the CRDs before the CR (#112)"; else bad "init CRD before CR" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 assert_changes "the first init applies the CR"
 
 installer_scenario same

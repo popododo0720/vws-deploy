@@ -43,6 +43,34 @@ expect_text "helm is atomic" "$(calls)" "--atomic --wait"
 expect_text "the backup WARN is printed" "$OUT" "WARN  backup"
 expect_text "no zero-downtime claim" "$OUT" "zero downtime is not claimed until vws-deploy#39"
 
+# #382: a release installed before #369 has no iam CRDs. An upgrade applies every chart CRD file and
+# waits for Established before the workload upgrade.
+installer_scenario upgrade-crds
+jq 'del(.items[] | select(.spec.group | startswith("iam.")))' \
+  "${VWS_FAKE_DIR}/kubectl/get_crd.json" >"${WORK}/crds.json" && mv "${WORK}/crds.json" "${VWS_FAKE_DIR}/kubectl/get_crd.json"
+run_vws_real upgrade --to v2;                     expect_rc "an upgrade without iam CRDs exits 0" 0
+first_apply=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
+wait_line=$(grep -n $'^kubectl\twait.*condition=Established crd --all' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
+# The CR save is the first apply whose document is the VWSCluster. The CRD wait must come before it,
+# so a bundle wait later in the apply cannot stand in for the CRD wait.
+cr_apply=$(awk '
+  /^--- apply$/ { n++; next }
+  /^--- / { next }
+  /"kind": "VWSCluster"/ && n { print n; exit }
+' "${VWS_FAKE_LOG}.stdin")
+cr_line=''
+[[ -z $cr_apply ]] || cr_line=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | sed -n "${cr_apply}p" | cut -d: -f1)
+if [[ -n $first_apply && -n $wait_line && -n $cr_line && -n $helm_line ]] &&
+  ((first_apply < wait_line && wait_line < cr_line && cr_line < helm_line)); then
+  ok "the iam CRDs are applied and Established before the CR and helm"
+else
+  bad "CRD wait before CR and helm" "$(calls)"
+fi
+iam_docs=$(grep -c 'group: iam\.' "${VWS_FAKE_LOG}.stdin" || true)
+if ((iam_docs >= 11)); then ok "the upgrade applies the iam CRDs"; else bad "iam CRDs applied" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+if grep -q $'^kubectl\tdelete' "$VWS_FAKE_LOG"; then bad "no CRD is deleted" "$(calls)"; else ok "no CRD is deleted"; fi
+
 installer_scenario judged
 with_doctor_fixtures
 run_vws_real upgrade --to v2;                     expect_rc "a healthy cluster after upgrade exits 0" 0
