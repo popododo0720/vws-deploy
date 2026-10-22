@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -78,8 +79,10 @@ const maxBody = 1 << 20
 // Handler routes /api/v1.
 func (srv *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/session", srv.postSession)
+	allowed := map[string][]string{}
 	authed := func(pattern string, h func(http.ResponseWriter, *http.Request) error) {
+		method, path, _ := strings.Cut(pattern, " ")
+		allowed[path] = append(allowed[path], method)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			if err := srv.auth.Check(token(r)); err != nil {
 				writeError(w, r, err)
@@ -102,6 +105,18 @@ func (srv *Server) Handler() http.Handler {
 	authed("GET /api/v1/cr", srv.getCR)
 	authed("POST /api/v1/cr", srv.postCR)
 	authed("POST /api/v1/result/credential", srv.postCredential)
+	mux.HandleFunc("POST /api/v1/session", srv.postSession)
+	allowed["/api/v1/session"] = []string{"POST"}
+	// A path that exists but not this method is 405 with Allow. Go's ServeMux does this itself,
+	// but the JSON 404 route below matches every method and would win.
+	for path, methods := range allowed {
+		slices.Sort(methods)
+		allow := strings.Join(methods, ", ")
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Allow", allow)
+			writeError(w, r, fail(ReasonMethodNotAllowed, "method "+r.Method+" is not allowed on "+path))
+		})
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, fail(ReasonNotFound, "no such endpoint"))
 	})

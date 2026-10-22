@@ -28,7 +28,7 @@ vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp
 | GET | /cr | implemented (#144). The CR file (`vwscluster.json`) when every step is valid |
 | POST | /cr | implemented (#144). Fills and checks every step from a CR file |
 
-Every path except `/session` needs a session (`Authorization: Bearer <token>` or the cookie `vws_installer_session`, HttpOnly, Secure, SameSite=Strict). Bodies are limited to 1 MiB, and unknown fields or data after the JSON are 400 `bad_request`.
+Every path except `/session` needs a session (`Authorization: Bearer <token>` or the cookie `vws_installer_session`, HttpOnly, Secure, SameSite=Strict). Bodies are limited to 1 MiB, and unknown fields or data after the JSON are 400 `bad_request`. A known path with an unsupported method is 405 `method_not_allowed`, and the `Allow` header names the methods it takes.
 
 ## Authentication (one-time access code)
 
@@ -85,7 +85,7 @@ NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes
 ## Storing the CR and unattended installs (#144)
 
 - `GET /cr` returns the same file as the CR the summary would install (every step valid, else 409 `step_out_of_order`). `vws apply --unattended -f vwscluster.json` does the same install without the wizard.
-- `POST /cr` splits a CR body into steps. `spec.network.nodes.external.eipPool` goes to the eip step, and the other spec fields go to the steps of the same name. roles are not in the CR, so the stored value is kept if valid, else all nodes. A missing observability is cleared. Every step is re-checked, and if any has an error the response is 400 `validation_failed` with every field (values stay `invalid`). It works only while editing is allowed (409 `install_in_progress` during an install, 409 `already_installed` after).
+- `POST /cr` splits a CR body into steps. `spec.network.nodes.external.eipPool` goes to the eip step, and the other spec fields go to the steps of the same name. roles are not in the CR, so the stored value is kept if valid, else all nodes. A missing observability is cleared. Every step is re-checked. A body with an invalid field is refused before the node lookup and changes no step; the response is 400 `validation_failed` with every field. It works only while editing is allowed (409 `install_in_progress` during an install, 409 `already_installed` after).
 - `spec.version`, `spec.services` and `spec.secrets`, which the draft does not have, are refused as `unsupported`. Such a CR goes through `vws apply --unattended -f` without the installer. `apiVersion`, `kind: VWSCluster` and `metadata.name: vws` are checked too.
 - Uploading the same CR twice gives the same steps and the same `specHash`. Running `vws apply --unattended -f` twice makes the second run `unchanged` for both init and apply.
 
@@ -109,7 +109,7 @@ NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes
 {"error":{"code":"validation_failed","message":"...","fields":[{"field":"spec.network.nodes.external.eipPool","code":"required","message":"..."}],"retryable":false}}
 ```
 
-Each code has one HTTP status and one vws-lib `errs.Code`. `retryable` is `errs.Code.Retryable()`. Added to the #139 table: 404 `not_found` (unknown path or step), 409 `not_confirmed`, 501 `not_implemented`, 500 `internal`. The cause of an internal error goes only to the log; the response says only "internal error". The cause of an install failure is not put in the response either.
+Each code has one HTTP status and one vws-lib `errs.Code`. `retryable` is `errs.Code.Retryable()`. Added to the #139 table: 404 `not_found` (unknown path or step), 405 `method_not_allowed` (known path, unsupported method), 409 `not_confirmed`, 501 `not_implemented`, 500 `internal`. The cause of an internal error goes only to the log; the response says only "internal error". The cause of an install failure is not put in the response either.
 
 ## TUI `vws init` (#142)
 
@@ -128,9 +128,9 @@ Inside the installer pod, `vws init` (no arguments) runs `vws-installer tui`. It
 
 - Authentication: code shape, no repeats, one-time use, a new login ends the old session, 403 and a new code after 5 failures, 30-minute idle expiry and renewal, cookie attributes, 401 on every path without a session, no code in response bodies.
 - State machine: start to finish, order violations, `spec_changed`, `not_confirmed`, 409 during an install, 409 after an install, retry after a failure.
-- 16 step validation cases, disabled drivers, eip re-check after a network change, preflight blocking and warnings, bad bodies, 404, 501, the CR's apiVersion equals the chart CRD's.
+- 16 step validation cases, disabled drivers, eip re-check after a network change, preflight blocking and warnings, bad bodies, 404, 405 with `Allow`, 501, the CR's apiVersion equals the chart CRD's.
 - TUI (`internal/tui`): with the real API over TLS, from the start to install, asking again after field errors, preflight display, refusal and end of input, install failure, refusing another certificate, the client error model. `print-url` output. `tests/vws/init.test.sh`: `vws init` in the pod runs the TUI, `--print-url` runs print-url, and `--from` stores as before.
-- CR (`cr_test.go`): export needs every step; uploading an exported CR to a new installer gives the same summary hash; uploading twice gives the same; refusal of apiVersion/kind/name/services, a missing eipPool, a missing profile and disabled drivers; 409 during and after an install. `tests/vws/apply.test.sh`: `apply -f` applies after init, the second run is unchanged with 0 changes, a bad file is 2 with no helm calls.
+- CR (`cr_test.go`): export needs every step; uploading an exported CR to a new installer gives the same summary hash; uploading twice gives the same; refusal of apiVersion/kind/name/services, a missing eipPool, a missing profile and disabled drivers; a bad CR is 400 even when the node lookup fails; 409 during and after an install. `tests/vws/apply.test.sh`: `apply -f` applies after init, the second run is unchanged with 0 changes, a bad file is 2 with no helm calls.
 - Events (`events_test.go`, `mask_test.go`): a client attached during the install and one that reads after it finished see the same thing; fake secrets, access codes and tokens appear nowhere in the raw stream; `Last-Event-ID` resume; the 2000 ring and gap; 400 on a bad id; an empty stream before the install. A table per masking shape.
 - Credentials (`credential_test.go`): 410 and `finished` after one return; shape (24 characters, alphabet); the value is in no response other than the return, nor in the CR or code files; a Secret creation failure is failed; a label failure is 500 without the value; an already used Secret is 410 and unchanged. `cluster.KubeSecret`: create with a fake kubectl, AlreadyExists, read, label, the value is not in kubectl arguments. `credential_leak_test.go`: after a label failure (500, ERROR log) and a normal return, the generated password appears nowhere in the raw `GET /install/events` stream or the slog logs (down to debug level).
 - `cluster.VWS`: with fake `kubectl` and `vws` scripts, the node list, a single `apply --unattended -f`, passing on an apply failure, CR file mode 0600.

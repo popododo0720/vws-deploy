@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,37 @@ func TestPostCRWhileInstalling(t *testing.T) {
 	h.waitState("succeeded")
 	status, body = h.do("POST", "/api/v1/cr", cr)
 	h.wantError(status, body, 409, ReasonAlreadyInstalled)
+}
+
+func TestPostCRValidatesBeforeNodeLookup(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	good := h.exportCR()
+	badStorage := map[string]any{}
+	if err := json.Unmarshal(mustJSON(t, good), &badStorage); err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := badStorage["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("exported CR has no spec object")
+	}
+	spec["storage"] = map[string]any{"driver": "minio"}
+	h.cluster.nodesErr = errors.New("kube-apiserver is unavailable")
+
+	for _, c := range []struct {
+		name string
+		body any
+	}{
+		{"not a CR", `{"spec": 1}`},
+		{"bad step value", badStorage},
+	} {
+		status, body := h.do("POST", "/api/v1/cr", c.body)
+		h.wantError(status, body, 400, ReasonValidationFailed)
+		if strings.Contains(h.bodies.String(), "kube-apiserver is unavailable") {
+			t.Fatalf("%s: node lookup error reached the response", c.name)
+		}
+	}
 }
 
 func fieldMessage(e map[string]any, field string) string {

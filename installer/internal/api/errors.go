@@ -20,6 +20,7 @@ const (
 	ReasonSessionExpired    Reason = "session_expired"
 	ReasonForbidden         Reason = "forbidden"
 	ReasonNotFound          Reason = "not_found"
+	ReasonMethodNotAllowed  Reason = "method_not_allowed"
 	ReasonStepOutOfOrder    Reason = "step_out_of_order"
 	ReasonSpecChanged       Reason = "spec_changed"
 	ReasonInstallInProgress Reason = "install_in_progress"
@@ -41,6 +42,7 @@ var reasons = map[Reason]struct {
 	ReasonSessionExpired:     {http.StatusUnauthorized, errs.CodeUnauthenticated},
 	ReasonForbidden:          {http.StatusForbidden, errs.CodePermissionDenied},
 	ReasonNotFound:           {http.StatusNotFound, errs.CodeNotFound},
+	ReasonMethodNotAllowed:   {http.StatusMethodNotAllowed, errs.CodeInvalidArgument},
 	ReasonStepOutOfOrder:     {http.StatusConflict, errs.CodeConflict},
 	ReasonSpecChanged:        {http.StatusConflict, errs.CodeConflict},
 	ReasonInstallInProgress:  {http.StatusConflict, errs.CodeConflict},

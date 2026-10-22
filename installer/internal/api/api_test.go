@@ -20,15 +20,21 @@ import (
 
 // fakeCluster is the fake cluster: fixed nodes, and an install that waits for release.
 type fakeCluster struct {
-	mu      sync.Mutex
-	nodes   []cluster.Node
-	release chan error
-	crs     [][]byte
+	mu       sync.Mutex
+	nodes    []cluster.Node
+	nodesErr error
+	release  chan error
+	crs      [][]byte
 	// lines are logged after "installing" (#145).
 	lines []string
 }
 
-func (f *fakeCluster) Nodes(context.Context) ([]cluster.Node, error) { return f.nodes, nil }
+func (f *fakeCluster) Nodes(context.Context) ([]cluster.Node, error) {
+	if f.nodesErr != nil {
+		return nil, f.nodesErr
+	}
+	return f.nodes, nil
+}
 
 func (f *fakeCluster) Install(_ context.Context, cr []byte, log func(string)) (cluster.Result, error) {
 	f.mu.Lock()
@@ -65,6 +71,7 @@ type harness struct {
 	codes   []string
 	token   string
 	bodies  bytes.Buffer
+	header  http.Header
 }
 
 func newHarness(t *testing.T, pf Preflight) *harness {
@@ -117,6 +124,7 @@ func (h *harness) do(method, path string, body any) (int, map[string]any) {
 		h.t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	h.header = resp.Header
 	raw, _ := io.ReadAll(resp.Body)
 	h.bodies.Write(raw)
 	var out map[string]any
@@ -631,6 +639,29 @@ func TestBadRequests(t *testing.T) {
 	h.wantError(status, body, 404, ReasonNotFound)
 	status, body = h.do("POST", "/api/v1/result/credential", nil)
 	h.wantError(status, body, 501, ReasonNotImplemented)
+}
+
+func TestUnsupportedMethodIs405(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	for _, c := range []struct{ method, path, allow string }{
+		{"DELETE", "/api/v1/cr", "GET, POST"},
+		{"PATCH", "/api/v1/steps/roles", "GET, PUT"},
+		{"GET", "/api/v1/install", "POST"},
+		{"POST", "/api/v1/state", "GET"},
+		{"GET", "/api/v1/session", "POST"},
+	} {
+		status, body := h.do(c.method, c.path, nil)
+		h.wantError(status, body, 405, Reason("method_not_allowed"))
+		if got := h.header.Get("Allow"); got != c.allow {
+			t.Fatalf("%s %s: Allow %q, want %q", c.method, c.path, got, c.allow)
+		}
+	}
+	status, body := h.do("DELETE", "/api/v1/nothing", nil)
+	h.wantError(status, body, 404, ReasonNotFound)
+	if got := h.header.Get("Allow"); got != "" {
+		t.Fatalf("unknown path has Allow %q", got)
+	}
 }
 
 func TestEveryReasonHasAStatus(t *testing.T) {
