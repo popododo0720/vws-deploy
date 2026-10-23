@@ -48,8 +48,12 @@ vws reconfigure --set network.underlayMTU=8942 --set network.vmMTU=8842
 
 ## The 1500 path out
 
-The bundle's Kube-OVN (`scripts/versions.env` KUBEOVN_VERSION) does not set OVN `gateway_mtu`, so the VPC router does not send
-ICMP "fragmentation needed" for large DF packets headed to the 1500 external network (vws-network `docs/mtu.md`). #237 covers it.
+The bundle's Kube-OVN (`scripts/versions.env` KUBEOVN_VERSION) does not set OVN `gateway_mtu` and has no field for it.
+`platform.py` adds the `vws-ovn-gateway-mtu` Deployment (#237), also when the external subnet comes only from
+`spec.services.network.flags.kube-external-subnet` (#246); it sets `options:gateway_mtu` on each VPC port to that subnet.
+OVN then answers an oversized IPv4 packet with ICMP fragmentation-needed (type 3 code 4) and, when the port has an IPv6
+address, an oversized IPv6 packet with ICMPv6 Packet Too Big (type 2), so the router can signal MTU exhaustion for
+both families. The live check on vws-test is still open in #246.
 
 ## Needs checking
 
