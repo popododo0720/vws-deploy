@@ -13,6 +13,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..")
 STATUS_PATH = f"{O}/vws-deploy/issues/415"
 EXCL = {"repos": set(), "items": set()}
+START, END = "<!-- vws-orchestrate:status -->", "<!-- /vws-orchestrate:status -->"
+# Human text around the managed block; it must survive every write byte for byte.
+HEAD = "Read me first: notes for people.\r\n\n- keep `this`\n\n"
+TAIL = "\n## Human notes\n\n_Updated by hand_\n## Failed ticks\nnot the orchestrator's\n<!-- note -->"
 
 
 def prs(n):
@@ -107,21 +111,64 @@ class Body(unittest.TestCase):
         self.assertEqual(sum(e["key"] == "k30" for e in state["status_events"]), 1)
 
 
+class Block(unittest.TestCase):
+    """vws-deploy#431 verdict: the orchestrator owns only the text between the two markers."""
+
+    def test_rendered_block_is_delimited(self):
+        snap = snapshot(*prs(1))
+        body = orch.status_body(snap, decide(snap), CFG, {}, "apply", NOW)
+        self.assertEqual((orch.STATUS_MARKER, orch.STATUS_END_MARKER), (START, END))
+        self.assertTrue(body.startswith(START + "\n"))
+        self.assertTrue(body.endswith("\n" + END + "\n"))
+        self.assertEqual((body.count(START), body.count(END)), (1, 1))
+
+    def test_splice_keeps_outside_text_byte_for_byte(self):
+        current = HEAD + f"{START}\nold\n{END}" + TAIL
+        new = orch.splice_status(current, f"{START}\nnew\n{END}\n")
+        self.assertEqual(new, HEAD + f"{START}\nnew\n{END}" + TAIL)
+
+    def test_splice_refuses_a_body_it_does_not_own(self):
+        for bad in ("", "human text only", f"{START}\nno end", f"no start\n{END}", f"{END}\nx\n{START}\n",
+                    f"{START}\na\n{END}\n{START}\nb\n{END}\n", f"{START}\n{START}\n{END}\n"):
+            with self.subTest(body=bad):
+                self.assertIsNone(orch.splice_status(bad, f"{START}\nnew\n{END}\n"))
+                self.assertTrue(orch.status_unowned(bad))
+        self.assertEqual(orch.status_unowned(HEAD + f"{START}\nx\n{END}" + TAIL), "")
+
+    def test_failure_section_stays_inside_the_block(self):
+        current = HEAD + f"{START}\nFactory status.\n\n_Updated x_\n{END}" + TAIL
+        new = orch.set_failure_section(current, "## Failed ticks\n\nboom")
+        self.assertTrue(new.startswith(HEAD) and new.endswith(TAIL), new)
+        inner = new[len(HEAD):len(new) - len(TAIL)]
+        self.assertIn("## Failed ticks\n\nboom", inner)
+        self.assertEqual(orch.failure_section(new), "## Failed ticks\n\nboom")
+        again = orch.set_failure_section(new, "## Failed ticks\n\nnew")
+        self.assertTrue(again.startswith(HEAD) and again.endswith(TAIL))
+        self.assertEqual(again.count("## Failed ticks\n\n"), 1 + TAIL.count("## Failed ticks\n\n"))
+        self.assertIn("## Failed ticks\nnot the orchestrator's", again, "a human heading outside is untouched")
+        self.assertIsNone(orch.set_failure_section("human text only", "## Failed ticks\n\nboom"))
+        self.assertIsNone(orch.set_failure_section(START + "\nno end\n", "## Failed ticks\n\nboom"))
+
+
 class GhGuard(Env):
     def test_only_the_status_issue_body_may_be_edited(self):
         gh = orch.Gh(status_issue="415")
-        refused = [("PATCH", f"{O}/vws-deploy/issues/416", {"body": orch.STATUS_MARKER + "\nx"}),
-                   ("PATCH", STATUS_PATH, {"body": orch.STATUS_MARKER + "\nx", "title": "t"}),
-                   ("PATCH", STATUS_PATH, {"body": orch.STATUS_MARKER + "\nx", "state": "closed"}),
+        ok = f"{START}\nx\n{END}\n"
+        refused = [("PATCH", f"{O}/vws-deploy/issues/416", {"body": ok}),
+                   ("PATCH", STATUS_PATH, {"body": ok, "title": "t"}),
+                   ("PATCH", STATUS_PATH, {"body": ok, "state": "closed"}),
                    ("PATCH", STATUS_PATH, {"body": "no marker"}),
-                   ("PATCH", f"{O}/vws-iam/issues/415", {"body": orch.STATUS_MARKER + "\nx"})]
+                   ("PATCH", STATUS_PATH, {"body": START + "\nno end marker"}),
+                   ("PATCH", STATUS_PATH, {"body": "x\n" + END + "\n" + START + "\n"}),
+                   ("PATCH", STATUS_PATH, {"body": f"{START}\na\n{END}\n{START}\nb\n{END}\n"}),
+                   ("PATCH", f"{O}/vws-iam/issues/415", {"body": ok})]
         for method, path, payload in refused:
             with self.subTest(path=path, payload=payload), self.assertRaises(PermissionError):
                 gh.write(method, path, payload)
         with self.assertRaises(PermissionError):
-            orch.Gh().write("PATCH", STATUS_PATH, {"body": orch.STATUS_MARKER + "\nx"})
+            orch.Gh().write("PATCH", STATUS_PATH, {"body": f"{START}\nx\n{END}\n"})
         self.assertEqual(self.calls(), [], "a refused write never reaches gh")
-        gh.write("PATCH", STATUS_PATH, {"body": orch.STATUS_MARKER + "\nok"})
+        gh.write("PATCH", STATUS_PATH, {"body": f"human text\n{START}\nok\n{END}\nmore"})
         self.assertEqual([(c["method"], c["path"]) for c in self.calls()], [("PATCH", STATUS_PATH)])
 
 
@@ -191,6 +238,54 @@ class Ticks(Env):
         self.assertNotIn("## Failed ticks", self.status_edits()[-1])
         self.assertFalse([c for c in self.calls() if c["path"].endswith("/comments") and orch.FAILURE_MARKER in c["stdin"]])
 
+
+    def human_body(self, body):
+        r = routes()
+        r[STATUS_PATH] = {"body": {"number": 415, "state": "open", "body": body}}
+        self.set_routes(r)
+
+    def test_human_text_outside_the_block_survives_ticks_and_failure_sections(self):
+        self.human_body(HEAD + f"{START}\nFactory status.\n{END}" + TAIL)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply"), 0)
+        first = self.status_edits()[-1]
+        self.assertTrue(first.startswith(HEAD), "text before the block is kept")
+        self.assertTrue(first.endswith(TAIL), "text after the block is kept")
+        self.assertIn("PRs waiting for verify: 5", first)
+        self.assertEqual((first.count(START), first.count(END)), (1, 1))
+        # A failure section, then a good tick that drops it: the human text is still there.
+        self.human_body(first)
+        orch.main(["--notify-failure", "--failures", "3", "--exit-code", "4", "--streak-start", "1000",
+                   "--last-error", "boom"], dict(self.env, ORCHESTRATE_MODE="apply"))
+        failed = self.status_edits()[-1]
+        self.assertTrue(failed.startswith(HEAD) and failed.endswith(TAIL))
+        self.assertIn("3 failed ticks in a row", failed[len(HEAD):len(failed) - len(TAIL)])
+        self.human_body(failed)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_WAKE_THREAD=""), 0)
+        last = self.status_edits()[-1]
+        self.assertTrue(last.startswith(HEAD) and last.endswith(TAIL))
+        self.assertNotIn("failed ticks in a row", last)
+
+    def test_body_without_the_block_is_never_overwritten(self):
+        for bad in ("Human notes only.\n", START + "\nFactory status.\n",
+                    f"{START}\na\n{END}\n{START}\nb\n{END}\n", f"{END}\nx\n{START}\n"):
+            with self.subTest(body=bad):
+                self.human_body(bad)
+                if os.path.exists(self.calls_file):
+                    os.remove(self.calls_file)
+                seen = len(self.log()) if os.path.exists(self.paths.log) else 0
+                self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_WAKE_THREAD=""), orch.FAIL_EXIT,
+                                 "an unowned body is a tick error")
+                self.assertEqual(self.status_edits(), [], "no PATCH")
+                unowned = [e for e in self.log()[seen:] if e["event"] == "status_body_unowned"]
+                self.assertEqual(len(unowned), 1)
+                self.assertIn("marker", unowned[0]["reason"])
+                seen = len(self.log())
+                orch.main(["--notify-failure", "--failures", "3", "--exit-code", "4", "--streak-start",
+                           str(1000 + len(bad)), "--last-error", "boom"], dict(self.env, ORCHESTRATE_MODE="apply"))
+                self.assertEqual(self.status_edits(), [], "the failure section is not written either")
+                self.assertTrue(any(e["event"] == "failure_alert_failed" and "status_body_unowned" in e.get("error", "")
+                                    for e in self.log()[seen:]))
+                self.assertFalse(os.path.exists(self.paths.failure_file), "the next failed tick tries again")
 
 if __name__ == "__main__":
     unittest.main()

@@ -145,6 +145,23 @@ class Webhook(Env):
         self.assertIn("https", skipped[0]["reason"])
         self.assertNotIn("example.invalid", self.log_text())
 
+    def test_a_bad_host_never_leaks_and_never_fails_the_run(self):
+        # vws-deploy#431 verdict: Request() raised ValueError with the host text, outside the try, so it
+        # reached metrics_failed (log and stderr) and the run exited 4.
+        secret = "hooksecret-abc123"
+        self.url = f"https://[{secret}]/hook"
+        self.assertEqual(self.alert(VWS_ALERT_WEBHOOK_URL=self.url, VWS_ALERT_WEBHOOK_KEY=KEY), 0)
+        events = self.events()
+        self.assertIn("metrics_alerted", events)
+        self.assertNotIn("metrics_failed", events)
+        failed = [e for e in self.log() if e["event"] == "metrics_webhook_failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["error"], "ValueError", "only the exception class is logged")
+        for where, text in (("log", self.log_text()), ("stdout/stderr", self.printed)):
+            self.assertNotIn(secret, text, f"no part of the URL is in the {where}")
+        self.assert_no_secret_leak()
+        self.assertEqual(self.srv.got, [])
+
     def test_a_pasted_bearer_header_is_not_doubled(self):
         self.assertEqual(self.alert(VWS_ALERT_WEBHOOK_URL=self.url, VWS_ALERT_WEBHOOK_KEY="Bearer " + KEY), 0)
         self.assertEqual(self.srv.got[0]["auth"], f"Bearer {KEY}")

@@ -255,7 +255,7 @@ class ApplyTicks(Env):
                         "body": f"[deepseek-dev] Failed for {self.URL}{2 * i + 1}: " + RATE_LIMIT_429.split(": ", 1)[1]})
         return out
 
-    def with_history(self, comments, status="<!-- vws-orchestrate:status -->\n"):
+    def with_history(self, comments, status="<!-- vws-orchestrate:status -->\n<!-- /vws-orchestrate:status -->\n"):
         r = routes()
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": comments}
         r[f"{O}/vws-deploy/issues/415"] = {"body": {"number": 415, "state": "open", "body": status}}

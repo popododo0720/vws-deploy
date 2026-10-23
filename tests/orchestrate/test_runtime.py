@@ -31,8 +31,9 @@ def read(path):
 NOWISO = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-# The status issue body as created by hand (vws-deploy#415), before the orchestrator first writes it.
-STATUS_SEED = "<!-- vws-orchestrate:status -->\nFactory status.\n"
+# The status issue body as created by hand (vws-deploy#415), before the orchestrator first writes it. The
+# orchestrator owns only the block between the two markers (vws-deploy#431 verdict).
+STATUS_SEED = "<!-- vws-orchestrate:status -->\nFactory status.\n<!-- /vws-orchestrate:status -->\n"
 
 
 def pr_issue(repo, n):
@@ -587,7 +588,8 @@ class FailureComments(Env):
         edits = self.status_edits()
         self.assertEqual(len(edits), 1, "one status body edit per streak")
         body = edits[0]
-        self.assertTrue(body.startswith(STATUS_SEED), "the rest of the status body is kept")
+        self.assertTrue(body.startswith("<!-- vws-orchestrate:status -->\nFactory status.\n"), "the rest of the status body is kept")
+        self.assertTrue(body.endswith("<!-- /vws-orchestrate:status -->\n"), "the section goes inside the block")
         self.assertIn("## Failed ticks\n\n<!-- vws-orchestrate:failure -->\n", body)
         self.assertIn("3 failed ticks in a row", body)
         self.assertNotIn("SECRETSECRET", body)
