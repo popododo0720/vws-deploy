@@ -750,15 +750,16 @@ cmd_vws() {
   rm -rf "$tmp"
 }
 
-# upgrade_compat_check: every testdata/upgrade/<version>/ record decodes with the current code and
-# its README names the tag and command that wrote it (R23, vws-deploy#396).
+# upgrade_compat_check: every testdata/upgrade/<version>/ record decodes with the current code, its
+# README names the tag and command that wrote it, and its commit carries that chart version
+# (R23, vws-deploy#396).
 upgrade_compat_die() {
   rm -rf "${upgrade_compat_tmp:-}"
   die "R23: $*"
 }
 
 cmd_upgrade_compat() {
-  local dir version fixture group
+  local dir version fixture group commit chart_version
   group=$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)
   [[ -n $group ]] || die "R23: charts/vws/crds/vwsclusters.yaml has no spec.group"
   [[ -d testdata/upgrade ]] || die "R23: testdata/upgrade does not exist"
@@ -770,6 +771,13 @@ cmd_upgrade_compat() {
     [[ -f ${dir}README.md ]] || upgrade_compat_die "${dir}README.md does not exist"
     grep -q -E '^Tag: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Tag: <tag>' line"
     grep -q -E '^Command: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Command: <command>' line"
+    commit=$(sed -n 's/^Commit: //p' "${dir}README.md")
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || upgrade_compat_die "${dir}README.md has no 'Commit: <full sha>' line"
+    git cat-file -e "${commit}^{commit}" 2>/dev/null || upgrade_compat_die "commit ${commit} is not in this repo"
+    git merge-base --is-ancestor "$commit" HEAD || upgrade_compat_die "commit ${commit} is not in this history"
+    chart_version=$(git show "${commit}:charts/vws/Chart.yaml" | sed -n 's/^version: //p')
+    [[ $chart_version == "$version" ]] ||
+      upgrade_compat_die "${dir} is version ${version} but charts/vws/Chart.yaml at ${commit:0:7} is ${chart_version}"
     for fixture in "${dir}"*.json; do
       [[ -f $fixture ]] || upgrade_compat_die "testdata/upgrade/${version} holds no .json record"
       jq --arg v "${group}/v1alpha1" '.apiVersion = $v' "$fixture" >"${upgrade_compat_tmp}/cr.json" ||
