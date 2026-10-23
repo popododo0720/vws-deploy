@@ -36,6 +36,7 @@ jobs:
           repository: popododo0720/vws-deploy
           ref: main
           path: vws-deploy
+          token: ""
           persist-credentials: false
           sparse-checkout: .github/ci-fail
 
