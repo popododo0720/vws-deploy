@@ -9,7 +9,7 @@ Checks per repo, on its default branch:
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist
   incident    .github/ISSUE_TEMPLATE/incident.yml exists, applies the incident label, has every field
-              of vws-deploy's form, and no incident.md is left
+              of vws-deploy's form, no incident.md is left, and the repo has the incident label
   lint        Go repos: the golangci config enables every linter in .github/golangci-common.yml,
               sets lll to 120 and enables gofumpt and goimports
 An archived repo is reported and skipped; it is not drift.
@@ -208,6 +208,11 @@ def incident_drift(tpl, legacy, want):
     return out
 
 
+def label_exists(owner, repo, name):
+    """True when the repo has the label. A deleted label would make the form's label do nothing."""
+    return gh(f"repos/{owner}/{repo}/labels/{name}") is not None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--owner", default="popododo0720")
@@ -277,6 +282,8 @@ def main():
             content(a.owner, repo, ".github/ISSUE_TEMPLATE/incident.md"),
             want_incident,
         )
+        if not label_exists(a.owner, repo, "incident"):
+            inc.append("no incident label")
         if inc:
             issues["incident"] = inc
         if kind == "go":
