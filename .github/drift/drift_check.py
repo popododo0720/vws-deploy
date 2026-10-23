@@ -3,7 +3,8 @@
 
 Checks per repo, on its default branch:
   protection  main is protected, admins included, no force push, no deletion
-  ruleset     an active vws-main branch ruleset, with no bypass actors
+  ruleset     an active vws-main branch ruleset, with no bypass actors; the bypass list is readable
+              only with an admin token, so without one the cell says "unverified", never ok
   checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
   workflows   repo-guard.yml and direct-push-watch.yml exist
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
@@ -185,23 +186,34 @@ def missing_checks(checks, extra):
     return [name for name in want if name not in checks]
 
 
+UNVERIFIED_BYPASS = "bypass actors unverified (needs admin token)"
+
+
 def ruleset_drift(rulesets, details):
-    """Issues for one repo's branch rulesets. `details` maps an active ruleset id to its detail or None."""
+    """(drift, unverified) for one repo's branch rulesets. `details` maps an active ruleset id to its
+    detail or None.
+
+    GET /rulesets/{id} returns `bypass_actors` only to a caller that can administer the ruleset, so the
+    scheduled run (github.token) never sees it. A missing or malformed field is never ok: it is reported
+    as unverified, and only a readable, non-empty list is drift.
+    """
     active = [r for r in rulesets or [] if r.get("target") == "branch" and r.get("enforcement") == "active"]
     if not active:
-        return ["no active branch ruleset"]
-    out = []
+        return ["no active branch ruleset"], []
+    out, unverified = [], []
     if not any(r.get("name") == "vws-main" for r in active):
         out.append("no active vws-main ruleset")
     for rule in active:
         detail = details.get(rule.get("id"))
-        if detail is None:
+        if not isinstance(detail, dict):
             out.append(f"ruleset {rule.get('name')} unreadable")
             continue
-        actors = detail.get("bypass_actors") or []
-        if actors:
+        actors = detail.get("bypass_actors")
+        if not isinstance(actors, list):
+            unverified.append(f"ruleset {rule.get('name')} {UNVERIFIED_BYPASS}")
+        elif actors:
             out.append(f"ruleset {rule.get('name')} has {len(actors)} bypass actor(s)")
-    return out
+    return out, unverified
 
 
 def stale_phrases(text):
@@ -281,7 +293,7 @@ def main():
     variants = load_variants(a.guard_variants)
     want_incident = load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"))
 
-    rows, drift = [], 0
+    rows, drift, unverified_repos = [], 0, 0
     for line in open(a.repos):
         if not line.strip() or line.startswith("#"):
             continue
@@ -294,7 +306,7 @@ def main():
         if info.get("archived"):
             rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-"])
             continue
-        issues = {}
+        issues, notes = {}, {}
         p = protection(a.owner, repo)
         if not p or not p["protected"]:
             issues["protection"] = ["main is not protected"]
@@ -323,9 +335,11 @@ def main():
                     for r in rulesets
                     if r.get("target") == "branch" and r.get("enforcement") == "active"
                 }
-                bad = ruleset_drift(rulesets, details)
+                bad, unverified = ruleset_drift(rulesets, details)
                 if bad:
                     issues["ruleset"] = issues.get("ruleset", []) + bad
+                if unverified:
+                    notes["ruleset"] = unverified
         checks = effective_checks(p["checks"], rules)
         miss = missing_checks(checks, extra)
         if miss:
@@ -365,9 +379,13 @@ def main():
                 issues["lint"] = issues_l
         if issues:
             drift += 1
+        if notes:
+            unverified_repos += 1
 
         def cell(k, ok="ok"):
-            return "; ".join(issues[k]) if k in issues else ok
+            if k in issues:
+                return "; ".join(issues[k] + notes.get(k, []))
+            return "; ".join(notes[k]) if k in notes else ok
 
         force = {None: "?", False: "no", True: "yes"}.get(p.get("force"))
         rows.append([
@@ -387,6 +405,9 @@ def main():
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
     text = "\n".join(table) + f"\n\ndrift: {drift} repo(s)\n"
+    if unverified_repos:
+        text += (f"unverified: {unverified_repos} repo(s); ruleset bypass actors need an admin token "
+                 "(run .github/drift/drift-check.sh with an admin gh)\n")
     print(text)
     if a.markdown:
         with open(a.markdown, "w") as f:
