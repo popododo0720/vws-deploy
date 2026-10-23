@@ -9,7 +9,9 @@ Checks per repo, on its default branch:
   workflows   repo-guard.yml, direct-push-watch.yml and verify-queue.yml exist (verify-queue: #460)
   caller      repo-guard.yml is the short caller of the vws-deploy repo-guard-<job>.yml files (caller_pin.py): a 40-hex
               pin, the same pin in every repo, and that pin is on vws-deploy main (vws-deploy#402). A repo
-              that caller-pending.tsv lists still carries the old full copy and is reported, not drift
+              that caller-pending.tsv lists still carries the old full copy and is reported, not drift.
+              The caller is also checked at the head of every open PR and at each --head REPO=SHA
+              (the workflow passes the PR head from its event), against the pin of the default branches
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist, and AGENTS.md has no stale fact (#395)
@@ -33,6 +35,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -176,6 +179,59 @@ def load_pending(path):
             if f[0] in out:
                 _bad_baseline(f"drift-check: {path}:{n} repeats {f[0]}")
             out[f[0]] = f[1]
+    return out
+
+
+def parse_heads(args, repos):
+    """--head REPO=SHA values as {repo: [sha, ...]}. A bad value exits 2: a typo must not check nothing."""
+    out = {}
+    for arg in args:
+        repo, _, sha = arg.partition("=")
+        if repo not in repos or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            _bad_baseline(f"drift-check: --head {arg!r} needs REPO=<40-hex SHA> with REPO in repos.tsv")
+        out.setdefault(repo, []).append(sha)
+    return out
+
+
+def open_pr_heads(owner, repo, api=None):
+    """[(label, head sha)] of the open PRs, or None when the list cannot be read (reported, never skipped)."""
+    d = (api or gh)(f"repos/{owner}/{repo}/pulls?state=open&per_page=100")
+    if not isinstance(d, list):
+        return None
+    return [(f"#{p['number']}", p["head"]["sha"]) for p in d]
+
+
+def content_at(owner, repo, path, ref):
+    d = gh(f"repos/{owner}/{repo}/contents/{path}?ref={ref}")
+    if not d or "content" not in d:
+        return None
+    return base64.b64decode(d["content"]).decode("utf-8", "replace")
+
+
+def head_issues(repo, heads, home, pending, common, on_main):
+    """Issues for the caller at each PR head: [(label, sha, text or None)] -> ["label sha: reason"].
+
+    A head is held to the same caller shape as the default branch and must pin the common pin of the
+    default branches (or, with no common pin, a SHA on vws-deploy main). A pending repo's head that is still
+    the full copy is not drift; one that is already a caller is checked like any other.
+    """
+    out = []
+    for label, sha, text in heads:
+        where = f"{label} {sha[:12]}"
+        if text is None:
+            out.append(f"{where}: no {WORKFLOWS[0]} at the PR head")
+            continue
+        errs, pin = caller_pin.check(text, home=home)
+        if errs:
+            if repo not in pending:
+                out.append(f"{where}: {errs[0]}")
+            continue
+        if pin == "local":
+            continue
+        if common and pin != common:
+            out.append(f"{where}: pin {pin[:12]} is not the common pin {common[:12]}")
+        elif not on_main(pin):
+            out.append(f"{where}: pin {pin[:12]} is not on vws-deploy main")
     return out
 
 
@@ -418,6 +474,9 @@ def main():
                     help="admin audit run: check only ruleset bypass actors and fail on any (#458)")
     ap.add_argument("--caller-pending", default=os.path.join(HERE, "caller-pending.tsv"),
                     help="repos not yet moved to the repo-guard caller: repo<TAB>reason")
+    ap.add_argument("--head", action="append", default=[], metavar="REPO=SHA",
+                    help="also check repo-guard.yml at this PR head (repeatable; the workflow passes its event's head)")
+    ap.add_argument("--no-open-prs", action="store_true", help="skip the open PR heads (only --head ones)")
     a = ap.parse_args()
     if a.bypass_audit:
         return run_bypass_audit(a.owner, a.repos)
@@ -428,7 +487,9 @@ def main():
     want_incident = load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"))
     pending = load_pending(a.caller_pending)
 
-    rows, drift, unverified_repos, pins, row_of = [], 0, 0, {}, {}
+    names = [ln.split("\t")[0] for ln in open(a.repos) if ln.strip() and not ln.startswith("#")]
+    extra_heads = parse_heads(a.head, set(names))
+    rows, drift, unverified_repos, pins, row_of, live = [], 0, 0, {}, {}, []
     for line in open(a.repos):
         if not line.strip() or line.startswith("#"):
             continue
@@ -531,6 +592,7 @@ def main():
         if notes:
             unverified_repos += 1
         row_of[repo] = (len(rows), bool(issues))
+        live.append(repo)
 
         def cell(k, ok="ok"):
             if k in issues:
@@ -557,11 +619,35 @@ def main():
         if not already:
             drift += 1
 
+    common = caller_pin.common_pin(pins)
+    head_rows = []
+    for repo in live:
+        heads = [] if a.no_open_prs else open_pr_heads(a.owner, repo)
+        if heads is None:
+            head_rows.append([repo, "cannot list open PRs"])
+            drift += 1
+            heads = []
+        heads = heads + [("--head", sha) for sha in extra_heads.get(repo, [])]
+        seen, todo = set(), []
+        for label, sha in heads:
+            if sha not in seen:
+                seen.add(sha)
+                todo.append((label, sha, content_at(a.owner, repo, WORKFLOWS[0], sha)))
+        bad = head_issues(repo, todo, repo == "vws-deploy", pending, common, lambda s: on_main(a.owner, s))
+        head_rows += [[repo, why] for why in bad]
+        drift += len(bad)
+        if todo and not bad:
+            head_rows.append([repo, f"ok ({len(todo)} PR head(s))"])
+
     head = ["repo", "protection", "ruleset", "required checks", "workflows", "caller", "guard-agents.sh",
             "AGENTS/QUALITY", "incident form", "lint"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
-    text = "\n".join(table) + f"\n\ndrift: {drift} repo(s)\n"
+    table += ["", "| repo | caller at PR heads |", "|---|---|"]
+    table += ["| " + " | ".join(r) + " |" for r in head_rows]
+    if not head_rows:
+        table.append("| - | no open PR heads |")
+    text = "\n".join(table) + f"\n\ndrift: {drift} repo(s) or PR head(s)\n"
     if unverified_repos:
         text += (f"unverified: {unverified_repos} repo(s); ruleset bypass actors need an admin token "
                  "(run .github/drift/drift-check.sh with an admin gh)\n")
