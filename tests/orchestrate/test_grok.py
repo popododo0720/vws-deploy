@@ -56,6 +56,10 @@ class Allowlist(unittest.TestCase):
         self.assertIn("https://github.com/popododo0720/vws-iam/issues/1", a["body"])
         self.assertIn(f"Idempotency key: `{a['key']}`", a["body"])
         self.assertEqual(orch.KEY_RE.search(a["body"]).group(1), a["key"])
+        self.assertTrue(a["body"].endswith("\n<!-- orchestrate:grok-wake item=vws-iam#1 -->"))
+        self.assertEqual(orch.classify_comment(a["body"]), ("marker", {"marker": "grok-wake"}))
+        self.assertEqual(orch.status_wakes([{"body": a["body"], "created_at": "2026-10-21T12:00:00Z"}]), [],
+                         "rule A never reads a grok wake as a verify wake")
 
     def test_malformed_entries_ignored_with_a_note(self):
         cfg = dict(CFG, ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1,#2,vws-iam#x,other/vws-iam#3,iam#4,vws-iam#1 ;rm")
