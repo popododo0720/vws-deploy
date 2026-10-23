@@ -216,6 +216,36 @@ def ruleset_drift(rulesets, details):
     return out, unverified
 
 
+MAIN_RULES = ("pull_request", "non_fast_forward", "deletion")
+
+
+def main_rules_drift(rulesets, rules):
+    """Issue strings for the rules that the vws-main ruleset must apply to main (AGENTS.md facts).
+
+    `rules` is GET /repos/{o}/{r}/rules/branches/main, readable with github.token: every entry has a
+    `type` and the `ruleset_id` it comes from. vws-main must apply to main and must carry a pull request
+    rule that allows only a squash merge, plus the non_fast_forward and deletion rules.
+    """
+    ids = {r.get("id") for r in rulesets or [] if isinstance(r, dict) and r.get("name") == "vws-main"
+           and r.get("target") == "branch" and r.get("enforcement") == "active"}
+    if not ids:
+        return []
+    mine = [r for r in rules or [] if isinstance(r, dict) and r.get("ruleset_id") in ids]
+    if not mine:
+        return ["vws-main does not apply to main"]
+    out = []
+    types = {r.get("type") for r in mine}
+    for name in MAIN_RULES:
+        if name not in types:
+            out.append(f"vws-main has no {name} rule")
+    for r in mine:
+        if r.get("type") == "pull_request":
+            methods = _map(r.get("parameters")).get("allowed_merge_methods")
+            if methods != ["squash"]:
+                out.append(f"vws-main allows merge methods {methods}, not squash only")
+    return out
+
+
 def stale_phrases(text):
     """The stale protection facts from #395 that must not come back into an AGENTS.md."""
     return [f"stale phrase: {phrase}" for phrase in STALE_PHRASES if phrase in text]
@@ -336,6 +366,7 @@ def main():
                     if r.get("target") == "branch" and r.get("enforcement") == "active"
                 }
                 bad, unverified = ruleset_drift(rulesets, details)
+                bad += main_rules_drift(rulesets, rules)
                 if bad:
                     issues["ruleset"] = issues.get("ruleset", []) + bad
                 if unverified:
