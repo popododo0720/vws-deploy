@@ -531,5 +531,35 @@ class BypassAuditWrapper(unittest.TestCase):
         self.assertIn("r: archived (skipped)", r.stdout)
         self.assertNotIn("secret-token-458", r.stdout + r.stderr)
 
+
+class CallerPending(unittest.TestCase):
+    """caller-pending.tsv lists repos that still carry the full repo-guard.yml (vws-deploy#402)."""
+
+    def write(self, text):
+        f = tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False)
+        f.write(text)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_load(self):
+        p = self.write("# c\nvws-lib\tfull copy until its caller PR lands\n\n")
+        self.assertEqual(dc.load_pending(p), {"vws-lib": "full copy until its caller PR lands"})
+
+    def test_missing_file_means_none(self):
+        self.assertEqual(dc.load_pending("/nonexistent/caller-pending.tsv"), {})
+
+    def test_bad_rows(self):
+        for text in ("vws-lib\n", "vws-lib\t\n", "\treason\n", "a\tb\tc\n", "a\tr\na\tr\n"):
+            with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    dc.load_pending(self.write(text))
+                self.assertEqual(cm.exception.code, 2)
+
+    def test_repo_file_never_lists_vws_deploy(self):
+        pending = dc.load_pending(os.path.join(ROOT, ".github", "drift", "caller-pending.tsv"))
+        self.assertNotIn("vws-deploy", pending)
+
+
 if __name__ == "__main__":
     unittest.main()
