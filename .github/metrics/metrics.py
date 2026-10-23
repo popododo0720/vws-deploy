@@ -432,11 +432,9 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
             for i in r.get("open_issues", []):
                 for lb in QUEUE_LABELS:
                     queue[lb] += lb in i["labels"]
-                if not set(i["labels"]) & set(STALL_LABELS):
-                    continue
                 if not i["is_pr"] and is_parked(i, f"{name}#{i['number']}", grok_allow):
                     parked += 1
-                elif "blocked" not in i["labels"]:
+                elif set(i["labels"]) & set(STALL_LABELS) and "blocked" not in i["labels"]:
                     waiting[i["number"]] = i.get("updated_at")
             for p in r.get("open_pulls", []):
                 if not p["draft"] and p["base"] == "main" and "verify-approved" not in p["labels"]:
