@@ -99,16 +99,24 @@ class ClassicRequiredChecks(Base):
         r[STATUS]["body"]["state"] = "pending"
         self.assertEqual(self.apply_tick(r), [])
 
-    def test_classic_contexts_without_checks_entry_bind_no_app(self):
-        # Older protections list a context only in `contexts`; it is required from any app.
+    def test_classic_context_without_checks_entry_fails_closed(self):
+        # A context listed only in `contexts` has no readable app binding; it must not merge.
         r = routes()
         b = branch(MAIN)
         b["protection"]["required_status_checks"].update(enforcement_level="everyone", contexts=["e2e"])
         r[BRANCH] = {"body": b}
-        self.assertIn({"context": "e2e", "app_id": None}, self.required(r)["required"])
-        add_run(r, "e2e", "skipped", app=4242)
+        add_run(r, "e2e", "success", app=4242)
         self.assertEqual(self.apply_tick(r), [])
-        self.assertIn("required_skipped:e2e", self.check_()["reasons"])
+        self.assertNotEqual(self.unreadable(), [])
+
+    def test_classic_check_without_app_id_key_fails_closed(self):
+        r = routes()
+        b = branch(MAIN, classic=[("e2e", 15368)])
+        del b["protection"]["required_status_checks"]["checks"][0]["app_id"]
+        r[BRANCH] = {"body": b}
+        add_run(r, "e2e", "success", app=4242)
+        self.assertEqual(self.apply_tick(r), [])
+        self.assertNotEqual(self.unreadable(), [])
 
     def test_union_with_rulesets_deduped_by_context_and_app(self):
         r = routes()
