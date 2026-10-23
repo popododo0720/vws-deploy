@@ -239,19 +239,32 @@ board is overwritten on the next sync. Design: vws-deploy#347.
 
 ## The status issue (vws-deploy#416)
 
-The status lives in the **body** of one pinned issue, vws-deploy#415 (`ORCHESTRATE_STATUS_ISSUE`). Its
-first line is `<!-- vws-orchestrate:status -->`. Each apply tick renders the body (mode and switches,
+The status lives in the **body** of one pinned issue, vws-deploy#415 (`ORCHESTRATE_STATUS_ISSUE`). The
+orchestrator owns only one block in that body, from the line `<!-- vws-orchestrate:status -->` to the
+line `<!-- /vws-orchestrate:status -->`. Text above and below the block belongs to people: every write
+replaces only the block and keeps the rest byte for byte. Each apply tick renders the block (mode and switches,
 PRs waiting for verify and where wakes go, DeepSeek in flight, merge locks, the last 20 merge and infra
 entries, and a "Failed ticks" section during a failure streak) and edits it with one
-`PATCH repos/popododo0720/vws-deploy/issues/415` only when the content changed: the last line
-(`_Updated ... by run ..._`) and line endings are ignored when comparing, so a quiet tick writes
+`PATCH repos/popododo0720/vws-deploy/issues/415` only when the block's content changed: its
+`_Updated ... by run ..._` line and line endings are ignored when comparing, so a quiet tick writes
 nothing. The read is ETag-cached, so an unchanged issue costs a 304. The edit is outside the write cap
 (at most one per tick); a failed edit fails the tick. Dry-run writes the rendered body to
-`status-body.md` in the state directory instead. While `ORCHESTRATE_SCOPE` is set, the edit is skipped
-unless the scope is the status issue itself.
+`status-body.md` in the state directory instead (the block only). While `ORCHESTRATE_SCOPE` is set, the
+edit is skipped unless the scope is the status issue itself.
+
+**Fail closed.** If the current body does not have exactly one block (no start marker, no end marker,
+two blocks, or the end marker before the start marker), the orchestrator writes nothing: the tick logs
+`status_body_unowned` with the reason and counts a tick error, and the failure section logs
+`failure_alert_failed` (`status_body_unowned: ...`). Fix the body by hand; nothing is overwritten. When
+seeding the issue (or after an edit removed a marker), the body must contain, each on its own line:
+
+```
+<!-- vws-orchestrate:status -->
+<!-- /vws-orchestrate:status -->
+```
 
 The gh wrapper allows only this edit: `PATCH` of the configured status issue, with `body` as the only
-field and the status marker as the first line. The orchestrator posts no comments on the status issue
+field and exactly one status block in it. The orchestrator posts no comments on the status issue
 and no status comments anywhere; comments there are metrics alerts only (see
 [factory-metrics.md](factory-metrics.md#alerts)). verify-wake never posts there:
 `ORCHESTRATE_WAKE_THREAD` equal to `ORCHESTRATE_STATUS_ISSUE` is refused.
@@ -269,7 +282,8 @@ never counts as a failed tick. On an abnormal day that script posts its own aler
   (60 s) times 2^(failures-1), capped at `ORCHESTRATE_BACKOFF_MAX` (1800 s).
 - **Failure section:** after each failed tick the loop runs `orchestrate.py --notify-failure`. At
   `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it writes one "## Failed ticks" section into
-  the status issue body (no comment), starting with `<!-- vws-orchestrate:failure -->`, with the count,
+  the status block of the status issue body (no comment; text outside the block is kept; a body without
+  one block is not written), starting with `<!-- vws-orchestrate:failure -->`, with the count,
   host, last exit code and the last 3 errors (redacted). The next good tick renders the body without it.
 - **Scoped trials:** while `ORCHESTRATE_SCOPE` is set, the failure section is skipped and logged
   (`failure_alert_skipped`), like every other write outside the scope, unless the scope is the status

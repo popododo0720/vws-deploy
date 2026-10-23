@@ -159,6 +159,8 @@ automation webhook key; a value that already starts with `Bearer ` is sent as is
   followed, so the key is never sent to another URL;
 - 10 s timeout per try, at most 3 tries (1 s, then 2 s backoff) on a network error, 429 or 5xx; no
   retry on another 4xx;
+- a URL that urllib cannot parse (for example a bad bracketed host) is logged as
+  `metrics_webhook_failed` with the error class only and `attempts` 0, and is not retried;
 - a failed POST is logged as `metrics_webhook_failed` with the HTTP status or the error class only,
   and never fails the run; it is not retried on a later run (the comment on the status issue is the
   durable record);
