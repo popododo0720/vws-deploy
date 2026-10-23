@@ -120,4 +120,6 @@ Fix the findings and re-run on the new head until N is 0.
 Codex rounds are capped per issue, not per PR: at most 3 rounds (`CODEX_ROUND_CAP`) across all PRs
 whose body has `Part of #N` or `Closes #N` for that issue, including rebuilt and superseded PRs.
 `scripts/codex-round-count.sh` keeps the count in `/workspace/handoff/codex/rounds.tsv` (local files
-only) and refuses the 4th round; then split the work or move the rest to issues.
+only) and refuses the 4th round; then split the work or move the rest to issues. It fails closed: a
+missing, unreadable or corrupt index, or a review file not in the index, stops the review (exit 2)
+until `init` and `backfill` fix it.
