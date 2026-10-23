@@ -80,7 +80,7 @@ def check(text, home=False):
         return errs + [f"caller does not parse: {e}"], None
     if not isinstance(wf, dict):
         return errs + ["caller is empty or not a YAML mapping"], None
-    top = sorted("on" if k is True else str(k) for k in wf)
+    top = sorted("on" if k is True else repr(k) if not isinstance(k, str) else k for k in wf)
     if top != TOP_KEYS:
         bad = sorted(set(top) - set(TOP_KEYS))
         errs.append(f"top-level keys must be exactly {TOP_KEYS}, got {top}" + (f"; drop {bad}" if bad else ""))
@@ -94,12 +94,16 @@ def check(text, home=False):
         errs.append("top-level permissions must be {} so each job grants only its own")
     jobs = wf.get("jobs") if isinstance(wf.get("jobs"), dict) else {}
     want_jobs = sorted(list(CALLS) + list(SHIMS))
-    if sorted(jobs) != want_jobs:
-        errs.append(f"jobs must be exactly {want_jobs}, got {sorted(jobs)}")
+    got_jobs = sorted(repr(k) if not isinstance(k, str) else k for k in jobs)  # a number key must not crash
+    if got_jobs != want_jobs:
+        errs.append(f"jobs must be exactly {want_jobs}, got {got_jobs}")
     pins = set()
     for cid, call in CALLS.items():
         j = jobs.get(cid)
+        if cid not in jobs:
+            continue  # reported above as a missing job
         if not isinstance(j, dict):
+            errs.append(f"{cid}: must be a mapping, got {j!r}")
             continue
         uses = j.get("uses", "")
         m = PIN.match(uses) if isinstance(uses, str) else None
