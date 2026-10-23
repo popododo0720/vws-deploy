@@ -71,6 +71,8 @@ WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
 # Rule G (vws-deploy#378): the Grok dev bot's GitHub-trigger routine on the status thread matches this.
 GROK_WAKE_MARKER = "<!-- vws-orchestrate:grok-wake -->"
+# The last line, so classify_comment() (and metrics, vws-deploy#400) sees a "grok-wake" marker comment.
+GROK_ASSIGN_MARKER = "<!-- orchestrate:grok-wake item="
 GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
 # Rule D (vws-deploy#346).
 VERIFY_CHECK = "vws-verify"
@@ -1107,7 +1109,7 @@ def grok_wake_body(it, k, key, slot, cap, run_id):
                       "Owning Grok dev bot: please take this issue: one small PR per its acceptance criteria, "
                       f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
                       f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
-                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
+                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
 
 
 def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
