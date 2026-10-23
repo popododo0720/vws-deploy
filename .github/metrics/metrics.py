@@ -64,9 +64,9 @@ CI_EVENTS = {"pull_request", "push", "merge_group"}
 SEPARATE_WORKFLOWS = {"repo-guard"}  # red by design until vws-verify approves; reported apart
 VOLATILE = ("generated_at", "release", "snapshot_at", "queue_depth", "stalls", "alerts", "content_sha256")
 SUMMARY_DAYS = 28
-# Orchestrator markers of comments that hand a task to grok (vws-deploy#400). Today only the Rule C swap
-# notice; a grok wake marker from #378 or #398 is added here.
-GROK_DISPATCH_MARKERS = ("swap",)
+# Orchestrator markers of comments that hand a task to grok (vws-deploy#400): the Rule C swap notice and
+# the Rule G grok wake's last line <!-- orchestrate:grok-wake item=... --> (vws-deploy#378).
+GROK_DISPATCH_MARKERS = ("swap", "grok-wake")
 STATE_KEEP_DAYS = 60  # done days kept per mode in metrics-state.json
 ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
 SNAPSHOT_GAP = "queue_depth and stalls are a live snapshot; not available for a back-filled day"
