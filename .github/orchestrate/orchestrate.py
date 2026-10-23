@@ -79,7 +79,11 @@ OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
 MERGEABLE_OK = {"clean", "has_hooks", "unstable"}
 PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
-AGENT_RE = re.compile(r"(?im)^\s*Agent:\s*(\S.*?)\s*$")
+# The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
+AGENT_RE = re.compile(r"^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$", re.M)
+# vws-deploy#419: who may write the comments the orchestrator acts on (the repos are public).
+TRUSTED_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
 MERGE_PAYLOAD_KEYS = {"merge_method", "sha", "commit_title"}
 KEY_RE = re.compile(r"^Idempotency key: `(sha256:[0-9a-f]{64})`$", re.M)
 # A [deepseek-dev] Failed report is a provider (infra) failure, not a task failure, when its body has
@@ -105,6 +109,8 @@ DEFAULTS = {
     "DEEPSEEK_TIMEOUT_HOURS": "3",
     "DEEPSEEK_MAX_FAILURES": "2",
     "ORCHESTRATE_DEEPSEEK_CAP": "2",
+    # GitHub logins whose [deepseek-dev] Done/Failed comments count: the poller's account (the VM PAT user).
+    "ORCHESTRATE_DEEPSEEK_LOGINS": "popododo0720",
     "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
@@ -184,6 +190,10 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_STATUS_PR must be a positive integer, got {cfg['ORCHESTRATE_STATUS_PR']!r}")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_DEEPSEEK_CAP"]):
         raise ValueError(f"ORCHESTRATE_DEEPSEEK_CAP must be a positive integer, got {cfg['ORCHESTRATE_DEEPSEEK_CAP']!r}")
+    logins = [x.strip() for x in cfg["ORCHESTRATE_DEEPSEEK_LOGINS"].split(",")]
+    if not all(LOGIN_RE.fullmatch(x) for x in logins):
+        raise ValueError("ORCHESTRATE_DEEPSEEK_LOGINS must be a comma-separated list of GitHub logins, "
+                         f"got {cfg['ORCHESTRATE_DEEPSEEK_LOGINS']!r}")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_INFRA_RETRY_DELAY_MIN"]):
         raise ValueError("ORCHESTRATE_INFRA_RETRY_DELAY_MIN must be a positive integer (minutes), "
                          f"got {cfg['ORCHESTRATE_INFRA_RETRY_DELAY_MIN']!r}")
@@ -201,7 +211,8 @@ def load_config(paths, environ):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT",
+                 "ORCHESTRATE_DEEPSEEK_LOGINS")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -525,6 +536,38 @@ def classify_comment(body):
     if m:
         return "marker", {"marker": m.group(1)}
     return None
+
+
+def is_trusted_reset_author(login, association):
+    """vws-deploy#419, same rule as .github/ci-fail (#412): the repo owner, or an OWNER/MEMBER/COLLABORATOR
+    association. A missing login or association fails closed."""
+    if not login or not association:
+        return False
+    return login.lower() == OWNER.lower() or association in TRUSTED_ASSOCIATIONS
+
+
+def comment_distrust(c, cfg):
+    """'' when the orchestrator may act on comment record c ({"body", "author", "association"}), else why
+    not. Resets and dispatches need a trusted author; [deepseek-dev] reports need a DeepSeek poller login.
+    Other kinds (verdict, marker) are not changed here."""
+    kind = classify_comment(c.get("body"))
+    if not kind or kind[0] not in ("reset", "dispatch", "report"):
+        return ""
+    login, assoc = c.get("author") or "", c.get("association") or ""
+    if not login or not assoc:
+        return "author_missing"
+    if kind[0] == "report":
+        logins = cfg.get("ORCHESTRATE_DEEPSEEK_LOGINS", DEFAULTS["ORCHESTRATE_DEEPSEEK_LOGINS"])
+        allowed = {x.strip().lower() for x in logins.split(",")}
+        return "" if login.lower() in allowed else "report_author_not_deepseek_poller"
+    return "" if is_trusted_reset_author(login, assoc) else f"{kind[0]}_author_not_trusted"
+
+
+def comment_record(c):
+    """The stored form of a comment the orchestrator classifies: the author is kept so trust is
+    decided on every tick, also for cached history."""
+    return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or "",
+            "author": (c.get("user") or {}).get("login") or "", "association": c.get("author_association") or ""}
 
 
 def pr_key(url):
@@ -1289,7 +1332,7 @@ def ci_state(gh, repo, sha):
 # since the copy in history-cache.json (a new comment or label change bumps it), so a quiet tick costs
 # no per-item reads. A full re-read every HISTORY_REFRESH_S (plus up to an hour of per-item jitter,
 # so entries do not all expire on one tick) catches edits and deletes, which do not bump updated_at.
-HISTORY_VERSION = 2  # 2: verdict comments are kept (vws-deploy#373)
+HISTORY_VERSION = 3  # 2: verdict comments are kept (vws-deploy#373); 3: author and association (#419)
 HISTORY_REFRESH_S = 6 * 3600
 
 
@@ -1312,7 +1355,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
     window = int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS"))
     # A since value floored to the UTC day keeps the URL stable for the day, so ETags can match.
     since = iso((int(now) // 86400 - window) * 86400)
-    snap = {"run_id": run_id, "repos": [], "items": {}, "deps": {}, "labels": {}}
+    snap = {"run_id": run_id, "repos": [], "items": {}, "deps": {}, "labels": {}, "ignored_comments": []}
     srepo, snum = status_target(cfg).split("#")
     status_comments = gh.get_all(f"repos/{OWNER}/{srepo}/issues/{snum}/comments?per_page=100")
     snap["status"] = {"wakes": status_wakes(status_comments),
@@ -1338,8 +1381,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         for c in gh.get_all(f"repos/{OWNER}/{name}/issues/comments?since={since}&sort=created&direction=asc&per_page=100", limit=50):
             k = f"{name}#{c['issue_url'].rsplit('/', 1)[1]}"
             if k in snap["items"] and classify_comment(c.get("body")):
-                snap["items"][k]["comments"].append({"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
-                                                     "body": c.get("body") or ""})
+                snap["items"][k]["comments"].append(comment_record(c))
     for k, it in sorted(snap["items"].items()):
         labels = set(it["labels"])
         if labels & {"ready", "deepseek", "grok"}:
@@ -1367,6 +1409,18 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                                          "merged": bool((d.get("pull_request") or {}).get("merged_at"))}
                 except GhError:
                     snap["deps"][dep] = {"unreadable": True}
+        # vws-deploy#419: untrusted resets, dispatches and results are dropped here, so decide never sees
+        # them. The cache keeps every comment, so a config change is applied on the next tick.
+        kept = []
+        for c in it["comments"]:
+            why = comment_distrust(c, cfg)
+            if why:
+                snap["ignored_comments"].append({"target": k, "comment": c["url"], "kind": classify_comment(c["body"])[0],
+                                                 "author": c.get("author") or "", "association": c.get("association") or "",
+                                                 "reason": why})
+            else:
+                kept.append(c)
+        it["comments"] = kept
         for c in it["comments"]:
             kind = classify_comment(c["body"])
             if kind and kind[0] == "report" and kind[1]["pr"] and kind[1]["pr"] not in it["report_prs"]:
@@ -1397,8 +1451,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
 
 
 def candidate_history(gh, it):
-    comments = [{"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or ""}
-                for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
+    comments = [comment_record(c) for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
                 if classify_comment(c.get("body"))]
     events = [{"event": e["event"], "label": {"name": (e.get("label") or {}).get("name")}, "created_at": e["created_at"]}
               for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
@@ -1685,7 +1738,8 @@ def recheck_dispatch(gh, repo, number, item, owner=None, head=None):
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     for c in comments:
         kind = classify_comment(c.get("body"))
-        if c["id"] not in known and kind and kind[0] == "dispatch":
+        if (c["id"] not in known and kind and kind[0] == "dispatch"
+                and is_trusted_reset_author((c.get("user") or {}).get("login"), c.get("author_association"))):
             return False
     if head:
         pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
@@ -1979,6 +2033,8 @@ def tick(paths, cfg, args, gh=None, now=None):
                 history = read_json(history_path(paths), {})
                 snapshot = collect(gh, repos, now, cfg, run_id, state, history)
                 write_json(history_path(paths), history)
+                for ig in snapshot.get("ignored_comments", []):
+                    log("comment_ignored", **ig)  # never the body
             except (GhError, PermissionError, KeyError, ValueError) as e:
                 status = getattr(e, "status", 0)
                 event = "auth_failed" if status in (401, 403) else "collect_failed"
