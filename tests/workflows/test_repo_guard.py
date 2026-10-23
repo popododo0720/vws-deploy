@@ -1,6 +1,6 @@
 """Behavior tests for the shared repo-guard jobs, with gh and sleep stubbed.
 
-The jobs live in .github/workflows/repo-guard-reusable.yml (vws-deploy#402); repo-guard.yml is a caller.
+The jobs live in .github/workflows/repo-guard-<job>.yml, one per file (vws-deploy#402); repo-guard.yml calls them.
 
 Run: python3 -m unittest discover -s tests/workflows
 """
@@ -13,7 +13,9 @@ import unittest
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-WF = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard-reusable.yml")))
+JOBS = ("pr-hygiene", "verify-gate", "verify-reset", "verify-rerun")
+FILES = {job: yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", f"repo-guard-{job}.yml"))) for job in JOBS}
+WF = {"jobs": {job: FILES[job]["jobs"][job] for job in JOBS}}
 CALLER = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard.yml")))
 ON = CALLER.get("on", CALLER.get(True))  # PyYAML reads the "on" key as True
 
@@ -108,22 +110,24 @@ esac"""
 
 
 class Reusable(unittest.TestCase):
-    """The callee runs only on workflow_call, picks one job per call and never sees pull_request_target."""
+    """Each job file runs only on workflow_call, holds only its own job and never sees pull_request_target."""
 
-    def test_only_workflow_call(self):
-        on = WF.get("on", WF.get(True))
-        self.assertEqual(list(on), ["workflow_call"])
-        self.assertEqual(on["workflow_call"]["inputs"]["job"]["type"], "string")
-        self.assertTrue(on["workflow_call"]["inputs"]["job"]["required"])
-        self.assertNotIn("secrets", on["workflow_call"])
-        self.assertEqual(WF["permissions"], {})
+    def test_only_workflow_call_and_one_job(self):
+        for job, wf in FILES.items():
+            on = wf.get("on", wf.get(True))
+            self.assertEqual(list(on), ["workflow_call"], job)
+            self.assertNotIn("inputs", on["workflow_call"] or {}, job)
+            self.assertNotIn("secrets", on["workflow_call"] or {}, job)
+            self.assertEqual(wf["permissions"], {}, job)
+            self.assertEqual(list(wf["jobs"]), [job])
 
-    def test_each_job_runs_only_for_its_input(self):
-        for job in ("pr-hygiene", "verify-gate", "verify-reset", "verify-rerun"):
-            self.assertIn("inputs.job == '%s'" % job, WF["jobs"][job]["if"])
+    def test_no_job_input_left(self):
+        for job, wf in FILES.items():
+            self.assertNotIn("inputs.", str(wf), job)
 
     def test_no_pull_request_target(self):
-        for name in ("repo-guard-reusable.yml", "repo-guard.yml"):
+        names = ["repo-guard.yml"] + [f"repo-guard-{job}.yml" for job in JOBS]
+        for name in names:
             self.assertNotIn("pull_request_target", open(os.path.join(ROOT, ".github", "workflows", name)).read())
 
     def test_gate_jobs_report_passed_last(self):
@@ -133,8 +137,8 @@ class Reusable(unittest.TestCase):
             last = j["steps"][-1]
             self.assertEqual(last["id"], "passed")
             self.assertEqual(last["run"].strip(), 'echo "passed=%s" >>"$GITHUB_OUTPUT"' % job)
-        out = WF.get("on", WF.get(True))["workflow_call"]["outputs"]["passed"]["value"]
-        self.assertEqual(out, "${{ jobs.pr-hygiene.outputs.passed || jobs.verify-gate.outputs.passed }}")
+            out = FILES[job].get("on", FILES[job].get(True))["workflow_call"]["outputs"]["passed"]["value"]
+            self.assertEqual(out, "${{ jobs.%s.outputs.passed }}" % job)
 
     def test_verify_gate_runs_the_base_commit_guard(self):
         co = WF["jobs"]["verify-gate"]["steps"][0]
