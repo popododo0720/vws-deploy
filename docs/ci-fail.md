@@ -37,6 +37,13 @@ a comment counts only when line 1 matches the record exactly (`parse_comment`). 
 `job`, `job_id`, `conclusion`, `url`, `tail_lines`, `tail_truncated`), `created_at`, `updated_at`.
 `<`, `>`, `@`, backtick and `~` are written as `\u` escapes in the JSON.
 
+A `failure` or `timed_out` run always has a failed job, but right after the run the jobs API can
+list none yet (#443). The script then reads the job list up to 3 times, 5 s and 10 s apart. If it is
+still empty, `failed_jobs` is `[]` and the comment says `Failed jobs: unavailable (...)` with the run
+URL. `Failed jobs: none reported` is kept for runs that failed before any job ran, such as
+`startup_failure`. The needs-human label POST is idempotent and retries like a read; comment writes
+are never retried.
+
 ## One comment per head SHA
 
 - No marker by `github-actions[bot]` for the SHA on the PR: post a new one. Only this wakes anyone.
