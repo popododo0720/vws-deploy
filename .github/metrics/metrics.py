@@ -62,7 +62,7 @@ QUEUE_LABELS = ("ready", "deepseek", "grok", "blocked", "in-review", "priority/b
 CI_FAIL = {"failure", "timed_out", "startup_failure"}
 CI_EVENTS = {"pull_request", "push", "merge_group"}
 SEPARATE_WORKFLOWS = {"repo-guard"}  # red by design until vws-verify approves; reported apart
-VOLATILE = ("generated_at", "release", "snapshot_at", "queue_depth", "stalls", "alerts", "content_sha256")
+VOLATILE = ("generated_at", "release", "snapshot_at", "queue_depth", "stalls", "parked", "alerts", "content_sha256")
 SUMMARY_DAYS = 28
 # Orchestrator markers of comments that hand a task to grok (vws-deploy#400): the Rule C swap notice and
 # the Rule G grok wake's last line <!-- orchestrate:grok-wake item=... --> (vws-deploy#378).
@@ -73,7 +73,8 @@ SNAPSHOT_GAP = "queue_depth and stalls are a live snapshot; not available for a 
 
 # Anomaly thresholds (tested in tests/metrics/test_alerts.py). A normal day raises no alert.
 STALL_HOURS = 48           # an open task or PR with no update for this long is stalled
-STALL_LABELS = ("ready", "deepseek", "grok", "in-review")  # tasks; "blocked" ones wait by design
+STALL_LABELS = ("ready", "deepseek", "grok", "in-review")  # tasks; parked ones wait by design
+PARK_LABELS = tuple(orch.OPT_OUT_LABELS) + ("needs-human",)  # vws-deploy#463
 BASELINE_DAYS = 7          # trailing days (before D) that form the baseline
 BASELINE_MIN_DAYS = 3      # fewer days with data: no rate or token alert (not enough history)
 RATE_MIN_EVENTS = 5        # the day needs at least this many events in the rate's denominator
@@ -252,7 +253,8 @@ def collect(gh, repo_names, day, cfg, snapshot=False):
                         r["verify"][sha] = verify_runs(gh, name, sha)
         if snapshot:
             r["open_issues"] = [{"number": i["number"], "labels": sorted(lb["name"] for lb in i.get("labels", [])),
-                                 "is_pr": "pull_request" in i, "updated_at": i.get("updated_at")}
+                                 "is_pr": "pull_request" in i, "updated_at": i.get("updated_at"),
+                                 "assignees": len(i.get("assignees") or [])}
                                 for i in pages(gh, f"repos/{OWNER}/{name}/issues?state=open&per_page=100")]
             r["open_pulls"] = [{"number": p["number"], "draft": bool(p.get("draft")), "base": p["base"]["ref"],
                                 "labels": sorted(lb["name"] for lb in p.get("labels", [])), "updated_at": p.get("updated_at")}
@@ -306,6 +308,17 @@ def bump(d, *keys):
     d[keys[-1]] = d.get(keys[-1], 0) + 1
 
 
+def is_parked(issue, key, grok_allow):
+    """vws-deploy#463: an open issue that waits by design, so it is never a stall. It has an opt-out label
+    or needs-human, or it is Grok work no rule may pick up: grok, no deepseek, no assignee (an assignee
+    holds a Grok slot, Rule G) and not on ORCHESTRATE_GROK_ALLOWLIST."""
+    labels = set(issue["labels"])
+    if labels & set(PARK_LABELS):
+        return True
+    return ("grok" in labels and "deepseek" not in labels and not issue.get("assignees")
+            and key not in grok_allow)
+
+
 def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at=None, tokens=None, lead_wakes=None):
     """Pure: the same inputs give the same output."""
     day = raw["day"]
@@ -323,6 +336,8 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
     codex = {"merged_prs_with_codex": 0, "rounds_declared": 0, "verify_reports": 0, "blocking_sum": 0}
     queue = {lb: 0 for lb in QUEUE_LABELS} if snapshot_at else None
     stalls = [] if snapshot_at else None
+    parked = 0 if snapshot_at else None
+    grok_allow, _ = orch.grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
     if queue is not None:
         queue["verify_backlog"] = 0
     for name in sorted(raw["repos"]):
@@ -417,7 +432,11 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
             for i in r.get("open_issues", []):
                 for lb in QUEUE_LABELS:
                     queue[lb] += lb in i["labels"]
-                if set(i["labels"]) & set(STALL_LABELS) and "blocked" not in i["labels"]:
+                if not set(i["labels"]) & set(STALL_LABELS):
+                    continue
+                if not i["is_pr"] and is_parked(i, f"{name}#{i['number']}", grok_allow):
+                    parked += 1
+                elif "blocked" not in i["labels"]:
                     waiting[i["number"]] = i.get("updated_at")
             for p in r.get("open_pulls", []):
                 if not p["draft"] and p["base"] == "main" and "verify-approved" not in p["labels"]:
@@ -487,7 +506,7 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
         "verify": verify, "deepseek": ds,
         "grok_swaps": {"labeled": grok, "by_orchestrator": by_orch["swap_label"]},
         "ci": ci, "codex": codex, "orchestrator": orch_stats,
-        "queue_depth": queue, "stalls": stalls, "snapshot_at": snapshot_at, "tokens": tokens, "source_gaps": gaps,
+        "queue_depth": queue, "stalls": stalls, "parked": parked, "snapshot_at": snapshot_at, "tokens": tokens, "source_gaps": gaps,
         "wakes": wakes,
     }
     out["content_sha256"] = content_hash(out)
