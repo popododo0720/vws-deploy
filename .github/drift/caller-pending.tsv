@@ -1,0 +1,12 @@
+# Repos whose .github/workflows/repo-guard.yml is still the full copy, not the caller of
+# vws-deploy repo-guard-reusable.yml (vws-deploy#402). repo<TAB>reason. Each rollout PR deletes its row.
+vws-lib	full copy until its caller PR lands (vws-deploy#402)
+vws-proto	full copy until its caller PR lands (vws-deploy#402)
+vws-iam	full copy until its caller PR lands (vws-deploy#402)
+vws-network	full copy until its caller PR lands (vws-deploy#402)
+vws-storage	full copy until its caller PR lands (vws-deploy#402)
+vws-compute	full copy until its caller PR lands (vws-deploy#402)
+vws-console-api	full copy until its caller PR lands (vws-deploy#402)
+vws-console	full copy until its caller PR lands (vws-deploy#402)
+vws-hypervisor	full copy until its caller PR lands (vws-deploy#402)
+vws-conformance	full copy until its caller PR lands (vws-deploy#402)
