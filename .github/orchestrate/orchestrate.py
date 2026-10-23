@@ -1106,7 +1106,7 @@ def grok_wake_body(it, k, key, slot, cap, run_id):
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
                       "Owning Grok dev bot: please take this issue: one small PR per its acceptance criteria, "
                       f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
-                      f"Grok slot {slot} of {cap}; no other Grok task is woken while this one is open with `grok`.",
+                      f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
 
 
