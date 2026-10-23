@@ -142,6 +142,10 @@ DEFAULTS = {
     "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
     # GitHub logins whose [deepseek-dev] Done/Failed comments count: the poller's account (the VM PAT user).
     "ORCHESTRATE_DEEPSEEK_LOGINS": "popododo0720",
+    # vws-deploy#433/#434: the login whose verify verdict comments and reviews count (besides an OWNER
+    # comment), and optionally its numeric user id, so a re-registered login does not match.
+    "ORCHESTRATE_VERIFY_LOGIN": VERIFY_LOGIN,
+    "ORCHESTRATE_VERIFY_USER_ID": "",
     "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
     "VERIFY_WAKE_THRESHOLD": "3",
     "VERIFY_WAKE_MAX_WAIT_MIN": "30",
@@ -226,6 +230,11 @@ def load_config(paths, environ):
     if not all(LOGIN_RE.fullmatch(x) for x in logins):
         raise ValueError("ORCHESTRATE_DEEPSEEK_LOGINS must be a comma-separated list of GitHub logins, "
                          f"got {cfg['ORCHESTRATE_DEEPSEEK_LOGINS']!r}")
+    if not LOGIN_RE.fullmatch(cfg["ORCHESTRATE_VERIFY_LOGIN"]):
+        raise ValueError(f"ORCHESTRATE_VERIFY_LOGIN must be one GitHub login, got {cfg['ORCHESTRATE_VERIFY_LOGIN']!r}")
+    if not re.fullmatch(r"(?:[1-9][0-9]*)?", cfg["ORCHESTRATE_VERIFY_USER_ID"]):
+        raise ValueError("ORCHESTRATE_VERIFY_USER_ID must be empty or a positive integer, "
+                         f"got {cfg['ORCHESTRATE_VERIFY_USER_ID']!r}")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_INFRA_RETRY_DELAY_MIN"]):
         raise ValueError("ORCHESTRATE_INFRA_RETRY_DELAY_MIN must be a positive integer (minutes), "
                          f"got {cfg['ORCHESTRATE_INFRA_RETRY_DELAY_MIN']!r}")
@@ -248,7 +257,7 @@ def load_config(paths, environ):
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_BOARD_TOKEN_FILE",
-                 "ORCHESTRATE_DEEPSEEK_LOGINS")
+                 "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN", "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -624,16 +633,28 @@ def is_trusted_reset_author(login, association):
     return login.lower() == OWNER.lower() or association in TRUSTED_ASSOCIATIONS
 
 
+def is_verifier(login, user_id, cfg):
+    """vws-deploy#433: the configured verify login, and its user id when ORCHESTRATE_VERIFY_USER_ID pins one."""
+    want_login = cfg.get("ORCHESTRATE_VERIFY_LOGIN", DEFAULTS["ORCHESTRATE_VERIFY_LOGIN"])
+    want_id = cfg.get("ORCHESTRATE_VERIFY_USER_ID", DEFAULTS["ORCHESTRATE_VERIFY_USER_ID"])
+    if not login or login.lower() != want_login.lower():
+        return False
+    return not want_id or (type(user_id) is int and user_id == int(want_id))
+
+
 def comment_distrust(c, cfg):
-    """'' when the orchestrator may act on comment record c ({"body", "author", "assoc"}), else why
-    not. Resets and dispatches need a trusted author; [deepseek-dev] reports need a DeepSeek poller login.
-    Other kinds (verdict, marker) are not changed here."""
+    """'' when the orchestrator may act on comment record c ({"body", "author", "author_id", "assoc"}),
+    else why not. Resets and dispatches need a trusted author; [deepseek-dev] reports need a DeepSeek poller
+    login; verdicts and markers need the verify login or an OWNER association (#433/#434)."""
     kind = classify_comment(c.get("body"))
-    if not kind or kind[0] not in ("reset", "dispatch", "report"):
+    if not kind:
         return ""
     login, assoc = c.get("author") or "", c.get("assoc") or ""
     if not login or not assoc:
         return "author_missing"
+    if kind[0] in ("verdict", "marker"):
+        trusted = assoc == "OWNER" or is_verifier(login, c.get("author_id"), cfg)
+        return "" if trusted else f"{kind[0]}_author_not_trusted"
     if kind[0] == "report":
         logins = cfg.get("ORCHESTRATE_DEEPSEEK_LOGINS", DEFAULTS["ORCHESTRATE_DEEPSEEK_LOGINS"])
         allowed = {x.strip().lower() for x in logins.split(",")}
@@ -1622,7 +1643,7 @@ def ci_state(gh, repo, sha):
 # since the copy in history-cache.json (a new comment or label change bumps it), so a quiet tick costs
 # no per-item reads. A full re-read every HISTORY_REFRESH_S (plus up to an hour of per-item jitter,
 # so entries do not all expire on one tick) catches edits and deletes, which do not bump updated_at.
-HISTORY_VERSION = 3  # 2: verdict comments are kept (vws-deploy#373); 3: author and association (#412, #419)
+HISTORY_VERSION = 4  # 2: verdict comments are kept (vws-deploy#373); 3: author and association (#412, #419); 4: author_id (#433)
 HISTORY_REFRESH_S = 6 * 3600
 
 
@@ -1700,8 +1721,8 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                                          "merged": bool((d.get("pull_request") or {}).get("merged_at"))}
                 except GhError:
                     snap["deps"][dep] = {"unreadable": True}
-        # vws-deploy#419: untrusted resets, dispatches and results are dropped here, so decide never sees
-        # them. The cache keeps every comment, so a config change is applied on the next tick.
+        # vws-deploy#419/#433: untrusted resets, dispatches, results, verdicts and markers are dropped here,
+        # so decide never sees them. The cache keeps every comment, so a config change is applied on the next tick.
         kept = []
         for c in it["comments"]:
             why = comment_distrust(c, cfg)
@@ -1731,7 +1752,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:
-                snap["items"][pk]["reviews"] = verify_reviews(gh, snap["items"][pk])
+                snap["items"][pk]["reviews"] = verify_reviews(gh, snap["items"][pk], cfg)
     if history is not None:
         live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}}
         for k in list(hist_items):
@@ -1744,9 +1765,11 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
 
 
 def comment_record(c):
-    """A kept comment. author and assoc let decide trust CI-failure markers and CI-cap resets (#412)."""
+    """A kept comment. author and assoc let decide trust CI-failure markers and CI-cap resets (#412), and
+    every comment the orchestrator acts on (#419); author_id pins the verify account (#433/#434)."""
     return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or "",
-            "author": (c.get("user") or {}).get("login", ""), "assoc": c.get("author_association", "")}
+            "author": (c.get("user") or {}).get("login") or "", "author_id": (c.get("user") or {}).get("id") or 0,
+            "assoc": c.get("author_association") or ""}
 
 
 def candidate_history(gh, it):
@@ -1762,11 +1785,12 @@ def label_events(gh, it):
             if e.get("event") in ("labeled", "unlabeled")]
 
 
-def verify_reviews(gh, pr):
+def verify_reviews(gh, pr, cfg=DEFAULTS):
     """vws-verify verdict reviews on one PR (ETag-cached), for the rework rule."""
     out = []
     for r in gh.get_all(f"repos/{OWNER}/{pr['repo']}/pulls/{pr['number']}/reviews?per_page=100"):
-        if ((r.get("user") or {}).get("login") == VERIFY_LOGIN and r.get("submitted_at")
+        user = r.get("user") or {}
+        if (is_verifier(user.get("login"), user.get("id"), cfg) and r.get("submitted_at")
                 and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")):
             out.append({"id": r["id"], "url": r.get("html_url") or pr["url"], "at": r["submitted_at"],
                         "sha": r.get("commit_id") or "", "result": "fail" if r["state"] == "CHANGES_REQUESTED" else "pass",
