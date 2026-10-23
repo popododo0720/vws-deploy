@@ -56,13 +56,24 @@ class Shape(unittest.TestCase):
         self.assertEqual(sorted(on["pull_request"]["types"]), ["ready_for_review", "synchronize"])
         self.assertEqual(sorted(on), ["pull_request", "workflow_run"])
 
-    def test_issues_write_is_the_only_write(self):
+    def test_only_the_needs_verify_job_writes_and_only_labels(self):
+        # Labels on a PR go through the issues API but need pull-requests: write too (GitHub answers
+        # 403 "Resource not accessible by integration" without it; live run on 4751579, vws-deploy#397 r2).
         wf = load()
-        perms = dict(wf["permissions"])
-        for job in wf["jobs"].values():
-            perms.update(job.get("permissions", {}))
-        self.assertEqual(perms.pop("issues"), "write")
-        self.assertTrue(all(v == "read" for v in perms.values()), perms)
+        self.assertEqual(write_scopes(wf.get("permissions", {})), set(), "workflow-level permissions grant no write")
+        for name, job in wf["jobs"].items():
+            # A job's permissions replace the workflow's, so they must be set on the job itself.
+            want = {"issues", "pull-requests"} if name == "needs-verify" else set()
+            self.assertEqual(write_scopes(effective(wf, job)), want, name)
+
+    def test_permission_check_catches_extra_writes(self):
+        # The check above must fail on any other write and on pull-requests: write outside the job.
+        job = {"permissions": {"issues": "write", "pull-requests": "write", "checks": "read"}}
+        self.assertEqual(write_scopes(effective({"permissions": {}}, job)), {"issues", "pull-requests"})
+        self.assertEqual(write_scopes({"issues": "write", "contents": "write"}), {"issues", "contents"})
+        self.assertEqual(write_scopes(effective({"permissions": {"pull-requests": "write"}}, {})), {"pull-requests"})
+        self.assertEqual(write_scopes("write-all"), {"*"})
+        self.assertEqual(write_scopes(effective({}, {})), {"*"}, "no permissions key means the token default")
 
     def test_never_checks_out_or_interpolates(self):
         wf = load()
@@ -70,6 +81,20 @@ class Shape(unittest.TestCase):
             for s in job["steps"]:
                 self.assertNotIn("uses", s, "no actions: nothing checks out PR code")
                 self.assertNotRegex(s.get("run", ""), re.compile(r"\$\{\{"), "event data only reaches the script via env")
+
+
+def write_scopes(perms):
+    """The scopes a permissions value can write ("*" for write-all or an unset default)."""
+    if perms is None or perms == "write-all":
+        return {"*"}
+    if perms == "read-all":
+        return set()
+    return {k for k, v in perms.items() if v == "write"}
+
+
+def effective(wf, job):
+    """GitHub uses the job's permissions when set, else the workflow's (None: the token default)."""
+    return job["permissions"] if "permissions" in job else wf.get("permissions")
 
 
 def triggers(wf):
@@ -186,6 +211,33 @@ class Label(unittest.TestCase):
         writes, out = self.go(event="pull_request", action="synchronize",
                               DELETE_FAIL="gh: Label does not exist (HTTP 404)")
         self.assertEqual(writes, [self.DEL])
+
+    # gh prints the JSON error body on stdout and "gh: <message> (HTTP <code>)" on stderr (live log,
+    # /workspace/handoff/verdicts/d425-r2/needs-verify-job.log).
+    LIVE_404 = ('printf \'%s\' \'{"message":"Label does not exist","status":"404"}\'; '
+                'echo "gh: Label does not exist (HTTP 404)" >&2; exit 1')
+    LIVE_403 = ('printf \'%s\' \'{"message":"Resource not accessible by integration","status":"403"}\'; '
+                'echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1')
+
+    def live_delete(self, body, labels):
+        gh = GH.replace('*"-X DELETE"*) if [ -n "${DELETE_FAIL:-}" ]; then echo "$DELETE_FAIL" >&2; exit 1; fi ;;',
+                        '*"-X DELETE"*) %s ;;' % body)
+        self.assertNotEqual(gh, GH)
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "pull_request", "ACTION": "synchronize", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(labels)}
+        return Stub(self, gh).run(self.script(), e)
+
+    def test_label_already_absent_404_is_success(self):
+        rc, calls, out = self.live_delete(self.LIVE_404, "")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(self.DEL, calls)
+        self.assertIn("#7: no needs-verify label (new push)", out)
+
+    def test_forbidden_403_fails_and_shows_why(self):
+        rc, _, out = self.live_delete(self.LIVE_403, "needs-verify")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("HTTP 403", out)
+        self.assertNotIn("needs-verify removed", out)
 
     def test_other_delete_error_fails(self):
         e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "pull_request", "ACTION": "synchronize", "PRS": "7",
