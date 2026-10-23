@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
 """Check that a repo-guard.yml is the short caller of the shared repo-guard jobs (vws-deploy#402).
 
-The jobs live in vws-deploy .github/workflows/repo-guard-reusable.yml. Every other repo calls it from a
-caller pinned by a full 40-hex commit SHA on vws-deploy main, never a branch or tag. vws-deploy itself
-(--home) calls it as ./.github/workflows/repo-guard-reusable.yml, which GitHub runs from the same commit.
-The caller must match the expected shape exactly: the triggers, one call per job with that job's least
-permissions and no secrets, and the two shim jobs that keep the bare pr-hygiene and verify-gate check
-names (a called job reports as "caller / called"). docs/design/repo-guard-reusable.md has the model.
+The jobs live in vws-deploy, one per file: .github/workflows/repo-guard-<job>.yml. GitHub validates the
+permissions of every job in a called file before any if:, so one file per job lets each call grant only
+its job's permissions. Every other repo calls them from a caller pinned by a full 40-hex commit SHA on
+vws-deploy main, never a branch or tag. vws-deploy itself (--home) calls ./.github/workflows/<file>, which
+GitHub runs from the same commit. The caller must match the expected shape exactly: the triggers, one
+call per job with that job's least permissions and no secrets, and the two shim jobs that keep the bare
+pr-hygiene and verify-gate check names (a called job reports as "caller / called").
+docs/design/repo-guard-reusable.md has the model.
 
 Usage: caller_pin.py [--home] FILE   prints the pin ("local" for --home); exit 1 with the reasons otherwise.
 """
+import collections
 import re
 import sys
 
 import yaml
 
 MAX_LINES = 40
-PATH = ".github/workflows/repo-guard-reusable.yml"
-REMOTE = re.compile(r"^popododo0720/vws-deploy/" + re.escape(PATH) + r"@([0-9a-f]{40})$")
-LOCAL = "./" + PATH
 PR = "github.event_name == 'pull_request'"
 TYPES = ["opened", "edited", "reopened", "synchronize", "labeled", "unlabeled"]
 COMMENT_TYPES = ["created", "edited", "deleted"]
-# caller job -> (called job, if, permissions)
+Call = collections.namedtuple("Call", "path cond permissions")
+# caller job -> (called file, if, permissions). Each file holds only the one job of the same name.
 CALLS = {
-    "hygiene": ("pr-hygiene", PR, {"contents": "read", "pull-requests": "read"}),
-    "gate": ("verify-gate", PR, {"contents": "read", "pull-requests": "read", "issues": "read"}),
-    "reset": ("verify-reset", PR + " && github.event.action == 'synchronize'",
-              {"issues": "write", "pull-requests": "write"}),
-    "rerun": ("verify-rerun", "github.event_name == 'issue_comment' && github.event.issue.pull_request",
-              {"actions": "write", "pull-requests": "read"}),
+    "hygiene": Call(".github/workflows/repo-guard-pr-hygiene.yml", PR, {"contents": "read", "pull-requests": "read"}),
+    "gate": Call(".github/workflows/repo-guard-verify-gate.yml", PR,
+                 {"contents": "read", "pull-requests": "read", "issues": "read"}),
+    "reset": Call(".github/workflows/repo-guard-verify-reset.yml", PR + " && github.event.action == 'synchronize'",
+                  {"issues": "write", "pull-requests": "write"}),
+    "rerun": Call(".github/workflows/repo-guard-verify-rerun.yml",
+                  "github.event_name == 'issue_comment' && github.event.issue.pull_request",
+                  {"actions": "write", "pull-requests": "read"}),
 }
+PIN = re.compile(r"^popododo0720/vws-deploy/(\.github/workflows/[a-z-]+\.yml)@([0-9a-f]{40})$")
 # required check name -> caller job it reports. A skipped required check counts as passed, so the shim
 # runs always() and passes only on "success/<name>": the call succeeded and its last step ran.
 SHIMS = {"pr-hygiene": "hygiene", "verify-gate": "gate"}
@@ -64,21 +68,21 @@ def check(text, home=False):
     if sorted(jobs) != want_jobs:
         errs.append(f"jobs must be exactly {want_jobs}, got {sorted(jobs)}")
     pins = set()
-    for cid, (job, cond, perms) in CALLS.items():
+    for cid, call in CALLS.items():
         j = jobs.get(cid)
         if not isinstance(j, dict):
             continue
         uses = j.get("uses", "")
-        m = REMOTE.match(uses) if isinstance(uses, str) else None
+        m = PIN.match(uses) if isinstance(uses, str) else None
         if home:
-            if uses != LOCAL:
-                errs.append(f"{cid}: vws-deploy calls {LOCAL} (same commit), got {uses!r}")
+            if uses != "./" + call.path:
+                errs.append(f"{cid}: vws-deploy calls ./{call.path} (same commit), got {uses!r}")
             pins.add("local")
-        elif not m:
-            errs.append(f"{cid}: uses must be popododo0720/vws-deploy/{PATH}@<40-hex commit SHA>, got {uses!r}")
+        elif not m or m.group(1) != call.path:
+            errs.append(f"{cid}: uses must be popododo0720/vws-deploy/{call.path}@<40-hex commit SHA>, got {uses!r}")
         else:
-            pins.add(m.group(1))
-        want = {"if": cond, "uses": uses, "with": {"job": job}, "permissions": perms}
+            pins.add(m.group(2))
+        want = {"if": call.cond, "uses": uses, "permissions": call.permissions}
         if j != want:
             extra = sorted(set(j) - set(want))
             errs.append(f"{cid}: must be exactly {want}" + (f"; drop {extra}" if extra else ""))

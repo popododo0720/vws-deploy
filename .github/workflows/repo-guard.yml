@@ -1,4 +1,4 @@
-# Caller of the shared repo-guard jobs; other repos pin a 40-hex SHA (docs/design/repo-guard-reusable.md).
+# Caller of the shared repo-guard jobs, one file each; other repos pin a 40-hex SHA (docs/design/repo-guard-reusable.md).
 name: repo-guard
 on:
   pull_request:
@@ -9,23 +9,19 @@ permissions: {}
 jobs:
   hygiene:
     if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/repo-guard-reusable.yml
-    with: {job: pr-hygiene}
+    uses: ./.github/workflows/repo-guard-pr-hygiene.yml
     permissions: {contents: read, pull-requests: read}
   gate:
     if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/repo-guard-reusable.yml
-    with: {job: verify-gate}
+    uses: ./.github/workflows/repo-guard-verify-gate.yml
     permissions: {contents: read, pull-requests: read, issues: read}
   reset:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    uses: ./.github/workflows/repo-guard-reusable.yml
-    with: {job: verify-reset}
+    uses: ./.github/workflows/repo-guard-verify-reset.yml
     permissions: {issues: write, pull-requests: write}
   rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
-    uses: ./.github/workflows/repo-guard-reusable.yml
-    with: {job: verify-rerun}
+    uses: ./.github/workflows/repo-guard-verify-rerun.yml
     permissions: {actions: write, pull-requests: read}
   # The required checks are bare names, and a called job reports as "caller / called", so shims carry them.
   pr-hygiene:
