@@ -8,14 +8,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": 0.05,
+   "lead_wakes": null,
    "prs_merged": 129,
    "prs_opened": 151,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": 0.615
+   "verify_pass_rate": 0.615,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -25,14 +29,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": 0.26,
+   "lead_wakes": null,
    "prs_merged": 71,
    "prs_opened": 101,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": 0.727
+   "verify_pass_rate": 0.727,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -42,14 +50,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": 4.33,
+   "lead_wakes": null,
    "prs_merged": 12,
    "prs_opened": 9,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": 0.917
+   "verify_pass_rate": 0.917,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -59,14 +71,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": 1.48,
+   "lead_wakes": null,
    "prs_merged": 5,
    "prs_opened": 11,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": 0.615
+   "verify_pass_rate": 0.615,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -76,14 +92,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": null,
+   "lead_wakes": null,
    "prs_merged": 0,
    "prs_opened": 0,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": null
+   "verify_pass_rate": null,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -93,14 +113,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": null,
+   "lead_wakes": null,
    "prs_merged": 0,
    "prs_opened": 0,
+   "rework_dispatches": null,
    "stalls": null,
    "tokens": null,
    "verify_backlog": null,
-   "verify_pass_rate": null
+   "verify_pass_rate": null,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -110,14 +134,18 @@
    "deepseek_done": 0,
    "deepseek_failed": 0,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 0,
    "lead_time_median_h": null,
+   "lead_wakes": null,
    "prs_merged": 0,
    "prs_opened": 3,
+   "rework_dispatches": null,
    "stalls": 0,
    "tokens": null,
    "verify_backlog": 7,
-   "verify_pass_rate": null
+   "verify_pass_rate": null,
+   "verify_wakes": null
   },
   {
    "alerts": [
@@ -129,14 +157,18 @@
    "deepseek_done": 25,
    "deepseek_failed": 4,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 89,
    "lead_time_median_h": 1.05,
+   "lead_wakes": null,
    "prs_merged": 45,
    "prs_opened": 64,
+   "rework_dispatches": null,
    "stalls": 0,
    "tokens": null,
    "verify_backlog": 10,
-   "verify_pass_rate": 0.641
+   "verify_pass_rate": 0.641,
+   "verify_wakes": null
   },
   {
    "alerts": [],
@@ -146,16 +178,44 @@
    "deepseek_done": 31,
    "deepseek_failed": 2,
    "deepseek_timeout": 0,
+   "grok_dispatches": null,
    "grok_swaps": 32,
    "lead_time_median_h": 0.27,
+   "lead_wakes": null,
    "prs_merged": 49,
    "prs_opened": 61,
+   "rework_dispatches": null,
    "stalls": 0,
    "tokens": null,
    "verify_backlog": 4,
-   "verify_pass_rate": 0.818
+   "verify_pass_rate": 0.818,
+   "verify_wakes": null
+  },
+  {
+   "alerts": [
+    "stall",
+    "deepseek_failure_rate"
+   ],
+   "ci_failure_rate": 0.015,
+   "day": "2026-10-23",
+   "deepseek_dispatched": 24,
+   "deepseek_done": 14,
+   "deepseek_failed": 13,
+   "deepseek_timeout": 0,
+   "grok_dispatches": 5,
+   "grok_swaps": 59,
+   "lead_time_median_h": 0.55,
+   "lead_wakes": null,
+   "prs_merged": 52,
+   "prs_opened": 95,
+   "rework_dispatches": 2,
+   "stalls": 89,
+   "tokens": null,
+   "verify_backlog": 16,
+   "verify_pass_rate": 0.74,
+   "verify_wakes": 18
   }
  ],
  "schema": 1,
- "through": "2026-10-22"
+ "through": "2026-10-23"
 }
