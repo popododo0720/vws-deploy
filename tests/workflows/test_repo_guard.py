@@ -150,6 +150,20 @@ esac"""
         self.assertEqual(rc, 0, out)
         self.assertIn('.name == "gate / verify-gate"', calls)
 
+    def script(self):
+        return step("verify-rerun", "Re-run verify-gate for the PR head")["run"]
+
+    def test_waits_for_running_job_then_reruns(self):
+        rc, calls, out = Stub(self, self.GH % 3).run(self.script(), self.ENV)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
+        self.assertIn("head_sha=abc123", calls)
+
+    def test_gives_up_with_failure(self):
+        rc, calls, _ = Stub(self, self.GH % 1000).run(self.script(), self.ENV)
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("rerun", calls.replace("verify-rerun", ""))
+
 
 class Reusable(unittest.TestCase):
     """The callee runs only on workflow_call, picks one job per call and never sees pull_request_target."""
@@ -184,20 +198,6 @@ class Reusable(unittest.TestCase):
         co = WF["jobs"]["verify-gate"]["steps"][0]
         self.assertTrue(co["uses"].startswith("actions/checkout@"))
         self.assertEqual(co["with"]["ref"], "${{ github.event.pull_request.base.sha }}")
-
-    def script(self):
-        return step("verify-rerun", "Re-run verify-gate for the PR head")["run"]
-
-    def test_waits_for_running_job_then_reruns(self):
-        rc, calls, out = Stub(self, self.GH % 3).run(self.script(), self.ENV)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
-        self.assertIn("head_sha=abc123", calls)
-
-    def test_gives_up_with_failure(self):
-        rc, calls, _ = Stub(self, self.GH % 1000).run(self.script(), self.ENV)
-        self.assertNotEqual(rc, 0)
-        self.assertNotIn("rerun", calls.replace("verify-rerun", ""))
 
 
 if __name__ == "__main__":
