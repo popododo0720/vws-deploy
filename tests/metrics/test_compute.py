@@ -126,6 +126,74 @@ class Compute(unittest.TestCase):
         self.assertEqual(json.loads(text)["day"], DAY)
 
 
+D21 = "https://github.com/popododo0720/vws-deploy/issues/21#issuecomment-105"
+PROVIDER_503 = ("[deepseek-dev] Failed for " + D21 + ": dsh exited with code 1.\n\nLast output:\n```\n"
+                "dsh: SERVER: 503: {\"type\":\"server_error\",\"message\":\"Upstream request failed\"}\n```")
+
+
+def with_comment(r, cid, created, body, issue=21):
+    r["repos"]["vws-deploy"]["comments"].append(
+        {"id": cid, "issue": issue, "created_at": created, "body": body,
+         "url": f"https://github.com/popododo0720/vws-deploy/issues/{issue}#issuecomment-{cid}"})
+    return r
+
+
+class DeepSeekReports(unittest.TestCase):
+    """vws-deploy#462: reports are judged per dispatch, as the orchestrator's dispatch_history does."""
+
+    def ds(self, r, exclusions=frozenset()):
+        return doc(r, exclusions=exclusions)["deepseek"]
+
+    def test_a_second_report_for_one_dispatch_is_not_a_second_failure(self):
+        # 2026-10-23: vws-deploy#395 dispatch 6358917367 got two Failed reports one second apart.
+        r = with_comment(raw(), 120, "2026-10-20T07:00:01Z",
+                         f"[deepseek-dev] Failed for {D21}: setup error: [Errno 28] No space left on device")
+        ds = self.ds(r)
+        self.assertEqual((ds["done"], ds["failed"], ds["duplicate_reports"]), (2, 1, 1))
+        self.assertEqual(ds["by_repo"]["vws-deploy"]["failed"], 1)
+
+    def test_the_first_report_wins_even_when_it_is_before_the_day(self):
+        d23 = "https://github.com/popododo0720/vws-deploy/issues/23#issuecomment-130"
+        r = with_comment(raw(), 130, "2026-10-19T10:00:00Z", "@deepseek-dev please take this issue.", issue=23)
+        with_comment(r, 131, "2026-10-19T11:00:00Z", f"[deepseek-dev] Failed for {d23}: dsh exited with code 1.", issue=23)
+        with_comment(r, 132, "2026-10-20T03:00:00Z", f"[deepseek-dev] Done for {d23}", issue=23)
+        ds = self.ds(r)
+        self.assertEqual((ds["dispatched"], ds["done"], ds["failed"], ds["duplicate_reports"]), (3, 2, 1, 1))
+
+    def test_a_provider_error_is_infra_not_a_task_failure(self):
+        r = raw()
+        for c in r["repos"]["vws-deploy"]["comments"]:
+            if c["id"] == 106:
+                c["body"] = PROVIDER_503
+        ds = self.ds(r)
+        self.assertEqual((ds["done"], ds["failed"], ds["infra"]), (2, 0, 1))
+        num, den = metrics._rate_inputs(doc(r))["deepseek_failure_rate"]
+        self.assertEqual((num, den), (2, 4), "infra stays out of the failure rate; the 2 timeouts stay in")
+
+    def test_an_excluded_attempt_is_not_counted(self):
+        for url in (D21, "https://github.com/popododo0720/vws-deploy/issues/21#issuecomment-106"):
+            ds = self.ds(raw(), exclusions={url})
+            self.assertEqual((ds["done"], ds["failed"], ds["excluded"]), (2, 0, 1), url)
+
+    def test_an_exclusion_does_not_remove_a_done_report(self):
+        # dispatch_history applies exclusions to failed attempts only.
+        ds = self.ds(raw(), exclusions={"https://github.com/popododo0720/vws-deploy/issues/20#issuecomment-102"})
+        self.assertEqual((ds["done"], ds["excluded"]), (2, 0))
+
+    def test_the_plain_fixture_keeps_its_numbers(self):
+        ds = self.ds(raw())
+        self.assertEqual((ds["dispatched"], ds["done"], ds["failed"], ds["timeout"]), (3, 2, 1, 2))
+        self.assertEqual((ds["infra"], ds["excluded"], ds["duplicate_reports"]), (0, 0, 0))
+
+    def test_input_order_does_not_pick_a_different_first_report(self):
+        r = with_comment(raw(), 120, "2026-10-20T07:00:01Z", f"[deepseek-dev] Done for {D21}")
+        a = self.ds(r)
+        for repo in r["repos"].values():
+            repo["comments"].reverse()
+        self.assertEqual(self.ds(r), a)
+        self.assertEqual((a["done"], a["failed"]), (2, 1))
+
+
 class Helpers(unittest.TestCase):
     def test_agent_line(self):
         cases = {"Agent: Eggbot": "eggbot", "x\nagent:  deepseek-dev \ny": "deepseek-dev", "Agent: two words": "unattributed",

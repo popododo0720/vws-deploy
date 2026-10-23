@@ -315,7 +315,8 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
     prs = {"opened": {}, "merged": {}, "closed_unmerged": {}, "by_agent": {"opened": {}, "merged": {}}}
     lead_all, lead_repo = [], {}
     verify = {"runs": 0, "success": 0, "failure": 0, "first_pass": 0, "first_pass_n": 0, "approved_labels": 0}
-    ds = {"dispatched": 0, "done": 0, "failed": 0, "timeout": 0, "by_repo": {}}
+    ds = {"dispatched": 0, "done": 0, "failed": 0, "timeout": 0, "infra": 0, "excluded": 0, "duplicate_reports": 0,
+          "by_repo": {}}
     grok = 0
     wakes = {"verify_wake_comments": 0, "dispatches": {"deepseek": 0, "grok": 0}, "rework_dispatches": 0,
              "lead_wakes": lead_wakes}
@@ -367,8 +368,14 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
                 verify["approved_labels"] += 1
             if e["event"] == "labeled" and e["label"] == "grok":
                 grok += 1
-        # DeepSeek: dispatch comments and poller reports, judged by the orchestrator's own rules.
-        by_issue = {}
+        # DeepSeek: dispatch comments and poller reports, judged by the orchestrator's own rules
+        # (dispatch_history, vws-deploy#462): only the first report per dispatch URL counts, a provider
+        # error is infra and an exclusions.tsv entry removes the attempt.
+        by_issue, first_report = {}, {}
+        for c in sorted(r["comments"], key=lambda c: (c["created_at"], c["id"])):
+            k = orch.classify_comment(c["body"])
+            if k and k[0] == "report":
+                first_report.setdefault(k[1]["for"], c["id"])
         for c in r["comments"]:
             by_issue.setdefault(c["issue"], []).append(c)
             k = orch.classify_comment(c["body"])
@@ -385,7 +392,14 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
                 ds["dispatched"] += 1
                 bump(ds["by_repo"], name, "dispatched")
             elif k[0] == "report":
-                key = "done" if k[1]["result"] == "done" else "failed"
+                if first_report[k[1]["for"]] != c["id"]:
+                    key = "duplicate_reports"
+                elif k[1]["result"] == "done":
+                    key = "done"
+                elif k[1]["for"] in exclusions or c["url"] in exclusions:
+                    key = "excluded"  # as in dispatch_history, an exclusion removes failed attempts only
+                else:
+                    key = "infra" if orch.infra_error(c["body"]) else "failed"
                 ds[key] += 1
                 bump(ds["by_repo"], name, key)
         for comments in by_issue.values():
