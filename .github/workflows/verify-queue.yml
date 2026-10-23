@@ -7,9 +7,10 @@
 name: verify-queue
 
 on:
-  # Runs from the default branch after these workflows finish on a PR head.
+  # Runs from the default branch after these workflows finish on a PR head: every workflow that runs on
+  # pull_request in a vws-* repo (vws-console names its CI "CI"; vws-conformance adds english).
   workflow_run:
-    workflows: [ci, repo-guard]
+    workflows: [ci, CI, english, repo-guard]
     types: [completed]
   pull_request:
     types: [ready_for_review, synchronize]
