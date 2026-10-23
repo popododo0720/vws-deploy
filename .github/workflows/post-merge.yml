@@ -26,6 +26,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          # A fork PR gets a read-only token; post-merge.sh logs a skip for it (vws-deploy#418).
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           PR_BODY_FILE="$RUNNER_TEMP/pr-body.md" .github/ac/post-merge.sh
