@@ -2,6 +2,19 @@
 
 A deterministic script that runs five routine factory steps on GitHub state. It never calls an LLM.
 
+## Roles
+
+- A deterministic script (this orchestrator, the handoff submit) may push a branch, open a pull
+  request and merge one.
+- A script merge happens only when all of these hold: every CI check on the head is green,
+  `verify-gate` passes, the `vws-verify` App check run passes, the pull request has no conflicts,
+  the merge is a squash with `--match-head-commit` set to the verified head, and the pull request
+  is not labeled `blocked`. Rule D lists each check.
+- The lead (dr eggbot) is woken only for a decision or a failure (issue scope, a real conflict, a
+  failed check), not for a routine push, pull request or merge.
+- The author bot is never the verifier, nothing pushes to main directly, and every pull request
+  body has `Part of #N` with no closing keyword.
+
 | rule | what it does |
 |---|---|
 | A, verify wake (vws-deploy#397) | Counts only open, non-draft PRs on `main` that carry `needs-verify`, lack `verify-approved` and whose CI is not failing. The `needs-verify` label is kept by `.github/workflows/verify-queue.yml` (see "The needs-verify queue" below). When the oldest of them has waited at least 30 min since its latest `needs-verify` label (`VERIFY_WAKE_MAX_WAIT_MIN`) or at least 3 wait (`VERIFY_WAKE_THRESHOLD`), it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`, and it lists every waiting PR as `- repo#N@head_sha url (CI pre-check: green, waited Nm)`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once; there is no cooldown, so a changed set (a new PR, or a new head after a push and a relabel) wakes again on the next tick. |

@@ -3,11 +3,13 @@
 
 Checks per repo, on its default branch:
   protection  main is protected, admins included, no force push, no deletion
-  checks      required status checks include the common set plus the repo's own (repos.tsv)
+  ruleset     an active vws-main branch ruleset, with no bypass actors; the bypass list is readable
+              only with an admin token, so without one the cell says "unverified", never ok
+  checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
   workflows   repo-guard.yml and direct-push-watch.yml exist
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
-  docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist
+  docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist, and AGENTS.md has no stale fact (#395)
   incident    .github/ISSUE_TEMPLATE/incident.yml exists, applies the incident label, has every field
               of vws-deploy's form, no incident.md is left, and the repo has the incident label
   lint        Go repos: the golangci config enables every linter in .github/golangci-common.yml,
@@ -31,6 +33,12 @@ import yaml
 
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
 WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml"]
+STALE_PHRASES = (
+    "private, free plan",
+    "no server-side protection",
+    "not a required check yet",
+    "detection, not blocking",
+)
 HERE = os.path.dirname(os.path.abspath(__file__))
 DRIFT_EXIT = 3  # distinct from 1, which Python uses for a traceback
 ROOT = os.path.dirname(os.path.dirname(HERE))  # .github/drift -> repo root
@@ -150,6 +158,99 @@ def guard_status(got, want, variant=None):
     return "guard-agents.sh differs from vws-deploy", "ok"
 
 
+def rule_checks(rules):
+    """Required status check contexts from the effective branch rules (the ruleset)."""
+    out = []
+    for rule in rules or []:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        for check in _map(rule.get("parameters")).get("required_status_checks") or []:
+            name = check.get("context") if isinstance(check, dict) else None
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+def effective_checks(protection_checks, rules):
+    """Classic protection and the ruleset both apply, so a required name may come from either."""
+    out = list(protection_checks or [])
+    for name in rule_checks(rules):
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def missing_checks(checks, extra):
+    """Common checks plus the repo's own (repos.tsv) that main does not require."""
+    want = COMMON_CHECKS + extra.split()
+    return [name for name in want if name not in checks]
+
+
+UNVERIFIED_BYPASS = "bypass actors unverified (needs admin token)"
+
+
+def ruleset_drift(rulesets, details):
+    """(drift, unverified) for one repo's branch rulesets. `details` maps an active ruleset id to its
+    detail or None.
+
+    GET /rulesets/{id} returns `bypass_actors` only to a caller that can administer the ruleset, so the
+    scheduled run (github.token) never sees it. A missing or malformed field is never ok: it is reported
+    as unverified, and only a readable, non-empty list is drift.
+    """
+    active = [r for r in rulesets or [] if r.get("target") == "branch" and r.get("enforcement") == "active"]
+    if not active:
+        return ["no active branch ruleset"], []
+    out, unverified = [], []
+    if not any(r.get("name") == "vws-main" for r in active):
+        out.append("no active vws-main ruleset")
+    for rule in active:
+        detail = details.get(rule.get("id"))
+        if not isinstance(detail, dict):
+            out.append(f"ruleset {rule.get('name')} unreadable")
+            continue
+        actors = detail.get("bypass_actors")
+        if not isinstance(actors, list):
+            unverified.append(f"ruleset {rule.get('name')} {UNVERIFIED_BYPASS}")
+        elif actors:
+            out.append(f"ruleset {rule.get('name')} has {len(actors)} bypass actor(s)")
+    return out, unverified
+
+
+MAIN_RULES = ("pull_request", "non_fast_forward", "deletion")
+
+
+def main_rules_drift(rulesets, rules):
+    """Issue strings for the rules that the vws-main ruleset must apply to main (AGENTS.md facts).
+
+    `rules` is GET /repos/{o}/{r}/rules/branches/main, readable with github.token: every entry has a
+    `type` and the `ruleset_id` it comes from. vws-main must apply to main and must carry a pull request
+    rule that allows only a squash merge, plus the non_fast_forward and deletion rules.
+    """
+    ids = {r.get("id") for r in rulesets or [] if isinstance(r, dict) and r.get("name") == "vws-main"
+           and r.get("target") == "branch" and r.get("enforcement") == "active"}
+    if not ids:
+        return []
+    mine = [r for r in rules or [] if isinstance(r, dict) and r.get("ruleset_id") in ids]
+    if not mine:
+        return ["vws-main does not apply to main"]
+    out = []
+    types = {r.get("type") for r in mine}
+    for name in MAIN_RULES:
+        if name not in types:
+            out.append(f"vws-main has no {name} rule")
+    for r in mine:
+        if r.get("type") == "pull_request":
+            methods = _map(r.get("parameters")).get("allowed_merge_methods")
+            if methods != ["squash"]:
+                out.append(f"vws-main allows merge methods {methods}, not squash only")
+    return out
+
+
+def stale_phrases(text):
+    """The stale protection facts from #395 that must not come back into an AGENTS.md."""
+    return [f"stale phrase: {phrase}" for phrase in STALE_PHRASES if phrase in text]
+
+
 def lint_drift(cfg, common):
     try:
         c = yaml.safe_load(cfg)
@@ -227,20 +328,20 @@ def main():
     variants = load_variants(a.guard_variants)
     want_incident = load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"))
 
-    rows, drift = [], 0
+    rows, drift, unverified_repos = [], 0, 0
     for line in open(a.repos):
         if not line.strip() or line.startswith("#"):
             continue
         repo, kind, cfgpath, extra = (line.rstrip("\n").split("\t") + ["", "", ""])[:4]
         info = gh(f"repos/{a.owner}/{repo}")
         if info is None:
-            rows.append([repo, "unreadable", "", "", "", "", "", ""])
+            rows.append([repo, "unreadable", "", "", "", "", "", "", ""])
             drift += 1
             continue
         if info.get("archived"):
-            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-"])
+            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-"])
             continue
-        issues = {}
+        issues, notes = {}, {}
         p = protection(a.owner, repo)
         if not p or not p["protected"]:
             issues["protection"] = ["main is not protected"]
@@ -255,8 +356,28 @@ def main():
                 bad.append("deletion allowed")
             if bad:
                 issues["protection"] = bad
-        want = COMMON_CHECKS + extra.split()
-        miss = [c for c in want if c not in p["checks"]]
+        rules = gh(f"repos/{a.owner}/{repo}/rules/branches/main?per_page=100")
+        if rules is None:
+            issues["ruleset"] = ["branch rules unreadable"]
+            rules = []
+        else:
+            rulesets = gh(f"repos/{a.owner}/{repo}/rulesets")
+            if rulesets is None:
+                issues["ruleset"] = issues.get("ruleset", []) + ["rulesets unreadable"]
+            else:
+                details = {
+                    r.get("id"): gh(f"repos/{a.owner}/{repo}/rulesets/{r.get('id')}")
+                    for r in rulesets
+                    if r.get("target") == "branch" and r.get("enforcement") == "active"
+                }
+                bad, unverified = ruleset_drift(rulesets, details)
+                bad += main_rules_drift(rulesets, rules)
+                if bad:
+                    issues["ruleset"] = issues.get("ruleset", []) + bad
+                if unverified:
+                    notes["ruleset"] = unverified
+        checks = effective_checks(p["checks"], rules)
+        miss = missing_checks(checks, extra)
         if miss:
             issues["checks"] = ["missing " + ",".join(miss)]
         wf = [w.rsplit("/", 1)[1] for w in WORKFLOWS if content(a.owner, repo, w) is None]
@@ -271,12 +392,15 @@ def main():
             if bad_g:
                 issues["guard"] = [bad_g]
         docs = []
-        if content(a.owner, repo, "AGENTS.md") is None:
-            docs.append("AGENTS.md")
+        agents = content(a.owner, repo, "AGENTS.md")
+        if agents is None:
+            docs.append("missing AGENTS.md")
+        else:
+            docs += stale_phrases(agents.decode("utf-8", "replace"))
         if content(a.owner, repo, "QUALITY.md") is None and content(a.owner, repo, "docs/QUALITY.md") is None:
-            docs.append("QUALITY.md")
+            docs.append("missing QUALITY.md")
         if docs:
-            issues["docs"] = ["missing " + ",".join(docs)]
+            issues["docs"] = docs
         inc = incident_drift(
             content(a.owner, repo, ".github/ISSUE_TEMPLATE/incident.yml"),
             content(a.owner, repo, ".github/ISSUE_TEMPLATE/incident.md"),
@@ -293,15 +417,20 @@ def main():
                 issues["lint"] = issues_l
         if issues:
             drift += 1
+        if notes:
+            unverified_repos += 1
 
         def cell(k, ok="ok"):
-            return "; ".join(issues[k]) if k in issues else ok
+            if k in issues:
+                return "; ".join(issues[k] + notes.get(k, []))
+            return "; ".join(notes[k]) if k in notes else ok
 
         force = {None: "?", False: "no", True: "yes"}.get(p.get("force"))
         rows.append([
             repo,
             cell("protection", f"ok (force push: {force})"),
-            cell("checks", ",".join(sorted(p["checks"]))),
+            cell("ruleset"),
+            cell("checks", ",".join(sorted(checks))),
             cell("workflows"),
             cell("guard", guard_ok),
             cell("docs"),
@@ -309,11 +438,14 @@ def main():
             cell("lint", "ok" if kind == "go" else "n/a"),
         ])
 
-    head = ["repo", "protection", "required checks", "workflows", "guard-agents.sh", "AGENTS/QUALITY",
-            "incident form", "lint"]
+    head = ["repo", "protection", "ruleset", "required checks", "workflows", "guard-agents.sh",
+            "AGENTS/QUALITY", "incident form", "lint"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
     text = "\n".join(table) + f"\n\ndrift: {drift} repo(s)\n"
+    if unverified_repos:
+        text += (f"unverified: {unverified_repos} repo(s); ruleset bypass actors need an admin token "
+                 "(run .github/drift/drift-check.sh with an admin gh)\n")
     print(text)
     if a.markdown:
         with open(a.markdown, "w") as f:

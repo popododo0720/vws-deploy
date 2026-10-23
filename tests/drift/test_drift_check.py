@@ -235,6 +235,196 @@ class GuardVariants(unittest.TestCase):
         self.assertEqual(variants, {"vws-conformance": self.VARIANT})
 
 
+class RequiredChecks(unittest.TestCase):
+    def test_ruleset_contexts(self):
+        rules = [
+            {"type": "deletion"},
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                {"context": "pr-hygiene"}, {"context": "verify-gate"}]}},
+        ]
+        self.assertEqual(dc.rule_checks(rules), ["pr-hygiene", "verify-gate"])
+
+    def test_bad_ruleset_shapes(self):
+        self.assertEqual(dc.rule_checks(None), [])
+        self.assertEqual(dc.rule_checks(["x", {"type": "required_status_checks", "parameters": None}]), [])
+        self.assertEqual(dc.rule_checks([
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                None, {"context": ""}, {"context": "lint"}]}},
+        ]), ["lint"])
+
+    def test_classic_and_ruleset_union(self):
+        rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+            {"context": "vws-verify"}, {"context": "lint"}]}}]
+        self.assertEqual(dc.effective_checks(["build", "lint"], rules), ["build", "lint", "vws-verify"])
+
+    def test_each_common_check_is_required(self):
+        self.assertEqual(dc.missing_checks(dc.COMMON_CHECKS, ""), [])
+        self.assertEqual(dc.missing_checks(["pr-hygiene", "verify-gate"], ""), ["vws-verify"])
+        self.assertEqual(dc.missing_checks(["pr-hygiene", "vws-verify", "verify-gate"], "lint test"), ["lint", "test"])
+
+
+class RulesetDrift(unittest.TestCase):
+    ACTIVE = {"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}
+    # GET /rulesets/{id} as a non-admin caller (github.token): no bypass_actors key at all.
+    NON_ADMIN = {"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active",
+                 "current_user_can_bypass": "never", "rules": []}
+
+    def test_active_ruleset_without_bypass(self):
+        self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: {"bypass_actors": []}}), ([], []))
+
+    def test_no_active_branch_ruleset(self):
+        for rulesets in ([], [{**self.ACTIVE, "enforcement": "disabled"}],
+                         [{**self.ACTIVE, "target": "tag"}]):
+            self.assertEqual(dc.ruleset_drift(rulesets, {}), (["no active branch ruleset"], []))
+
+    def test_other_ruleset_name(self):
+        self.assertEqual(dc.ruleset_drift([{**self.ACTIVE, "name": "other"}], {1: {"bypass_actors": []}}),
+                         (["no active vws-main ruleset"], []))
+
+    def test_bypass_actor_is_drift(self):
+        self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: {"bypass_actors": [{"actor_id": 5}]}}),
+                         (["ruleset vws-main has 1 bypass actor(s)"], []))
+
+    def test_unreadable_detail_is_drift(self):
+        for detail in (None, [], "x"):
+            self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: detail}), (["ruleset vws-main unreadable"], []))
+
+    def test_non_admin_shape_is_unverified_not_ok(self):
+        drift, unverified = dc.ruleset_drift([self.ACTIVE], {1: self.NON_ADMIN})
+        self.assertEqual(drift, [])
+        self.assertEqual(unverified, ["ruleset vws-main bypass actors unverified (needs admin token)"])
+
+    def test_malformed_bypass_field_is_unverified(self):
+        for value in (None, {}, "none", 0):
+            _, unverified = dc.ruleset_drift([self.ACTIVE], {1: {"bypass_actors": value}})
+            self.assertEqual(len(unverified), 1, value)
+
+
+class MainRulesetCell(unittest.TestCase):
+    """main() end to end with a stubbed gh: the non-admin ruleset detail must never print ruleset ok."""
+
+    def run_main(self, detail, rules=None):
+        files = {".github/workflows/repo-guard.yml": b"x", ".github/workflows/direct-push-watch.yml": b"x",
+                 "AGENTS.md": b"main is protected by the active vws-main ruleset", "QUALITY.md": b"q"}
+
+        def gh(path):
+            if path.endswith("/rulesets/1"):
+                return detail
+            if path.endswith("/rulesets"):
+                return [{"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}]
+            if "/rules/branches/main" in path:
+                return rules if rules is not None else MainRules.GOOD + [
+                    {"type": "required_status_checks", "ruleset_id": 1, "parameters": {
+                        "required_status_checks": [{"context": c} for c in dc.COMMON_CHECKS]}}]
+            if "/labels/" in path:  # the incident label check (#454)
+                return {"name": path.rsplit("/", 1)[1]}
+            if path == "repos/o/r":
+                return {"archived": False}
+            return None
+
+        def content(owner, repo, path):
+            if path == "scripts/guard-agents.sh":
+                with open(os.path.join(ROOT, "scripts", "guard-agents.sh"), "rb") as g:
+                    return g.read()
+            if path == ".github/ISSUE_TEMPLATE/incident.yml":
+                with open(os.path.join(ROOT, path), "rb") as g:
+                    return g.read()
+            return files.get(path)
+
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            f.write("r\tproto\t-\t\n")
+        self.addCleanup(os.unlink, f.name)
+        saved = (dc.gh, dc.content, dc.protection, dc.sys.argv)
+        dc.gh, dc.content = gh, content
+        dc.protection = lambda o, r: {"protected": True, "admins": True, "force": False, "delete": False,
+                                      "checks": []}
+        dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = dc.main()
+        finally:
+            dc.gh, dc.content, dc.protection, dc.sys.argv = saved
+        row = [line for line in out.getvalue().splitlines() if line.startswith("| r |")][0]
+        return rc, row.split(" | ")[2], out.getvalue()
+
+    def test_non_admin_detail_is_reported_unverified(self):
+        rc, cell, text = self.run_main(RulesetDrift.NON_ADMIN)
+        self.assertEqual(rc, 0)
+        self.assertEqual(cell, "ruleset vws-main bypass actors unverified (needs admin token)")
+        self.assertIn("unverified: 1 repo(s)", text)
+
+    def test_admin_detail_with_actor_is_drift(self):
+        rc, cell, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": [{"actor_id": 5}]})
+        self.assertEqual(cell, "ruleset vws-main has 1 bypass actor(s)")
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_admin_detail_without_actor_is_ok(self):
+        _, cell, text = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
+        self.assertEqual(cell, "ok")
+        self.assertNotIn("unverified:", text)
+
+
+    def test_missing_main_rule_is_drift(self):
+        rules = [r for r in MainRules.GOOD if r["type"] != "non_fast_forward"]
+        rc, cell, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []}, rules)
+        self.assertEqual(cell, "vws-main has no non_fast_forward rule")
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+
+class MainRules(unittest.TestCase):
+    """vws-main must apply to main with the rules AGENTS.md states (#455 verify FAIL)."""
+
+    RULESETS = [RulesetDrift.ACTIVE]
+    GOOD = [{"type": "pull_request", "ruleset_id": 1, "parameters": {"allowed_merge_methods": ["squash"]}},
+            {"type": "non_fast_forward", "ruleset_id": 1},
+            {"type": "deletion", "ruleset_id": 1}]
+
+    def test_good_rules(self):
+        self.assertEqual(dc.main_rules_drift(self.RULESETS, self.GOOD), [])
+
+    def test_each_missing_rule_is_drift(self):
+        for name in ("pull_request", "non_fast_forward", "deletion"):
+            rules = [r for r in self.GOOD if r["type"] != name]
+            self.assertEqual(dc.main_rules_drift(self.RULESETS, rules), [f"vws-main has no {name} rule"])
+
+    def test_only_status_checks_left_is_drift(self):
+        rules = [{"type": "required_status_checks", "ruleset_id": 1, "parameters": {}}]
+        self.assertEqual(len(dc.main_rules_drift(self.RULESETS, rules)), 3)
+
+    def test_not_squash_only_is_drift(self):
+        for methods in (["squash", "merge"], ["merge"], [], None):
+            rules = [{**self.GOOD[0], "parameters": {"allowed_merge_methods": methods}}] + self.GOOD[1:]
+            self.assertEqual(dc.main_rules_drift(self.RULESETS, rules),
+                             [f"vws-main allows merge methods {methods}, not squash only"])
+
+    def test_vws_main_not_applying_to_main_is_drift(self):
+        other = [{**r, "ruleset_id": 2} for r in self.GOOD]
+        for rules in ([], None, other):
+            self.assertEqual(dc.main_rules_drift(self.RULESETS, rules), ["vws-main does not apply to main"])
+
+    def test_no_vws_main_is_left_to_ruleset_drift(self):
+        self.assertEqual(dc.main_rules_drift([{**RulesetDrift.ACTIVE, "name": "other"}], []), [])
+
+
+class StaleFacts(unittest.TestCase):
+    def test_stale_phrases_are_pinned(self):
+        self.assertEqual(dc.STALE_PHRASES, ("private, free plan", "no server-side protection",
+                                            "not a required check yet", "detection, not blocking"))
+
+    def test_each_stale_phrase_is_reported(self):
+        for phrase in dc.STALE_PHRASES:
+            self.assertEqual(dc.stale_phrases("before " + phrase + " after"),
+                             [f"stale phrase: {phrase}"])
+
+    def test_clean_text_passes(self):
+        self.assertEqual(dc.stale_phrases("main is protected by the active vws-main ruleset"), [])
+
+    def test_repo_agents_md_is_clean(self):
+        with open(os.path.join(ROOT, "AGENTS.md"), "rb") as f:
+            self.assertEqual(dc.stale_phrases(f.read().decode("utf-8")), [])
+
+
 class ExitStatus(unittest.TestCase):
     def test_drift_is_not_a_crash_status(self):
         # 1 is what Python returns on a traceback; drift must not share it with a crash.

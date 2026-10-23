@@ -1,6 +1,8 @@
 # Daily guardrail drift check across the vws-* repos (vws-deploy#300).
-# GITHUB_TOKEN reads public repos, so branch protection comes from the branch summary;
-# run .github/drift/drift-check.sh with an admin gh for the full settings during an audit.
+# GITHUB_TOKEN reads public repos, so branch protection comes from the branch summary and the
+# rulesets API. That token cannot read a ruleset's bypass actors, so the ruleset cell says
+# "unverified" for them; run .github/drift/drift-check.sh with an admin gh for the full classic
+# protection settings and the bypass actors during an audit.
 name: drift-check
 
 on:
@@ -9,6 +11,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - AGENTS.md
       - .github/drift/drift-check.sh
       - .github/drift/**
       - .github/golangci-common.yml
