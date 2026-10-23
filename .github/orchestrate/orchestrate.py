@@ -7,7 +7,8 @@ box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from
 
 Rules (see docs/factory-orchestrator.md):
   A  wake vws-verify with one marker comment on the status thread (draft PR vws-deploy#339) when
-     >= VERIFY_WAKE_THRESHOLD PRs wait for verify (edge-triggered, one comment per pending set)
+     needs-verify PRs wait (labeled by verify-queue.yml): the oldest for VERIFY_WAKE_MAX_WAIT_MIN or
+     at least VERIFY_WAKE_THRESHOLD of them; one comment per pending set
   B  hand the next ready+deepseek tasks to DeepSeek, at most ORCHESTRATE_DEEPSEEK_CAP (2) in flight
      and one per repo, with an @deepseek-dev comment; a task whose Depends on target is still open is
      never dispatched
@@ -65,6 +66,7 @@ CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "s
 # The first line of a status comment is exactly one of these; vws-verify and vws-platform routines
 # match on it.
 WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
+NEEDS_VERIFY = "needs-verify"  # set by verify-queue.yml while every non-verify check is green (vws-deploy#397)
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
 # Rule D (vws-deploy#346).
 VERIFY_CHECK = "vws-verify"
@@ -106,9 +108,8 @@ DEFAULTS = {
     "DEEPSEEK_MAX_FAILURES": "2",
     "ORCHESTRATE_DEEPSEEK_CAP": "2",
     "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
-    "VERIFY_WAKE_THRESHOLD": "5",
-    "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
-    "VERIFY_WAKE_COOLDOWN_HOURS": "6",
+    "VERIFY_WAKE_THRESHOLD": "3",
+    "VERIFY_WAKE_MAX_WAIT_MIN": "30",
     "ORCHESTRATE_STATUS_PR": "339",
     "ORCHESTRATE_FAILURE_ALERT": "apply",
     "ORCHESTRATE_FAILURE_THRESHOLD": "3",
@@ -566,12 +567,11 @@ def load_repos(tsv, extra):
 
 # ---------------------------------------------------------------- decide (pure)
 
-def wake_body(pending, key, run_id, threshold, repos):
+def wake_body(pending, key, run_id, threshold, max_wait, repos):
     lines = [WAKE_MARKER,
-             f"vws-orchestrate: {len(pending)} PRs wait for verify (threshold {threshold}).", ""]
-    lines += [f"- {p['repo']}#{p['number']} {p['url']} `{p['head_sha'][:7]}`" for p in pending[:50]]
-    if len(pending) > 50:
-        lines.append(f"- ... and {len(pending) - 50} more")
+             f"vws-orchestrate: {len(pending)} PRs wait for verify (wake at {threshold} or after {max_wait} min).", ""]
+    lines += [f"- {p['repo']}#{p['number']}@{p['head_sha']} {p['url']} (CI pre-check: green, waited {p['waited'] // 60}m)"
+              for p in pending]
     lines += ["", f"Repos scanned: {', '.join(repos)}", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
     return "\n".join(lines)
 
@@ -1100,24 +1100,26 @@ def decide(snapshot, state, now, cfg, exclusions):
     posted = set(snapshot.get("status", {}).get("keys", []))
     cycles = find_cycles(snapshot)
 
-    # Rule A: pending PRs and the verify wake
+    # Rule A: needs-verify PRs and the verify wake (vws-deploy#397)
     pending = []
     for key in sorted(items):
         it = items[key]
         if (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"
-                and "verify-approved" not in it["labels"] and it.get("ci") != "failing"):
-            pending.append({"repo": it["repo"], "number": it["number"], "url": it["url"], "head_sha": it["head_sha"]})
+                and NEEDS_VERIFY in it["labels"] and "verify-approved" not in it["labels"] and it.get("ci") != "failing"):
+            # Waited since the latest needs-verify label (a push removes it); unknown counts as just labeled.
+            since = max((utc(e["created_at"]) for e in it.get("events", [])
+                         if e["event"] == "labeled" and e["label"]["name"] == NEEDS_VERIFY), default=now)
+            pending.append({"repo": it["repo"], "number": it["number"], "url": it["url"], "head_sha": it["head_sha"],
+                            "waited": int(max(0, now - since))})
     threshold = int(num(cfg, "VERIFY_WAKE_THRESHOLD"))
+    max_wait = int(num(cfg, "VERIFY_WAKE_MAX_WAIT_MIN"))
     key = pending_key(pending)
     wakes = snapshot.get("status", {}).get("wakes", [])
-    last_at = max((w["at"] for w in wakes), default=0)
-    prev = state.get("prev_pending_count")
-    rising = prev is None or prev < threshold
-    gap = num(cfg, "VERIFY_WAKE_EDGE_MIN_HOURS" if rising else "VERIFY_WAKE_COOLDOWN_HOURS") * 3600
-    if len(pending) >= threshold and key not in {w["key"] for w in wakes} and now - last_at >= gap:
+    oldest = max((p["waited"] for p in pending), default=0)
+    if pending and (len(pending) >= threshold or oldest >= max_wait * 60) and key not in {w["key"] for w in wakes}:
         actions.append({"type": "wake_verify", "target": status_target(cfg),
-                        "reason": f"{len(pending)} PRs pending, threshold {threshold}", "key": key,
-                        "body": wake_body(pending, key, snapshot["run_id"], threshold, sorted(repos))})
+                        "reason": f"{len(pending)} PRs need verify, oldest waited {oldest // 60}m", "key": key,
+                        "body": wake_body(pending, key, snapshot["run_id"], threshold, max_wait, sorted(repos))})
     new_state["prev_pending_count"] = len(pending)
 
     # Rules B and C
@@ -1381,6 +1383,8 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
+            if NEEDS_VERIFY in labels and not it["events"]:
+                it["events"] = label_events(gh, it)  # Rule A's wait time; ETag-cached
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:
@@ -1400,10 +1404,13 @@ def candidate_history(gh, it):
     comments = [{"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or ""}
                 for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
                 if classify_comment(c.get("body"))]
-    events = [{"event": e["event"], "label": {"name": (e.get("label") or {}).get("name")}, "created_at": e["created_at"]}
-              for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
-              if e.get("event") in ("labeled", "unlabeled")]
-    return comments, events
+    return comments, label_events(gh, it)
+
+
+def label_events(gh, it):
+    return [{"event": e["event"], "label": {"name": (e.get("label") or {}).get("name")}, "created_at": e["created_at"]}
+            for e in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/events?per_page=100")
+            if e.get("event") in ("labeled", "unlabeled")]
 
 
 def verify_reviews(gh, pr):
