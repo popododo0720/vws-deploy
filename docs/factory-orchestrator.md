@@ -4,7 +4,7 @@ A deterministic script that runs four routine factory steps on GitHub state. It 
 
 | rule | what it does |
 |---|---|
-| A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
+| A, verify wake (vws-deploy#397) | Counts only open, non-draft PRs on `main` that carry `needs-verify`, lack `verify-approved` and whose CI is not failing. The `needs-verify` label is kept by `.github/workflows/verify-queue.yml` (see "The needs-verify queue" below). When the oldest of them has waited at least 30 min since its latest `needs-verify` label (`VERIFY_WAKE_MAX_WAIT_MIN`) or at least 3 wait (`VERIFY_WAKE_THRESHOLD`), it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`, and it lists every waiting PR as `- repo#N@head_sha url (CI pre-check: green, waited Nm)`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once; there is no cooldown, so a changed set (a new PR, or a new head after a push and a relabel) wakes again on the next tick. |
 | B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | B2, verify rework (vws-deploy#373) | A DeepSeek PR (an open PR labeled `ready`+`deepseek`, or the open PR a `ready`+`deepseek` issue's Done report named) whose newest vws-verify verdict on its current head is a FAIL (a `CHANGES_REQUESTED` review by `vws-verify[bot]`, or a `# repo#N @ <head>` / `Result: FAIL` comment) gets `@deepseek-dev please rework this PR ...` on the PR, with the verdict quoted, through the same queue, cap and `ORCHESTRATE_DISPATCH` switch, ahead of new tasks. A `<!-- orchestrate:rework head=<sha> ... -->` marker, or any dispatch after the verdict, means that head is done: one rework per head. Conflict-only verdicts are skipped for an eggbot rebuild (note `rework_skipped`). Each rework, and a pending FAIL, counts as one failure toward the grok swap below. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. A Failed report that shows a provider error is an infra failure instead: never counted, re-mentioned after 5 minutes, at most 3 times. See "Infra retries" below. |
@@ -56,6 +56,37 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   - a report or dispatch URL listed in `exclusions.tsv` (vws-iam#123's token failure is the first entry).
 - **Labels:** labels are never created. An action whose label is missing on the repo is skipped and
   logged.
+
+## The needs-verify queue (vws-deploy#397)
+
+`.github/workflows/verify-queue.yml` ships unchanged to every vws-* repo with `repo-guard.yml`. It keeps
+the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
+
+- It runs when a PR workflow completes on a PR head (`workflow_run`, from the default branch) and on
+  `pull_request` `ready_for_review` and `synchronize`. The `workflow_run` list must name every workflow
+  that runs on `pull_request`, because any of them can finish last: vws-deploy's `ci`, `drift-check`,
+  `installer-image`, `post-merge` (closed PRs; it only clears a stale label) and `repo-guard`, plus
+  `CI` (vws-console) and `english` (vws-conformance). `tests/workflows/test_verify_queue.py` fails when
+  a `pull_request` workflow in this repo is missing; a repo that adds a PR workflow under a new name
+  must add it to the list. `check_suite` is not used because GitHub starts no workflow for check suites
+  created by GitHub Actions.
+- Once `gate / verify-gate` (vws-deploy#413) is on `main`, it joins the skip list next to `verify-gate`
+  and `vws-verify`; whichever of #413 and #397 merges second adds it.
+- It adds `needs-verify` when the PR is open, not a draft, on base `main`, has no `verify-approved`, and
+  the newest run of every check on its head (and every commit status) is green, except `verify-gate`
+  and `vws-verify`, which wait for the verdict by design. Pending checks, or no checks yet, leave the
+  PR unlabeled; the run for the last workflow to finish adds the label.
+- It removes the label on a red check, on a new push (`synchronize`), and when the PR stops waiting
+  (draft, other base, closed or approved). A run for an old head writes nothing.
+- Permissions: none at workflow level; the `needs-verify` job has `issues: write` and
+  `pull-requests: write` (adding or removing a label on a pull request goes through the issues API but
+  GitHub also requires `pull-requests: write`; without it the call fails with 403 "Resource not accessible
+  by integration"), plus `checks: read` and `statuses: read`. It writes nothing but the `needs-verify`
+  label, checks out nothing and runs no PR code. Removing a label that is already gone (HTTP 404)
+  counts as done; any other error fails the job.
+
+The vws-pr-pipeline "Open" step 4 (the dev agent waking vws-verify) and vws-verify-verdict step 8 are
+replaced by this label and Rule A.
 
 ## Rule D: serialized merges (vws-deploy#346)
 
@@ -290,9 +321,8 @@ Config keys and defaults:
 - `DEEPSEEK_MAX_FAILURES=2`
 - `ORCHESTRATE_DEEPSEEK_CAP=2` (DeepSeek dispatches in flight at once; a positive integer)
 - `ORCHESTRATE_INFRA_RETRY_DELAY_MIN=5` (minutes after a provider-error report before the retry; a positive integer; with the 600 s tick the effective delay is 5 to 10 minutes)
-- `VERIFY_WAKE_THRESHOLD=5`
-- `VERIFY_WAKE_EDGE_MIN_HOURS=1`
-- `VERIFY_WAKE_COOLDOWN_HOURS=6`
+- `VERIFY_WAKE_THRESHOLD=3` (needs-verify PRs waiting that wake vws-verify at once)
+- `VERIFY_WAKE_MAX_WAIT_MIN=30` (minutes the oldest needs-verify PR may wait before a wake; `VERIFY_WAKE_EDGE_MIN_HOURS` and `VERIFY_WAKE_COOLDOWN_HOURS` are gone and ignored)
 - `ORCHESTRATE_DISPATCH=on` (`on` or `off`; `off` pauses new DeepSeek dispatches, including infra retries, while in-flight tracking, verify-wake and merges continue)
 - `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`

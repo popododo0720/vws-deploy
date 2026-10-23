@@ -55,6 +55,14 @@ class Wakes(unittest.TestCase):
         self.assertEqual(w["rework_dispatches"], 1)
         self.assertEqual(doc()["deepseek"]["dispatched"], 4, "the DeepSeek dispatch count is the same number")
 
+    def test_grok_wake_from_378_counts_as_a_grok_dispatch(self):
+        # The vws-deploy#378 wake: first line <!-- vws-orchestrate:grok-wake -->, last line names the item.
+        r = fixture()
+        r["repos"]["vws-deploy"]["comments"].append(comment(
+            909, 339, "2026-10-20T06:00:00Z", "<!-- vws-orchestrate:grok-wake -->\nvws-orchestrate: Grok task vws-iam#7 "
+            "https://github.com/popododo0720/vws-iam/issues/7\n\n<!-- orchestrate:grok-wake item=vws-iam#7 -->"))
+        self.assertEqual(doc(r)["wakes"]["dispatches"]["grok"], 2, "the swap notice plus the grok wake")
+
     def test_recorded_day_without_new_comments(self):
         w = doc(raw())["wakes"]
         self.assertEqual(w, {"verify_wake_comments": 0, "dispatches": {"deepseek": 3, "grok": 0},

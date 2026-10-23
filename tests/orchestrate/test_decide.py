@@ -37,59 +37,86 @@ class Purity(unittest.TestCase):
         self.assertEqual(json.dumps([snap, state], sort_keys=True), before, "decide mutated its input")
 
 
+def queued(n, waited_min=5, **kw):
+    """n PRs labeled needs-verify by verify-queue.yml waited_min minutes ago (vws-deploy#397)."""
+    labels = ("needs-verify",) + tuple(kw.pop("extra", ()))
+    return [item("vws-deploy", 400 + i, is_pr=True, labels=labels,
+                 events=[event("labeled", "needs-verify", waited_min / 60)], **kw) for i in range(n)]
+
+
 class RuleA(unittest.TestCase):
+    """Rule A counts only needs-verify PRs; it wakes when the oldest waited 30 min or 3 wait (vws-deploy#397)."""
+
     def wake(self, result):
         return [a for a in result["actions"] if a["type"] == "wake_verify"]
 
-    def test_threshold_table(self):
-        key5 = orch.pending_key([{"repo": p["repo"], "number": p["number"], "head_sha": p["head_sha"]} for p in prs(5)])
+    def test_wake_table(self):
+        key3 = orch.pending_key([{"repo": p["repo"], "number": p["number"], "head_sha": p["head_sha"]} for p in queued(3)])
         cases = [
-            ("4 pending", prs(4), {}, [], 0),
-            ("5 pending, first run", prs(5), {}, [], 1),
-            ("5 pending, rising edge", prs(5), {"prev_pending_count": 3}, [], 1),
-            ("same set already posted", prs(5), {"prev_pending_count": 3}, [{"key": key5, "at": NOW - 99999}], 0),
-            ("changed set inside cooldown", prs(6), {"prev_pending_count": 5}, [{"key": key5, "at": NOW - 3600}], 0),
-            ("changed set after cooldown", prs(6), {"prev_pending_count": 5}, [{"key": key5, "at": NOW - 7 * 3600}], 1),
-            ("rising edge inside 1h", prs(6)[1:], {"prev_pending_count": 4}, [{"key": key5, "at": NOW - 600}], 0),
-            ("rising edge after 1h", prs(6)[1:], {"prev_pending_count": 4}, [{"key": key5, "at": NOW - 3700}], 1),
+            ("0 labeled: green PRs without needs-verify", prs(5), [], 0),
+            ("2 labeled, both under 30 min", queued(2, 29), [], 0),
+            ("1 labeled for 30 min", queued(1, 30), [], 1),
+            ("1 labeled for 2 h", queued(1, 120), [], 1),
+            ("3 labeled, all fresh", queued(3, 1), [], 1),
+            ("same set already posted", queued(3, 1), [{"key": key3, "at": NOW - 60}], 0),
+            ("a changed set right after a wake: no cooldown", queued(4, 1), [{"key": key3, "at": NOW - 60}], 1),
         ]
-        for name, items, state, wakes, want in cases:
+        for name, items, wakes, want in cases:
             with self.subTest(name):
-                self.assertEqual(len(self.wake(run(snapshot(*items, wakes=wakes), state))), want)
+                self.assertEqual(len(self.wake(run(snapshot(*items, wakes=wakes)))), want)
+
+    def test_repeated_ticks_post_once(self):
+        snap = snapshot(*queued(3, 40))
+        first = self.wake(run(snap))
+        self.assertEqual(len(first), 1)
+        posted = snapshot(*queued(3, 45), wakes=[{"key": first[0]["key"], "at": NOW}])
+        for minutes in (5, 60, 600):
+            with self.subTest(minutes=minutes):
+                self.assertEqual(self.wake(run(posted, now=NOW + minutes * 60)), [])
+
+    def test_wait_is_from_the_latest_label(self):
+        # Labeled 2 h ago, removed by a push, labeled again 10 min ago: the wait restarts.
+        ev = [event("labeled", "needs-verify", 2), event("unlabeled", "needs-verify", 1), event("labeled", "needs-verify", 1 / 6)]
+        it = item("vws-deploy", 400, is_pr=True, labels=("needs-verify",), events=ev)
+        self.assertEqual(self.wake(run(snapshot(it))), [])
+        self.assertEqual(len(self.wake(run(snapshot(it), now=NOW + 20 * 60))), 1)
 
     def test_not_counted(self):
-        extra = [item("vws-iam", 1, is_pr=True, draft=True), item("vws-iam", 2, is_pr=True, base="release"),
-                 item("vws-iam", 3, is_pr=True, labels=("verify-approved",)), item("vws-iam", 4, is_pr=True, ci="failing"),
-                 item("vws-iam", 5)]
-        r = run(snapshot(*prs(4), *extra))
-        self.assertEqual(r["pending_count"], 4)
+        def nv(n, **kw):
+            return item("vws-iam", n, is_pr=True, labels=("needs-verify",) + kw.pop("extra", ()),
+                        events=[event("labeled", "needs-verify", 5)], **kw)
+        extra = [nv(1, draft=True), nv(2, base="release"), nv(3, extra=("verify-approved",)), nv(4, ci="failing"),
+                 item("vws-iam", 5, is_pr=True), item("vws-iam", 6, labels=("needs-verify",))]
+        r = run(snapshot(*queued(2, 1), *extra))
+        self.assertEqual(r["pending_count"], 2)
         self.assertEqual(self.wake(r), [])
 
     def test_comment_body_and_state(self):
-        r = run(snapshot(*prs(5)), {"prev_pending_count": 0})
+        r = run(snapshot(*queued(3, 1)), {"prev_pending_count": 0})
         a = self.wake(r)[0]
         self.assertEqual(a["target"], "vws-deploy#339")
         lines = a["body"].split("\n")
         self.assertEqual(lines[0], "<!-- vws-orchestrate:verify-wake -->", "routines match the exact first line")
-        sha7 = prs(1)[0]["head_sha"][:7]
-        self.assertIn(f"- vws-deploy#400 https://github.com/popododo0720/vws-deploy/pull/400 `{sha7}`", lines)
+        for p in queued(3):
+            self.assertIn(f"- {p['repo']}#{p['number']}@{p['head_sha']} {p['url']} (CI pre-check: green, waited 1m)", lines)
         self.assertIn(f"Idempotency key: `{a['key']}`", lines)
         self.assertIn("Run id: `20261021T120000Z-abcdef`", lines)
         self.assertIn("Repos scanned: vws-deploy, vws-iam, vws-proto", lines, "archived repos are not listed")
         self.assertNotIn("@deepseek-dev", a["body"])
         self.assertEqual(orch.status_wakes([{"body": a["body"], "created_at": "2026-10-21T12:00:00Z"}])[0]["key"], a["key"],
                          "the key is read back from the posted comment")
-        self.assertEqual(r["state"]["prev_pending_count"], 5)
+        self.assertEqual(r["state"]["prev_pending_count"], 3)
 
     def test_marker_must_be_first_line(self):
         body = "hello\n<!-- vws-orchestrate:verify-wake -->\nIdempotency key: `sha256:" + "a" * 64 + "`"
         self.assertEqual(orch.status_wakes([{"body": body, "created_at": "2026-10-21T12:00:00Z"}]), [])
 
-    def test_cap_50(self):
-        a = self.wake(run(snapshot(*prs(60))))[0]
+    def test_body_lists_every_waiting_pr(self):
+        many = queued(60, 1)
+        a = self.wake(run(snapshot(*many)))[0]
         self.assertIn("60 PRs wait for verify", a["body"])
-        self.assertEqual(a["body"].count("\n- vws-deploy#"), 50)
-        self.assertIn("- ... and 10 more", a["body"])
+        for p in many:
+            self.assertIn(f"- {p['repo']}#{p['number']}@{p['head_sha']} ", a["body"])
 
 
 class RuleB(unittest.TestCase):
