@@ -2,7 +2,9 @@
 import importlib.util
 import os
 import re
+import subprocess
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location("ci_fail", os.path.join(ROOT, ".github", "ci-fail", "ci_fail.py"))
@@ -39,12 +41,13 @@ class FakeGh:
         self.jobs = jobs or {}              # (run_id, attempt) -> [job]
         self.logs = logs or {}              # job_id -> text
         self.writes = []
+        self.retried = []                   # paths of writes made with retry=True
         self.next_id = 1000
 
     def _pr(self, n):
         p = self.prs[n]
         return {"number": n, "state": p.get("state", "open"), "head": {"ref": p["branch"], "sha": p.get("sha", SHA),
-                "repo": {"full_name": FULL}}, "base": {"repo": {"full_name": FULL}}, "body": p.get("body", ""),
+                "repo": {"full_name": p.get("head_repo", FULL)}}, "base": {"repo": {"full_name": FULL}}, "body": p.get("body", ""),
                 "labels": [{"name": x} for x in p.get("labels", [])]}
 
     def get_all(self, path):
@@ -70,8 +73,10 @@ class FakeGh:
         assert m, path
         return self.logs.get(int(m.group(1)), "")
 
-    def post(self, path, payload):
+    def post(self, path, payload, retry=False):
         self.writes.append(("POST", path, payload))
+        if retry:
+            self.retried.append(path)
         m = re.fullmatch(rf"{A}/issues/(\d+)/comments", path)
         if m:
             self.next_id += 1
@@ -337,6 +342,29 @@ class Cap(unittest.TestCase):
         self.assertEqual(body.count("**needs-human**"), 1)
         self.assertEqual(out["action"], "post")
 
+    def test_the_label_post_is_retried_and_the_comment_post_is_not(self):
+        gh = storage_gh(comments={113: [marker_comment(1, sha(1), 1), marker_comment(2, sha(2), 2),
+                                        marker_comment(3, sha(3), 3)]})
+        cf.run(gh, "workflow_run", event(), FULL, NOW)
+        self.assertEqual(gh.retried, [f"{A}/issues/113/labels"])
+
+    def test_a_fork_pr_on_the_same_branch_is_not_in_the_chain(self):
+        fork = {111: {"branch": "fix/x", "state": "closed", "head_repo": "mallory/vws-storage"}}
+        gh = storage_gh(extra_prs=fork, comments={111: [marker_comment(1, sha(1), 1, pr=111),
+                                                        marker_comment(2, sha(2), 2, pr=111),
+                                                        marker_comment(3, sha(3), 3, pr=111)]})
+        cf.run(gh, "workflow_run", event(), FULL, NOW)
+        rec = cf.parse_comment(posts(gh)[0][2]["body"])
+        self.assertEqual((rec["n"], rec["chain"], rec["wake"]), (1, [113], True))
+        self.assertFalse([w for w in gh.writes if w[1].endswith("/labels")])
+
+    def test_a_fork_pr_named_by_supersedes_is_not_in_the_chain(self):
+        fork = {90: {"branch": "other", "state": "closed", "head_repo": "mallory/vws-storage"}}
+        gh = storage_gh(body="Part of #1\nSupersedes #90", extra_prs=fork,
+                        comments={90: [marker_comment(1, sha(1), 1, pr=90)]})
+        cf.run(gh, "workflow_run", event(), FULL, NOW)
+        self.assertEqual(cf.parse_comment(posts(gh)[0][2]["body"])["chain"], [113])
+
     def test_supersedes_links_a_renamed_predecessor(self):
         old = {90: {"branch": "fix/old-name", "state": "closed"}}
         gh = storage_gh(body="Part of #1\nSupersedes #90", extra_prs=old,
@@ -418,6 +446,59 @@ class Pagination(unittest.TestCase):
         pages = {1: [{}] * 100, 2: [{}] * 5}
         gh.get = lambda path: pages[int(path.rsplit("=", 1)[1])]
         self.assertEqual(len(gh.get_all("repos/x?per_page=100")), 105)
+
+
+class GhRetry(unittest.TestCase):
+    """Bounded backoff (ported from #421): reads and idempotent writes retry, comment writes do not."""
+
+    def setUp(self):
+        self.calls, self.sleeps = [], []
+        p1 = mock.patch.object(cf.subprocess, "run", side_effect=self.fake_run)
+        p2 = mock.patch.object(cf.time, "sleep", side_effect=self.sleeps.append)
+        p1.start(), p2.start()
+        self.addCleanup(mock.patch.stopall)
+        self.results = []
+
+    def fake_run(self, args, **kw):
+        self.calls.append(args)
+        r = self.results.pop(0) if self.results else ("fail", "HTTP 502")
+        if r[0] == "timeout":
+            raise subprocess.TimeoutExpired(args, 60)
+        return subprocess.CompletedProcess(args, 0 if r[0] == "ok" else 1, stdout=r[1], stderr=r[1])
+
+    def test_a_read_retries_transient_failures_with_backoff(self):
+        self.results = [("fail", "HTTP 502"), ("timeout", ""), ("ok", "[1]")]
+        self.assertEqual(cf.Gh().get("repos/x"), [1])
+        self.assertEqual((len(self.calls), self.sleeps), (3, [2, 4]))
+
+    def test_a_read_fails_closed_after_a_bounded_number_of_tries(self):
+        with self.assertRaises(RuntimeError):
+            cf.Gh(tries=3).get("repos/x")
+        self.assertEqual(len(self.calls), 3)
+
+    def test_comment_writes_are_never_retried(self):
+        gh = cf.Gh()
+        with self.assertRaises(RuntimeError):
+            gh.post("repos/x/issues/1/comments", {"body": "b"})
+        with self.assertRaises(RuntimeError):
+            gh.patch("repos/x/issues/comments/1", {"body": "b"})
+        self.assertEqual((len(self.calls), self.sleeps), (2, []))
+
+    def test_an_idempotent_write_retries_then_succeeds(self):
+        self.results = [("fail", "HTTP 502"), ("ok", "{}")]
+        cf.Gh().post("repos/x/issues/1/labels", {"labels": ["needs-human"]}, retry=True)
+        self.assertEqual((len(self.calls), self.sleeps), (2, [2]))
+
+    def test_an_idempotent_write_still_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            cf.Gh(tries=3).post("repos/x/issues/1/labels", {"labels": ["needs-human"]}, retry=True)
+        self.assertEqual(len(self.calls), 3)
+
+    def test_the_error_is_masked(self):
+        self.results = [("fail", "bad token ghp_abcdefghijklmnop1234")] * 3
+        with self.assertRaises(RuntimeError) as cm:
+            cf.Gh().get("repos/x")
+        self.assertNotIn("ghp_abcdefghijklmnop1234", str(cm.exception))
 
 
 if __name__ == "__main__":
