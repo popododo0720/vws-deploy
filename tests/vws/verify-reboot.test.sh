@@ -67,15 +67,27 @@ done
 drain_case() { # NAME UNSCHEDULABLE ATTACHED WANT_RC TEXT
   scenario "drain-$1"
   jq -n --argjson u "$2" '{kind: "Node", metadata: {name: "node-a"}, spec: {unschedulable: $u}}' >"${VWS_FAKE_DIR}/kubectl/get_nodes.json"
-  jq -n --argjson a "$3" '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com"}, status: {attached: $a}},
+  jq -n --argjson a "$3" '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com", source: {persistentVolumeName: "pv-a"}}, status: {attached: $a}},
     {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com"}, status: {attached: true}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
-  run_vws_real verify-reboot --drained node-a; expect_rc "drain $1 exits $4" "$4"
+  run_vws_real verify-reboot --drained node-a --timeout 2s; expect_rc "drain $1 exits $4" "$4"
   expect_text "drain $1 says why" "$OUT" "$5"
   assert_no_changes "drain $1 changes nothing"
 }
 drain_case finished true false 0 "OK    drained  node-a is cordoned and has no RBD volume attached; safe to reboot"
 drain_case not-run false false 1 "FAIL  drained  node-a is not cordoned: the drain did not run or failed; do not reboot"
-drain_case unfinished true true 1 "FAIL  drained  node-a still has 1 RBD volumes attached: the drain did not finish; do not reboot"
+drain_case unfinished true true 1 "FAIL  drained  node-a still has 1 RBD volumes attached after 2s: pv-a; the drain did not finish; do not reboot"
+
+# #193: the CSI detach lags the drain; --drained waits for the last RBD volume to go.
+scenario drain-waits
+jq -n '{kind: "Node", metadata: {name: "node-a"}, spec: {unschedulable: true}}' >"${VWS_FAKE_DIR}/kubectl/get_nodes.json"
+jq -n '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com", source: {persistentVolumeName: "pv-a"}}, status: {attached: true}},
+  {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com", source: {persistentVolumeName: "pv-b"}}, status: {attached: true}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+(sleep 2; edit_json get_volumeattachments.json '(.items[] | select(.spec.nodeName == "node-a") | .status.attached) = false') &
+detach_pid=$!
+run_vws_real --strict verify-reboot --drained node-a --timeout 10s; expect_rc "a detach during the wait exits 0" 0
+wait "$detach_pid"
+expect_text "a detach during the wait is OK" "$OUT" "OK    drained  node-a is cordoned and has no RBD volume attached; safe to reboot"
+expect_text "the wait printed the remaining PV name" "$ERR" "vws: drained node-a: 1 RBD volumes still attached: pv-a; waiting up to 10s"
 scenario drain-unreadable
 rm "${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
 run_vws_real verify-reboot --drained node-a; expect_rc "unreadable volumeattachments at the drain gate exits 3" 3

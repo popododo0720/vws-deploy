@@ -172,11 +172,11 @@ Rollback limits (also printed as WARNs):
 
 ### vws verify-reboot
 
-`vws verify-reboot --snapshot FILE` (before the reboot), `vws verify-reboot --drained NODE` (after the drain, before the reboot), `vws verify-reboot --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]` (after the reboot). This command does not reboot (a person or `talosctl` does). Read only (#43 section 8).
+`vws verify-reboot --snapshot FILE` (before the reboot), `vws verify-reboot --drained NODE [--timeout 5m]` (after the drain, before the reboot), `vws verify-reboot --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]` (after the reboot). This command does not reboot (a person or `talosctl` does). Read only (#43 section 8).
 
 `--snapshot` emits `WARN krbd` for each node with a `rbd.csi.ceph.com` VolumeAttachment. Drain those nodes before rebooting (krbd shutdown hang, #116; the procedure is in [platform-bundle.md](platform-bundle.md)).
 
-- `--drained NODE`: 0 when the node is cordoned and no `rbd.csi.ceph.com` VolumeAttachment is attached, 1 when the drain did not happen or is incomplete, 3 when unreadable. Do not reboot on non-zero (#150).
+- `--drained NODE [--timeout 5m]`: 0 when the node is cordoned and no `rbd.csi.ceph.com` VolumeAttachment is attached, 1 when the node is not cordoned or the detach did not finish within `--timeout`, 3 when unreadable. The CSI detach lags the drain, so it re-reads the attachments every `VWS_VERIFY_INTERVAL` (default 10 seconds) and prints the remaining PV names; the detach is a FAIL only when it is still incomplete at the timeout. Do not reboot on non-zero (#150, #193).
 - `--snapshot` emits `WARN infra` when one or fewer nodes can take the KubeVirt infra pods (virt-api, virt-controller, virt-exportproxy). It counts schedulable nodes that have every nodeSelector label, or control-plane nodes when there is no nodePlacement. Draining that node stalls on the PDBs (#168). It only reads and does not count as a failure.
 - If any list in the snapshot cannot be read, it exits 3 and leaves no file (`snapshot failed: ...; do not reboot`). This keeps anyone from rebooting without the krbd check (#150).
 - Snapshot (0600, never overwritten): node names and boot IDs, ready/desired per service, pod **counts** per namespace, release namespace PVC names and phases, the **number** of keys in VWS ConfigMaps, `runStrategy: Always` VM names and states. No pod UIDs, ConfigMap data or Secrets.
