@@ -638,7 +638,8 @@ def summarize(docs, last_day):
     for span in (7, SUMMARY_DAYS):
         since = (end - dt.timedelta(days=span - 1)).isoformat()  # calendar days, not the last N files
         part = [r for r in rows if r["day"] >= since]
-        total = lambda k: sum(r[k] for r in part if r[k] is not None)
+        known = lambda k: [r[k] for r in part if r[k] is not None]
+        total = lambda k: sum(known(k)) if known(k) else "-"  # a total over no day with data is unknown, not 0
         lines.append(f"- Last {span} days ({len(part)} with data): {total('prs_merged')} PRs merged, "
                      f"{total('prs_opened')} opened, {total('deepseek_dispatched')} DeepSeek dispatches "
                      f"({total('deepseek_done')} done, {total('deepseek_failed')} failed, {total('deepseek_timeout')} "
@@ -647,8 +648,11 @@ def summarize(docs, last_day):
         tok = [(r["tokens"], r["prs_merged"]) for r in part if r["tokens"] is not None]
         merged = sum(m for _, m in tok)
         per_pr = round(sum(t for t, _ in tok) / merged) if merged else "-"
+        wake_days = len(known("verify_wakes"))  # days with a wakes block; days before #400 have none
+        partial = f" ({wake_days} days with data)" if wake_days < len(part) else ""
         lines.append(f"- Last {span} days wakes: {total('verify_wakes')} verify wakes, {total('deepseek_dispatched')} "
-                     f"DeepSeek and {total('grok_dispatches')} grok dispatches ({total('rework_dispatches')} reworks), "
+                     f"DeepSeek and {total('grok_dispatches')} grok dispatches ({total('rework_dispatches')} reworks)"
+                     f"{partial}, "
                      f"lead wakes: {sum(lead) if lead else '-'} ({len(lead)} days with input); "
                      f"tokens per merged PR: {per_pr} ({len(tok)} days with input).")
     lines += ["", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
