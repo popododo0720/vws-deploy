@@ -207,9 +207,10 @@ class TickEndBreakdown(Env):
             {"event": "commented", "created_at": "2026-10-21T11:01:00Z"}]}
         self.set_routes(r)
         self.tick()
-        got = sorted(c["path"].split("?")[0] for c in self.calls() if c["path"].endswith("/events?per_page=100"))
+        got = sorted(c["path"].split("?")[0] for c in self.calls()
+                     if c["path"].startswith(f"{O}/vws-deploy/") and c["path"].endswith("/events?per_page=100"))
         self.assertEqual(got, [f"{O}/vws-deploy/issues/{n}/events" for n in range(400, 405)],
-                         "only needs-verify PRs pay for an events read")
+                         "only needs-verify PRs pay for an events read (the draft status thread #339 does not)")
 
     def test_unlabeled_green_prs_do_not_wake(self):
         r = routes()
