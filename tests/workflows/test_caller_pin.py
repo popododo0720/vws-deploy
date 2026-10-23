@@ -15,9 +15,10 @@ cp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cp)
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
-REF = "popododo0720/vws-deploy/.github/workflows/repo-guard-reusable.yml@" + SHA
+PFX = "popododo0720/vws-deploy/.github/workflows/"
+LOCAL = "./.github/workflows/"
 
-# The caller every other repo carries, with REF in each uses line.
+# The caller every other repo carries: each uses line is PFX + the job's file + "@" + SHA.
 GOOD = """name: repo-guard
 on:
   pull_request:
@@ -28,23 +29,19 @@ permissions: {}
 jobs:
   hygiene:
     if: github.event_name == 'pull_request'
-    uses: REF
-    with: {job: pr-hygiene}
+    uses: PFXrepo-guard-pr-hygiene.ymlAT
     permissions: {contents: read, pull-requests: read}
   gate:
     if: github.event_name == 'pull_request'
-    uses: REF
-    with: {job: verify-gate}
+    uses: PFXrepo-guard-verify-gate.ymlAT
     permissions: {contents: read, pull-requests: read, issues: read}
   reset:
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    uses: REF
-    with: {job: verify-reset}
+    uses: PFXrepo-guard-verify-reset.ymlAT
     permissions: {issues: write, pull-requests: write}
   rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
-    uses: REF
-    with: {job: verify-rerun}
+    uses: PFXrepo-guard-verify-rerun.ymlAT
     permissions: {actions: write, pull-requests: read}
   pr-hygiene:
     needs: hygiene
@@ -59,8 +56,8 @@ jobs:
 """
 
 
-def caller(ref=REF, text=GOOD):
-    return text.replace("REF", ref)
+def caller(pfx=PFX, at="@" + SHA, text=GOOD):
+    return text.replace("PFX", pfx).replace("AT\n", at + "\n")
 
 
 class CallerPin(unittest.TestCase):
@@ -68,26 +65,24 @@ class CallerPin(unittest.TestCase):
         self.assertEqual(cp.check(caller()), ([], SHA))
 
     def test_branch_tag_and_short_refs_fail(self):
-        base = REF.split("@")[0]
-        for ref in (base + "@main", base + "@v1", base + "@" + SHA[:12], base + "@" + SHA.upper(),
-                    base + "@refs/heads/main", "popododo0720/vws-other/.github/workflows/repo-guard-reusable.yml@" + SHA):
-            errs, _ = cp.check(caller(ref))
-            self.assertTrue(errs, ref)
-            self.assertTrue(any("40-hex" in e for e in errs), (ref, errs))
+        cases = [(PFX, at) for at in ("@main", "@v1", "@" + SHA[:12], "@" + SHA.upper(), "@refs/heads/main", "")]
+        cases.append(("popododo0720/vws-other/.github/workflows/", "@" + SHA))
+        for pfx, at in cases:
+            errs, _ = cp.check(caller(pfx, at))
+            self.assertTrue(errs, (pfx, at))
+            self.assertTrue(any("40-hex" in e for e in errs), (pfx, at, errs))
 
     def test_local_ref_only_in_the_home_repo(self):
-        local = "./.github/workflows/repo-guard-reusable.yml"
-        errs, _ = cp.check(caller(local))
+        errs, _ = cp.check(caller(LOCAL, ""))
         self.assertTrue(errs)
-        self.assertEqual(cp.check(caller(local), home=True), ([], "local"))
+        self.assertEqual(cp.check(caller(LOCAL, ""), home=True), ([], "local"))
 
     def test_home_repo_must_not_pin_a_sha(self):
         errs, _ = cp.check(caller(), home=True)
         self.assertTrue(errs)
 
     def test_mixed_pins_fail(self):
-        other = REF.replace(SHA, "f" * 40)
-        text = GOOD.replace("REF", other, 1).replace("REF", REF)
+        text = caller().replace("@" + SHA, "@" + "f" * 40, 1)
         errs, _ = cp.check(text)
         self.assertTrue(any("same SHA" in e for e in errs), errs)
 
@@ -104,12 +99,16 @@ class CallerPin(unittest.TestCase):
         self.assertTrue(cp.check(text)[0])
 
     def test_secrets_are_never_passed(self):
-        text = caller().replace("    with: {job: verify-gate}\n", "    with: {job: verify-gate}\n    secrets: inherit\n")
-        self.assertTrue(cp.check(text)[0])
+        gate = "repo-guard-verify-gate.yml@%s\n" % SHA
+        self.assertTrue(cp.check(caller().replace(gate, gate + "    secrets: inherit\n"))[0])
+        self.assertTrue(cp.check(caller().replace(gate, gate + "    with: {job: verify-gate}\n"))[0])
 
-    def test_wrong_job_input_fails(self):
-        text = caller().replace("with: {job: verify-gate}", "with: {job: pr-hygiene}")
-        self.assertTrue(cp.check(text)[0])
+    def test_wrong_called_file_fails(self):
+        # The gate call must call the verify-gate file; another job's file, or a file that is not a
+        # repo-guard job, fails.
+        for name in ("repo-guard-pr-hygiene.yml", "repo-guard-reusable.yml", "ci.yml"):
+            text = caller().replace("repo-guard-verify-gate.yml@", name + "@")
+            self.assertTrue(cp.check(text)[0], name)
 
     def test_shim_that_ignores_the_result_fails(self):
         text = caller().replace('run: test "$R" = success/verify-gate', "run: 'true'")
