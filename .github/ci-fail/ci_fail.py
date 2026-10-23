@@ -316,13 +316,15 @@ class Gh:
         return self._call([path])
 
     def get_all(self, path):
+        """Every page of a list. Fails closed: more than `pages` full pages raises instead of
+        returning a partial list (an undercount would lift the cap or miss the dedupe marker)."""
         out = []
         for page in range(1, self.pages + 1):
             batch = self.get(f"{path}&page={page}")
             out += batch
             if len(batch) < 100:
-                break
-        return out
+                return out
+        raise RuntimeError(f"gh api {path} has more than {self.pages} pages; refusing a partial list")
 
     def post(self, path, payload):
         return self._call(["-X", "POST", path, "--input", "-"], json.dumps(payload), write=True)
