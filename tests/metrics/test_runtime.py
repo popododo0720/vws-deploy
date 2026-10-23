@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s tests/metrics"""
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -369,12 +370,16 @@ class BoxLoop(unittest.TestCase):
 
 
 class Static(unittest.TestCase):
-    def test_no_webhook_or_direct_http(self):
+    def test_direct_http_only_for_the_alert_webhook(self):
+        # vws-deploy#416: the alert webhook is the only HTTP call that does not go through gh.
         with open(SCRIPT, encoding="utf-8") as f:
             text = f.read()
-        for word in ("urllib", "webhook", "requests", "git push", "heads/main"):
+        for word in ("requests", "git push", "heads/main", "urlopen("):
             self.assertNotIn(word, text)
         self.assertTrue(text.isascii())
+        allowed = re.search(r"^class _NoRedirect.*?^def read_tokens", text, re.M | re.S).group(0)
+        rest = text.replace(allowed, "")
+        self.assertEqual([line for line in rest.splitlines() if "urllib" in line and not line.startswith("import ")], [])
 
     def test_executable(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
