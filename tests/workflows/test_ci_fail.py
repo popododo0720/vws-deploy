@@ -9,6 +9,8 @@ import json
 import os
 import re
 import unittest
+import unittest.mock
+import urllib.error
 
 import yaml
 
@@ -63,6 +65,7 @@ class Fake:
         self.jobs = {}
         self.logs = {}
         self.calls = []
+        self.fail_labels = False
         self.next_id = 500
 
     @staticmethod
@@ -123,10 +126,12 @@ class Fake:
         m = re.search(r"/actions/jobs/(\d+)/logs$", path)
         return self.logs.get(int(m.group(1)), "") if m else ""
 
-    def post(self, path, data):
+    def post(self, path, data, retry=True):
         self.calls.append(("POST", path, data))
         m = re.fullmatch(rf"repos/{self.repo}/issues/(\d+)/labels", path)
         if m:
+            if self.fail_labels:
+                raise cf.GhError(422, path, "label does not exist")
             pull = next(p for p in self.pulls if p["number"] == int(m.group(1)))
             pull["labels"] += [{"name": x} for x in data["labels"]]
             return [{"name": x} for x in data["labels"]]
@@ -159,6 +164,69 @@ class Fake:
 
     def labels(self):
         return [c for c in self.calls if c[0] == "POST" and c[1].endswith("/labels")]
+
+
+class _Response:
+    def __init__(self, data):
+        self.data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.data
+
+
+class Api(unittest.TestCase):
+    def openers(self):
+        class Opener:
+            def __init__(self):
+                self.calls = 0
+
+            def open(self, req, timeout):
+                self.calls += 1
+                if self.calls < 3:
+                    raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, None)
+                return _Response(b'{"ok": true}')
+        return Opener()
+
+    def test_transient_get_retries_with_a_bounded_attempt_count(self):
+        client = cf.Client("popododo0720/vws-storage", "x")
+        client.opener = self.openers()
+        with unittest.mock.patch.object(cf.time, "sleep", lambda _: None):
+            self.assertEqual(client.get("repos/x/y"), {"ok": True})
+        self.assertEqual(client.opener.calls, 3)
+
+        class Always:
+            def __init__(self):
+                self.calls = 0
+
+            def open(self, req, timeout):
+                self.calls += 1
+                raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, None)
+        client.opener = Always()
+        with unittest.mock.patch.object(cf.time, "sleep", lambda _: None):
+            with self.assertRaises(cf.GhError):
+                client.get("repos/x/y")
+        self.assertEqual(client.opener.calls, cf.RETRY_ATTEMPTS)
+
+    def test_comment_post_is_not_retried(self):
+        class Busy:
+            def __init__(self):
+                self.calls = 0
+
+            def open(self, req, timeout):
+                self.calls += 1
+                raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, None)
+        client = cf.Client("popododo0720/vws-storage", "x")
+        client.opener = Busy()
+        with unittest.mock.patch.object(cf.time, "sleep", lambda _: None):
+            with self.assertRaises(cf.GhError):
+                client.post("repos/x/y/issues/1/comments", {"body": "x"}, retry=False)
+        self.assertEqual(client.opener.calls, 1)
 
 
 class Create(unittest.TestCase):
@@ -273,6 +341,14 @@ class Cap(unittest.TestCase):
         self.assertEqual(len(w.labels()), 1)
         self.assertIn("**needs-human**", w.comments[113][0]["body"])
         self.assertEqual(cf.parse_marker(w.comments[113][0]["body"])["n"], 4)
+
+    def test_a_missing_needs_human_label_still_posts_the_escalation(self):
+        w = self.chain()
+        w.fail_labels = True
+        result = cf.run(w, event(), ["ci"], NOW)
+        self.assertEqual(result["action"], "created")
+        self.assertIn("**needs-human**", w.comments[113][0]["body"])
+        self.assertEqual(len(w.labels()), 1)
 
     def test_needs_human_blocks_wake_without_an_escalation(self):
         w = Fake(labels=["deepseek", "needs-human"])
