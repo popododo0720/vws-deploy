@@ -117,6 +117,11 @@ class Parked(unittest.TestCase):
             d = self.doc(("ready", "deepseek", lb))
             self.assertEqual((self.targets(d), d["parked"]), ([], 2), lb)
 
+    def test_an_opt_out_issue_without_a_task_label_is_still_parked(self):
+        for lb in ("hold", "needs-human"):
+            d = self.doc((lb,))
+            self.assertEqual((self.targets(d), d["parked"]), ([], 2), lb)
+
     def test_missing_assignee_field_counts_as_unassigned(self):
         r = copy.deepcopy(raw())
         r["repos"]["vws-deploy"]["open_issues"].append(
