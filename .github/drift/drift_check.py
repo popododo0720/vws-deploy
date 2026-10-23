@@ -220,6 +220,7 @@ def open_pr_heads(owner, repo, api=None):
 WF_DIR = ".github/workflows"
 CALLED = re.compile(r"(^|/)repo-guard-[^/@]*\.ya?ml(@|$)", re.I)
 EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
+LISTING_CAP = 1000
 
 
 def workflow_files(owner, repo, ref=None, api=None):
@@ -228,8 +229,8 @@ def workflow_files(owner, repo, ref=None, api=None):
     api = api or gh
     q = f"?ref={ref}" if ref else ""
     d = api(f"repos/{owner}/{repo}/contents/{WF_DIR}{q}")
-    if not isinstance(d, list):
-        return None
+    if not isinstance(d, list) or len(d) >= LISTING_CAP:
+        return None  # the Contents API lists at most 1,000 entries; a full listing may hide a file
     out = {}
     for e in d:
         e = _map(e)
@@ -287,8 +288,12 @@ def other_workflow_issues(files):
         if _call_only(wf.get("on", wf.get(True))):
             continue
         for jid, job in jobs.items():
-            label = _map(job).get("name", jid)
-            hit = _may_report(str(label))
+            label = str(_map(job).get("name", jid))
+            if "${{" in label:
+                # Never parsed or evaluated: a quoted }} or format() can still produce a bare check name.
+                out.append(f"{name}: job {jid} name has an expression, which can report a required check name; only literal job names are allowed")
+                continue
+            hit = _may_report(label)
             if hit:
                 out.append(f"{name}: job {jid} can report the required check name {hit}; only repo-guard.yml may")
     return out
