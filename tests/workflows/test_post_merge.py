@@ -111,13 +111,13 @@ print("[]")
     def writes(self):
         return [c for c in self.calls() if "-X" in c or "--method" in c]
 
-    def run(self, pr_body, repo="popododo0720/vws-iam"):
+    def run(self, pr_body, repo="popododo0720/vws-iam", **extra):
         body = os.path.join(self.dir, "pr-body.md")
         with open(body, "w") as f:
             f.write(pr_body)
         summary = os.path.join(self.dir, "summary.md")
         env = dict(os.environ, PATH=self.dir + ":" + os.environ["PATH"], REPO=repo, PR_BODY_FILE=body,
-                   GITHUB_STEP_SUMMARY=summary)
+                   GITHUB_STEP_SUMMARY=summary, **extra)
         r = subprocess.run(["bash", POST], env=env, capture_output=True, text=True)
         r.summary = open(summary).read() if os.path.exists(summary) else ""
         return r
@@ -188,10 +188,67 @@ class PostMerge(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(s.calls(), [])
 
-    def test_part_of_only_at_line_start(self):
-        s = Stub(self, {I + "7": issue(OPEN_BODY)})
-        s.run("This is not Part of #7 in prose.\n")
+    def test_refs_resolve_like_guard_agents(self):
+        # vws-deploy#418: every form guard-agents.sh pr-body accepts (PART_OF_RE) resolves here too.
+        s = Stub(self, {I + n: issue(OPEN_BODY) for n in ("7", "8", "9", "11")})
+        r = s.run("This change is Part of #7 in prose.\n"
+                  "Part of popododo0720/vws-iam#8\n"
+                  "(part of POPODODO0720/VWS-IAM#9)\n"
+                  "Part of vws-iam#11\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(s.writes(), [label_call(n) for n in (7, 8, 9, 11)])
+
+    def test_other_owner_or_repo_with_owner_is_skipped(self):
+        s = Stub(self, {})
+        r = s.run("Part of popododo0720/vws-proto#5\nPart of someone/vws-iam#6\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(s.calls(), [])
+        self.assertIn("popododo0720/vws-proto#5 skipped, other repo", r.summary)
+        self.assertIn("someone/vws-iam#6 skipped, other repo", r.summary)
+
+    def test_hidden_or_zero_refs_do_not_count(self):
+        # guard-agents.sh ignores HTML comments and code fences, and #0 names no issue.
+        s = Stub(self, {I + n: issue(OPEN_BODY) for n in ("7", "8", "9")})
+        s.run("<!-- Part of #7 -->\n```\nPart of #8\n```\nPart of #0\nnot apart of #9\n")
+        self.assertEqual(s.calls(), [])
+
+    def test_lint_crash_fails_closed(self):
+        # vws-deploy#418: ac-lint dying (exit 2+, or no summary line) is never "all AC met".
+        crash = os.path.join(tempfile.mkdtemp(), "lint.sh")
+        self.addCleanup(subprocess.run, ["rm", "-rf", os.path.dirname(crash)])
+        for name, script in [("exit 2", "echo boom >&2; exit 2"), ("killed", "kill -9 $$"),
+                             ("exit 0 without output", "exit 0"), ("exit 1 without output", "exit 1")]:
+            with self.subTest(name):
+                with open(crash, "w") as f:
+                    f.write("#!/usr/bin/env bash\ncat >/dev/null\n" + script + "\n")
+                os.chmod(crash, 0o755)
+                s = Stub(self, {I + "9": issue(DONE_BODY)})
+                r = s.run("Part of #9\n", AC_LINT=crash)
+                self.assertNotEqual(r.returncode, 0, "the job fails")
+                self.assertEqual(s.writes(), [label_call(9)], "and the issue is marked ac-pending")
+                self.assertRegex(r.summary, r"#9 ac-lint failed \(exit [0-9]+\)")
+                self.assertNotIn("complete", r.summary)
+
+    def test_lint_exit_1_is_no_evidence_not_a_crash(self):
+        s = Stub(self, {I + "8": issue(NOEV_BODY)})
+        r = s.run("Part of #8\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("ac-lint failed", r.summary)
+
+    def test_fork_pr_is_skipped_with_a_log(self):
+        for head in ("someone/vws-iam", ""):
+            with self.subTest(head=head or "deleted fork"):
+                s = Stub(self, {I + "7": issue(OPEN_BODY)})
+                r = s.run("Part of #7\n", HEAD_REPO=head)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(s.calls(), [], "no API call with the read-only fork token")
+                self.assertIn("skipped: fork pull request", r.summary)
+                self.assertIn("skipped: fork pull request", r.stdout)
+
+    def test_same_repo_head_still_labels(self):
+        s = Stub(self, {I + "7": issue(OPEN_BODY)})
+        s.run("Part of #7\n", HEAD_REPO="popododo0720/vws-iam")
+        self.assertEqual(s.writes(), [label_call(7)])
 
     def test_unreadable_issue_fails(self):
         s = Stub(self, {})
@@ -233,6 +290,10 @@ class Workflow(unittest.TestCase):
         self.assertEqual(w["ref"], "${{ github.event.repository.default_branch }}")
         self.assertEqual(w["sparse-checkout"].split(), [".github/ac"])
         self.assertNotRegex(text, r"head\.(sha|ref)|refs/pull")
+
+    def test_head_repo_passed_for_the_fork_skip(self):
+        run = next(s for s in WF["jobs"]["ac-pending"]["steps"] if s.get("name") == "Label issues with open AC")
+        self.assertEqual(run["env"]["HEAD_REPO"], "${{ github.event.pull_request.head.repo.full_name }}")
 
     def test_pr_body_via_file_not_shell_interpolation(self):
         text = open(WF_PATH).read()
