@@ -16,7 +16,9 @@ tests are `tests/ci_fail/` (fake gh, no network).
   is not `main`/`master`, and exactly one open PR has that head SHA. Push runs on main never post.
 - A green run does nothing. There is no passed state; consumers compare `sha` with the PR head.
 - Permissions: `actions: read` (jobs and logs), `contents: read`, `pull-requests: write` (comment
-  and label). The PR's code is never checked out; the script comes from vws-deploy `main`.
+  and label). The PR's code is never checked out. The script is checked out from
+  `job.workflow_repository` at `job.workflow_sha`, the vws-deploy commit the caller pinned, so a
+  push to vws-deploy main changes nothing until the caller bumps its pin.
 
 ## Comment format (v=1)
 
@@ -101,6 +103,7 @@ verify FAIL counts once.
 ## Caller (one per vws-* repo, after this merges)
 
 List every CI workflow of the repo by its `name:`. Keep the list in sync when a workflow is added.
+Pin `uses:` to a full commit SHA on vws-deploy main (the SHA below is a placeholder).
 
 ```yaml
 # .github/workflows/ci-fail.yml in a vws-* repo
@@ -119,7 +122,8 @@ jobs:
       actions: read
       contents: read
       pull-requests: write
-    uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@main
+    # A full 40-hex commit SHA on vws-deploy main, never a branch (#402); the script runs from it too.
+    uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@0123456789abcdef0123456789abcdef01234567
 ```
 
 `workflow_run` runs the caller from the default branch, so a PR cannot change it. `check_suite` is
