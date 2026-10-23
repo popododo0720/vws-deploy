@@ -4,10 +4,12 @@ Run: python3 -m unittest discover -s tests/workflows
 The tests load .github/ci-fail/ci_fail.py and use an in-memory GitHub, so no network or token.
 """
 import datetime as dt
+import http.server
 import importlib.util
 import json
 import os
 import re
+import threading
 import unittest
 import unittest.mock
 import urllib.error
@@ -227,6 +229,43 @@ class Api(unittest.TestCase):
             with self.assertRaises(cf.GhError):
                 client.post("repos/x/y/issues/1/comments", {"body": "x"}, retry=False)
         self.assertEqual(client.opener.calls, 1)
+
+
+class LogRedirect(unittest.TestCase):
+    def test_a_log_redirect_does_not_forward_the_token(self):
+        seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.headers.get("Authorization"), self.path))
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://localhost:{self.server.server_port}/log")
+                    self.end_headers()
+                    return
+                body = b"log"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = cf.Client("popododo0720/vws-deploy", "secret",
+                               api=f"http://127.0.0.1:{server.server_port}")
+            self.assertEqual(client.get_text("redirect"), "log")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+        self.assertEqual(seen[0], ("Bearer secret", "/redirect"))
+        self.assertEqual(seen[1][1], "/log")
+        self.assertIsNone(seen[1][0])
 
 
 class Create(unittest.TestCase):
