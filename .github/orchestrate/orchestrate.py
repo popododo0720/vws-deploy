@@ -647,7 +647,8 @@ def comment_distrust(c, cfg):
     else why not. Resets and dispatches need a trusted author; [deepseek-dev] reports need a DeepSeek poller
     login; verdicts and markers need the verify login or an OWNER association (#433/#434)."""
     kind = classify_comment(c.get("body"))
-    if not kind:
+    # CI-failure markers have their own author check (ci_fail_markers, #412).
+    if not kind or kind[0] == "ci_fail":
         return ""
     login, assoc = c.get("author") or "", c.get("assoc") or ""
     if not login or not assoc:
