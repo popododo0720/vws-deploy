@@ -124,6 +124,18 @@ def check(text, home=False):
     return errs, pin
 
 
+def common_pin(pins):
+    """The single most common pin of {repo: sha}, or None when there is none or a tie."""
+    counts = {}
+    for sha in pins.values():
+        counts[sha] = counts.get(sha, 0) + 1
+    if not counts:
+        return None
+    top = max(counts.values())
+    leaders = [s for s, n in counts.items() if n == top]
+    return leaders[0] if len(leaders) == 1 else None
+
+
 def pin_drift(pins, on_main):
     """{repo: reason} for callers whose pin differs from the common one or is not on vws-deploy main.
 
@@ -133,12 +145,7 @@ def pin_drift(pins, on_main):
     out = {}
     if not pins:
         return out
-    counts = {}
-    for sha in pins.values():
-        counts[sha] = counts.get(sha, 0) + 1
-    top = max(counts.values())
-    leaders = [s for s, n in counts.items() if n == top]
-    common = leaders[0] if len(leaders) == 1 else None
+    common = common_pin(pins)
     checked = {}
     for repo, sha in sorted(pins.items()):
         if sha != common:
