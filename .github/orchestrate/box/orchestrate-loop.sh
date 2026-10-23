@@ -3,8 +3,9 @@
 # One loop per box: it holds loop.lock for its lifetime. Each tick runs orchestrate.py in a fresh
 # process, so a crash ends only that tick. Failed ticks back off exponentially (capped); after each
 # failed tick orchestrate.py --notify-failure runs, and at ORCHESTRATE_FAILURE_THRESHOLD failures in a
-# row it posts one failure comment on the status thread (draft PR) per streak. Start it with
-# orchestrate-ensure.sh, not by hand.
+# row it writes one "Failed ticks" section into the status issue body per streak (no comment). Start it
+# with orchestrate-ensure.sh, not by hand. metrics.py reads VWS_ALERT_WEBHOOK_URL and
+# VWS_ALERT_WEBHOOK_KEY from this process's environment (never from the env file).
 #
 # Environment (tests override these): ORCHESTRATE_STATE_DIR, ORCHESTRATE_CONFIG_DIR,
 # ORCHESTRATE_INTERVAL (default 600 s), ORCHESTRATE_BACKOFF_BASE (default 60 s),
@@ -14,7 +15,7 @@
 #
 # Daily metrics (vws-deploy#345): with METRICS_ENABLED=1, every iteration also runs metrics.py --if-due,
 # which returns at once unless a day is due. It has its own lock and log (log/metrics.log), and its exit
-# status never counts as a failed tick, so it cannot start backoff or a failure comment.
+# status never counts as a failed tick, so it cannot start backoff or a failure section.
 set -uo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 
