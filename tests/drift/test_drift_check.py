@@ -127,6 +127,71 @@ class GuardVariants(unittest.TestCase):
         self.assertEqual(variants, {"vws-conformance": self.VARIANT})
 
 
+class RequiredChecks(unittest.TestCase):
+    def test_ruleset_contexts(self):
+        rules = [
+            {"type": "deletion"},
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                {"context": "pr-hygiene"}, {"context": "verify-gate"}]}},
+        ]
+        self.assertEqual(dc.rule_checks(rules), ["pr-hygiene", "verify-gate"])
+
+    def test_bad_ruleset_shapes(self):
+        self.assertEqual(dc.rule_checks(None), [])
+        self.assertEqual(dc.rule_checks(["x", {"type": "required_status_checks", "parameters": None}]), [])
+        self.assertEqual(dc.rule_checks([
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                None, {"context": ""}, {"context": "lint"}]}},
+        ]), ["lint"])
+
+    def test_classic_and_ruleset_union(self):
+        rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+            {"context": "vws-verify"}, {"context": "lint"}]}}]
+        self.assertEqual(dc.effective_checks(["build", "lint"], rules), ["build", "lint", "vws-verify"])
+
+    def test_each_common_check_is_required(self):
+        self.assertEqual(dc.missing_checks(dc.COMMON_CHECKS, ""), [])
+        self.assertEqual(dc.missing_checks(["pr-hygiene", "verify-gate"], ""), ["vws-verify"])
+        self.assertEqual(dc.missing_checks(["pr-hygiene", "vws-verify", "verify-gate"], "lint test"), ["lint", "test"])
+
+
+class RulesetDrift(unittest.TestCase):
+    ACTIVE = {"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}
+
+    def test_active_ruleset_without_bypass(self):
+        self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: {"bypass_actors": []}}), [])
+
+    def test_no_active_branch_ruleset(self):
+        for rulesets in ([], [{**self.ACTIVE, "enforcement": "disabled"}],
+                         [{**self.ACTIVE, "target": "tag"}]):
+            self.assertEqual(dc.ruleset_drift(rulesets, {}), ["no active branch ruleset"])
+
+    def test_other_ruleset_name(self):
+        self.assertEqual(dc.ruleset_drift([{**self.ACTIVE, "name": "other"}], {1: {}}),
+                         ["no active vws-main ruleset"])
+
+    def test_bypass_actor_is_drift(self):
+        self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: {"bypass_actors": [{"actor_id": 5}]}}),
+                         ["ruleset vws-main has 1 bypass actor(s)"])
+
+    def test_unreadable_detail_is_drift(self):
+        self.assertEqual(dc.ruleset_drift([self.ACTIVE], {1: None}), ["ruleset vws-main unreadable"])
+
+
+class StaleFacts(unittest.TestCase):
+    def test_each_stale_phrase_is_reported(self):
+        for phrase in dc.STALE_PHRASES:
+            self.assertEqual(dc.stale_phrases("before " + phrase + " after"),
+                             [f"stale phrase: {phrase}"])
+
+    def test_clean_text_passes(self):
+        self.assertEqual(dc.stale_phrases("main is protected by the active vws-main ruleset"), [])
+
+    def test_repo_agents_md_is_clean(self):
+        with open(os.path.join(ROOT, "AGENTS.md"), "rb") as f:
+            self.assertEqual(dc.stale_phrases(f.read().decode("utf-8")), [])
+
+
 class ExitStatus(unittest.TestCase):
     def test_drift_is_not_a_crash_status(self):
         # 1 is what Python returns on a traceback; drift must not share it with a crash.
