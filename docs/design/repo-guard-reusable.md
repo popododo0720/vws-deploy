@@ -35,6 +35,18 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 - Who satisfies the gate: unchanged. The `verify-approved` label plus a `Verified-by: vws-verify` comment for the head, with `VWS_VERIFY_ACTORS`, `VWS_VERIFY_IDENTITY` and the author and pusher exclusion read from the caller repo's variables and API.
 - What the pin adds: in a repo other than vws-deploy, a PR can no longer edit the job steps; they are fixed at the pinned vws-deploy commit. A PR can still edit its caller (the pin, the shim or the permissions), because `pull_request` runs the PR's copy of the caller. That is detected, not blocked: `caller_pin.py` and the daily drift-check report any caller that changed shape, pins a branch, tag or short SHA, pins a different SHA from the other repos, or pins a SHA that is not on vws-deploy main. drift-check reads the caller on the default branch and at the head of every open PR, so a PR that changes the pin is flagged while it is open: the daily run fails on it, and `workflow_dispatch` with `repo` and `sha` checks one PR head on demand. On a vws-deploy pull request drift-check also checks that PR's head (`--head vws-deploy=<head sha>` from the event) but, as before, only warns on drift. In vws-deploy a PR can edit both files, as before. This is the same gap as docs/QUALITY.md "Known gaps"; the real control stays branch protection with review by a second account.
 
+### What drift-check checks at each ref
+
+drift-check applies the same rules on the default branch and at every PR head. It lists open PRs page by page; a page it cannot read is drift.
+
+- Pending repos: a repo in `.github/drift/caller-pending.tsv` (`repo<TAB>sha256<TAB>reason`) is exempt only while its `repo-guard.yml` has exactly the pinned sha256, the unmigrated full copy. Any other content is checked by `caller_pin.py` and its errors are drift. A migration PR with a `defaults.run.shell` bypass or an `@main` pin is flagged. The hash is a pin, not "same as the default branch", so a full copy edited by a PR that merged between two drift runs is also flagged. Editing a full copy on purpose needs a vws-deploy PR that updates its hash first.
+- Other workflow files: every `.yml` and `.yaml` file in `.github/workflows` is read. No file but `repo-guard.yml` may call a `repo-guard-*.yml` file (by pin or local path), so a second caller or a renamed one is flagged. No file but `repo-guard.yml` may have a job that can report the bare `pr-hygiene` or `verify-gate` check name. That name is the job `name`, or the job id when it has no name. The match ignores case and counts `${{ }}` as a wildcard. Such a job could satisfy a required check from another file, so it is flagged. Files that run only on `workflow_call` are skipped, because their jobs report as `caller / job`. An unreadable or unparsable file, or a symlink named like a workflow, is drift.
+- A missing `repo-guard.yml` is drift.
+
+## Rollout notes
+
+- Comment-triggered rerun after this merges: `issue_comment` runs the default-branch workflow. Once vws-deploy main has the caller, `verify-rerun` looks for the job `gate / verify-gate`. An open PR whose head still carries the old full `repo-guard.yml` has no such job, so the rerun prints "has no verify-gate job" and exits 0 without re-running anything. For those PRs, merge main into the branch (or push a new commit) so the head has the caller, or toggle the `verify-approved` label to start a `pull_request` run. The same applies in each repo when its caller PR lands. verify r2 saw the reverse before the merge: on PR #413 a comment ran main's old `verify-rerun`, which re-ran only the shim.
+
 ## How it fits #338
 
 #338 moves verify-gate to the vws-verify App check run and a digest allowlist. With this layout that is one vws-deploy PR that changes the called `verify-gate` job (and adds `checks: read` to the `gate` call in `caller_pin.py`), followed by one pin bump per repo, instead of an edit in every repo. vws-conformance keeps its own repo-guard.yml and accepted guard variant (`caller-pending.tsv`, `guard-variants.tsv`) until then. Its variant runs verify-gate on `pull_request_target`; becoming a caller means moving it to `pull_request`, which #338 has to decide.
@@ -44,7 +56,7 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 1. Merge the change to the `repo-guard-<job>.yml` files on vws-deploy main; note the merge commit SHA `S` (40 hex).
 2. In each repo, one PR that replaces the four `@<old>` refs in `.github/workflows/repo-guard.yml` with `@S` (`sed -i "s/@[0-9a-f]\{40\}/@S/" .github/workflows/repo-guard.yml`) and nothing else. `python3 .github/drift/caller_pin.py <file>` (from a vws-deploy checkout) prints `S`.
 3. Until the last repo merges, drift-check reports the repos whose pin is not the common one. That is expected during a rollout and clears when every repo pins `S`.
-4. First move of a repo from the full copy: the same PR deletes the repo's row from vws-deploy `.github/drift/caller-pending.tsv` (a separate vws-deploy PR).
+4. First move of a repo from the full copy: drift-check checks the migration PR's caller like any other, because it is no longer the pinned full copy. After it merges, a separate vws-deploy PR deletes the repo's row from `.github/drift/caller-pending.tsv`. Until then drift-check shows the caller as ok with "drop its caller-pending.tsv row".
 
 ## Rejected
 
@@ -56,4 +68,4 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 
 ## Not verified
 
-The YAML passes actionlint and the stubbed tests in `tests/workflows`, and the permission superset test reads the real files. That a run on the per-job layout starts at all, the `caller / called` job names, re-running a called job together with its shim, and the output of a failed call are only proven by a run on the pushed PR head.
+The YAML passes actionlint and the stubbed tests in `tests/workflows`, and the permission superset test reads the real files. verify r2 observed these on PR #413's head 390ca0e (run 39906944900): the run starts on the per-job layout, the bare `pr-hygiene` check passes, and the bare `verify-gate` check fails closed without a verdict. Not yet seen: a green `verify-gate`, re-running `gate / verify-gate` together with its shim (only possible after merge, see Rollout notes), the output of a failed call, and drift-check's pending-repo and other-file rules against the real API.
