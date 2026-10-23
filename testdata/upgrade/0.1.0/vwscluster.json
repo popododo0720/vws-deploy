@@ -4,17 +4,18 @@
   "metadata": {
     "name": "vws",
     "namespace": "vws",
-    "generation": 2,
-    "resourceVersion": "4711"
+    "generation": 2
   },
   "spec": {
     "profile": "single-node",
-    "version": "0.1.0",
+    "version": "sha-0123456",
     "storage": {
-      "driver": "rook-ceph"
+      "driver": "existing",
+      "storageClass": "fast-rbd"
     },
     "network": {
-      "driver": "kube-ovn"
+      "driver": "kube-ovn",
+      "vmMTU": 8900
     },
     "services": {
       "network": {
@@ -31,14 +32,6 @@
   },
   "status": {
     "observedGeneration": 2,
-    "appliedValuesHash": "ec47c4c8b927ae96f2d394b46da8c47d8ddce62956e33e9ea1aa460718f65f7f",
-    "conditions": [
-      {
-        "type": "Applied",
-        "status": "True",
-        "reason": "Applied",
-        "message": "vws apply"
-      }
-    ]
+    "appliedValuesHash": "3883248714bfe18aac81d35c30824400d21feeeeb0cc92e209f29bbf0ddff3b1"
   }
 }

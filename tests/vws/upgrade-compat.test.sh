@@ -15,8 +15,8 @@ fixture() {
   jq --arg v "${GROUP}/v1alpha1" '.apiVersion = $v' "$FIXTURE" >"$1"
 }
 
-# behind_release IN OUT: the same record after a spec edit the release has not applied yet. Its
-# status.observedGeneration is older than metadata.generation, so vws apply upgrades.
+# behind_release IN OUT: the record while the release is behind it. Its status.observedGeneration
+# is older than metadata.generation, the state vws apply upgrades from.
 behind_release() {
   jq '.status.observedGeneration = 1' "$1" >"$2"
 }
@@ -32,18 +32,30 @@ status_hash() {
   grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -o '{"status".*}' | jq -r '.status.appliedValuesHash'
 }
 
+# The fields vws apply reads outside the spec keep their names, types and values.
+if jq -e '(.metadata.name == "vws") and (.metadata.generation == 2) and
+          (.status.observedGeneration == 2) and
+          ((.status.appliedValuesHash | type) == "string") and
+          (.status.appliedValuesHash | test("^[0-9a-f]{64}$"))' "$FIXTURE" >/dev/null; then
+  ok "the fixture keeps the identity and status fields vws apply reads"
+else
+  bad "fixture shape" "$(jq -c '{metadata, status}' "$FIXTURE")"
+fi
+
 # The record decodes: every spec field 0.1.0 wrote still reaches the values.
 fixture "${WORK}/vwscluster.json"
 run_vws_real render "${WORK}/vwscluster.json" "${WORK}/values.yaml"
 expect_rc "the 0.1.0 record renders" 0
 expect_text "the 0.1.0 profile is kept" "$(cat "${WORK}/values.yaml")" "profile: single-node"
-expect_text "the 0.1.0 image tag is kept" "$(cat "${WORK}/values.yaml")" "tag: 0.1.0"
+expect_text "the 0.1.0 image tag is kept" "$(cat "${WORK}/values.yaml")" "tag: sha-0123456"
+expect_text "the 0.1.0 storage class is kept" "$(cat "${WORK}/values.yaml")" "storageClass: fast-rbd"
 expect_text "the 0.1.0 elastic IP pool is kept" "$(cat "${WORK}/values.yaml")" "pool: 198.18.0.0/24"
 expect_text "the 0.1.0 console origin is kept" "$(cat "${WORK}/values.yaml")" "console-origins: https://console.example.invalid"
+expect_text "the 0.1.0 VM MTU is kept" "$(cat "${WORK}/values.yaml")" "vm-mtu: 8900"
 
-# Upgrade: an install older than charts/vws/crds/iam.yaml (#369) has no iam CRDs, and Helm does not
-# upgrade crds/ on its own (#381). vws apply adds them, waits until they are Established, renders the
-# old record, and upgrades the release to the value of that render.
+# Upgrade from an install older than charts/vws/crds/iam.yaml (#369): Helm does not upgrade crds/
+# on its own, so the cluster has no iam CRDs until vws apply adds them (#381). The record is the
+# same 0.1.0 record; only the cluster's CRD set is older.
 installer_scenario upgrade
 behind_release "${WORK}/vwscluster.json" "${WORK}/behind.json"
 cp "${WORK}/behind.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
