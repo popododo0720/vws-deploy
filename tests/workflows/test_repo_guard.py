@@ -63,6 +63,64 @@ class VerifyReset(unittest.TestCase):
         self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
 
 
+class PrHygiene(unittest.TestCase):
+    def test_body_checks_run_on_a_body_edit(self):
+        for action in ("opened", "edited", "synchronize"):
+            self.assertIn(action, ON["pull_request"]["types"])
+        self.assertIn("pr-checklist", step("pr-hygiene", "Body has the 9-item Quality checklist, all ticked with evidence")["run"])
+        self.assertIn("pr-commits", step("pr-hygiene", "Commit subjects have a type prefix and Part of #N")["run"])
+
+    def script(self):
+        return step("pr-hygiene", "Acceptance criteria of the linked issue")["run"]
+
+    def summary(self):
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def run_step(self, gh, env):
+        return Stub(self, gh).run(self.script(), dict(env, GH_TOKEN="x", REPO="o/r"))
+
+    def test_ac_lint_goes_to_the_job_summary(self):
+        path = self.summary()
+        gh = r'''case "$*" in
+  *issues/7*) printf '## Acceptance criteria\n\n- [x] one https://example.invalid/1\n- [ ] two\n- [ ] \n' ;;
+  *) exit 1 ;;
+esac'''
+        rc, calls, out = self.run_step(gh, {"PR_BODY": "Part of #7", "GITHUB_STEP_SUMMARY": path})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("issues/7", calls)
+        text = open(path).read()
+        self.assertIn("OK", text)
+        self.assertIn("OPEN", text)
+        self.assertIn("3 boxes, 0 ticked without evidence", text)
+
+    def test_a_ticked_box_without_evidence_does_not_fail_the_job(self):
+        path = self.summary()
+        gh = r'''case "$*" in
+  *issues/7*) printf '## Acceptance criteria\n\n- [x] no evidence\n' ;;
+  *) exit 1 ;;
+esac'''
+        rc, _, out = self.run_step(gh, {"PR_BODY": "Part of #7", "GITHUB_STEP_SUMMARY": path})
+        self.assertEqual(rc, 0, out)
+        text = open(path).read()
+        self.assertIn("NO-EVIDENCE", text)
+        self.assertIn("1 boxes, 1 ticked without evidence", text)
+
+    def test_ac_lint_read_failure_does_not_fail_the_job(self):
+        path = self.summary()
+        rc, _, out = self.run_step("exit 1", {"PR_BODY": "Part of #7", "GITHUB_STEP_SUMMARY": path})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("could not be read", open(path).read())
+
+    def test_no_part_of_does_not_fail_the_job(self):
+        path = self.summary()
+        rc, _, out = self.run_step("exit 1", {"PR_BODY": "no issue", "GITHUB_STEP_SUMMARY": path})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("no 'Part of #N' issue to lint", open(path).read())
+
+
 class CommentRerun(unittest.TestCase):
     ENV = {"GH_TOKEN": "x", "REPO": "o/r", "NUMBER": "7"}
     GH = """case "$*" in
