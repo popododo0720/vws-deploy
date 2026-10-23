@@ -534,7 +534,8 @@ def run(client, event, workflows, now=None):
 
     owner, source = owner_of([l.get("name") for l in pr.get("labels", [])], pr.get("body"),
                              branch, repo)
-    pulls = client.get_all(f"repos/{client.repo}/pulls", {"state": "all"})
+    pulls = [p for p in client.get_all(f"repos/{client.repo}/pulls", {"state": "all"})
+             if ((p.get("head") or {}).get("repo") or {}).get("full_name") == client.repo]
     chain = chain_numbers(pulls, pr["number"], pr.get("body"))
     events = client.get_all(f"repos/{client.repo}/issues/{pr['number']}/events")
     failing = failing_shas({n: client.get_all(f"repos/{client.repo}/issues/{n}/comments") for n in chain},
