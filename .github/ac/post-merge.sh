@@ -23,12 +23,20 @@ if [[ $(lc "$head_repo") != $(lc "$REPO") ]]; then
   exit 0
 fi
 
-# The refs guard-agents.sh pr-body accepts (PART_OF_RE, case-insensitive, anywhere in a line), in the
-# text a reader sees: HTML comments and fenced code blocks are dropped first, as visible_text does.
-mapfile -t refs < <(tr -d '\r' <"$PR_BODY_FILE" |
-  awk '/^[[:space:]]*(```|~~~)/ { fence = !fence; next } !fence' |
-  perl -0pe 's/<!--.*?(-->|\z)//gs' |
-  grep -oiE '(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*' |
+# The refs guard-agents.sh pr-body accepts, read with its own code (vws-deploy#418): visible_text drops
+# HTML comments and code blocks, PART_OF_RE matches #N, name#N and owner/name#N anywhere in a line. Only
+# those two definitions are loaded (the script's command dispatch is not run), so there is no second copy.
+guard=${GUARD_AGENTS:-$here/../../scripts/guard-agents.sh}
+unset PART_OF_RE
+unset -f visible_text
+if ! defs=$(sed -n -e '/^PART_OF_RE=/p' -e '/^visible_text() {$/,/^}$/p' "$guard" 2>/dev/null) ||
+  ! eval "$defs" || [[ -z ${PART_OF_RE:-} ]] || ! declare -F visible_text >/dev/null; then
+  echo "cannot load visible_text and PART_OF_RE from guard-agents ($guard); not reading the PR body" >&2
+  echo "- cannot load guard-agents ($guard)" >>"$summary"
+  exit 1
+fi
+body=$(cat "$PR_BODY_FILE")
+mapfile -t refs < <(LC_ALL=C visible_text <<<"$body" | grep -oiE "$PART_OF_RE" |
   sed -E 's/^[^Pp]?[Pp][Aa][Rr][Tt] [Oo][Ff][[:space:]]+//' | awk '!seen[tolower($0)]++')
 
 ((${#refs[@]})) || echo "No Part of #N in the PR body." >>"$summary"
@@ -52,11 +60,11 @@ for ref in "${refs[@]}"; do
     echo "- #$n skipped, not an open issue" >>"$summary"
     continue
   fi
-  # ac-lint exits 0 (no tick without evidence) or 1 (some), always after its "N boxes" line.
+  # ac-lint exits 0 (no tick without evidence) or 1 (some), after exactly one "N boxes" line.
   # Anything else is a crash: fail closed, label ac-pending so the lead looks, and fail the job.
   lrc=0
   out=$(jq -r '.body // ""' <<<"$json" | "$lint" --file /dev/stdin) || lrc=$?
-  if ((lrc > 1)) || ! grep -qE '^[0-9]+ boxes, ' <<<"$out"; then
+  if ((lrc > 1)) || [[ $(grep -cE '^[0-9]+ boxes, ' <<<"$out" || true) != 1 ]]; then
     echo "#$n: ac-lint failed (exit $lrc); marking ac-pending" >&2
     if gh api -X POST "repos/$REPO/issues/$n/labels" -f 'labels[]=ac-pending' >/dev/null; then
       echo "- #$n ac-lint failed (exit $lrc), labeled ac-pending" >>"$summary"
