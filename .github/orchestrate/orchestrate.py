@@ -4,6 +4,8 @@
 One tick: collect (gh API reads with an on-disk ETag cache) -> decide (pure) -> apply (writes only
 when ORCHESTRATE_MODE=apply). It never calls an LLM. It runs on the shared box under
 box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from the gh environment.
+The one exception is board_sync: its GraphQL calls run with GH_TOKEN set to the project-scope classic
+PAT read from ORCHESTRATE_BOARD_TOKEN_FILE (no file: board_sync is skipped for that tick).
 
 Rules (see docs/factory-orchestrator.md):
   A  wake vws-verify with one marker comment on the status thread (draft PR vws-deploy#339) when
@@ -151,6 +153,8 @@ DEFAULTS = {
     "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
     "ORCHESTRATE_BOARD_EVERY": "6",
     "ORCHESTRATE_BOARD_WRITES": "50",
+    # Classic PAT with only the `project` scope, used for board_sync GraphQL calls and nothing else.
+    "ORCHESTRATE_BOARD_TOKEN_FILE": "/root/.config/vws/board-sync-token",
 }
 
 
@@ -228,8 +232,12 @@ def load_config(paths, environ):
     for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES", "ORCHESTRATE_GROK_CAP"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
+    tf = cfg["ORCHESTRATE_BOARD_TOKEN_FILE"]
+    if not os.path.isabs(tf) or re.search(r"[\x00-\x1f]", tf):
+        raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
+                 "ORCHESTRATE_BOARD_TOKEN_FILE")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -397,23 +405,27 @@ class Gh:
         self.stats = {"get": 0, "not_modified": 0, "write": 0}
         # GETs per endpoint class and status ("200", "304", or the error status), for the tick_end log.
         self.by_class = {}
+        # Set by board_sync for the duration of one sync; only graphql() ever passes it to gh.
+        self.board_token = None
 
     def _count_get(self, path, status):
         c = self.by_class.setdefault(get_class(path), {})
         c[str(status)] = c.get(str(status), 0) + 1
 
-    def _env(self):
+    def _env(self, token=None):
         env = dict(os.environ)
         env.pop("GH_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
+        if token:
+            env["GH_TOKEN"] = token
         return env
 
-    def _run(self, args, stdin=None, tries=None):
+    def _run(self, args, stdin=None, tries=None, token=None):
         last = None
         tries = tries or self.tries
         for attempt in range(tries):
             try:
-                r = self.runner(args, input=stdin, capture_output=True, text=True, timeout=self.timeout, env=self._env())
+                r = self.runner(args, input=stdin, capture_output=True, text=True, timeout=self.timeout, env=self._env(token))
             except subprocess.TimeoutExpired:
                 last = GhError(0, "timeout")
             else:
@@ -489,9 +501,12 @@ class Gh:
                 raise PermissionError("graphql mutation not allowed")
         elif query != BOARD_QUERY:
             raise PermissionError("graphql query not allowed")
+        if not self.board_token:
+            # Never fall back to the box login: the board has its own project-scope token.
+            raise PermissionError("graphql needs the board token")
         args = ["gh", "api", "-i", "graphql", "--input", "-"]
         stdin = json.dumps({"query": query, "variables": variables})
-        status, _headers, body = self._run(args, stdin, tries=1 if write else None)
+        status, _headers, body = self._run(args, stdin, tries=1 if write else None, token=self.board_token)
         self.stats["write" if write else "get"] += 1
         if not write:
             self._count_get("graphql", status)
@@ -2278,11 +2293,37 @@ def board_write(gh, project, fields, muts, sleep):
     return done
 
 
+def read_board_token(path):
+    """The board token from its file, or None if the file is missing, unreadable or empty."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return token or None
+
+
 def board_sync(gh, snapshot, cfg, paths, log, mode, label_change):
     """After apply(): mirror labels to the board on sync ticks. Never raises and never fails the tick."""
     if cfg["ORCHESTRATE_BOARD"] == "off":
         return
     bstate = read_json(paths.board_file, {})
+    token = read_board_token(cfg["ORCHESTRATE_BOARD_TOKEN_FILE"])
+    if not token:
+        # Not an error: the cadence is left as is, so the first tick with a token syncs.
+        log("board_sync_skipped", reason="token_missing")
+        if label_change:
+            bstate["dirty"] = True
+            write_json(paths.board_file, bstate)
+        return
+    try:
+        _board_sync(gh, snapshot, cfg, paths, log, mode, label_change, bstate, token)
+    finally:
+        gh.board_token = None
+
+
+def _board_sync(gh, snapshot, cfg, paths, log, mode, label_change, bstate, token):
+    gh.board_token = token
     if not board_due(bstate, int(num(cfg, "ORCHESTRATE_BOARD_EVERY"))):
         bstate["ticks"] = bstate.get("ticks", 0) + 1
     else:
@@ -2309,7 +2350,7 @@ def board_sync(gh, snapshot, cfg, paths, log, mode, label_change):
                         dry_run=not write)
         except Exception as e:  # noqa: BLE001 - a board outage must never fail the tick or stop dispatch
             bstate["errors"] = bstate.get("errors", 0) + 1
-            log("board_sync_error", error=scrub(e))
+            log("board_sync_error", error=scrub(str(e).replace(token, "[redacted]")))
     if label_change:
         bstate["dirty"] = True
     write_json(paths.board_file, bstate)
