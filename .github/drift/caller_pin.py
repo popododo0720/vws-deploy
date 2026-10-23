@@ -35,6 +35,29 @@ CALLS = {
                   {"actions": "write", "pull-requests": "read"}),
 }
 PIN = re.compile(r"^popododo0720/vws-deploy/(\.github/workflows/[a-z-]+\.yml)@([0-9a-f]{40})$")
+# The only top-level keys. run-name is left out: it only changes the run title, which nothing reads, and every
+# extra key is one more place to hide an override. defaults (a shell that always exits 0), env and
+# concurrency (cancel-in-progress can cancel the gate) change how the shims and calls behave.
+TOP_KEYS = ["jobs", "name", "on", "permissions"]
+
+
+
+class _Strict(yaml.SafeLoader):
+    """safe_load that refuses a repeated key, so the mapping checked here is the one GitHub runs."""
+
+
+def _no_dupes(loader, node, deep=False):
+    seen = set()
+    for k, _ in node.value:
+        key = loader.construct_object(k, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(None, None, f"repeated key {key!r}", k.start_mark)
+        seen.add(key)
+    return loader.construct_mapping(node, deep)
+
+
+_Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dupes)
+
 # required check name -> caller job it reports. A skipped required check counts as passed, so the shim
 # runs always() and passes only on "success/<name>": the call succeeded and its last step ran.
 SHIMS = {"pr-hygiene": "hygiene", "verify-gate": "gate"}
@@ -52,11 +75,17 @@ def check(text, home=False):
     if len(text.splitlines()) > MAX_LINES:
         errs.append(f"caller has {len(text.splitlines())} lines; a caller is at most {MAX_LINES} lines")
     try:
-        wf = yaml.safe_load(text)
+        wf = yaml.load(text, Loader=_Strict)  # noqa: S506 (SafeLoader subclass)
     except yaml.YAMLError as e:
         return errs + [f"caller does not parse: {e}"], None
     if not isinstance(wf, dict):
         return errs + ["caller is empty or not a YAML mapping"], None
+    top = sorted("on" if k is True else str(k) for k in wf)
+    if top != TOP_KEYS:
+        bad = sorted(set(top) - set(TOP_KEYS))
+        errs.append(f"top-level keys must be exactly {TOP_KEYS}, got {top}" + (f"; drop {bad}" if bad else ""))
+    if wf.get("name") != "repo-guard":
+        errs.append(f"name must be repo-guard, got {wf.get('name')!r}")
     on = wf.get("on", wf.get(True))
     want_on = {"pull_request": {"types": TYPES}, "issue_comment": {"types": COMMENT_TYPES}}
     if on != want_on:
