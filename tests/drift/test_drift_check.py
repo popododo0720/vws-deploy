@@ -1,10 +1,14 @@
 """Unit tests for .github/drift/drift_check.py (vws-deploy#300). Run: python3 -m unittest discover -s tests/drift"""
+import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location("drift_check", os.path.join(ROOT, ".github", "drift", "drift_check.py"))
@@ -134,7 +138,7 @@ class ExitStatus(unittest.TestCase):
 
 
 class CallerPending(unittest.TestCase):
-    """caller-pending.tsv lists repos that still carry the full repo-guard.yml (vws-deploy#402)."""
+    """caller-pending.tsv pins, per repo, the sha256 of the full repo-guard.yml it still carries (vws-deploy#402)."""
 
     def write(self, text):
         f = tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False)
@@ -144,14 +148,17 @@ class CallerPending(unittest.TestCase):
         return f.name
 
     def test_load(self):
-        p = self.write("# c\nvws-lib\tfull copy until its caller PR lands\n\n")
-        self.assertEqual(dc.load_pending(p), {"vws-lib": "full copy until its caller PR lands"})
+        p = self.write("# c\nvws-lib\t%s\tfull copy until its caller PR lands\n\n" % ("a" * 64))
+        self.assertEqual(dc.load_pending(p), {"vws-lib": "a" * 64})
 
     def test_missing_file_means_none(self):
         self.assertEqual(dc.load_pending("/nonexistent/caller-pending.tsv"), {})
 
     def test_bad_rows(self):
-        for text in ("vws-lib\n", "vws-lib\t\n", "\treason\n", "a\tb\tc\n", "a\tr\na\tr\n"):
+        h = "a" * 64
+        for text in ("vws-lib\n", "vws-lib\t\n", "\treason\n", "vws-lib\treason\n", "vws-lib\t%s\n" % h,
+                     "vws-lib\t%s\t \n" % h, "vws-lib\t%s\tr\n" % h[:63], "vws-lib\t%s\tr\n" % h.upper(),
+                     "a\t%s\tr\na\t%s\tr\n" % (h, h), "a\t%s\tr\tx\n" % h):
             with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as cm:
                     dc.load_pending(self.write(text))
@@ -160,6 +167,7 @@ class CallerPending(unittest.TestCase):
     def test_repo_file_never_lists_vws_deploy(self):
         pending = dc.load_pending(os.path.join(ROOT, ".github", "drift", "caller-pending.tsv"))
         self.assertNotIn("vws-deploy", pending)
+        self.assertTrue(pending)
 
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -246,48 +254,303 @@ class OpenPrHeads(unittest.TestCase):
         self.assertIsNone(dc.open_pr_heads("o", "r", api=lambda path: self.prs(1, 100)))
 
 
-class HeadCallers(unittest.TestCase):
-    """The caller at a PR head is checked like the default branch one, against the fleet pin (AC3)."""
+RG = ".github/workflows/repo-guard.yml"
+DPW = ".github/workflows/direct-push-watch.yml"
+# A stand-in for the full repo-guard.yml a pending repo still carries; only its bytes matter.
+FULL = b"""name: repo-guard
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+jobs:
+  pr-hygiene:
+    runs-on: ubuntu-latest
+    steps: [{run: scripts/guard-agents.sh pr-body}]
+  verify-gate:
+    runs-on: ubuntu-latest
+    steps: [{run: scripts/guard-agents.sh verify-gate}]
+"""
+FULL_SHA = hashlib.sha256(FULL).hexdigest()
+PENDING = {"vws-lib": FULL_SHA}
+DPW_TEXT = b"name: direct-push-watch\non: push\njobs:\n  direct-push-watch: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
+BYPASS_SHELL = pinned().replace("permissions: {}\n", "permissions: {}\ndefaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n", 1)
+AT_MAIN = pinned().replace("@" + SHA, "@main")
 
-    def issues(self, heads, repo="vws-lib", pending=(), common=SHA, main=(SHA,)):
-        return dc.head_issues(repo, heads, home=(repo == "vws-deploy"), pending=set(pending), common=common,
+
+def tree(rg=FULL, **more):
+    """{path: bytes} of .github/workflows at one ref: repo-guard.yml (None = absent), direct-push-watch.yml, more."""
+    out = {DPW: DPW_TEXT}
+    if rg is not None:
+        out[RG] = rg if isinstance(rg, bytes) else rg.encode()
+    for name, text in more.items():
+        out[".github/workflows/" + name.replace("_", "-").replace("-yaml", ".yaml").replace("-yml", ".yml")] = (
+            text if text is None or isinstance(text, bytes) else text.encode())
+    return out
+
+
+def home_tree():
+    d = os.path.join(ROOT, ".github", "workflows")
+    return {".github/workflows/" + n: open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d))}
+
+
+class PendingExemption(unittest.TestCase):
+    """A pending repo is exempt only while repo-guard.yml is byte for byte the full copy that
+    caller-pending.tsv pins; anything else is checked as a caller (round 2 blocker)."""
+
+    def check(self, files, repo="vws-lib", pending=PENDING):
+        return dc.ref_issues(files, home=(repo == "vws-deploy"), full_copy=pending.get(repo))
+
+    def test_unchanged_full_copy_passes(self):
+        self.assertEqual(self.check(tree()), ([], "pending"))
+
+    def test_bypass_caller_in_a_pending_repo_is_flagged(self):
+        for what, text in (("defaults.run.shell", BYPASS_SHELL), ("@main pin", AT_MAIN)):
+            with self.subTest(what=what):
+                issues, pin = self.check(tree(rg=text))
+                self.assertTrue(issues)
+                self.assertIsNone(pin)
+                self.assertIn("not the full copy", issues[0])
+        self.assertIn("top-level keys", self.check(tree(rg=BYPASS_SHELL))[0][0])
+        self.assertIn("@main", self.check(tree(rg=AT_MAIN))[0][0])
+
+    def test_edited_full_copy_is_flagged(self):
+        for edited in (FULL + b"#\n", FULL.replace(b"\n", b"\r\n"), FULL.replace(b"pr-body", b"true   ")):
+            with self.subTest(edited=edited[-20:]):
+                issues, pin = self.check(tree(rg=edited))
+                self.assertTrue(issues)
+                self.assertIsNone(pin)
+
+    def test_good_caller_in_a_pending_repo_returns_its_pin(self):
+        self.assertEqual(self.check(tree(rg=pinned())), ([], SHA))
+
+    def test_full_copy_outside_caller_pending_is_flagged(self):
+        issues, pin = self.check(tree(), pending={})
+        self.assertTrue(issues)
+        self.assertIsNone(pin)
+
+    def test_deleted_or_unreadable_repo_guard_is_flagged(self):
+        self.assertEqual(self.check(tree(rg=None))[0], ["no .github/workflows/repo-guard.yml"])
+        files = tree()
+        files[RG] = None
+        self.assertEqual(self.check(files)[0], ["cannot read .github/workflows/repo-guard.yml"])
+        self.assertEqual(self.check(tree(rg=b"\xff\xfe"))[1], None)
+        self.assertEqual(self.check(None), (["cannot list .github/workflows"], None))
+
+    def test_home_repo_tree_is_clean(self):
+        self.assertEqual(self.check(home_tree(), repo="vws-deploy"), ([], "local"))
+
+
+class OtherWorkflowFiles(unittest.TestCase):
+    """Only repo-guard.yml may call the repo-guard jobs or report the bare pr-hygiene and verify-gate checks,
+    in every repo, pending or not, on the default branch and at PR heads."""
+
+    def issues(self, files, repo="vws-lib"):
+        return dc.ref_issues(files, home=(repo == "vws-deploy"), full_copy=PENDING.get(repo))[0]
+
+    def test_second_caller_with_a_bad_pin_is_flagged(self):
+        out = self.issues(tree(rg2_yml=AT_MAIN))
+        self.assertTrue(any("rg2.yml" in i and "only repo-guard.yml may call" in i for i in out), out)
+
+    def test_second_caller_with_a_good_pin_is_flagged(self):
+        out = self.issues(tree(rg2_yml=pinned()))
+        self.assertTrue(any("rg2.yml" in i for i in out), out)
+
+    def test_renamed_caller_is_flagged(self):
+        out = self.issues(tree(rg=None, guard_yaml=pinned()))
+        self.assertIn("no .github/workflows/repo-guard.yml", out)
+        self.assertTrue(any("guard.yaml" in i for i in out), out)
+
+    def test_local_path_call_is_flagged(self):
+        for uses in ("./.github/workflows/repo-guard-pr-hygiene.yml",
+                     "popododo0720/vws-deploy/.github/workflows/repo-guard-verify-gate.yml@" + SHA,
+                     "popododo0720/vws-deploy/.github/workflows/Repo-Guard-Verify-Gate.YML@main"):
+            text = "on: pull_request\njobs:\n  x:\n    uses: %s\n" % uses
+            with self.subTest(uses=uses):
+                self.assertTrue(any("x.yml" in i for i in self.issues(tree(x_yml=text))))
+
+    def test_job_that_reports_a_required_check_name_is_flagged(self):
+        for job in ("pr-hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}",
+                    "x: {name: verify-gate, runs-on: ubuntu-latest, steps: [{run: 'true'}]}",
+                    "x: {name: PR-Hygiene, runs-on: ubuntu-latest, steps: [{run: 'true'}]}",
+                    "x: {name: ' verify-gate ', runs-on: ubuntu-latest, steps: [{run: 'true'}]}",
+                    "x: {name: \"${{ 'verify-gate' }}\", runs-on: ubuntu-latest, steps: [{run: 'true'}]}",
+                    "x: {name: \"verify-${{ 'gate' }}\", runs-on: ubuntu-latest, steps: [{run: 'true'}]}"):
+            for name in ("spoof_yml", "spoof_yaml"):
+                text = "on: [pull_request]\njobs:\n  %s\n" % job
+                with self.subTest(job=job, file=name):
+                    out = self.issues(tree(**{name: text}))
+                    self.assertTrue(any("required check name" in i for i in out), out)
+
+    def test_ordinary_workflows_pass(self):
+        ok = ("on: pull_request\njobs:\n  test:\n    name: test (${{ matrix.go }})\n    runs-on: ubuntu-latest\n"
+              "    strategy: {matrix: {go: ['1.22']}}\n    steps: [{run: go test}]\n"
+              "  hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n")
+        called = "on: workflow_call\njobs:\n  pr-hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
+        called2 = "on: {workflow_call: {}}\njobs:\n  verify-gate: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
+        self.assertEqual(self.issues(tree(ci_yml=ok, lib_yml=called, lib2_yml=called2)), [])
+
+    def test_unreadable_or_broken_files_are_flagged(self):
+        for text in (None, b"\xff", b"jobs: [unclosed\n", b"a: 1\na: 2\n", b"- a list\n"):
+            with self.subTest(text=text):
+                self.assertTrue(any("x.yml" in i for i in self.issues(tree(x_yml=text))))
+
+
+class WorkflowFiles(unittest.TestCase):
+    """workflow_files reads every .yml/.yaml file in .github/workflows at one ref through gh api."""
+
+    @staticmethod
+    def api(entries, files, ref=None):
+        q = "?ref=%s" % ref if ref else ""
+
+        def get(path):
+            if path == "repos/o/r/contents/.github/workflows" + q:
+                return entries
+            for p, b in files.items():
+                if path == "repos/o/r/contents/" + p + q:
+                    return {"content": base64.b64encode(b).decode()}
+            return None
+        return get
+
+    def test_reads_files_at_a_ref(self):
+        entries = [{"type": "file", "name": "repo-guard.yml", "path": RG},
+                   {"type": "file", "name": "buf.yaml", "path": ".github/workflows/buf.yaml"},
+                   {"type": "file", "name": "README.md", "path": ".github/workflows/README.md"},
+                   {"type": "dir", "name": "sub", "path": ".github/workflows/sub"}]
+        files = {RG: FULL, ".github/workflows/buf.yaml": b"x"}
+        got = dc.workflow_files("o", "r", ref=SHA, api=self.api(entries, files, ref=SHA))
+        self.assertEqual(got, files)
+        got = dc.workflow_files("o", "r", api=self.api(entries, files))
+        self.assertEqual(got, files)
+
+    def test_errors(self):
+        self.assertIsNone(dc.workflow_files("o", "r", api=lambda p: None))
+        self.assertIsNone(dc.workflow_files("o", "r", api=lambda p: {"message": "x"}))
+        entries = [{"type": "file", "name": "a.yml", "path": ".github/workflows/a.yml"},
+                   {"type": "symlink", "name": "b.yml", "path": ".github/workflows/b.yml"}]
+        got = dc.workflow_files("o", "r", api=self.api(entries, {}))
+        self.assertEqual(got, {".github/workflows/a.yml": None, ".github/workflows/b.yml": None})
+
+
+class HeadCallers(unittest.TestCase):
+    """The workflows at a PR head are checked like the default branch ones, against the fleet pin (AC3)."""
+
+    def issues(self, heads, repo="vws-lib", pending=PENDING, common=SHA, main=(SHA,)):
+        return dc.head_issues(repo, heads, home=(repo == "vws-deploy"), pending=pending, common=common,
                               on_main=lambda sha: sha in main)
 
     def test_same_pin_is_clean(self):
-        self.assertEqual(self.issues([("#7", SHA, pinned())]), [])
+        self.assertEqual(self.issues([("#7", SHA, tree(rg=pinned()))]), [])
 
     def test_pr_that_changes_the_pin_is_flagged(self):
-        out = self.issues([("#7", OTHER, pinned(OTHER))], main=(SHA, OTHER))
+        out = self.issues([("#7", OTHER, tree(rg=pinned(OTHER)))], main=(SHA, OTHER))
         self.assertEqual(len(out), 1)
         self.assertIn("#7", out[0])
         self.assertIn("not the common pin", out[0])
 
     def test_pin_not_on_main_is_flagged(self):
-        out = self.issues([("#7", OTHER, pinned(OTHER))], common=None)
+        out = self.issues([("#7", OTHER, tree(rg=pinned(OTHER)))], common=None)
         self.assertEqual(len(out), 1)
         self.assertIn("not on vws-deploy main", out[0])
 
-    def test_missing_or_broken_caller_is_flagged(self):
-        self.assertIn("no .github/workflows/repo-guard.yml", self.issues([("#7", OTHER, None)])[0])
-        broken = pinned().replace("permissions: {}\n", "permissions: {}\ndefaults: {run: {shell: sh}}\n", 1)
-        out = self.issues([("#7", OTHER, broken)])
-        self.assertEqual(len(out), 1)
-        self.assertIn("top-level keys", out[0])
+    def test_pending_repo_head(self):
+        # (b) the unchanged full copy is not drift; (a) a bypass caller at the head of a migration PR is.
+        self.assertEqual(self.issues([("#7", OTHER, tree())]), [])
+        for text in (BYPASS_SHELL, AT_MAIN, FULL.decode() + "#\n"):
+            with self.subTest(text=text[-30:]):
+                out = self.issues([("#7", OTHER, tree(rg=text))])
+                self.assertEqual(len(out), 1, out)
+                self.assertTrue(out[0].startswith("#7 %s:" % OTHER[:12]), out)
 
-    def test_pending_repo(self):
-        # A repo still on the full copy is not drift at a PR head either, but its migration PR is checked.
-        self.assertEqual(self.issues([("#7", OTHER, "name: repo-guard\njobs: {}\n")], pending=["vws-lib"]), [])
-        self.assertEqual(self.issues([("#7", OTHER, pinned())], pending=["vws-lib"]), [])
-        out = self.issues([("#7", OTHER, pinned(OTHER))], pending=["vws-lib"], main=(SHA, OTHER))
-        self.assertIn("not the common pin", out[0])
+    def test_pending_repo_head_with_a_second_caller_or_spoof_is_flagged(self):
+        spoof = "on: pull_request\njobs:\n  pr-hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
+        self.assertTrue(self.issues([("#7", OTHER, tree(rg2_yml=AT_MAIN))]))
+        self.assertTrue(self.issues([("#7", OTHER, tree(x_yml=spoof))]))
+        self.assertTrue(self.issues([("#7", OTHER, tree(rg=None))]))
+
+    def test_unlisted_head_is_flagged(self):
+        self.assertIn("cannot list .github/workflows", self.issues([("#7", OTHER, None)])[0])
 
     def test_home_repo_head(self):
-        self.assertEqual(self.issues([("#9", OTHER, HOME_CALLER)], repo="vws-deploy"), [])
-        self.assertTrue(self.issues([("#9", OTHER, pinned())], repo="vws-deploy"))
+        self.assertEqual(self.issues([("#9", OTHER, home_tree())], repo="vws-deploy"), [])
+        self.assertTrue(self.issues([("#9", OTHER, tree(rg=pinned()))], repo="vws-deploy"))
 
     def test_label_names_the_head(self):
-        out = self.issues([("--head", OTHER, None)])
+        out = self.issues([("--head", OTHER, tree(rg=None))])
         self.assertTrue(out[0].startswith("--head %s:" % OTHER[:12]), out)
+
+
+def _b64(b):
+    return {"content": base64.b64encode(b).decode()}
+
+
+class MainWithFakeGh(unittest.TestCase):
+    """main() end to end with a fake gh api: the default branch and PR heads of a pending repo (no network)."""
+
+    def run_main(self, lib_default, lib_prs=(), lib_heads=None):
+        guard = open(os.path.join(ROOT, "scripts", "guard-agents.sh"), "rb").read()
+        prot = {"required_status_checks": {"contexts": list(dc.COMMON_CHECKS)}, "enforce_admins": {"enabled": True},
+                "allow_force_pushes": {"enabled": False}, "allow_deletions": {"enabled": False}}
+        trees = {("vws-deploy", None): home_tree(), ("vws-lib", None): lib_default}
+        trees.update({("vws-lib", sha): t for sha, t in (lib_heads or {}).items()})
+        prs = {"vws-deploy": [], "vws-lib": [{"number": n, "head": {"sha": sha}} for n, sha in lib_prs]}
+
+        def gh(path):
+            path, _, q = path.partition("?")
+            parts = path.split("/")
+            repo = parts[2]
+            if len(parts) == 3:
+                return {"archived": False}
+            rest = "/".join(parts[3:])
+            if rest == "branches/main/protection":
+                return prot
+            if rest == "pulls":
+                return prs[repo] if q.endswith("&page=1") else []
+            if rest.startswith("compare/"):
+                return {"status": "identical"}
+            ref = q[4:] if q.startswith("ref=") else None
+            if rest.startswith("contents/.github/workflows"):
+                t = trees.get((repo, ref))
+                if t is None:
+                    return None
+                if rest == "contents/.github/workflows":
+                    return [{"type": "file", "name": p.rsplit("/", 1)[1], "path": p} for p in t]
+                b = t.get(rest[len("contents/"):])
+                return None if b is None else _b64(b)
+            return {"contents/scripts/guard-agents.sh": _b64(guard), "contents/AGENTS.md": _b64(b"x"),
+                    "contents/QUALITY.md": _b64(b"x")}.get(rest)
+
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: [os.unlink(os.path.join(d, f)) for f in os.listdir(d)] and os.rmdir(d))
+        repos = os.path.join(d, "repos.tsv")
+        open(repos, "w").write("vws-deploy\tother\t\t\nvws-lib\tother\t\t\n")
+        pend = os.path.join(d, "pending.tsv")
+        open(pend, "w").write("vws-lib\t%s\tfull copy\n" % FULL_SHA)
+        argv = ["drift_check.py", "--owner", "o", "--repos", repos, "--caller-pending", pend,
+                "--guard-variants", os.path.join(d, "none.tsv")]
+        out = io.StringIO()
+        with mock.patch.object(dc, "gh", gh), mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+            rc = dc.main()
+        return rc, out.getvalue()
+
+    def test_pending_full_copy_is_clean(self):
+        rc, out = self.run_main(tree())
+        self.assertEqual(rc, 0, out)
+        self.assertIn("pending (full copy)", out)
+
+    def test_default_branch_second_caller_with_a_bad_pin_is_flagged(self):
+        # (c) a pending repo whose default branch has another workflow file calling repo-guard-*.yml
+        rc, out = self.run_main(tree(rg2_yml=AT_MAIN))
+        self.assertEqual(rc, dc.DRIFT_EXIT, out)
+        self.assertIn("rg2.yml", out)
+
+    def test_default_branch_edited_full_copy_is_flagged(self):
+        rc, out = self.run_main(tree(rg=FULL + b"#\n"))
+        self.assertEqual(rc, dc.DRIFT_EXIT, out)
+        self.assertIn("not the full copy", out)
+
+    def test_pr_head_bypass_in_a_pending_repo_is_flagged(self):
+        rc, out = self.run_main(tree(), lib_prs=[(5, OTHER)], lib_heads={OTHER: tree(rg=BYPASS_SHELL)})
+        self.assertEqual(rc, dc.DRIFT_EXIT, out)
+        self.assertIn("| vws-lib | #5 %s:" % OTHER[:12], out)
 
 
 class HeadWiring(unittest.TestCase):
