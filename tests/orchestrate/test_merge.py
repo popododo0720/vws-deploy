@@ -82,6 +82,7 @@ class Eligibility(unittest.TestCase):
             ("no verify-approved label", dict(labels=()), "no_verify_approved"),
             ("opt-out label do-not-merge", dict(labels=("verify-approved", "do-not-merge")), "opted_out"),
             ("opt-out label hold", dict(labels=("verify-approved", "hold")), "opted_out"),
+            ("opt-out label blocked", dict(labels=("verify-approved", "blocked")), "opted_out"),
             ("opt-out marker", dict(body="Part of #1\n<!-- vws-orchestrate:no-merge -->"), "opted_out"),
             ("status thread", dict(number=339), "opted_out"),
             ("vws-verify missing", dict(info={"checks": bad_verify}), "verify_check_missing"),
@@ -125,6 +126,30 @@ class Eligibility(unittest.TestCase):
                 r = run(snap(c))
                 self.assertEqual(merges(r), [], name)
                 self.assertIn(want, reasons(r, f"vws-deploy#{c['number']}"))
+
+    def test_verify_gate_required_by_name(self):
+        # vws-deploy#393: verify-gate must pass on the head even when main's protection does not require it.
+        sha = candidate()["head_sha"]
+        no_gate = [c for c in green_checks(sha) if c["name"] != "verify-gate"]
+        unrequired = {"vws-deploy": ctx(required=[q for q in REQUIRED if q["context"] != "verify-gate"])}
+        cases = [
+            ("verify-gate missing", no_gate, "verify_gate_missing"),
+            ("verify-gate pending", no_gate + [check(9, "verify-gate", sha, None, status="in_progress")], "verify_gate_pending"),
+            ("verify-gate failed", no_gate + [check(9, "verify-gate", sha, "failure")], "verify_gate_failure"),
+            ("verify-gate skipped", no_gate + [check(9, "verify-gate", sha, "skipped")], "verify_gate_skipped"),
+            ("verify-gate from another app", no_gate + [check(9, "verify-gate", sha, app=1)], "verify_gate_missing"),
+            ("verify-gate on an older head", no_gate + [check(9, "verify-gate", "f" * 40)], "verify_gate_missing"),
+            ("verify-gate failed in another workflow", [dict(c, suite_id=1) for c in green_checks(sha)]
+             + [dict(check(9, "verify-gate", sha, "failure"), suite_id=2)], "verify_gate_failure"),
+        ]
+        for name, checks, want in cases:
+            with self.subTest(name):
+                r = run(snap(candidate(info={"checks": checks}), merge=unrequired))
+                self.assertEqual(merges(r), [], name)
+                self.assertIn(want, reasons(r, "vws-deploy#500"))
+        r = run(snap(candidate(), merge=unrequired))
+        self.assertEqual(merges(r), ["vws-deploy#500"], "verify-gate success and everything else OK merges")
+        self.assertEqual(reasons(r, "vws-deploy#500"), [])
 
     def test_status_cannot_stand_in_for_an_app_bound_check(self):
         sha = candidate()["head_sha"]
@@ -534,6 +559,13 @@ class ApplyMerges(rt.Env):
         self.assertEqual(orch.recheck_merge(gh, "vws-deploy", "500", "1" * 40, {}, c), "labels or opt-out changed")
         self.assertEqual(orch.recheck_merge(gh, "vws-deploy", "500", "1" * 40, {"merge_locks": {"vws-deploy": {}}}, c),
                          "repo is locked")
+
+    def test_recheck_refuses_new_blocked_label(self):
+        r = routes()
+        r[f"{O}/vws-deploy/pulls/500"]["body"]["labels"] = [{"name": "verify-approved"}, {"name": "blocked"}]
+        self.set_routes(r)
+        c = {"main_sha": MAIN, "required": REQUIRED}
+        self.assertEqual(orch.recheck_merge(orch.Gh(), "vws-deploy", "500", "1" * 40, {}, c), "labels or opt-out changed")
 
     def test_red_main_comment_and_write_cap(self):
         r = routes()

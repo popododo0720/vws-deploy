@@ -71,7 +71,10 @@ VERIFY_CHECK = "vws-verify"
 VERIFY_APP_ID = 5313004
 ACTIONS_APP_ID = 15368  # GitHub Actions
 CHECK_OK = {"success", "neutral", "skipped"}
-OPT_OUT_LABELS = ("do-not-merge", "hold")
+# blocked: a human or the dependency rule holds the PR (vws-deploy#393); it never merges while labeled.
+OPT_OUT_LABELS = ("do-not-merge", "hold", "blocked")
+# repo-guard / verify-gate must pass on the head by name, even when main's protection does not list it.
+GATE_CHECK = "verify-gate"
 OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
 MERGEABLE_OK = {"clean", "has_hooks", "unstable"}
 PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
@@ -756,6 +759,14 @@ def head_check_reasons(info, required):
         reasons.append("verify_check_missing")
     elif v.get("status") != "completed" or v.get("conclusion") != "success":
         reasons.append(f"verify_check_{v.get('conclusion') or v.get('status')}")
+    # Every verify-gate run from GitHub Actions on the head must be success; a success elsewhere cannot hide a failure.
+    gates = [r for (name, app, _s), r in runs.items() if name == GATE_CHECK and app == ACTIONS_APP_ID]
+    bad_gates = [r for r in gates if r.get("status") != "completed" or r.get("conclusion") != "success"]
+    if not gates:
+        reasons.append("verify_gate_missing")
+    elif bad_gates:
+        g = max(bad_gates, key=run_order)
+        reasons.append("verify_gate_pending" if g.get("status") != "completed" else f"verify_gate_{g.get('conclusion')}")
     if info.get("checks_truncated"):
         reasons.append("checks_truncated")
     if info.get("statuses_truncated"):

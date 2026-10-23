@@ -70,8 +70,9 @@ A PR is eligible only when all of these hold:
 |---|---|
 | not a draft, base `main` | `draft`, `base_not_main` (stacked PRs never merge) |
 | label `verify-approved` | `no_verify_approved` |
-| not opted out: no `do-not-merge` or `hold` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status thread | `opted_out` |
+| not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status thread | `opted_out` |
 | the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
+| a `verify-gate` check run from GitHub Actions (app id 15368) on the **current head**, and every such run is success, even when `main`'s protection does not require it | `verify_gate_missing`, `verify_gate_pending`, `verify_gate_<conclusion>` |
 | every required check of `main` (classic protection plus rulesets, bound to its app id) is success on the head | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
 | every other check run on the head is success, skipped or neutral, and every commit status is success (AGENTS.md rule 5) | `check_failed:<name>`, `check_pending:<name>`, `status_<state>:<context>`, `combined_status_<state>`, `checks_truncated`, `statuses_truncated` |
 | `mergeable` is true and `mergeable_state` is `clean`, `has_hooks` or `unstable` | `mergeable_unknown` (GitHub is still computing; next tick), `conflicts`, `mergeable_state:<state>` |
