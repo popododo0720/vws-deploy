@@ -16,8 +16,8 @@ Reviewers do not merge a PR whose checklist lacks evidence or a stated reason fo
 
 ## Verify gate (#249)
 
-The `repo-guard / verify-gate` check passes only when all of these hold. It is not a required
-check yet; making it required is a separate admin step.
+The `repo-guard / verify-gate` check passes only when all of these hold. It is a required check on
+main.
 
 - The pull request has the `verify-approved` label.
 - A PR comment (never the PR body) has a section like the one below. It must name the
@@ -58,14 +58,15 @@ for the new head.
 
 The gate records that a verdict was posted. It cannot prove who judged it.
 
-- **One account.** All bots, vws-verify included, push and comment as the same GitHub
-  account. While that account is also `VWS_VERIFY_IDENTITY`, the author/pusher exclusion
-  exempts it, so a bot can label and approve its own PR. The fix is a separate account or
-  GitHub App for vws-verify, set alone in `VWS_VERIFY_ACTORS` and `VWS_VERIFY_IDENTITY`.
+- **One account for the bots.** The bots other than vws-verify push and comment as the same
+  GitHub account. vws-verify is the separate `vws-verify[bot]` GitHub App (id 5313004), set
+  alone in `VWS_VERIFY_ACTORS` and `VWS_VERIFY_IDENTITY`, so the author/pusher exclusion
+  rejects a bot's own approval.
 - **The PR can edit the gate's YAML.** On `pull_request`, GitHub runs the workflow from the
   PR's merge commit. The job checks out the base commit, so the guard script that judges is
   the one on main, but a PR can still change `repo-guard.yml` itself (for example, the
-  checkout ref or the step). The real control is branch protection with required review
-  from CODEOWNERS for `.github/` and `scripts/`, by an account other than the author.
+  checkout ref or the step). The `vws-main` ruleset requires a pull request and the
+  `verify-gate` check, with no bypass actors, but it cannot judge a workflow the PR changes.
+  The remaining control is a person reviewing the `.github/` and `scripts/` diff.
 - **Evidence is checked for form, not truth.** The gate checks that each item has a URL,
   path or `N/A: reason`. It does not open them.
