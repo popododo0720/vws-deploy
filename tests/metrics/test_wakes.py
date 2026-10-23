@@ -139,13 +139,36 @@ class Summary(unittest.TestCase):
         # 3 days in 7, each from fixture(): 2 verify wakes, 4 DeepSeek and 1 grok dispatch, 1 rework.
         self.assertIn("- Last 7 days wakes: 6 verify wakes, 12 DeepSeek and 3 grok dispatches (3 reworks), "
                       "lead wakes: 13 (2 days with input); tokens per merged PR: 1250 (2 days with input).", md)
-        # The pre-#400 day adds its 3 DeepSeek dispatches and nothing else.
-        self.assertIn("- Last 28 days wakes: 6 verify wakes, 15 DeepSeek and 3 grok dispatches (3 reworks), "
-                      "lead wakes: 13 (2 days with input); tokens per merged PR: 1250 (2 days with input).", md)
+        # The pre-#400 day adds its 3 DeepSeek dispatches; its unknown wakes are not 0, so the
+        # wake totals say they cover 3 of the 4 days in the window.
+        self.assertIn("- Last 28 days wakes: 6 verify wakes, 15 DeepSeek and 3 grok dispatches (3 reworks) "
+                      "(3 days with data), lead wakes: 13 (2 days with input); tokens per merged PR: 1250 "
+                      "(2 days with input).", md)
         row = summary["days"][-1]
         self.assertEqual((row["verify_wakes"], row["grok_dispatches"], row["rework_dispatches"], row["lead_wakes"]), (2, 1, 1, 10))
         self.assertIsNone(summary["days"][0]["verify_wakes"], "a day written before #400 has no wake data")
         self.assertTrue(md.isascii())
+
+    def test_window_with_only_pre_change_days_shows_a_dash_not_zero(self):
+        old = doc(raw())
+        del old["wakes"]  # written before #400: every wake value is unknown
+        _, md = metrics.summarize([old], DAY)
+        for span in (7, 28):
+            self.assertIn(f"- Last {span} days wakes: - verify wakes, 3 DeepSeek and - grok dispatches (- reworks) "
+                          "(0 days with data), lead wakes: - (0 days with input); tokens per merged PR: - "
+                          "(0 days with input).", md)
+        self.assertNotIn("0 verify wakes", md)
+
+    def test_window_without_daily_files_shows_a_dash_not_zero(self):
+        old = doc(raw())
+        old["day"] = "2026-10-01"  # in the 28-day window only
+        _, md = metrics.summarize([old], DAY)
+        self.assertIn("- Last 7 days (0 with data): - PRs merged, - opened, - DeepSeek dispatches (- done, - failed, "
+                      "- timed out), - grok swaps.", md)
+        self.assertIn("- Last 7 days wakes: - verify wakes, - DeepSeek and - grok dispatches (- reworks), "
+                      "lead wakes: - (0 days with input); tokens per merged PR: - (0 days with input).", md)
+        self.assertIn("- Last 28 days wakes: 0 verify wakes, 3 DeepSeek and 0 grok dispatches (0 reworks), ", md,
+                      "a day with a wakes block keeps its real 0")
 
     def test_no_input_shows_a_dash_not_zero(self):
         d = doc()
