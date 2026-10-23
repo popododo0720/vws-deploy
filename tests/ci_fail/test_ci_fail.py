@@ -302,6 +302,16 @@ class Dedupe(unittest.TestCase):
         self.assertIn("Hangul found", gh.comments[113][0]["body"])
         self.assertNotIn("FAIL TestA", gh.comments[113][0]["body"])
 
+    def test_patch_keeps_n_and_wake(self):
+        gh = storage_gh(comments={113: [marker_comment(1, sha(1), 1), marker_comment(2, sha(2), 2)]})
+        cf.run(gh, "workflow_run", event(), FULL, NOW)
+        gh.prs[113]["labels"] = ["needs-human"]
+        gh.comments[113].append({"id": 60, "user": {"login": "popododo0720"}, "author_association": "OWNER",
+                                 "created_at": "2026-10-23T07:00:00Z", "body": "/orchestrate reset-failures"})
+        self.assertEqual(cf.run(gh, "workflow_run", event(attempt=2), FULL, NOW)["action"], "patch")
+        rec = cf.parse_comment(gh.comments[113][2]["body"])
+        self.assertEqual((rec["n"], rec["wake"]), (3, True))
+
     def test_a_marker_by_another_user_is_not_reused(self):
         gh = storage_gh(comments={113: [marker_comment(1, SHA, 1, user="mallory")]})
         self.assertEqual(cf.run(gh, "workflow_run", event(), FULL, NOW)["action"], "post")
@@ -394,6 +404,20 @@ class Reset(unittest.TestCase):
         gh = storage_gh(comments={113: three_failures()}, events={113: ev})
         cf.run(gh, "workflow_run", event(), FULL, NOW)
         self.assertEqual(cf.parse_comment(posts(gh)[0][2]["body"])["n"], 1)
+
+
+class Pagination(unittest.TestCase):
+    def test_full_last_page_fails_closed(self):
+        gh = cf.Gh(pages=2)
+        gh.get = lambda path: [{"n": 1}] * 100
+        with self.assertRaises(RuntimeError):
+            gh.get_all("repos/x?per_page=100")
+
+    def test_short_page_ends_the_list(self):
+        gh = cf.Gh(pages=3)
+        pages = {1: [{}] * 100, 2: [{}] * 5}
+        gh.get = lambda path: pages[int(path.rsplit("=", 1)[1])]
+        self.assertEqual(len(gh.get_all("repos/x?per_page=100")), 105)
 
 
 if __name__ == "__main__":
