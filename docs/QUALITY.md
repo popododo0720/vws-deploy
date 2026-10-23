@@ -12,7 +12,7 @@ Adopted 2026-10-14. Every change in this repo must be AWS-grade production quali
 8. **Idempotency**: safe on retry, duplicate request and restart.
 9. **AWS compatibility** where applicable: API behavior and error codes match AWS.
 
-Reviewers do not merge a PR whose checklist lacks evidence or a stated reason for N/A.
+Reviewers do not merge a PR whose checklist lacks evidence or a stated reason for N/A. CI checks the same rule first: `repo-guard / pr-hygiene` runs `scripts/guard-agents.sh pr-checklist`, which fails a PR body with an unticked item, missing evidence or an `N/A` without a reason, and names each bad item.
 
 ## Verify gate (#249)
 
