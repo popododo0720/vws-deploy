@@ -13,8 +13,9 @@ rate floor and comment parsers; see docs/factory-metrics.md.
 Nothing polls the metrics. On a normal day the script is silent: it only appends to the branch. When a
 day is abnormal (stalled tasks, a failure or grok-escalation rate well above the trailing baseline, a
 token-usage spike; thresholds are the constants below) it posts one comment whose first line is
-<!-- vws-orchestrate:metrics-alert --> on the status thread (draft PR vws-deploy#339, ORCHESTRATE_STATUS_PR).
-tmp receives it through a GitHub-trigger routine on that PR; no extra endpoint and no secret.
+<!-- vws-orchestrate:metrics-alert --> on the status issue (ORCHESTRATE_STATUS_ISSUE, vws-deploy#416), and,
+when VWS_ALERT_WEBHOOK_URL and VWS_ALERT_WEBHOOK_KEY are both in the environment, POSTs a small JSON to
+that webhook (best effort: a failed POST is logged and never fails the run; the key is never logged).
 
 Commands:
   --if-due             the loop calls this after each tick: publish the oldest unpublished day of the
@@ -39,6 +40,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORCH_PATH = os.path.join(HERE, "..", "orchestrate", "orchestrate.py")
@@ -69,6 +72,7 @@ SUMMARY_DAYS = 28
 GROK_DISPATCH_MARKERS = ("swap",)
 STATE_KEEP_DAYS = 60  # done days kept per mode in metrics-state.json
 ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
+WEBHOOK_TIMEOUT_S, WEBHOOK_TRIES = 10, 3
 SNAPSHOT_GAP = "queue_depth and stalls are a live snapshot; not available for a back-filled day"
 
 # Anomaly thresholds (tested in tests/metrics/test_alerts.py). A normal day raises no alert.
@@ -128,9 +132,10 @@ class RateLow(Exception):
 class MetricsGh(orch.Gh):
     """The orchestrator's wrapper with this script's allowlist, a GET budget and write-payload rules."""
 
-    def __init__(self, cache_path=None, max_gets=1500, init=False, rate_floor=1000, status_pr=339, **kw):
+    def __init__(self, cache_path=None, max_gets=1500, init=False, rate_floor=1000, status_issue=None, **kw):
         super().__init__(cache_path, allow=allowed, **kw)
-        self.max_gets, self.init, self.rate_floor, self.status_pr = max_gets, init, rate_floor, int(status_pr)
+        self.max_gets, self.init, self.rate_floor = max_gets, init, rate_floor
+        self.alert_issue = int(status_issue) if status_issue else None
 
     def get(self, path):
         if not self.allow("GET", path):
@@ -147,11 +152,11 @@ class MetricsGh(orch.Gh):
 
     def write(self, method, path, payload=None):
         if path.endswith("/comments"):
-            # The only comment this script ever posts: a metrics alert on the status thread.
+            # The only comment this script ever posts: a metrics alert on the status issue.
             body = (payload or {}).get("body") if isinstance(payload, dict) else None
-            if path != f"repos/{OWNER}/{DATA_REPO}/issues/{self.status_pr}/comments" or not isinstance(body, str) \
-                    or body.split("\n", 1)[0] != ALERT_MARKER:
-                raise PermissionError("only a metrics-alert comment on the status thread may be posted")
+            if not self.alert_issue or path != f"repos/{OWNER}/{DATA_REPO}/issues/{self.alert_issue}/comments" \
+                    or not isinstance(body, str) or body.split("\n", 1)[0] != ALERT_MARKER:
+                raise PermissionError("only a metrics-alert comment on the status issue may be posted")
         if path.endswith(f"/git/refs/heads/{BRANCH}") and (not isinstance(payload, dict) or payload.get("force") is not False):
             raise PermissionError("the factory-metrics ref moves only with force: false")
         if path.endswith("/git/refs"):
@@ -579,14 +584,71 @@ def post_alert(gh, ctx, log, pending, state):
     if pending["key"] in state.get("alerted", []):
         log("metrics_alert_skipped", day=pending["day"], reason="already posted")
         return
-    number = int(ctx.cfg["ORCHESTRATE_STATUS_PR"])
+    number = int(ctx.cfg["ORCHESTRATE_STATUS_ISSUE"])
     posted = pages(gh, f"repos/{OWNER}/{DATA_REPO}/issues/{number}/comments?per_page=100")
     if not any(f"Idempotency key: `{pending['key']}`" in (c.get("body") or "") for c in posted):
-        gh.write("POST", f"repos/{OWNER}/{DATA_REPO}/issues/{number}/comments", {"body": pending["body"]})
+        resp = gh.write("POST", f"repos/{OWNER}/{DATA_REPO}/issues/{number}/comments", {"body": pending["body"]})
         log("metrics_alerted", day=pending["day"], target=f"{DATA_REPO}#{number}", kinds=pending["kinds"], key=pending["key"])
+        url = (resp or {}).get("html_url") if isinstance(resp, dict) else None
+        url = url or f"https://github.com/{OWNER}/{DATA_REPO}/issues/{number}"
+        summary = f"{len(pending['kinds'])} anomalies for the KST day {pending['day']}: {', '.join(pending['kinds'])}"
+        alert_webhook(ctx.environ, log, summary, url)
     else:
-        log("metrics_alert_skipped", day=pending["day"], reason="the status thread already has this key")
+        log("metrics_alert_skipped", day=pending["day"], reason="the status issue already has this key")
     state["alerted"] = (state.get("alerted", []) + [pending["key"]])[-STATE_KEEP_DAYS:]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would resend the key to another URL: treat any 3xx as a failed POST instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _webhook_url_ok(url):
+    """https only; plain http only to the local host (tests and a local relay)."""
+    return re.match(r"^https://[^/\s]+", url) is not None or \
+        re.match(r"^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?(/|$)", url) is not None
+
+
+def alert_webhook(environ, log, summary, comment_url, opener=None, sleep=None):
+    """Best effort: POST {"kind": "metrics-alert", "summary", "comment_url"} to VWS_ALERT_WEBHOOK_URL with
+    the header Authorization: Bearer $VWS_ALERT_WEBHOOK_KEY (a Cursor automation webhook key; a value that
+    already starts with "Bearer " is sent as is). Both come from the process environment only.
+    Skipped when either is unset. WEBHOOK_TIMEOUT_S per try, at most WEBHOOK_TRIES tries with backoff on a
+    network error, 429 or 5xx. Never raises; the log never has the URL or the key. Returns True when sent."""
+    url, key = environ.get("VWS_ALERT_WEBHOOK_URL", ""), environ.get("VWS_ALERT_WEBHOOK_KEY", "")
+    if not url or not key:
+        log("metrics_webhook_skipped", reason="VWS_ALERT_WEBHOOK_URL or VWS_ALERT_WEBHOOK_KEY is unset")
+        return False
+    if not _webhook_url_ok(url):
+        log("metrics_webhook_skipped", reason="VWS_ALERT_WEBHOOK_URL is not https")
+        return False
+    auth = key if key.startswith("Bearer ") else f"Bearer {key}"  # a pasted "Bearer crsr_..." header works too
+    data = json.dumps({"kind": "metrics-alert", "summary": summary, "comment_url": comment_url}).encode()
+    opener = opener or urllib.request.build_opener(_NoRedirect)
+    sleep = sleep or time.sleep
+    status, error, attempt = 0, "", 0
+    for attempt in range(1, WEBHOOK_TRIES + 1):
+        req = urllib.request.Request(url, data=data, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": auth, "User-Agent": "vws-metrics"})
+        try:
+            with opener.open(req, timeout=WEBHOOK_TIMEOUT_S) as r:
+                status = r.status
+            if 200 <= status < 300:
+                log("metrics_webhook_sent", http_status=status, attempts=attempt)
+                return True
+            error = f"HTTP {status}"
+        except urllib.error.HTTPError as e:
+            status, error = e.code, f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001 - best effort; only the class name is logged (no URL, no key)
+            status, error = 0, type(e).__name__
+        if status and status < 500 and status != 429:
+            break  # a client error does not get better with a retry
+        if attempt < WEBHOOK_TRIES:
+            sleep(2 ** (attempt - 1))
+    log("metrics_webhook_failed", error=error, http_status=status, attempts=attempt)
+    return False
 
 
 def read_tokens(path):
@@ -733,6 +795,7 @@ class Ctx:
     def __init__(self, environ):
         self.paths = orch.Paths(environ)
         self.cfg = orch.load_config(self.paths, environ)
+        self.environ = environ  # the alert webhook URL and key are read from here only, never the env file
         file_cfg = orch.read_env_file(self.paths.env_file)
         for k, v in DEFAULTS.items():
             self.cfg[k] = environ.get(k, file_cfg.get(k, v))
@@ -958,7 +1021,7 @@ def main(argv=None, environ=None, now=None, gh=None):
             return run_day(ctx, None, log, args, day, now)
         gh = gh or MetricsGh(ctx.cache, max_gets=int(ctx.cfg["METRICS_MAX_GETS"]), init=args.init,
                              rate_floor=orch.num(ctx.cfg, "ORCHESTRATE_RATE_FLOOR"),
-                             status_pr=int(ctx.cfg["ORCHESTRATE_STATUS_PR"]))
+                             status_issue=ctx.cfg["ORCHESTRATE_STATUS_ISSUE"])
         try:
             if args.init:
                 return init_branch(ctx, gh, log)

@@ -6,21 +6,23 @@ when ORCHESTRATE_MODE=apply). It never calls an LLM. It runs on the shared box u
 box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from the gh environment.
 
 Rules (see docs/factory-orchestrator.md):
-  A  wake vws-verify with one marker comment on the status thread (draft PR vws-deploy#339) when
-     >= VERIFY_WAKE_THRESHOLD PRs wait for verify (edge-triggered, one comment per pending set)
+  A  wake vws-verify with one marker comment on the verify-wake thread (ORCHESTRATE_WAKE_THREAD; never
+     the status issue) when >= VERIFY_WAKE_THRESHOLD PRs wait for verify (edge-triggered, one comment
+     per pending set)
   B  hand the next ready+deepseek tasks to DeepSeek, at most ORCHESTRATE_DEEPSEEK_CAP (2) in flight
      and one per repo, with an @deepseek-dev comment; a task whose Depends on target is still open is
      never dispatched
   C  count DeepSeek failures (Failed report, 3h timeout, Done PR closed unmerged); at 2, swap to grok.
      A Failed report that shows a provider error (INFRA_ERROR_RE) is an infra failure instead: never
      counted, re-mentioned ORCHESTRATE_INFRA_RETRY_DELAY_MIN after the report, at most
-     INFRA_MAX_RETRIES times; then one failure comment on the status thread and the item gets blocked
+     INFRA_MAX_RETRIES times; then one entry in the status issue body and the item gets blocked
   D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
      is green for the current main head; after a merge the repo is locked until the push CI for the
-     new main head is green (red stops merges there and posts one failure comment)
+     new main head is green (red stops merges there and adds one entry to the status issue body)
 
-A failed tick streak is reported the same way, with a failure marker comment on the status thread
-(--notify-failure, called by box/orchestrate-loop.sh).
+Status (vws-deploy#416): each apply tick rewrites the BODY of the status issue (ORCHESTRATE_STATUS_ISSUE)
+in place, and only when its content changed; the orchestrator posts no status comments. A failed tick
+streak is reported in that body too (--notify-failure, called by box/orchestrate-loop.sh).
 
 Exit status: 0 tick done or skipped on purpose, 2 usage error, 4 tick failed (auth, API or
 config error), 1 is an uncaught Python error.
@@ -39,7 +41,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OWNER = "popododo0720"
-STATUS_REPO = "vws-deploy"  # the status thread lives here; ORCHESTRATE_STATUS_PR picks the number
+STATUS_REPO = "vws-deploy"  # the status issue and the verify-wake thread live here; config picks the numbers
 FAIL_EXIT = 4
 DEEPSEEK = "@deepseek-dev"
 DISPATCH_TEXT = (
@@ -66,6 +68,13 @@ CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "s
 # match on it.
 WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
+# The status issue (vws-deploy#416): its body starts with STATUS_MARKER and is rewritten in place. Its
+# comments are metrics alerts only (.github/metrics posts them); the orchestrator never comments there.
+STATUS_MARKER = "<!-- vws-orchestrate:status -->"
+METRICS_ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
+STATUS_UPDATED_RE = re.compile(r"^_Updated [^\n]*_$", re.M)  # the one volatile line; ignored when comparing
+STATUS_EVENT_KEY_RE = re.compile(r"key `(sha256:[0-9a-f]{64})`")
+STATUS_EVENTS_KEEP = 20
 # Rule D (vws-deploy#346).
 VERIFY_CHECK = "vws-verify"
 VERIFY_APP_ID = 5313004
@@ -109,7 +118,8 @@ DEFAULTS = {
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
     "VERIFY_WAKE_COOLDOWN_HOURS": "6",
-    "ORCHESTRATE_STATUS_PR": "339",
+    "ORCHESTRATE_STATUS_ISSUE": "415",
+    "ORCHESTRATE_WAKE_THREAD": "",
     "ORCHESTRATE_FAILURE_ALERT": "apply",
     "ORCHESTRATE_FAILURE_THRESHOLD": "3",
     "ORCHESTRATE_FAILURE_MIN_GAP_HOURS": "1",
@@ -180,8 +190,13 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_MODE must be dry-run or apply, got {cfg['ORCHESTRATE_MODE']!r}")
     if cfg["ORCHESTRATE_SCOPE"] and not re.fullmatch(r"vws-[a-z0-9-]+#[0-9]+", cfg["ORCHESTRATE_SCOPE"]):
         raise ValueError("ORCHESTRATE_SCOPE must look like vws-deploy#123")
-    if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_STATUS_PR"]):
-        raise ValueError(f"ORCHESTRATE_STATUS_PR must be a positive integer, got {cfg['ORCHESTRATE_STATUS_PR']!r}")
+    if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_STATUS_ISSUE"]):
+        raise ValueError(f"ORCHESTRATE_STATUS_ISSUE must be a positive integer, got {cfg['ORCHESTRATE_STATUS_ISSUE']!r}")
+    if cfg["ORCHESTRATE_WAKE_THREAD"] and not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_WAKE_THREAD"]):
+        raise ValueError("ORCHESTRATE_WAKE_THREAD must be empty or a positive integer, "
+                         f"got {cfg['ORCHESTRATE_WAKE_THREAD']!r}")
+    if cfg["ORCHESTRATE_WAKE_THREAD"] == cfg["ORCHESTRATE_STATUS_ISSUE"]:
+        raise ValueError("ORCHESTRATE_WAKE_THREAD must not be the status issue: verify-wake never posts there")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_DEEPSEEK_CAP"]):
         raise ValueError(f"ORCHESTRATE_DEEPSEEK_CAP must be a positive integer, got {cfg['ORCHESTRATE_DEEPSEEK_CAP']!r}")
     if not re.fullmatch(r"[1-9][0-9]*", cfg["ORCHESTRATE_INFRA_RETRY_DELAY_MIN"]):
@@ -200,7 +215,8 @@ def load_config(paths, environ):
     for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
-    text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
+    text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
+                 "ORCHESTRATE_WAKE_THREAD",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
     for k in DEFAULTS:
         if k not in text_keys:
@@ -211,8 +227,14 @@ def load_config(paths, environ):
 
 
 def status_target(cfg):
-    """The status thread: a never-merged draft PR in vws-deploy. PR comments use the issues API."""
-    return f"{STATUS_REPO}#{int(cfg['ORCHESTRATE_STATUS_PR'])}"
+    """The status issue in vws-deploy: the orchestrator edits its body; it never comments there."""
+    return f"{STATUS_REPO}#{int(cfg['ORCHESTRATE_STATUS_ISSUE'])}"
+
+
+def wake_target(cfg):
+    """The verify-wake thread in vws-deploy ('' = unset: Rule A plans no wake). Never the status issue."""
+    n = cfg.get("ORCHESTRATE_WAKE_THREAD", "")
+    return f"{STATUS_REPO}#{int(n)}" if n else ""
 
 
 def num(cfg, key):
@@ -300,6 +322,8 @@ ALLOWED = {
     "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek)$")],
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
+    # The status issue body only (vws-deploy#416); Gh.write also pins the number and the payload.
+    "PATCH": [re.compile(rf"^repos/{OWNER}/{STATUS_REPO}/issues/[0-9]+$")],
 }
 
 
@@ -360,8 +384,11 @@ class Gh:
     """Every GitHub call goes through here. Reads use If-None-Match; 304 answers come from the cache
     and do not count against the primary rate limit."""
 
-    def __init__(self, cache_path=None, runner=subprocess.run, sleep=time.sleep, timeout=30, tries=3, allow=None):
+    def __init__(self, cache_path=None, runner=subprocess.run, sleep=time.sleep, timeout=30, tries=3, allow=None,
+                 status_issue=None):
         self.cache_path = cache_path
+        # The only issue whose body may be PATCHed (the configured status issue); None refuses every edit.
+        self.status_issue = int(status_issue) if status_issue else None
         # allow(method, path) -> bool. Another box script (.github/metrics) passes its own, narrower list.
         self.allow = allow or allowed
         self.cache = read_json(cache_path, {}) if cache_path else {}
@@ -442,6 +469,12 @@ class Gh:
             if (set(p) - MERGE_PAYLOAD_KEYS or p.get("merge_method") != "squash"
                     or not re.fullmatch(r"[0-9a-f]{40}", str(p.get("sha", "")))):
                 raise PermissionError("merge refused: squash with a 40-hex head sha only")
+        if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/issues/[0-9]+", path):
+            # The only issue edit: the status issue's body, rewritten with its marker first.
+            body = payload.get("body") if isinstance(payload, dict) and set(payload) == {"body"} else None
+            if (not self.status_issue or path != f"repos/{OWNER}/{STATUS_REPO}/issues/{self.status_issue}"
+                    or not isinstance(body, str) or not body.startswith(STATUS_MARKER + "\n")):
+                raise PermissionError("issue edit refused: only the status issue body, starting with its marker")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -577,7 +610,7 @@ def wake_body(pending, key, run_id, threshold, repos):
 
 
 def status_wakes(comments):
-    """Verify-wake comments already on the status thread: [{"key", "at"}]."""
+    """Verify-wake comments already on the verify-wake thread: [{"key", "at"}]."""
     out = []
     for c in comments:
         body = c.get("body") or ""
@@ -847,7 +880,7 @@ def merge_reasons(it, ctx, snapshot, repos, cfg, attempts):
         reasons.append("base_not_main")
     if "verify-approved" not in labels:
         reasons.append("no_verify_approved")
-    if labels & set(OPT_OUT_LABELS) or OPT_OUT_MARKER in (it.get("body") or "") or k == status_target(cfg):
+    if labels & set(OPT_OUT_LABELS) or OPT_OUT_MARKER in (it.get("body") or "") or k in (status_target(cfg), wake_target(cfg)):
         reasons.append("opted_out")
     if reasons:
         return reasons  # the cheap rules decide; nothing else was read for this PR
@@ -915,7 +948,7 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
         return actions, notes
     items = snapshot["items"]
     merge = snapshot.get("merge", {})
-    posted = set(snapshot.get("status", {}).get("keys", []))
+    posted = status_keys(snapshot, new_state)
     locks = new_state.setdefault("merge_locks", {})
     attempts = new_state.setdefault("merge_attempts", {})
     open_heads = {f"{k}@{it.get('head_sha')}" for k, it in items.items() if it["is_pr"] and it["state"] == "open"}
@@ -1083,6 +1116,14 @@ def rework_body(pr, v):
             f"{REWORK_MARKER}{pr['head_sha']} verdict={v['id']} -->")
 
 
+def status_keys(snapshot, state):
+    """Keys of merge and infra entries already reported: in the status issue body, in state, or (before
+    vws-deploy#416) as comments on the verify-wake thread."""
+    keys = set(snapshot.get("status", {}).get("keys", []))
+    keys |= set(STATUS_EVENT_KEY_RE.findall(snapshot.get("status_issue", {}).get("body", "")))
+    return keys | {e["key"] for e in state.get("status_events", [])}
+
+
 def decide(snapshot, state, now, cfg, exclusions):
     """Pure: the same inputs give the same output. Returns {"actions", "notes", "state"}."""
     actions, notes = [], []
@@ -1097,7 +1138,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     max_fail = int(num(cfg, "DEEPSEEK_MAX_FAILURES"))
     cap = int(num(cfg, "ORCHESTRATE_DEEPSEEK_CAP"))
     infra_delay = int(num(cfg, "ORCHESTRATE_INFRA_RETRY_DELAY_MIN")) * 60
-    posted = set(snapshot.get("status", {}).get("keys", []))
+    posted = status_keys(snapshot, state)
     cycles = find_cycles(snapshot)
 
     # Rule A: pending PRs and the verify wake
@@ -1114,8 +1155,11 @@ def decide(snapshot, state, now, cfg, exclusions):
     prev = state.get("prev_pending_count")
     rising = prev is None or prev < threshold
     gap = num(cfg, "VERIFY_WAKE_EDGE_MIN_HOURS" if rising else "VERIFY_WAKE_COOLDOWN_HOURS") * 3600
-    if len(pending) >= threshold and key not in {w["key"] for w in wakes} and now - last_at >= gap:
-        actions.append({"type": "wake_verify", "target": status_target(cfg),
+    if not wake_target(cfg):
+        if len(pending) >= threshold:
+            notes.append({"kind": "wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "pending": len(pending)})
+    elif len(pending) >= threshold and key not in {w["key"] for w in wakes} and now - last_at >= gap:
+        actions.append({"type": "wake_verify", "target": wake_target(cfg),
                         "reason": f"{len(pending)} PRs pending, threshold {threshold}", "key": key,
                         "body": wake_body(pending, key, snapshot["run_id"], threshold, sorted(repos))})
     new_state["prev_pending_count"] = len(pending)
@@ -1313,10 +1357,16 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
     # A since value floored to the UTC day keeps the URL stable for the day, so ETags can match.
     since = iso((int(now) // 86400 - window) * 86400)
     snap = {"run_id": run_id, "repos": [], "items": {}, "deps": {}, "labels": {}}
+    snap["status"] = {"wakes": [], "keys": []}
+    if wake_target(cfg):
+        wrepo, wnum = wake_target(cfg).split("#")
+        wake_comments = gh.get_all(f"repos/{OWNER}/{wrepo}/issues/{wnum}/comments?per_page=100")
+        snap["status"] = {"wakes": status_wakes(wake_comments),
+                          "keys": sorted({m.group(1) for c in wake_comments for m in [KEY_RE.search(c.get("body") or "")] if m})}
+    # The status issue body (ETag-cached: an unchanged issue costs a 304), compared before any edit.
     srepo, snum = status_target(cfg).split("#")
-    status_comments = gh.get_all(f"repos/{OWNER}/{srepo}/issues/{snum}/comments?per_page=100")
-    snap["status"] = {"wakes": status_wakes(status_comments),
-                      "keys": sorted({m.group(1) for c in status_comments for m in [KEY_RE.search(c.get("body") or "")] if m})}
+    issue, _ = gh.get(f"repos/{OWNER}/{srepo}/issues/{snum}")
+    snap["status_issue"] = {"body": (issue.get("body") or "") if isinstance(issue, dict) else ""}
     for name in repo_names:
         meta, _ = gh.get(f"repos/{OWNER}/{name}")
         snap["repos"].append({"name": name, "archived": bool(meta.get("archived"))})
@@ -1545,6 +1595,11 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if scope and a["target"] != scope:
             log("skipped", action=a["type"], target=a["target"], reason="outside ORCHESTRATE_SCOPE")
             continue
+        if a["type"] in ("merge_status", "infra_status"):
+            # An entry in the status issue body (vws-deploy#416), not a comment: no gh write here.
+            add_status_event(new_state, a, now)
+            log("status_event", action=a["type"], key=a["key"], reason=a["reason"])
+            continue
         repo, number = a["target"].split("#")
         base = f"repos/{OWNER}/{repo}/issues/{number}"
         calls = []
@@ -1560,8 +1615,6 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             calls.append(("POST", f"{base}/labels", {"labels": [a["label"]]}))
         elif a["type"] == "remove_label":
             calls.append(("DELETE", f"{base}/labels/{a['label']}", None))
-        elif a["type"] in ("merge_status", "infra_status"):
-            calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "merge":
             calls.append(("PUT", f"repos/{OWNER}/{repo}/pulls/{number}/merge", a["payload"]))
         label = a.get("add") or a.get("label")
@@ -1577,9 +1630,6 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]],
                                                             a.get("owner"), a.get("head")):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
-            continue
-        if a["type"] in ("merge_status", "infra_status") and not recheck_key(gh, repo, number, a["key"]):
-            log("skipped", action=a["type"], reason="a comment with this key already exists")
             continue
         if a["type"] == "merge":
             why = recheck_merge(gh, repo, number, a["head"], new_state, snapshot.get("merge", {}).get(repo, {}))
@@ -1641,9 +1691,90 @@ def recheck_wake(gh, repo, number, key):
     return key not in {w["key"] for w in status_wakes(comments)}
 
 
-def recheck_key(gh, repo, number, key):
-    comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
-    return not any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in comments)
+def add_status_event(state, a, now):
+    """Journal one merge or infra entry for the status issue body; one per key, the newest kept."""
+    events = [e for e in state.get("status_events", []) if e["key"] != a["key"]]
+    kind = "merge" if a["type"] == "merge_status" else "infra"
+    events.append({"key": a["key"], "at": now, "kind": kind, "text": scrub(a["reason"])})
+    state["status_events"] = events[-STATUS_EVENTS_KEEP:]
+
+
+# ---------------------------------------------------------------- the status issue body (vws-deploy#416)
+
+def status_body(snapshot, result, cfg, state, mode, now, failure=""):
+    """Pure: the status issue body. Only the last line (_Updated ..._) changes from tick to tick without a
+    real change, and status_same ignores it, so a quiet tick edits nothing."""
+    notes = result.get("notes", [])
+    in_flight = next((n["targets"] for n in notes if n.get("kind") == "in_flight"), [])
+    wake = wake_target(cfg)
+    lines = [STATUS_MARKER,
+             "Factory status. The orchestrator rewrites this body in place each tick; it does not post status comments.",
+             "",
+             f"Comments here are metrics alerts only (marker `{METRICS_ALERT_MARKER}`). verify-wake does not post here.",
+             "", "## Now", "",
+             f"- Mode: {mode}; dispatch {cfg['ORCHESTRATE_DISPATCH']}, merge {cfg['ORCHESTRATE_MERGE']}, "
+             f"board {cfg['ORCHESTRATE_BOARD']}",
+             f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
+             + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),
+             f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
+             + (": " + ", ".join(in_flight) if in_flight else "")]
+    locks = state.get("merge_locks", {})
+    lines.append("- Merge locks: " + ("; ".join(
+        f"{repo} {lk.get('status', '?')} ({lk.get('pr', '?')}"
+        + (f", main `{lk['merge_sha'][:7]}`" if lk.get("merge_sha") else "") + ")"
+        for repo, lk in sorted(locks.items())) if locks else "none"))
+    lines += ["", "## Recent entries", ""]
+    events = sorted(state.get("status_events", []), key=lambda e: (e["at"], e["key"]), reverse=True)
+    lines += [f"- {iso(e['at'])} {e['kind']}: {e['text']} (key `{e['key']}`)" for e in events] or ["- none"]
+    if failure:
+        lines += ["", failure.rstrip("\n")]
+    lines += ["", f"_Updated {iso(now)} by run `{snapshot.get('run_id', '')}`._"]
+    return "\n".join(lines) + "\n"
+
+
+def _status_norm(body):
+    text = STATUS_UPDATED_RE.sub("", (body or "").replace("\r\n", "\n"))
+    return "\n".join(line.rstrip() for line in text.strip().split("\n"))
+
+
+def status_same(old, new):
+    return _status_norm(old) == _status_norm(new)
+
+
+def failure_section(body):
+    """The '## Failed ticks' section of a status body ('' when there is none)."""
+    m = re.search(r"^## Failed ticks\n.*?(?=^## |^_Updated |\Z)", body or "", re.M | re.S)
+    return m.group(0).rstrip("\n") if m else ""
+
+
+def set_failure_section(body, section):
+    """The status body with its failure section replaced by section (a body without the marker is
+    replaced by a minimal one: the orchestrator owns this body)."""
+    if not (body or "").startswith(STATUS_MARKER + "\n"):
+        body = f"{STATUS_MARKER}\nFactory status. The orchestrator rewrites this body in place each tick.\n"
+    old = failure_section(body)
+    if old:
+        body = body.replace(old, section.rstrip("\n"), 1)
+    else:
+        m = STATUS_UPDATED_RE.search(body)
+        at = m.start() if m else len(body)
+        body = body[:at].rstrip("\n") + "\n\n" + section.rstrip("\n") + "\n\n" + body[at:].lstrip("\n")
+    return body.rstrip("\n") + "\n"
+
+
+def publish_status(gh, cfg, snapshot, body, log):
+    """Edit the status issue body when its content changed. Returns the number of failed writes (0 or 1)."""
+    repo, number = status_target(cfg).split("#")
+    if status_same(snapshot.get("status_issue", {}).get("body", ""), body):
+        log("status_unchanged", target=status_target(cfg))
+        return 0
+    try:
+        gh.write("PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": body})
+    except (GhError, PermissionError) as e:
+        log("apply_failed", action="status_body", target=status_target(cfg), error=str(e))
+        return 1
+    log("status_updated", target=status_target(cfg), chars=len(body))
+    return 0
 
 
 def recheck_merge(gh, repo, number, head, new_state, ctx):
@@ -1964,7 +2095,7 @@ def tick(paths, cfg, args, gh=None, now=None):
             snapshot = read_json(args.fixture, None)
             snapshot["run_id"] = run_id
         else:
-            gh = gh or Gh(paths.cache)
+            gh = gh or Gh(paths.cache, status_issue=cfg["ORCHESTRATE_STATUS_ISSUE"])
             log("tick_start")
             try:
                 rate, _ = gh.get("rate_limit")
@@ -2001,6 +2132,17 @@ def tick(paths, cfg, args, gh=None, now=None):
         if mode == "apply":
             new_state, errors = apply(result, snapshot, gh, cfg, paths, log, state, now)
             write_json(paths.state_file, new_state)
+        # The status issue body: written in apply mode when its content changed, else only kept locally.
+        # A streak's failure section (written by --notify-failure) stays while this tick fails too.
+        failure = read_json(paths.failure_file, {}).get("section", "") if mode == "apply" and errors else ""
+        body = status_body(snapshot, result, cfg, new_state if mode == "apply" else result["state"], mode, now, failure)
+        with open(os.path.join(paths.state, "status-body.md"), "w", encoding="utf-8") as f:
+            f.write(body)
+        scope = cfg["ORCHESTRATE_SCOPE"]
+        if mode == "apply" and gh is not None and (not scope or scope == status_target(cfg)):
+            errors += publish_status(gh, cfg, snapshot, body, log)
+        elif mode == "apply":
+            log("skipped", action="status_body", target=status_target(cfg), reason="ORCHESTRATE_SCOPE is set")
         if gh is not None:
             # Over-counting is harmless: a planned label action only brings the next sync forward.
             label_change = mode == "apply" and any(
@@ -2033,7 +2175,8 @@ def tick(paths, cfg, args, gh=None, now=None):
 
 
 def failure_body(host, failures, threshold, streak_start, exit_code, errors, mode, log_path, key):
-    lines = [FAILURE_MARKER,
+    """The '## Failed ticks' section of the status issue body for one streak."""
+    lines = ["## Failed ticks", "", FAILURE_MARKER,
              f"vws-orchestrate: {failures} failed ticks in a row on host `{host}` since {iso(streak_start)} "
              f"(threshold {threshold}).", "",
              f"Last exit code: {exit_code}", f"Mode: {mode}", f"Log: `{log_path}`", "", "Last errors (redacted):"]
@@ -2043,9 +2186,10 @@ def failure_body(host, failures, threshold, streak_start, exit_code, errors, mod
 
 
 def notify_failure(paths, cfg, args, gh=None, now=None):
-    """Called by the loop after each failed tick. Posts one failure comment per streak, at the threshold.
-    It bypasses the per-tick write cap and the rate floor (one call), so it still goes out when every
-    tick fails; if GitHub itself is down the POST fails and the next failed tick tries again."""
+    """Called by the loop after each failed tick. At the threshold it writes one '## Failed ticks' section
+    per streak into the status issue body (no comment; vws-deploy#416). It bypasses the per-tick write cap
+    and the rate floor (one read, one edit), so it still goes out when every tick fails; if GitHub itself
+    is down the edit fails and the next failed tick tries again. The next good tick drops the section."""
     now = now or time.time()
     log = Log(paths, cfg, run_id_now(now), cfg["ORCHESTRATE_MODE"])
     threshold = int(num(cfg, "ORCHESTRATE_FAILURE_THRESHOLD"))
@@ -2073,27 +2217,25 @@ def notify_failure(paths, cfg, args, gh=None, now=None):
         log("failure_alert_skipped", reason="already posted for this streak", failures=args.failures)
         return 0
     if now - prev.get("at", 0) < num(cfg, "ORCHESTRATE_FAILURE_MIN_GAP_HOURS") * 3600:
-        log("failure_alert_skipped", reason="minimum gap between failure comments", failures=args.failures)
+        log("failure_alert_skipped", reason="minimum gap between failure sections", failures=args.failures)
         return 0
     repo, number = status_target(cfg).split("#")
-    gh = gh or Gh()
+    gh = gh or Gh(status_issue=cfg["ORCHESTRATE_STATUS_ISSUE"])
+    section = failure_body(host, args.failures, threshold, args.streak_start, args.exit_code, errors,
+                           cfg["ORCHESTRATE_MODE"], paths.log, key)
     try:
-        # A POST that timed out may have landed; never post the same key twice.
-        posted = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
-        if any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in posted):
-            write_json(paths.failure_file, {"key": key, "at": now})
-            log("failure_alert_skipped", reason="the status thread already has this key", failures=args.failures)
+        issue, _ = gh.get(f"repos/{OWNER}/{repo}/issues/{number}")
+        current = (issue.get("body") or "") if isinstance(issue, dict) else ""
+        if f"Idempotency key: `{key}`" in current:
+            # An edit that timed out may have landed; never write the same streak twice.
+            write_json(paths.failure_file, {"key": key, "at": now, "section": section})
+            log("failure_alert_skipped", reason="the status issue already has this key", failures=args.failures)
             return 0
-    except (GhError, PermissionError) as e:
-        log("failure_alert_recheck_failed", error=str(e))  # GitHub may be down; still try the POST
-    body = failure_body(host, args.failures, threshold, args.streak_start, args.exit_code, errors,
-                        cfg["ORCHESTRATE_MODE"], paths.log, key)
-    try:
-        gh.write("POST", f"repos/{OWNER}/{repo}/issues/{number}/comments", {"body": body})
+        gh.write("PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": set_failure_section(current, section)})
     except (GhError, PermissionError) as e:
         log("failure_alert_failed", error=str(e), failures=args.failures)
         return 0
-    write_json(paths.failure_file, {"key": key, "at": now})
+    write_json(paths.failure_file, {"key": key, "at": now, "section": section})
     log("failure_alerted", target=status_target(cfg), failures=args.failures, key=key)
     return 0
 
