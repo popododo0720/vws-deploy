@@ -142,6 +142,10 @@ event on this PR.
   `wake=false`, no escalation line, no label write.
 - Removing `needs-human` is the only reset. The next failure counts from 1 again.
 
+The cap counts CI-failure heads only. The orchestrator's DeepSeek swap budget (two failures) is a
+separate count; when stage 2 lets a CI-fail rework consume a slot it counts as one dispatch, as any
+rework does.
+
 The orchestrator recomputes `n` and `wake` from the comments; the record is not trusted alone.
 
 ## Log tail
