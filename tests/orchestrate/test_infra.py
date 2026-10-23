@@ -249,9 +249,9 @@ class ApplyTicks(Env):
         out = []
         for i in range(n):
             age = last_report_seconds_ago + (n - 1 - i) * 1200
-            out.append({"id": 2 * i + 1, "html_url": f"{self.URL}{2 * i + 1}", "created_at": iso_ago(age + 120),
+            out.append({"id": 2 * i + 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": f"{self.URL}{2 * i + 1}", "created_at": iso_ago(age + 120),
                         "body": orch.DISPATCH_TEXT})
-            out.append({"id": 2 * i + 2, "html_url": f"{self.URL}{2 * i + 2}", "created_at": iso_ago(age),
+            out.append({"id": 2 * i + 2, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": f"{self.URL}{2 * i + 2}", "created_at": iso_ago(age),
                         "body": f"[deepseek-dev] Failed for {self.URL}{2 * i + 1}: " + RATE_LIMIT_429.split(": ", 1)[1]})
         return out
 

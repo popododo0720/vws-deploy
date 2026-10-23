@@ -197,9 +197,9 @@ class ReworkTick(test_runtime.Env):
         bodies = self.posted()
         self.assertEqual(len(bodies), 1)
         self.assertIn(f"orchestrate:rework head={h1} verdict=1", bodies[0])
-        posted = {"id": 50, "html_url": f"{U}/vws-iam/pull/7#issuecomment-50", "created_at": "2026-10-21T10:05:00Z",
+        posted = {"id": 50, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": f"{U}/vws-iam/pull/7#issuecomment-50", "created_at": "2026-10-21T10:05:00Z",
                   "body": bodies[0]}
-        done = {"id": 51, "html_url": f"{U}/vws-iam/pull/7#issuecomment-51", "created_at": "2026-10-21T11:00:00Z",
+        done = {"id": 51, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": f"{U}/vws-iam/pull/7#issuecomment-51", "created_at": "2026-10-21T11:00:00Z",
                 "body": f"[deepseek-dev] Done for {posted['html_url']}"}
         # Same head, verdict repeated: nothing new is posted.
         os.remove(self.calls_file)

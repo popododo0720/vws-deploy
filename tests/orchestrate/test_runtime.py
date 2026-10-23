@@ -265,7 +265,7 @@ class Ticks(Env):
         wake = json.loads(self.writes()[0]["stdin"])["body"]
         r = routes()
         r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 5, "created_at": NOWISO, "body": wake}]}
-        disp = [{"id": 6, "issue_url": "x/vws-iam/issues/1", "created_at": NOWISO,
+        disp = [{"id": 6, "user": {"login": "popododo0720"}, "author_association": "OWNER", "issue_url": "x/vws-iam/issues/1", "created_at": NOWISO,
                  "html_url": "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-6", "body": orch.DISPATCH_TEXT}]
         r[f"{O}/vws-iam/issues/comments"] = {"body": disp}
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": disp}
@@ -323,8 +323,8 @@ class Ticks(Env):
         old = "2026-09-01T00:00:00Z"
         u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
-            {"id": 1, "html_url": u + "1", "created_at": old, "body": orch.DISPATCH_TEXT},
-            {"id": 2, "html_url": u + "2", "created_at": old, "body": f"[deepseek-dev] Done for {u}1"}]}
+            {"id": 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "1", "created_at": old, "body": orch.DISPATCH_TEXT},
+            {"id": 2, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "2", "created_at": old, "body": f"[deepseek-dev] Done for {u}1"}]}
         self.set_routes(r)
         self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1")
         self.assertEqual(self.writes(), [], "a task done long ago is not dispatched again")
@@ -342,9 +342,9 @@ class Ticks(Env):
         u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
         r[f"{O}/vws-iam/issues"]["body"][0]["labels"].append({"name": "grok"})
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
-            {"id": 1, "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
-            {"id": 2, "html_url": u + "2", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT},
-            {"id": 3, "html_url": u + "3", "created_at": "2026-10-02T01:00:00Z", "body": "x\n<!-- orchestrate:swap -->"}]}
+            {"id": 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 2, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "2", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 3, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "3", "created_at": "2026-10-02T01:00:00Z", "body": "x\n<!-- orchestrate:swap -->"}]}
         self.set_routes(r)
         self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1")
         self.assertEqual([(c["method"], c["path"]) for c in self.writes()], [("DELETE", f"{O}/vws-iam/issues/1/labels/deepseek")])
@@ -354,11 +354,11 @@ class Ticks(Env):
         r = routes()
         u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
-            {"id": 1, "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
-            {"id": 2, "html_url": u + "2", "created_at": "2026-10-01T01:00:00Z",
+            {"id": 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 2, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "2", "created_at": "2026-10-01T01:00:00Z",
              "body": f"[deepseek-dev] Done for {u}1\nPR: https://github.com/popododo0720/other-repo/pull/5"},
-            {"id": 3, "html_url": u + "3", "created_at": "2026-10-01T02:00:00Z", "body": orch.DISPATCH_TEXT},
-            {"id": 4, "html_url": u + "4", "created_at": "2026-10-01T03:00:00Z",
+            {"id": 3, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "3", "created_at": "2026-10-01T02:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 4, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "4", "created_at": "2026-10-01T03:00:00Z",
              "body": f"[deepseek-dev] Done for {u}3\nPR: https://github.com/someone/vws-iam/pull/6"}]}
         self.set_routes(r)
         self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1"), 0)
@@ -374,8 +374,8 @@ class Ticks(Env):
         u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
         r[f"{O}/vws-iam/issues"]["body"][0]["labels"].append({"name": "in-review"})
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
-            {"id": 1, "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
-            {"id": 2, "html_url": u + "2", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
+            {"id": 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "1", "created_at": "2026-10-01T00:00:00Z", "body": orch.DISPATCH_TEXT},
+            {"id": 2, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "2", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
         self.set_routes(r)
         orch.write_json(self.paths.state_file, {"owned_labels": {"in-review": ["vws-iam#1"], "blocked": []}})
         self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1"), 0)
@@ -530,7 +530,7 @@ class HistoryCache(Env):
         u = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-"
         r[f"{O}/vws-iam/issues"]["body"][0]["updated_at"] = "2026-10-02T00:00:00Z"
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": [
-            {"id": 1, "html_url": u + "1", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
+            {"id": 1, "user": {"login": "popododo0720"}, "author_association": "OWNER", "html_url": u + "1", "created_at": "2026-10-02T00:00:00Z", "body": orch.DISPATCH_TEXT}]}
         self.set_routes(r)
         os.remove(self.calls_file)
         self.tick()

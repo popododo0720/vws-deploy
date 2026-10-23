@@ -57,6 +57,27 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   last 14 days.
 - **Completion signal:** only the poller's `[deepseek-dev] Done for <url>` and
   `[deepseek-dev] Failed for <url>` comments. A Done report with an open PR adds `in-review`.
+- **Trusted comments (vws-deploy#419):** the repos are public, so anyone can post a comment. The
+  orchestrator acts on a comment only when its author is trusted:
+  - `/orchestrate reset-failures` and `@deepseek-dev` dispatch comments: the owner (`popododo0720`) or
+    an `OWNER`, `MEMBER` or `COLLABORATOR` author association (`is_trusted_reset_author`, the same
+    rule as `.github/ci-fail`, #412);
+  - `[deepseek-dev] Done/Failed` results: only a login in `ORCHESTRATE_DEEPSEEK_LOGINS` (the poller's
+    account, the VM PAT user), whatever its association;
+  - verify verdict comments (`# repo#N @ <sha>` + `Result:`) and `<!-- orchestrate:... -->` marker
+    comments (vws-deploy#433, #434): only `ORCHESTRATE_VERIFY_LOGIN` (default `vws-verify[bot]`,
+    compared case-insensitively) or an `OWNER` association. When `ORCHESTRATE_VERIFY_USER_ID` is set,
+    the verify login counts only with that numeric user id, so a renamed and re-registered login does
+    not match. `vws-verify[bot]` reviews use the same login and id check;
+  - a comment without an author login or association is ignored (fail closed).
+
+  Other comments are dropped before the decision and logged as a `comment_ignored` event with
+  `target`, `comment` (URL), `kind`, `author`, `association` and `reason`
+  (`reset_author_not_trusted`, `dispatch_author_not_trusted`, `report_author_not_deepseek_poller`,
+  `verdict_author_not_trusted`, `marker_author_not_trusted` or `author_missing`). The comment body is
+  never logged. So a forged FAIL posts no rework prompt and counts no failure toward the grok swap,
+  and a forged PASS cannot hide a trusted FAIL. A new dispatch found by the pre-dispatch re-read
+  blocks only when its author is trusted.
 - **Done report with a PR outside `popododo0720/vws-*`:** that PR is never read (the gh allowlist
   refuses it). The attempt counts as one failure (kind `pr_outside_vws`) and each tick logs a
   `note` with kind `report_pr_outside_vws`, so the task is retried or moved to grok instead of
@@ -67,7 +88,7 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   that still has an orchestrator-owned `in-review` loses it on the next tick.
 - **Failure resets** (failures before them do not count):
   - `deepseek` re-added after `grok`;
-  - a comment starting `/orchestrate reset-failures`;
+  - a comment starting `/orchestrate reset-failures` from a trusted author (see Trusted comments);
   - a report or dispatch URL listed in `exclusions.tsv` (vws-iam#123's token failure is the first entry).
 - **Labels:** labels are never created. An action whose label is missing on the repo is skipped and
   logged.
@@ -136,6 +157,8 @@ A PR is eligible only when all of these hold:
 | no other PR of the repo is chosen this tick (lowest number first) | `one_merge_per_repo:<pr>` |
 
 The `Agent:` line of the PR body is copied into the `merged` log event (`agent`, empty when absent).
+It follows the #412 spec: the first unindented, case-sensitive line matching
+`^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$`, so `Agent: dr eggbot` or `agent: x` is not an agent.
 No rule reads it, so a PR without that line merges the same way.
 
 **Merge call.** `PUT repos/O/R/pulls/N/merge` with `{"merge_method": "squash", "sha": "<verified head>",
@@ -283,6 +306,9 @@ board is overwritten on the next sync. Design: vws-deploy#347.
   full after 6 hours (plus up to 1 hour of per-item jitter) to catch edits and deletes, when it was
   updated in the last 2 minutes, and when the file is missing or has another `version`. Items that
   lose their labels or close are dropped. Deleting the file forces a full read on the next tick.
+  Version 3 (vws-deploy#419) stores each comment's `author` and `association` and keeps untrusted
+  comments, so trust is decided on every tick; an older file is discarded and the first tick
+  re-reads every candidate.
 - **Rate floor:** a tick is skipped when `core.remaining` < `ORCHESTRATE_RATE_FLOOR` (1000), because
   other agents share the login.
 - **Write cap:** at most `ORCHESTRATE_MAX_WRITES` (5) GitHub writes per tick. The verify-wake comment
@@ -362,6 +388,9 @@ Config keys and defaults:
 - `ORCHESTRATE_DEEPSEEK_CAP=2` (DeepSeek dispatches in flight at once; a positive integer)
 - `ORCHESTRATE_GROK_CAP=1` (rule G: Grok tasks in flight at once; a positive integer)
 - `ORCHESTRATE_GROK_ALLOWLIST=` (rule G: `repo#N` entries such as `vws-deploy#378,vws-iam#12`, split on commas or whitespace; empty assigns nothing; anything else is ignored with a `grok_allowlist_invalid` note)
+- `ORCHESTRATE_DEEPSEEK_LOGINS=popododo0720` (comma-separated GitHub logins whose `[deepseek-dev]` results count: the poller's account; each must be a valid login, optionally ending in `[bot]`)
+- `ORCHESTRATE_VERIFY_LOGIN=vws-verify[bot]` (the one GitHub login whose verdict comments, markers and reviews count besides an `OWNER` comment; a valid login, optionally ending in `[bot]`)
+- `ORCHESTRATE_VERIFY_USER_ID=` (empty: not pinned; else a positive integer that the verify login's `user.id` must equal; get it with `gh api 'users/vws-verify[bot]' -q .id`)
 - `ORCHESTRATE_INFRA_RETRY_DELAY_MIN=5` (minutes after a provider-error report before the retry; a positive integer; with the 600 s tick the effective delay is 5 to 10 minutes)
 - `VERIFY_WAKE_THRESHOLD=3` (needs-verify PRs waiting that wake vws-verify at once)
 - `VERIFY_WAKE_MAX_WAIT_MIN=30` (minutes the oldest needs-verify PR may wait before a wake; `VERIFY_WAKE_EDGE_MIN_HOURS` and `VERIFY_WAKE_COOLDOWN_HOURS` are gone and ignored)
@@ -379,6 +408,19 @@ Config keys and defaults:
 
 The box has no systemd and no cron, and nothing restarts user processes after a box restart. The loop
 is started with `setsid nohup`.
+
+Before the install or an upgrade, check the GitHub accounts the trust rules depend on (vws-deploy#419,
+#433):
+
+1. On the DeepSeek poller VM, run `gh api user -q .login`. It must print the expected poller account
+   (`popododo0720` by default). If it prints another login, put `ORCHESTRATE_DEEPSEEK_LOGINS=<that login>`
+   in the env file below; otherwise every real result is ignored, dispatches time out and tasks move
+   to grok.
+2. On the box, run `gh api user -q .login` with `GH_TOKEN` unset. It must print `popododo0720`: the
+   orchestrator's own dispatches, rework prompts and swap markers are trusted through that account's
+   `OWNER` association.
+3. Optional: pin the verify bot with `ORCHESTRATE_VERIFY_USER_ID=$(gh api 'users/vws-verify[bot]' -q .id)`
+   in the env file.
 
 ```bash
 unset GH_TOKEN
