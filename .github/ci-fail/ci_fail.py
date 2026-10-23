@@ -27,6 +27,11 @@ TAIL_BYTES = 4096
 MAX_TAILS = 5
 TAIL_BUDGET = 12288
 WAKEABLE = {"deepseek", "grok"}
+# A failure or timeout always has a failed job, but right after the run the jobs API can list none
+# yet (#443). Re-read with a bounded backoff (5 s, 10 s) before writing "unavailable".
+JOB_LAG = {"failure", "timed_out"}
+JOBS_TRIES = 3
+JOBS_BACKOFF = 5
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPO_RE = re.compile(r"vws-[a-z0-9-]+")
@@ -127,6 +132,10 @@ def format_comment(rec, tails, escalation=""):
         out.append("Failed jobs:")
         out += [f"- `{_safe(j['workflow'])} / {_safe(j['job'])}`: {_safe(j['conclusion'])} ({_safe(j['url'], 300)})"
                 for j in rec["failed_jobs"]]
+    elif any(r.get("conclusion") in JOB_LAG for r in rec["runs"]):
+        urls = ", ".join(_safe(r.get("url") or "", 300) for r in rec["runs"])
+        out.append(f"Failed jobs: unavailable (the jobs API listed no failed job after {JOBS_TRIES} reads; "
+                   f"see the run: {urls}).")
     else:
         out.append("Failed jobs: none reported (the run failed before any job ran).")
     for j in rec["failed_jobs"]:
@@ -245,10 +254,16 @@ def run(gh, event_name, event, repository, now):
     wf = str(wr.get("name") or "")
     run_entry = {"workflow": wf, "run_id": int(wr["id"]), "run_attempt": int(wr.get("run_attempt") or 1),
                  "conclusion": wr["conclusion"], "url": wr.get("html_url") or ""}
-    jobs = gh.get(f"{a}/actions/runs/{run_entry['run_id']}/attempts/{run_entry['run_attempt']}/jobs?per_page=100")
-    new_jobs = [{"workflow": wf, "job": str(j.get("name") or ""), "job_id": int(j["id"]), "conclusion": j["conclusion"],
-                 "url": j.get("html_url") or "", "tail_lines": 0, "tail_truncated": False}
-                for j in jobs.get("jobs", []) if j.get("conclusion") in FAILED]
+    jobs_path = f"{a}/actions/runs/{run_entry['run_id']}/attempts/{run_entry['run_attempt']}/jobs?per_page=100"
+    for i in range(JOBS_TRIES):
+        jobs = gh.get(jobs_path)
+        new_jobs = [{"workflow": wf, "job": str(j.get("name") or ""), "job_id": int(j["id"]),
+                     "conclusion": j["conclusion"], "url": j.get("html_url") or "", "tail_lines": 0,
+                     "tail_truncated": False}
+                    for j in jobs.get("jobs", []) if j.get("conclusion") in FAILED]
+        if new_jobs or wr["conclusion"] not in JOB_LAG or i == JOBS_TRIES - 1:
+            break
+        time.sleep(JOBS_BACKOFF * 2 ** i)
 
     comments = gh.get_all(f"{a}/issues/{pr}/comments?per_page=100")
     for c, rec in bot_records(comments, repo, pr):
