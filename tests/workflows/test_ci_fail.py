@@ -73,8 +73,8 @@ class Fake:
     @staticmethod
     def pull(number, sha, ref, state="open", labels=(), body=""):
         return {"number": number, "state": state, "body": body,
-                "head": {"sha": sha, "ref": ref}, "base": {"ref": "main"},
-                "labels": [{"name": x} for x in labels]}
+                "head": {"sha": sha, "ref": ref, "repo": {"full_name": "popododo0720/vws-storage"}},
+                "base": {"ref": "main"}, "labels": [{"name": x} for x in labels]}
 
     def add_marker(self, number=113, sha=SHA, n=1, wake=True, when=NOW, login="github-actions[bot]"):
         c = marker_comment(number, sha, n, wake, when=when, login=login)
@@ -399,6 +399,18 @@ class Cap(unittest.TestCase):
         self.assertFalse(result["wake"])
         self.assertNotIn("**needs-human**", w.comments[113][0]["body"])
         self.assertEqual(w.labels(), [])
+
+    def test_a_fork_pr_does_not_count_toward_the_cap(self):
+        w = Fake(labels=["deepseek"])
+        w.pulls.append(Fake.pull(110, OTHER[0], "fix/x", state="closed"))
+        w.add_marker(number=110, sha=OTHER[0])
+        fork = Fake.pull(120, OTHER[1], "fix/x", state="closed")
+        fork["head"]["repo"] = {"full_name": "someone/vws-storage"}
+        w.pulls.append(fork)
+        w.add_marker(number=120, sha=OTHER[1])
+        w.add_run("ci")
+        result = cf.run(w, event(), ["ci"], NOW)
+        self.assertEqual(result["n"], 2)
 
     def test_human_reset_restarts_the_count(self):
         w = Fake(labels=["deepseek"])
