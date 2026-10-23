@@ -25,10 +25,12 @@ jobs:
       group: vws-ci-fail-${{ github.repository }}-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      # The script runs from the same commit as this workflow file (the caller's @sha pin), never
+      # from a branch (#402). tests/workflows/test_ci_fail_pin.py fails on any other ref.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          repository: popododo0720/vws-deploy
-          ref: main
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: vws-deploy-ci-fail
           sparse-checkout: .github/ci-fail
           persist-credentials: false

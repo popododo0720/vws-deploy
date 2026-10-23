@@ -1,0 +1,6 @@
+# actionlint 1.7.7 does not know the job.workflow_repository and job.workflow_sha contexts yet.
+# Ignore only that message, only in ci-fail.yml (vws-deploy#412); remove when actionlint knows them.
+paths:
+  .github/workflows/ci-fail.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'
