@@ -73,7 +73,7 @@ A PR is eligible only when all of these hold:
 | not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status thread | `opted_out` |
 | the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
 | a `verify-gate` check run from GitHub Actions (app id 15368) on the **current head**, and every such run is success, even when `main`'s protection does not require it | `verify_gate_missing`, `verify_gate_pending`, `verify_gate_<conclusion>` |
-| every required check of `main`'s rulesets (bound to its app id) is success on the head; classic protection is not read (the PAT gets 403, #408) and is covered by `mergeable_state` below | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
+| every required check of `main`'s rulesets and classic branch protection (bound to its app id) is success on the head, so a skipped or neutral required check never merges; the classic list comes from the `protection` field of `branches/main`, never the protection API (the PAT gets 403 there, #408) | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
 | every other check run on the head is success, skipped or neutral, and every commit status is success (AGENTS.md rule 5) | `check_failed:<name>`, `check_pending:<name>`, `status_<state>:<context>`, `combined_status_<state>`, `checks_truncated`, `statuses_truncated` |
 | `mergeable` is true and `mergeable_state` (GraphQL `mergeStateStatus`) is `clean`, GitHub's own verdict that counts main's protection and rulesets; `blocked`, `behind`, `dirty`, `unknown`, `unstable`, `has_hooks`, `draft` or no value never merge | `mergeable_unknown` (GitHub is still computing; next tick), `conflicts`, `mergeable_state:<state>` |
 | the head did not move during collect, and the PR is still open | `head_moved_during_collect`, `not_open` |
@@ -97,9 +97,14 @@ open, at the same head, not a draft, on base `main`, `mergeable` and `mergeable_
 `sha` protects only the head, so the CI verdicts are re-read too.
 
 **Rulesets.** Required checks are read from `rules/branches/main`, so the `vws-main` ruleset (squash
-only, required checks such as `english`) is honored. Classic branch protection is not read: its API
+only, required checks such as `english`) is honored. The protection API is never called: it
 needs Administration read, which the PAT does not have (403 on vws-storage and vws-console-api, #408).
-GitHub folds it into `mergeable_state`, so only `clean` merges. Each requirement is
+Classic required checks come from the `protection.required_status_checks` field of the
+`branches/main` body instead (`checks` with `app_id`, plus `contexts` with no app), and are joined
+with the ruleset checks, deduped by context and app id. GitHub counts a skipped or neutral required
+check as passing, so `mergeable_state` alone is not enough: each one must be success. Classic
+protection off (`protected` or `protection.enabled` false) adds nothing; a missing or malformed
+`protection` field fails closed (`merge_repo_unreadable`). Only `clean` merges. Each requirement is
 bound to its app id. A commit status can satisfy only a requirement that has no app id. The
 orchestrator always squashes, never updates the branch (no merge commits for guard R2), and never
 bypasses a ruleset or protection.
