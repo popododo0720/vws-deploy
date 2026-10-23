@@ -123,6 +123,44 @@ class CallerPin(unittest.TestCase):
         cut = caller().split("  verify-gate:\n")[0]
         self.assertTrue(cp.check(cut)[0])
 
+    def test_top_level_defaults_shell_bypass_fails(self):
+        # Repro of the round 1 finding (/workspace/handoff/verdicts/d413/caller-pin-defaults-bypass.txt): a
+        # default shell that always exits 0 makes both shims pass whatever the called jobs return.
+        bypass = "defaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n"
+        for home, text in ((True, caller(LOCAL, "")), (False, caller())):
+            text = text.replace("permissions: {}\n", "permissions: {}\n" + bypass, 1)
+            errs, pin = cp.check(text, home=home)
+            self.assertIsNone(pin)
+            self.assertTrue(any("defaults" in e for e in errs), errs)
+
+    def test_only_name_on_permissions_jobs_at_the_top(self):
+        for extra in ("env: {SHELLOPTS: xtrace}\n", "concurrency: {group: x, cancel-in-progress: true}\n",
+                      "run-name: anything\n", "defaults: {run: {working-directory: /tmp}}\n", "x-anchor: &a 1\n"):
+            text = caller().replace("permissions: {}\n", "permissions: {}\n" + extra, 1)
+            errs, _ = cp.check(text)
+            self.assertTrue(any("top-level keys" in e for e in errs), (extra, errs))
+        self.assertTrue(cp.check(caller().replace("name: repo-guard\n", ""))[0])
+
+    def test_repeated_keys_fail(self):
+        # PyYAML keeps the last of two equal keys; the check must not compare a different mapping than GitHub runs.
+        text = caller().replace("permissions: {}\n", "permissions: {}\npermissions: write-all\n", 1)
+        self.assertTrue(any("repeated key" in e for e in cp.check(text)[0]))
+        shim = caller().split("  verify-gate:\n    needs: gate\n")[1]
+        text = caller().replace("  pr-hygiene:\n", "  verify-gate:\n    needs: gate\n" + shim + "  pr-hygiene:\n", 1)
+        self.assertTrue(cp.check(text)[0])
+
+    def test_job_level_overrides_fail(self):
+        # Shims and call jobs are compared as whole mappings, so any extra key fails.
+        shim_head = "  verify-gate:\n    needs: gate\n"
+        for extra in ("    defaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n", "    env: {R: success/verify-gate}\n",
+                      "    continue-on-error: true\n", "    container: {image: busybox}\n"):
+            self.assertTrue(cp.check(caller().replace(shim_head, shim_head + extra))[0], extra)
+        call_head = "  gate:\n    if: github.event_name == 'pull_request'\n"
+        for extra in ("    defaults: {run: {shell: sh}}\n", "    env: {A: b}\n", "    concurrency: x\n"):
+            self.assertTrue(cp.check(caller().replace(call_head, call_head + extra))[0], extra)
+        step = 'run: test "$R" = success/verify-gate}'
+        self.assertTrue(cp.check(caller().replace(step, step[:-1] + ", shell: \"bash -c 'exit 0' {0}\"}"))[0])
+
     def test_caller_longer_than_40_lines_fails(self):
         text = caller() + "#\n" * (41 - len(caller().splitlines()))
         self.assertGreater(len(text.splitlines()), 40)
