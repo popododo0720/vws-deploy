@@ -782,8 +782,25 @@ class OtherWorkflowFiles(unittest.TestCase):
                     out = self.issues(tree(**{name: text}))
                     self.assertTrue(any("required check name" in i for i in out), out)
 
+    def test_expression_in_a_job_name_is_flagged(self):
+        # ${{ }} is never evaluated or parsed: a quoted }} once hid verify-gate from the check (#436).
+        for name in ("\"${{ 'verify-gate' || '}}ignored' }}\"", "\"${{ 'pr-hygiene' || '}}x' }}\"",
+                     "\"${{ format('verify-{0}', 'gate') }}\"", "\"${{ format('{0}-{1}', 'pr', 'hygiene') }}\"",
+                     "\"${{ github.event.x || 'verify-gate' }}\"", "\"${{ inputs.n }}\"", "\"test (${{ matrix.go }})\""):
+            text = "on: pull_request\njobs:\n  j:\n    name: %s\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n" % name
+            with self.subTest(name=name):
+                out = self.issues(tree(q_yml=text))
+                self.assertTrue(any("q.yml: job j name has an expression" in i for i in out), out)
+                self.assertEqual(self.check_pending(tree(q_yml=text))[1], None, "no pending exemption")
+        call = ("on: pull_request\njobs:\n  c:\n    name: \"${{ 'verify-gate' || '}}' }}\"\n"
+                "    uses: ./.github/workflows/lib.yml\n")
+        self.assertTrue(any("job c name has an expression" in i for i in self.issues(tree(q_yml=call))))
+
+    def check_pending(self, files):
+        return dc.ref_issues(files, home=False, full_copy=PENDING["vws-lib"])
+
     def test_ordinary_workflows_pass(self):
-        ok = ("on: pull_request\njobs:\n  test:\n    name: test (${{ matrix.go }})\n    runs-on: ubuntu-latest\n"
+        ok = ("on: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
               "    strategy: {matrix: {go: ['1.22']}}\n    steps: [{run: go test}]\n"
               "  hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n")
         called = "on: workflow_call\njobs:\n  pr-hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
@@ -822,6 +839,21 @@ class WorkflowFiles(unittest.TestCase):
         self.assertEqual(got, files)
         got = dc.workflow_files("o", "r", api=self.api(entries, files))
         self.assertEqual(got, files)
+
+    def test_a_listing_of_1000_entries_is_not_trusted(self):
+        # The Contents API lists at most 1,000 entries, so a spoofing file past them would never be read (#436).
+        spoof = b"on: pull_request\njobs:\n  pr-hygiene: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
+        for n in (1000, 1001):
+            entries = [{"type": "file", "path": ".github/workflows/f%04d.txt" % i} for i in range(n - 2)]
+            entries += [{"type": "file", "path": DPW}, {"type": "file", "path": RG}]
+            with self.subTest(n=n):
+                got = dc.workflow_files("o", "r", api=self.api(entries, {DPW: DPW_TEXT, RG: FULL, ".github/workflows/z.yml": spoof}))
+                self.assertIsNone(got)
+                self.assertEqual(dc.ref_issues(got, home=False, full_copy=FULL_SHA), (["cannot list .github/workflows"], None))
+        entries = [{"type": "file", "path": ".github/workflows/f%04d.txt" % i} for i in range(997)]
+        entries += [{"type": "file", "path": DPW}, {"type": "file", "path": RG}]
+        got = dc.workflow_files("o", "r", api=self.api(entries, {DPW: DPW_TEXT, RG: FULL}))
+        self.assertEqual(got, {DPW: DPW_TEXT, RG: FULL}, "999 entries are a complete listing")
 
     def test_errors(self):
         self.assertIsNone(dc.workflow_files("o", "r", api=lambda p: None))
