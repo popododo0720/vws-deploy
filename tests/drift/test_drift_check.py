@@ -687,7 +687,11 @@ def tree(rg=FULL, **more):
 
 def home_tree():
     d = os.path.join(ROOT, ".github", "workflows")
-    return {".github/workflows/" + n: open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d))}
+    out = {}
+    for n in sorted(os.listdir(d)):
+        with open(os.path.join(d, n), "rb") as f:
+            out[".github/workflows/" + n] = f.read()
+    return out
 
 
 class PendingExemption(unittest.TestCase):
@@ -884,7 +888,8 @@ class MainWithFakeGh(unittest.TestCase):
     """main() end to end with a fake gh api: the default branch and PR heads of a pending repo (no network)."""
 
     def run_main(self, lib_default, lib_prs=(), lib_heads=None):
-        guard = open(os.path.join(ROOT, "scripts", "guard-agents.sh"), "rb").read()
+        with open(os.path.join(ROOT, "scripts", "guard-agents.sh"), "rb") as f:
+            guard = f.read()
         prot = {"required_status_checks": {"contexts": list(dc.COMMON_CHECKS)}, "enforce_admins": {"enabled": True},
                 "allow_force_pushes": {"enabled": False}, "allow_deletions": {"enabled": False}}
         trees = {("vws-deploy", None): home_tree(), ("vws-lib", None): lib_default}
@@ -919,9 +924,11 @@ class MainWithFakeGh(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: [os.unlink(os.path.join(d, f)) for f in os.listdir(d)] and os.rmdir(d))
         repos = os.path.join(d, "repos.tsv")
-        open(repos, "w").write("vws-deploy\tother\t\t\nvws-lib\tother\t\t\n")
+        with open(repos, "w") as f:
+            f.write("vws-deploy\tother\t\t\nvws-lib\tother\t\t\n")
         pend = os.path.join(d, "pending.tsv")
-        open(pend, "w").write("vws-lib\t%s\tfull copy\n" % FULL_SHA)
+        with open(pend, "w") as f:
+            f.write("vws-lib\t%s\tfull copy\n" % FULL_SHA)
         argv = ["drift_check.py", "--owner", "o", "--repos", repos, "--caller-pending", pend,
                 "--guard-variants", os.path.join(d, "none.tsv")]
         out = io.StringIO()
