@@ -594,13 +594,55 @@ class HeadArgs(unittest.TestCase):
 
 
 class OpenPrHeads(unittest.TestCase):
+    """Every open PR is listed, page by page; a list that cannot be read in full is None (drift)."""
+
+    @staticmethod
+    def pages(*pages):
+        """A fake gh api: page n of the open PR list is pages[n-1], later pages are empty, anything else None."""
+        def api(path):
+            base, _, page = path.partition("&page=")
+            if base != "repos/o/r/pulls?state=open&per_page=100" or not page.isdigit():
+                return None
+            n = int(page)
+            return pages[n - 1] if n <= len(pages) else []
+        return api
+
+    @staticmethod
+    def prs(first, count):
+        return [{"number": n, "head": {"sha": "%040x" % n}} for n in range(first, first + count)]
+
     def test_lists_number_and_head(self):
-        api = {"repos/o/r/pulls?state=open&per_page=100": [{"number": 7, "head": {"sha": SHA}}]}.get
+        api = self.pages([{"number": 7, "head": {"sha": SHA}}])
         self.assertEqual(dc.open_pr_heads("o", "r", api=api), [("#7", SHA)])
+
+    def test_reads_every_page(self):
+        got = dc.open_pr_heads("o", "r", api=self.pages(self.prs(1, 100), self.prs(101, 100), self.prs(201, 3)))
+        self.assertEqual(len(got), 203)
+        self.assertEqual(got[0], ("#1", "%040x" % 1))
+        self.assertEqual(got[-1], ("#203", "%040x" % 203))
+
+    def test_a_full_last_page_is_followed_by_an_empty_one(self):
+        self.assertEqual(len(dc.open_pr_heads("o", "r", api=self.pages(self.prs(1, 100)))), 100)
 
     def test_api_error_is_none(self):
         self.assertIsNone(dc.open_pr_heads("o", "r", api=lambda path: None))
         self.assertIsNone(dc.open_pr_heads("o", "r", api=lambda path: {"message": "x"}))
+
+    def test_error_on_a_later_page_is_none(self):
+        first = self.pages(self.prs(1, 100))
+
+        def api(path):
+            return None if path.endswith("&page=2") else first(path)
+        self.assertIsNone(dc.open_pr_heads("o", "r", api=api))
+
+    def test_malformed_entries_are_none(self):
+        for bad in ([{"number": 7}], [{"number": 7, "head": {"sha": "main"}}], [{"head": {"sha": SHA}}], ["x"]):
+            with self.subTest(bad=bad):
+                self.assertIsNone(dc.open_pr_heads("o", "r", api=self.pages(bad)))
+
+    def test_endless_pages_are_none(self):
+        # A list that never ends (or a fake that ignores page) is not read forever.
+        self.assertIsNone(dc.open_pr_heads("o", "r", api=lambda path: self.prs(1, 100)))
 
 
 class HeadCallers(unittest.TestCase):
