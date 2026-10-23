@@ -1,9 +1,12 @@
 """Tests for .github/workflows/verify-queue.yml (vws-deploy#397): the needs-verify label follows CI.
 
 The run script is executed with gh stubbed: $PR_TSV, $CHECKS_TSV and $STATUS_TSV are what the PR,
-check-runs and commit-status reads print; $DELETE_FAIL makes the label DELETE fail with that text.
+check-runs and commit-status reads print; $REVIEWS_JSON and $COMMENTS_JSON are the raw API pages of the
+reviews and issue-comments reads (filtered by the script's own jq); $DELETE_FAIL makes the label DELETE
+fail with that text and $READ_FAIL makes the reviews read fail.
 Run: python3 -m unittest discover -s tests/workflows
 """
+import json
 import os
 import re
 import unittest
@@ -21,6 +24,9 @@ GH = """case "$*" in
   "api repos/o/r/pulls/"*) printf '%s\\n' "$PR_TSV" ;;
   *"/check-runs?per_page=100"*) [ -n "${CHECKS_TSV:-}" ] && printf '%s\\n' "$CHECKS_TSV" ;;
   *"/status --jq"*) [ -n "${STATUS_TSV:-}" ] && printf '%s\\n' "$STATUS_TSV" ;;
+  *"/reviews?per_page=100") if [ -n "${READ_FAIL:-}" ]; then echo "$READ_FAIL" >&2; exit 1; fi
+    [ -n "${REVIEWS_JSON:-}" ] && printf '%s\\n' "$REVIEWS_JSON" ;;
+  *"/comments?per_page=100") [ -n "${COMMENTS_JSON:-}" ] && printf '%s\\n' "$COMMENTS_JSON" ;;
   *"-X DELETE"*) if [ -n "${DELETE_FAIL:-}" ]; then echo "$DELETE_FAIL" >&2; exit 1; fi ;;
   *"-X POST"*) exit 0 ;;
   *) echo "unexpected gh $*" >&2; exit 9 ;;
@@ -54,7 +60,9 @@ class Shape(unittest.TestCase):
             "workflows": ["ci", "CI", "drift-check", "english", "installer-image", "post-merge", "repo-guard"],
             "types": ["completed"]})
         self.assertEqual(sorted(on["pull_request"]["types"]), ["ready_for_review", "synchronize"])
-        self.assertEqual(sorted(on), ["pull_request", "workflow_run"])
+        # vws-deploy#440: a verdict review re-runs the queue so a FAIL takes the label off at once.
+        self.assertEqual(on["pull_request_review"], {"types": ["submitted"]})
+        self.assertEqual(sorted(on), ["pull_request", "pull_request_review", "workflow_run"])
 
     def test_only_the_needs_verify_job_writes_and_only_labels(self):
         # Labels on a PR go through the issues API but need pull-requests: write too (GitHub answers
@@ -264,6 +272,148 @@ class Label(unittest.TestCase):
     def test_no_pr_for_the_run_is_a_no_op(self):
         writes, out = self.go(prs="")
         self.assertEqual(writes, [])
+
+
+# Recorded shapes (vws-deploy#440). PR #441 head 85d35dd got vws-verify's CHANGES_REQUESTED at 07:29Z, yet
+# verify-queue labeled it needs-verify again at 10:43:31Z (issue events) and the verify wake re-woke for
+# 159 minutes. The review is GET repos/popododo0720/vws-deploy/pulls/441/reviews (body trimmed); its
+# check runs at that head had vws-verify completed/failure. Comments follow GET issues/N/comments.
+HEAD_441 = "85d35dd0fc3c1089b419a24d9e3a9dbc83dde0b4"
+REVIEW_441 = {
+    "author_association": "NONE", "commit_id": HEAD_441, "id": 5625213917, "node_id": "PRR_kwDOVCPQls8AAAABT0nz3Q",
+    "body": "Verify FAIL for head 85d35dd0fc3c1089b419a24d9e3a9dbc83dde0b4 (blocking=1).",
+    "html_url": "https://github.com/popododo0720/vws-deploy/pull/441#pullrequestreview-5625213917",
+    "pull_request_url": "https://api.github.com/repos/popododo0720/vws-deploy/pulls/441",
+    "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-23T07:29:02Z",
+    "user": {"id": 342416846, "login": "vws-verify[bot]", "type": "Bot"}}
+CHECKS_441 = [run_(120292165453, "lint"), run_(120292165444, "verify-gate", conclusion="failure"),
+              run_(120292165802, "build"), run_(120292165783, "check"), run_(120292165649, "installer"),
+              run_(120292165908, "drift"), run_(120293505631, "verify-reset", conclusion="skipped"),
+              run_(120293565924, "verify-rerun", conclusion="skipped"),
+              run_(120296243688, "vws-verify", conclusion="failure"),
+              run_(120372380132, "pr-hygiene"), run_(120372380535, "verify-gate", conclusion="failure"),
+              run_(120372381981, "verify-reset", conclusion="skipped"),
+              run_(120372382012, "verify-rerun", conclusion="skipped")]
+
+
+def review(sha=SHA, state="CHANGES_REQUESTED", at="2026-10-23T07:29:02Z", login="vws-verify[bot]", rid=1):
+    return dict(REVIEW_441, commit_id=sha, state=state, submitted_at=at, id=rid,
+                user=dict(REVIEW_441["user"], login=login))
+
+
+def comment(body, at="2026-10-23T08:00:00Z", login="popododo0720", assoc="OWNER", cid=6359281322):
+    return {"author_association": assoc, "body": body, "created_at": at, "updated_at": at, "id": cid,
+            "html_url": f"https://github.com/o/r/pull/7#issuecomment-{cid}", "user": {"login": login, "type": "User"}}
+
+
+def verdict(result, sha=SHA, target="r#7"):
+    return f"# {target} @ {sha}\n\nResult: {result}\n\n- finding"
+
+
+def page(*objs):
+    return json.dumps(list(objs))
+
+
+class HeadFail(unittest.TestCase):
+    """vws-deploy#440: a FAIL verdict on the current head keeps the PR out of the verify queue."""
+
+    script, go, ADD, DEL = Label.script, Label.go, Label.ADD, Label.DEL
+
+    VERDICT_GREEN = [r for r in GREEN if "vws-verify" not in r]  # verify has finished on this head
+
+    def test_pr_441_recorded_fail_is_not_relabeled(self):
+        # The real case: green CI, vws-verify failed the head; the run that relabeled it must not.
+        e = dict(PR_TSV=pr(sha=HEAD_441), CHECKS_TSV="\n".join(CHECKS_441), REVIEWS_JSON=page(REVIEW_441))
+        writes, out = self.go(sha=HEAD_441, **e)
+        self.assertEqual(writes, [])
+        self.assertIn("FAIL on this head (verdict review 5625213917)", out)
+
+    def test_pr_441_label_already_on_is_removed(self):
+        e = dict(PR_TSV=pr("needs-verify", sha=HEAD_441), CHECKS_TSV="\n".join(CHECKS_441), REVIEWS_JSON=page(REVIEW_441))
+        writes, out = self.go(sha=HEAD_441, **e)
+        self.assertEqual(writes, [self.DEL])
+        self.assertIn("needs-verify removed (verify FAIL on this head)", out)
+
+    def test_fail_review_event_removes_the_label(self):
+        writes, _ = self.go(event="pull_request_review", action="submitted", PR_TSV=pr("needs-verify"),
+                            REVIEWS_JSON=page(review()))
+        self.assertEqual(writes, [self.DEL])
+
+    def test_fail_on_old_head_does_not_block_a_new_push(self):
+        # A new push: the FAIL names the previous head, so the new head is labeled again.
+        writes, _ = self.go(REVIEWS_JSON=page(review(sha=OTHER)), CHECKS_TSV="\n".join(GREEN),
+                            COMMENTS_JSON=page(comment(verdict("FAIL", sha=OTHER))))
+        self.assertEqual(writes, [self.ADD])
+
+    def test_no_verdict_yet_is_labeled(self):
+        writes, out = self.go(REVIEWS_JSON=page(), COMMENTS_JSON=page())
+        self.assertEqual(writes, [self.ADD])
+        self.assertNotIn("FAIL", out)
+
+    def test_fail_verdict_comment_on_head(self):
+        for name, c in [("owner account", comment(verdict("FAIL"))),
+                        ("verify bot", comment(verdict("FAIL"), login="vws-verify[bot]", assoc="NONE")),
+                        ("crlf and leading blank", comment("\r\n" + verdict("FAIL").replace("\n", "\r\n")))]:
+            with self.subTest(name):
+                writes, out = self.go(COMMENTS_JSON=page(c))
+                self.assertEqual(writes, [])
+                self.assertIn("verdict comment 6359281322", out)
+                writes, _ = self.go(COMMENTS_JSON=page(c), PR_TSV=pr("needs-verify"))
+                self.assertEqual(writes, [self.DEL])
+
+    def test_comments_that_are_not_a_fail_on_this_head_are_ignored(self):
+        for name, c in [("outsider", comment(verdict("FAIL"), login="rando", assoc="NONE")),
+                        ("other PR", comment(verdict("FAIL", target="r#8"))),
+                        ("other repo", comment(verdict("FAIL", target="vws-iam#7"))),
+                        ("FAIL quoted later", comment("note\n" + verdict("FAIL"))),
+                        ("PASS", comment(verdict("PASS")))]:
+            with self.subTest(name):
+                writes, _ = self.go(COMMENTS_JSON=page(c))
+                self.assertEqual(writes, [self.ADD])
+
+    def test_review_filters(self):
+        for name, r in [("other reviewer", review(login="popododo0720")), ("commented only", review(state="COMMENTED")),
+                        ("approved", review(state="APPROVED")), ("pending review", dict(review(), submitted_at=None))]:
+            with self.subTest(name):
+                writes, _ = self.go(REVIEWS_JSON=page(r))
+                self.assertEqual(writes, [self.ADD])
+
+    def test_newest_verdict_on_the_head_counts(self):
+        fail = review(at="2026-10-23T07:00:00Z", rid=1)
+        passed = comment(verdict("PASS"), at="2026-10-23T08:00:00Z")
+        writes, _ = self.go(REVIEWS_JSON=page(fail), COMMENTS_JSON=page(passed))
+        self.assertEqual(writes, [self.ADD], "a later PASS on the same head supersedes the FAIL")
+        writes, _ = self.go(REVIEWS_JSON=page(review(at="2026-10-23T09:00:00Z")), COMMENTS_JSON=page(passed))
+        self.assertEqual(writes, [], "a later FAIL supersedes the PASS")
+
+    def test_paginated_reviews_are_joined(self):
+        # gh api --paginate prints one JSON array per page.
+        writes, _ = self.go(REVIEWS_JSON=page(review(sha=OTHER, rid=1)) + "\n" + page(review(rid=2)))
+        self.assertEqual(writes, [])
+
+    def test_vws_verify_check_failure_on_head(self):
+        writes, out = self.go(CHECKS_TSV="\n".join(self.VERDICT_GREEN + [run_(20, "vws-verify", conclusion="failure")]))
+        self.assertEqual(writes, [])
+        self.assertIn("vws-verify check failure", out)
+        rerun = self.VERDICT_GREEN + [run_(20, "vws-verify", conclusion="failure"), run_(21, "vws-verify", "in_progress", "")]
+        writes, _ = self.go(CHECKS_TSV="\n".join(rerun))
+        self.assertEqual(writes, [self.ADD], "a newer vws-verify run on the head supersedes the failed one")
+        writes, _ = self.go(CHECKS_TSV="\n".join(self.VERDICT_GREEN + [run_(20, "vws-verify")]))
+        self.assertEqual(writes, [self.ADD])
+
+    def test_red_ci_skips_the_verdict_reads(self):
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN + [run_(9, "e2e", conclusion="failure")])}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("/reviews", calls)
+
+    def test_failed_verdict_read_fails_the_job_without_labeling(self):
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "READ_FAIL": "gh: Server Error (HTTP 500)"}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotIn("-X POST", calls)
 
 
 if __name__ == "__main__":
