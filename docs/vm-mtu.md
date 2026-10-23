@@ -52,8 +52,8 @@ The bundle's Kube-OVN (`scripts/versions.env` KUBEOVN_VERSION) does not set OVN 
 `platform.py` adds the `vws-ovn-gateway-mtu` Deployment (#237), also when the external subnet comes only from
 `spec.services.network.flags.kube-external-subnet` (#246); it sets `options:gateway_mtu` on each VPC port to that subnet.
 OVN then answers an oversized IPv4 packet with ICMP fragmentation-needed (type 3 code 4) and, when the port has an IPv6
-address, an oversized IPv6 packet with ICMPv6 Packet Too Big (type 2), so PMTUD works on both families. The live check
-on vws-test is still open in #246.
+address, an oversized IPv6 packet with ICMPv6 Packet Too Big (type 2), so the router can signal MTU exhaustion for
+both families. The live check on vws-test is still open in #246.
 
 ## Needs checking
 
