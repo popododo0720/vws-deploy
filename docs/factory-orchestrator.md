@@ -78,7 +78,12 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
   PR unlabeled; the run for the last workflow to finish adds the label.
 - It removes the label on a red check, on a new push (`synchronize`), and when the PR stops waiting
   (draft, other base, closed or approved). A run for an old head writes nothing.
-- Permissions: `issues: write`, everything else read. It checks out nothing and runs no PR code.
+- Permissions: none at workflow level; the `needs-verify` job has `issues: write` and
+  `pull-requests: write` (adding or removing a label on a pull request goes through the issues API but
+  GitHub also requires `pull-requests: write`; without it the call fails with 403 "Resource not accessible
+  by integration"), plus `checks: read` and `statuses: read`. It writes nothing but the `needs-verify`
+  label, checks out nothing and runs no PR code. Removing a label that is already gone (HTTP 404)
+  counts as done; any other error fails the job.
 
 The vws-pr-pipeline "Open" step 4 (the dev agent waking vws-verify) and vws-verify-verdict step 8 are
 replaced by this label and Rule A.
