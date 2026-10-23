@@ -1,4 +1,4 @@
-# repo-guard as one reusable workflow (#402)
+# repo-guard as reusable workflows, one per job (#402)
 
 ## Problem
 
@@ -6,10 +6,11 @@
 
 ## Chosen
 
-- The jobs (`pr-hygiene`, `verify-gate`, `verify-reset`, `verify-rerun`) live in vws-deploy `.github/workflows/repo-guard-reusable.yml`, `on: workflow_call` only. The required input `job` picks the one job a call runs. The workflow takes no secrets and sets top-level `permissions: {}`; each job keeps its own permissions.
+- Each job lives in its own vws-deploy file, `on: workflow_call` only: `.github/workflows/repo-guard-pr-hygiene.yml`, `repo-guard-verify-gate.yml`, `repo-guard-verify-reset.yml` and `repo-guard-verify-rerun.yml`. Each file takes no inputs and no secrets, sets top-level `permissions: {}`, and holds only its job with that job's permissions.
+- Why one file per job: GitHub validates the permissions of every job in a called file when the run starts, before any `if:` is evaluated, and a called job can only keep or lower what the caller job grants. Round 1 had all four jobs in one file, so the read-only `hygiene` call failed against the write jobs beside it and the whole run ended in `startup_failure` with 0 jobs (run 39904989710). `tests/workflows/test_call_permissions.py` now fails when any caller job grants less than some job of the file it calls.
 - Every repo keeps `.github/workflows/repo-guard.yml` as a caller of at most 40 lines with exactly this shape (`.github/drift/caller_pin.py` checks it):
 
-  | caller job | runs | `if` | permissions |
+  | caller job | calls | `if` | permissions |
   | --- | --- | --- | --- |
   | `hygiene` | `pr-hygiene` | `pull_request` | contents read, pull-requests read |
   | `gate` | `verify-gate` | `pull_request` | contents read, pull-requests read, issues read |
@@ -18,7 +19,8 @@
   | `pr-hygiene` | shim, `needs: hygiene` | `always()` and `pull_request` | none |
   | `verify-gate` | shim, `needs: gate` | `always()` and `pull_request` | none |
 
-- The ref is `popododo0720/vws-deploy/.github/workflows/repo-guard-reusable.yml@<40-hex SHA>`, the same SHA in every call and every repo, and that SHA is on vws-deploy main. Never a branch or tag, which can move under every caller at once. vws-deploy itself calls `./.github/workflows/repo-guard-reusable.yml`, which GitHub runs from the same commit as the caller, so a vws-deploy PR that changes the jobs is checked by the changed jobs.
+- The top level has exactly `name: repo-guard`, `on`, `permissions: {}` and `jobs`. `defaults`, `env` and `concurrency` are refused because they change how the shims and calls run (a default shell that always exits 0 would pass both shims). `run-name` is refused too: it only sets the run title, which nothing needs. Repeated YAML keys are refused so the check reads what GitHub runs. Call jobs and shims are compared as whole mappings, so any job-level `defaults`, `env`, `continue-on-error`, `container` or step `shell` fails.
+- Each ref is `popododo0720/vws-deploy/.github/workflows/repo-guard-<job>.yml@<40-hex SHA>`, the same SHA in every call and every repo, and that SHA is on vws-deploy main. Never a branch or tag, which can move under every caller at once. vws-deploy itself calls `./.github/workflows/repo-guard-<job>.yml`, which GitHub runs from the same commit as the caller, so a vws-deploy PR that changes the jobs is checked by the changed jobs.
 
 ### Required check names
 
@@ -31,7 +33,7 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 - Event: `pull_request` and `issue_comment` only, never `pull_request_target`. A fork PR gets a read-only token and no secrets, as before. The called workflow runs in the caller's context: `github`, `vars` and `github.token` are the caller repo's, and its token has at most what the caller job grants (GitHub can only lower permissions down the call chain). No secrets are passed (`secrets:` is not allowed in the caller).
 - Guard script: `verify-gate` checks out the caller's base commit (`github.event.pull_request.base.sha`) and runs that `scripts/guard-agents.sh`, as before; `pr-hygiene` still runs the identity check against `scripts/guard-agents.sh.sha256`. The callee does not fetch the script from vws-deploy: that would need the called workflow's own SHA, which the `github` context does not carry, and it would bypass the per-repo identity and the accepted variant (#338).
 - Who satisfies the gate: unchanged. The `verify-approved` label plus a `Verified-by: vws-verify` comment for the head, with `VWS_VERIFY_ACTORS`, `VWS_VERIFY_IDENTITY` and the author and pusher exclusion read from the caller repo's variables and API.
-- What the pin adds: in a repo other than vws-deploy, a PR can no longer edit the job steps; they are fixed at the pinned vws-deploy commit. A PR can still edit its caller (the pin, the shim or the permissions), because `pull_request` runs the PR's copy of the caller. That is detected, not blocked: `caller_pin.py` and the daily drift-check report any caller that changed shape, pins a branch, tag or short SHA, pins a different SHA from the other repos, or pins a SHA that is not on vws-deploy main. In vws-deploy a PR can edit both files, as before. This is the same gap as docs/QUALITY.md "Known gaps"; the real control stays branch protection with review by a second account.
+- What the pin adds: in a repo other than vws-deploy, a PR can no longer edit the job steps; they are fixed at the pinned vws-deploy commit. A PR can still edit its caller (the pin, the shim or the permissions), because `pull_request` runs the PR's copy of the caller. That is detected, not blocked: `caller_pin.py` and the daily drift-check report any caller that changed shape, pins a branch, tag or short SHA, pins a different SHA from the other repos, or pins a SHA that is not on vws-deploy main. drift-check reads the caller on the default branch and at the head of every open PR, so a PR that changes the pin is flagged while it is open: the daily run fails on it, and `workflow_dispatch` with `repo` and `sha` checks one PR head on demand. On a vws-deploy pull request drift-check also checks that PR's head (`--head vws-deploy=<head sha>` from the event) but, as before, only warns on drift. In vws-deploy a PR can edit both files, as before. This is the same gap as docs/QUALITY.md "Known gaps"; the real control stays branch protection with review by a second account.
 
 ## How it fits #338
 
@@ -39,7 +41,7 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 
 ## Upgrade procedure (bumping the pin)
 
-1. Merge the change to `repo-guard-reusable.yml` on vws-deploy main; note the merge commit SHA `S` (40 hex).
+1. Merge the change to the `repo-guard-<job>.yml` files on vws-deploy main; note the merge commit SHA `S` (40 hex).
 2. In each repo, one PR that replaces the four `@<old>` refs in `.github/workflows/repo-guard.yml` with `@S` (`sed -i "s/@[0-9a-f]\{40\}/@S/" .github/workflows/repo-guard.yml`) and nothing else. `python3 .github/drift/caller_pin.py <file>` (from a vws-deploy checkout) prints `S`.
 3. Until the last repo merges, drift-check reports the repos whose pin is not the common one. That is expected during a rollout and clears when every repo pins `S`.
 4. First move of a repo from the full copy: the same PR deletes the repo's row from vws-deploy `.github/drift/caller-pending.tsv` (a separate vws-deploy PR).
@@ -48,9 +50,10 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 
 - A tag or branch ref (`@v1`, `@main`): one merge reaches every repo's required check unreviewed by that repo.
 - One caller job that calls the whole workflow: the caller job must grant the union of permissions (actions write, issues write) to every job.
+- One file for all four jobs with a `job` input (round 1): GitHub validates every job's permissions before `if:`, so every call would have to grant the union, the same as above.
 - Renaming the required checks to `hygiene / pr-hygiene`: a ruleset change in every repo, which #402 rules out.
 - `pull_request_target` for the callee: it runs with a write token and secrets on fork PRs.
 
 ## Not verified
 
-The YAML passes actionlint and the stubbed tests in `tests/workflows`. The GitHub behaviour (the `caller / called` job name, re-running a called job, the output of a failed call) is not exercised until a scratch PR runs it.
+The YAML passes actionlint and the stubbed tests in `tests/workflows`, and the permission superset test reads the real files. That a run on the per-job layout starts at all, the `caller / called` job names, re-running a called job together with its shim, and the output of a failed call are only proven by a run on the pushed PR head.
