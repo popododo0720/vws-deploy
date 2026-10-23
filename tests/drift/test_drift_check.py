@@ -5,6 +5,7 @@ import io
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location("drift_check", os.path.join(ROOT, ".github", "drift", "drift_check.py"))
@@ -158,6 +159,27 @@ class LoadIncident(unittest.TestCase):
 
     def test_repo_baseline(self):
         self.assertEqual(dc.load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml")), WANT)
+
+
+class LabelExists(unittest.TestCase):
+    def test_present(self):
+        with mock.patch.object(dc, "gh", return_value={"name": "incident"}):
+            self.assertTrue(dc.label_exists("popododo0720", "vws-lib", "incident"))
+
+    def test_missing(self):
+        with mock.patch.object(dc, "gh", return_value=None):
+            self.assertFalse(dc.label_exists("popododo0720", "vws-lib", "incident"))
+
+    def test_asks_for_the_label_path(self):
+        seen = []
+
+        def fake(path):
+            seen.append(path)
+            return {}
+
+        with mock.patch.object(dc, "gh", fake):
+            dc.label_exists("o", "r", "incident")
+        self.assertEqual(seen, ["repos/o/r/labels/incident"])
 
 
 class GuardVariants(unittest.TestCase):
