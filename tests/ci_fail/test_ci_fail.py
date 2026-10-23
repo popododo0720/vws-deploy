@@ -42,6 +42,7 @@ class FakeGh:
         self.logs = logs or {}              # job_id -> text
         self.writes = []
         self.retried = []                   # paths of writes made with retry=True
+        self.job_reads = 0
         self.next_id = 1000
 
     def _pr(self, n):
@@ -65,7 +66,11 @@ class FakeGh:
     def get(self, path):
         m = re.fullmatch(rf"{A}/actions/runs/(\d+)/attempts/(\d+)/jobs\?per_page=100", path)
         if m:
-            return {"jobs": self.jobs.get((int(m.group(1)), int(m.group(2))), [])}
+            self.job_reads += 1
+            got = self.jobs.get((int(m.group(1)), int(m.group(2))), [])
+            if callable(got):                 # a lagging jobs API: the answer depends on the read count
+                got = got(self.job_reads)
+            return {"jobs": got}
         raise AssertionError(f"unexpected GET {path}")
 
     def text(self, path):
@@ -446,6 +451,50 @@ class Pagination(unittest.TestCase):
         pages = {1: [{}] * 100, 2: [{}] * 5}
         gh.get = lambda path: pages[int(path.rsplit("=", 1)[1])]
         self.assertEqual(len(gh.get_all("repos/x?per_page=100")), 105)
+
+
+class JobsLag(unittest.TestCase):
+    """#443: right after a failure the jobs API can list no failed job yet."""
+
+    def setUp(self):
+        self.sleeps = []
+        p = mock.patch.object(cf.time, "sleep", side_effect=self.sleeps.append)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def lagging(self, ready_at, conclusion="failure"):
+        gh = storage_gh()
+        gh.jobs[(500, 1)] = lambda reads: ([job(1, "test"), job(2, "lint", conclusion="success")]
+                                           if reads >= ready_at else [job(2, "lint", conclusion="success")])
+        return gh, cf.run(gh, "workflow_run", event(conclusion=conclusion), FULL, NOW)
+
+    def test_a_failed_job_listed_on_a_retry_is_reported(self):
+        gh, out = self.lagging(ready_at=2)
+        self.assertEqual(out["action"], "post")
+        rec = cf.parse_comment(posts(gh)[0][2]["body"])
+        self.assertEqual([j["job"] for j in rec["failed_jobs"]], ["test"])
+        self.assertEqual((gh.job_reads, self.sleeps), (2, [5]))
+
+    def test_retries_are_bounded_and_then_say_the_list_was_unavailable(self):
+        gh, out = self.lagging(ready_at=99)
+        self.assertEqual(gh.job_reads, cf.JOBS_TRIES)
+        self.assertLessEqual(sum(self.sleeps), 30)
+        body = posts(gh)[0][2]["body"]
+        self.assertEqual(cf.parse_comment(body)["failed_jobs"], [])
+        self.assertIn("Failed jobs: unavailable", body)
+        self.assertNotIn("none reported", body)
+
+    def test_the_normal_path_reads_the_jobs_once(self):
+        gh = storage_gh()
+        cf.run(gh, "workflow_run", event(), FULL, NOW)
+        self.assertEqual((gh.job_reads, self.sleeps), (1, []))
+
+    def test_a_startup_failure_without_jobs_is_not_retried(self):
+        gh = storage_gh()
+        gh.jobs[(500, 1)] = []
+        cf.run(gh, "workflow_run", event(conclusion="startup_failure"), FULL, NOW)
+        self.assertEqual((gh.job_reads, self.sleeps), (1, []))
+        self.assertIn("none reported (the run failed before any job ran)", posts(gh)[0][2]["body"])
 
 
 class GhRetry(unittest.TestCase):
