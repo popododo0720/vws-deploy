@@ -6,13 +6,13 @@ The design is https://github.com/popododo0720/vws-deploy/issues/33. This repo is
 
 | File | What it does |
 | --- | --- |
-| `.github/workflows/repo-guard.yml` | Runs on PRs only: the base is the default branch, the body has `Part of #N` (N of 1 or more, outside HTML comments `<!-- -->` and code fences), neither the PR body nor the commits have a closing keyword (`Closes/Fixes/Resolves` followed by `#N`, `owner/repo#N` or a full issue or PR URL), and AGENTS.md has the guard section |
+| `.github/workflows/repo-guard.yml` | A short caller of vws-deploy `.github/workflows/repo-guard-reusable.yml`, pinned by full commit SHA (docs/design/repo-guard-reusable.md, #402). The jobs run on PRs only: the base is the default branch, the body has `Part of #N` (N of 1 or more, outside HTML comments `<!-- -->` and code fences), neither the PR body nor the commits have a closing keyword (`Closes/Fixes/Resolves` followed by `#N`, `owner/repo#N` or a full issue or PR URL), and AGENTS.md has the guard section |
 | `.github/workflows/direct-push-watch.yml` | Runs only on `push` to main: every new first-parent commit has a linked PR, and main's history was not rewritten. It is a separate file so a PR run has no skipped check |
 | `scripts/guard-agents.sh` | The actual code of the checks above. It uses no repo paths. `selftest` feeds bad and good inputs directly and checks that every bad one fails |
 
 ## How to copy
 
-1. Copy the two workflow files and the script to the same paths unchanged, and make `scripts/guard-agents.sh` executable.
+1. Copy `direct-push-watch.yml` and the script to the same paths unchanged, and make `scripts/guard-agents.sh` executable. For `repo-guard.yml`, copy vws-deploy's caller and replace each `./.github/workflows/repo-guard-reusable.yml` with `popododo0720/vws-deploy/.github/workflows/repo-guard-reusable.yml@<the pin every repo uses>`; `python3 .github/drift/caller_pin.py <file>` must print that SHA.
 2. Add a `## Insider-risk guardrails` section (items 1-7) to the target repo's AGENTS.md. Copy the body from the same section of this repo's AGENTS.md. The heading text and numbering must match for the `agents` check to pass.
 3. If the default branch is not `main`, change only the `branches: [main]` line in `direct-push-watch.yml`. Everything else uses `github.event.repository.default_branch`. On the script side, set `GUARD_MAIN_BRANCH`.
 4. Even if the repo already has CI, keep these workflows as separate files. Do not run the same job in two places.
