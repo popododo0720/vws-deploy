@@ -63,10 +63,11 @@ class Allowlist(unittest.TestCase):
         r = run(s, cfg)
         self.assertEqual([a["item"] for a in wakes(r)], ["vws-iam#1"])
         bad = sorted(n["token"] for n in r["notes"] if n["kind"] == "grok_allowlist_invalid")
-        self.assertEqual(bad, sorted(["#2", "vws-iam#x", "other/vws-iam#3", "iam#4", "vws-iam#1 ;rm"]))
+        self.assertEqual(bad, sorted(["#2", "vws-iam#x", "other/vws-iam#3", "iam#4", ";rm"]))
 
     def test_whitespace_and_commas_both_separate(self):
-        self.assertEqual(orch.grok_allowlist("vws-iam#1 vws-deploy#2,\nvws-iam#1")[0], {"vws-iam#1", "vws-deploy#2"})
+        self.assertEqual(orch.grok_allowlist("vws-iam#1 vws-deploy#2,\nvws-iam#1, vws-iam#0"),
+                         ({"vws-iam#1", "vws-deploy#2"}, ["vws-iam#0"]))
 
     def test_allowlist_key_is_text_config(self):
         env = {"ORCHESTRATE_CONFIG_DIR": "/nonexistent/vws-orchestrate-test"}

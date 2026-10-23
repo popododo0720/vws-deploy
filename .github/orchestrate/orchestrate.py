@@ -15,6 +15,9 @@ Rules (see docs/factory-orchestrator.md):
      A Failed report that shows a provider error (INFRA_ERROR_RE) is an infra failure instead: never
      counted, re-mentioned ORCHESTRATE_INFRA_RETRY_DELAY_MIN after the report, at most
      INFRA_MAX_RETRIES times; then one failure comment on the status thread and the item gets blocked
+  G  wake the Grok dev bot with one marker comment on the status thread for the top ready+grok issue
+     on ORCHESTRATE_GROK_ALLOWLIST (empty: nothing is assigned), at most ORCHESTRATE_GROK_CAP (1) at
+     a time and one per repo; a woken issue holds its slot while it stays open with grok
   D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
      is green for the current main head; after a merge the repo is locked until the push CI for the
      new main head is green (red stops merges there and posts one failure comment)
@@ -66,6 +69,9 @@ CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "s
 # match on it.
 WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
+# Rule G (vws-deploy#378): the Grok dev bot's GitHub-trigger routine on the status thread matches this.
+GROK_WAKE_MARKER = "<!-- vws-orchestrate:grok-wake -->"
+GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
 # Rule D (vws-deploy#346).
 VERIFY_CHECK = "vws-verify"
 VERIFY_APP_ID = 5313004
@@ -105,6 +111,8 @@ DEFAULTS = {
     "DEEPSEEK_TIMEOUT_HOURS": "3",
     "DEEPSEEK_MAX_FAILURES": "2",
     "ORCHESTRATE_DEEPSEEK_CAP": "2",
+    "ORCHESTRATE_GROK_CAP": "1",
+    "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
     "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
     "VERIFY_WAKE_THRESHOLD": "5",
     "VERIFY_WAKE_EDGE_MIN_HOURS": "1",
@@ -197,11 +205,11 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_BOARD must be off, dry-run or apply")
     if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
         raise ValueError("ORCHESTRATE_BOARD_PROJECT must be a ProjectV2 node id (PVT_...)")
-    for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES"):
+    for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES", "ORCHESTRATE_GROK_CAP"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_PR",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT")
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -1083,6 +1091,71 @@ def rework_body(pr, v):
             f"{REWORK_MARKER}{pr['head_sha']} verdict={v['id']} -->")
 
 
+def grok_allowlist(text):
+    """ORCHESTRATE_GROK_ALLOWLIST: repo#N entries split on commas or whitespace. Returns (keys, bad)."""
+    toks = [t for t in re.split(r"[,\s]+", text or "") if t]
+    return {t for t in toks if GROK_ALLOW_RE.fullmatch(t)}, [t for t in toks if not GROK_ALLOW_RE.fullmatch(t)]
+
+
+def grok_key(k, since):
+    """One wake per issue per failure reset (/orchestrate reset-failures re-arms it)."""
+    return "sha256:" + hashlib.sha256(f"grok-wake\n{k}\n{int(since)}".encode()).hexdigest()
+
+
+def grok_wake_body(it, k, key, slot, cap, run_id):
+    return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
+                      "Owning Grok dev bot: please take this issue: one small PR per its acceptance criteria, "
+                      f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
+                      f"Grok slot {slot} of {cap}; no other Grok task is woken while this one is open with `grok`.",
+                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
+
+
+def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
+    """Rule G (vws-deploy#378). Returns the grok_wake actions. Pure."""
+    items = snapshot["items"]
+    allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
+    notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
+    running, queue = [], []
+    for k in sorted(items):
+        it = items[k]
+        labels = set(it["labels"])
+        if it["state"] != "open" or "grok" not in labels:
+            continue
+        if grok_key(k, reset_time(it)) in posted:
+            running.append(k)  # woken and still open with grok: the slot stays taken
+            continue
+        if (k not in allow or "ready" not in labels or labels & {"deepseek", "blocked"}
+                or (it["is_pr"] and it.get("draft"))):
+            continue
+        deps, bad_deps = parse_deps(it.get("body"), it["repo"])
+        unmet = [d for d in deps if dep_state(d, snapshot, repos) != "met"]
+        notes += [{"kind": "dep_unmet", "target": k, "dep": d, "state": dep_state(d, snapshot, repos)} for d in unmet]
+        if unmet or bad_deps or k in cycles:
+            continue
+        security = "security" in labels or re.search(r"(?i)\bsecurity\b", it.get("title") or "")
+        prio = 0 if "priority/blocker" in labels else 1 if security else 2
+        queue.append((prio, ready_time(it), it["repo"], it["number"], k))
+    if running:
+        notes.append({"kind": "grok_in_flight", "targets": running})
+    cap = int(num(cfg, "ORCHESTRATE_GROK_CAP"))
+    free = 0 if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off" else max(0, cap - len(running))
+    busy = {items[k]["repo"] for k in running}
+    actions = []
+    for q in sorted(queue):
+        if len(actions) >= free:
+            break
+        if q[2] in busy:
+            notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
+            continue
+        busy.add(q[2])
+        it, key = items[q[4]], grok_key(q[4], reset_time(items[q[4]]))
+        slot = len(running) + len(actions) + 1
+        actions.append({"type": "grok_wake", "target": status_target(cfg), "item": q[4], "key": key,
+                        "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
+                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"])})
+    return actions
+
+
 def decide(snapshot, state, now, cfg, exclusions):
     """Pure: the same inputs give the same output. Returns {"actions", "notes", "state"}."""
     actions, notes = [], []
@@ -1255,6 +1328,7 @@ def decide(snapshot, state, now, cfg, exclusions):
                         "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
+    actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes)
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
@@ -1331,6 +1405,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                 "repo": name, "number": i["number"], "url": i["html_url"], "is_pr": "pull_request" in i,
                 "state": i["state"], "state_reason": i.get("state_reason"), "created_at": i["created_at"],
                 "labels": sorted(lb["name"] for lb in i.get("labels", [])), "body": i.get("body") or "",
+                "title": i.get("title") or "",
                 "node_id": i.get("node_id", ""),
                 "draft": bool(p and p.get("draft")), "base": p["base"]["ref"] if p else "",
                 "head_sha": p["head"]["sha"] if p else "", "comments": [], "events": [], "report_prs": {},
@@ -1539,7 +1614,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
-        if a["type"] in ("wake_verify", "merge_status", "infra_status") and scope:
+        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
@@ -1548,7 +1623,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         repo, number = a["target"].split("#")
         base = f"repos/{OWNER}/{repo}/issues/{number}"
         calls = []
-        if a["type"] in ("dispatch", "wake_verify"):
+        if a["type"] in ("dispatch", "wake_verify", "grok_wake"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "swap_label":
             if a.get("comment"):
@@ -1577,6 +1652,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]],
                                                             a.get("owner"), a.get("head")):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
+            continue
+        if a["type"] == "grok_wake" and not (recheck_key(gh, repo, number, a["key"]) and recheck_grok(gh, a["item"])):
+            log("skipped", action="grok_wake", target=a["target"], item=a["item"],
+                reason="already woken, or the issue changed since collect")
             continue
         if a["type"] in ("merge_status", "infra_status") and not recheck_key(gh, repo, number, a["key"]):
             log("skipped", action=a["type"], reason="a comment with this key already exists")
@@ -1632,6 +1711,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 continue
         if a["type"] == "wake_verify":
             log("wake_posted", target=a["target"], key=a["key"])
+        if a["type"] == "grok_wake":
+            log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
     return new_state, errors
 
@@ -1644,6 +1725,14 @@ def recheck_wake(gh, repo, number, key):
 def recheck_key(gh, repo, number, key):
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     return not any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in comments)
+
+
+def recheck_grok(gh, k):
+    """Rule G: the issue is still open, ready+grok, and neither blocked nor back on DeepSeek."""
+    repo, number = k.split("#")
+    issue, _ = gh.get(f"repos/{OWNER}/{repo}/issues/{number}")
+    names = {lb["name"] for lb in issue.get("labels", [])}
+    return issue.get("state") == "open" and {"ready", "grok"} <= names and not names & {"blocked", "deepseek"}
 
 
 def recheck_merge(gh, repo, number, head, new_state, ctx):
