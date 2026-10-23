@@ -294,6 +294,8 @@ class MainRulesetCell(unittest.TestCase):
                 return rules if rules is not None else MainRules.GOOD + [
                     {"type": "required_status_checks", "ruleset_id": 1, "parameters": {
                         "required_status_checks": [{"context": c} for c in dc.COMMON_CHECKS]}}]
+            if "/labels/" in path:  # the incident label check (#454)
+                return {"name": path.rsplit("/", 1)[1]}
             if path == "repos/o/r":
                 return {"archived": False}
             return None
