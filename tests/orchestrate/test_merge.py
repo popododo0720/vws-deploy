@@ -410,6 +410,14 @@ class Verdicts(unittest.TestCase):
                 self.assertEqual(orch.main_ci_verdict(runs), want)
 
 
+def branch(sha, classic=(), protected=True, enabled=True):
+    """GET branches/main as GitHub sends it: classic protection with its required checks ({context, app_id})."""
+    checks = [{"context": c, "app_id": a} for c, a in classic]
+    rsc = {"enforcement_level": "everyone" if checks else "off", "contexts": [c for c, _ in classic], "checks": checks}
+    return {"name": "main", "commit": {"sha": sha}, "protected": protected,
+            "protection": {"enabled": enabled, "required_status_checks": rsc}}
+
+
 def routes(labels=("verify-approved",), head="1" * 40):
     r = rt.routes()
     issue = {"number": 500, "html_url": "https://github.com/popododo0720/vws-deploy/pull/500", "state": "open",
@@ -424,7 +432,7 @@ def routes(labels=("verify-approved",), head="1" * 40):
              "conclusion": c["conclusion"], "head_sha": c["head_sha"]} for c in green_checks(head)]
     r[f"{O}/vws-deploy/commits/{head}/check-runs"] = {"body": {"total_count": len(runs), "check_runs": runs}}
     r[f"{O}/vws-deploy/commits/{head}/status"] = {"body": {"statuses": []}}
-    r[f"{O}/vws-deploy/branches/main"] = {"body": {"commit": {"sha": MAIN}}}
+    r[f"{O}/vws-deploy/branches/main"] = {"body": branch(MAIN)}
     r[f"{O}/vws-deploy/actions/runs"] = {"body": {"total_count": 1, "workflow_runs": [
         {"id": 1, "workflow_id": 7, "name": "ci", "status": "completed", "conclusion": "success"}]}}
     r[f"{O}/vws-deploy/rules/branches/main"] = {"body": []}
