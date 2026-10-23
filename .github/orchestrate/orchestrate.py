@@ -76,7 +76,9 @@ OPT_OUT_LABELS = ("do-not-merge", "hold", "blocked")
 # repo-guard / verify-gate must pass on the head by name, even when main's protection does not list it.
 GATE_CHECK = "verify-gate"
 OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
-MERGEABLE_OK = {"clean", "has_hooks", "unstable"}
+# GitHub's own verdict (REST mergeable_state = GraphQL mergeStateStatus) must be clean: it already counts
+# main's protection and rulesets, which the PAT cannot read (vws-deploy#408). Anything else never merges.
+MERGEABLE_OK = {"clean"}
 PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 AGENT_RE = re.compile(r"(?im)^\s*Agent:\s*(\S.*?)\s*$")
@@ -290,7 +292,6 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
         re.compile(rf"^{_REPO}/branches/main$"),
         re.compile(rf"^{_REPO}/compare/[0-9a-f]{{40}}\.\.\.[0-9a-f]{{40}}\?per_page=1$"),
-        re.compile(rf"^{_REPO}/branches/main/protection/required_status_checks$"),
         re.compile(rf"^{_REPO}/rules/branches/main(\?.*)?$"),
         re.compile(rf"^{_REPO}/actions/runs\?event=push&branch=main&head_sha=[0-9a-f]{{40}}&per_page=100$"),
         re.compile(rf"^{_REPO}/actions/runs\?head_sha=[0-9a-f]{{40}}&per_page=100$"),
@@ -1434,15 +1435,9 @@ def main_ahead_of(gh, repo, old, new):
 
 
 def required_checks(gh, repo):
-    """Required checks on main: classic protection plus effective rulesets. [] if neither exists."""
+    """Required checks on main from the effective rulesets. [] if none. Classic branch protection is not
+    read: the PAT gets 403 there (vws-deploy#408); mergeable_state clean already enforces it."""
     out = []
-    try:
-        data, _ = gh.get(f"repos/{OWNER}/{repo}/branches/main/protection/required_status_checks")
-        checks = data.get("checks") or [{"context": c, "app_id": None} for c in data.get("contexts", [])]
-        out += [{"context": c["context"], "app_id": c.get("app_id")} for c in checks]
-    except GhError as e:
-        if e.status != 404:
-            raise
     rules, _ = gh.get(f"repos/{OWNER}/{repo}/rules/branches/main?per_page=100")
     for rule in rules or []:
         if rule.get("type") == "required_status_checks":
@@ -1662,10 +1657,15 @@ def recheck_merge(gh, repo, number, head, new_state, ctx):
         return f"re-read failed: {scrub(e)}"
     if info["head_sha"] != head:
         return "head moved"
+    if info.get("mergeable") is not True or info.get("mergeable_state") not in MERGEABLE_OK:
+        return f"merge state changed: mergeable={info.get('mergeable')} state={info.get('mergeable_state')}"
     bad = head_check_reasons(info, ctx.get("required"))
     if bad:
         return "head checks changed: " + ", ".join(bad[:3])
-    pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    try:
+        pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    except (GhError, PermissionError) as e:
+        return f"re-read failed: {scrub(e)}"
     names = {lb["name"] for lb in pr.get("labels", [])}
     if pr.get("state") != "open" or pr.get("merged"):
         return "not open"
