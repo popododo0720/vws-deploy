@@ -74,6 +74,84 @@ class Stall(unittest.TestCase):
         self.assertEqual(self.doc_at(500, labels=("blocked", "ready"), draft=True)["stalls"], [])
         self.assertEqual(self.doc_at(500, labels=("enhancement",), draft=True)["stalls"], [])
 
+    def test_backfilled_day_has_no_parked_count(self):
+        recs, cov = log_records()
+        self.assertIsNone(M.compute(raw(), recs, cov, CFG, snapshot_at=None)["parked"])
+
+
+class Parked(unittest.TestCase):
+    """vws-deploy#463: parked issues wait by design and are not stalls. 2026-10-23: 88 of the 89 stalls
+    were grok issues that no rule may pick up (not on ORCHESTRATE_GROK_ALLOWLIST)."""
+
+    def doc(self, labels, assignees=0, allow="", hours=500):
+        r = copy.deepcopy(raw())
+        updated = orch.iso(orch.utc(SNAP) - hours * 3600)
+        r["repos"]["vws-deploy"]["open_issues"].append(
+            {"number": 99, "labels": list(labels), "is_pr": False, "updated_at": updated, "assignees": assignees})
+        recs, cov = log_records()
+        return M.compute(r, recs, cov, dict(CFG, ORCHESTRATE_GROK_ALLOWLIST=allow), snapshot_at=SNAP)
+
+    def targets(self, d):
+        return [s["target"] for s in d["stalls"]]
+
+    def test_grok_issue_off_the_allowlist_is_parked_not_stalled(self):
+        for labels in (("grok",), ("aws-parity", "grok"), ("grok", "in-review")):
+            d = self.doc(labels)
+            self.assertEqual(self.targets(d), [], labels)
+            self.assertEqual(d["parked"], 2, "#99 and the fixture's blocked #21")
+
+    def test_allowlisted_grok_issue_can_stall(self):
+        d = self.doc(("grok", "ready"), allow="vws-iam#1, vws-deploy#99")
+        self.assertEqual((self.targets(d), d["parked"]), (["vws-deploy#99"], 1))
+
+    def test_assigned_grok_issue_holds_a_slot_and_can_stall(self):
+        d = self.doc(("grok",), assignees=1)
+        self.assertEqual((self.targets(d), d["parked"]), (["vws-deploy#99"], 1))
+
+    def test_deepseek_owned_issue_can_stall(self):
+        d = self.doc(("deepseek", "grok", "ready"))
+        self.assertEqual((self.targets(d), d["parked"]), (["vws-deploy#99"], 1))
+
+    def test_opt_out_labels_are_parked(self):
+        for lb in ("hold", "do-not-merge", "needs-human", "blocked"):
+            d = self.doc(("ready", "deepseek", lb))
+            self.assertEqual((self.targets(d), d["parked"]), ([], 2), lb)
+
+    def test_an_opt_out_issue_without_a_task_label_is_still_parked(self):
+        for lb in ("hold", "needs-human"):
+            d = self.doc((lb,))
+            self.assertEqual((self.targets(d), d["parked"]), ([], 2), lb)
+
+    def test_missing_assignee_field_counts_as_unassigned(self):
+        r = copy.deepcopy(raw())
+        r["repos"]["vws-deploy"]["open_issues"].append(
+            {"number": 99, "labels": ["grok"], "is_pr": False, "updated_at": "2026-10-01T00:00:00Z"})
+        recs, cov = log_records()
+        d = M.compute(r, recs, cov, CFG, snapshot_at=SNAP)
+        self.assertEqual((d["stalls"], d["parked"]), ([], 2))
+
+    def test_a_parked_issue_that_is_also_a_task_label_counts_once(self):
+        d = self.doc(("grok", "ready", "hold"))
+        self.assertEqual(d["parked"], 2)
+
+    def test_parked_is_volatile_like_stalls(self):
+        self.assertIn("parked", M.VOLATILE)
+        self.assertEqual(self.doc(("grok",))["content_sha256"], self.doc(("grok",), hours=1)["content_sha256"])
+
+    def test_snapshot_keeps_the_assignee_count_not_the_logins(self):
+        class Gh:
+            def get(self, path):
+                if path.endswith("/vws-deploy"):
+                    return {"archived": False}, None
+                if "/issues?state=open" in path:
+                    return [{"number": 7, "labels": [{"name": "grok"}], "updated_at": "2026-10-01T00:00:00Z",
+                             "assignees": [{"login": "someone"}, {"login": "other"}]},
+                            {"number": 8, "labels": [], "updated_at": "2026-10-01T00:00:00Z"}], None
+                return [], None
+        got = M.collect(Gh(), ["vws-deploy"], DAY, CFG, snapshot=True)["repos"]["vws-deploy"]["open_issues"]
+        self.assertEqual([(i["number"], i["assignees"]) for i in got], [(7, 2), (8, 0)])
+        self.assertNotIn("someone", json.dumps(got))
+
     def test_backfilled_day_has_no_stall_data(self):
         recs, cov = log_records()
         self.assertIsNone(M.compute(raw(), recs, cov, CFG, snapshot_at=None)["stalls"])
