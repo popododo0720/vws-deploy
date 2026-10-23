@@ -1457,14 +1457,16 @@ def classic_required(branch):
         raise ValueError("branches/main: required_status_checks not readable")
     out = []
     for c in rsc["checks"]:
-        if not isinstance(c, dict) or not isinstance(c.get("context"), str):
+        if not isinstance(c, dict) or not isinstance(c.get("context"), str) or "app_id" not in c:
             raise ValueError(f"branches/main: malformed required check {c!r}")
-        out.append({"context": c["context"], "app_id": _app_id(c.get("app_id"))})
+        out.append({"context": c["context"], "app_id": _app_id(c["app_id"])})
     for ctx in rsc["contexts"]:
         if not isinstance(ctx, str):
             raise ValueError(f"branches/main: malformed required context {ctx!r}")
         if not any(c["context"] == ctx for c in out):
-            out.append({"context": ctx, "app_id": None})  # listed without an app: any source
+            # A context with no checks entry has no app binding we can read: fail closed rather
+            # than accept the check from any app.
+            raise ValueError(f"branches/main: required context {ctx!r} has no checks entry")
     return out
 
 
