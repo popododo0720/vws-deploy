@@ -92,7 +92,7 @@ class Compute(unittest.TestCase):
         self.assertIsNone(d["deepseek"]["dispatched_by_orchestrator"])
         self.assertIsNone(d["grok_swaps"]["by_orchestrator"])
         self.assertIsNone(d["queue_depth"])
-        self.assertEqual(len(d["source_gaps"]), 3)
+        self.assertEqual(len(d["source_gaps"]), 4)
         self.assertIn("no token-usage input for this day", d["source_gaps"])
         self.assertIsNone(d["stalls"])
 

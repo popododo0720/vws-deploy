@@ -64,6 +64,9 @@ CI_EVENTS = {"pull_request", "push", "merge_group"}
 SEPARATE_WORKFLOWS = {"repo-guard"}  # red by design until vws-verify approves; reported apart
 VOLATILE = ("generated_at", "release", "snapshot_at", "queue_depth", "stalls", "alerts", "content_sha256")
 SUMMARY_DAYS = 28
+# Orchestrator markers of comments that hand a task to grok (vws-deploy#400). Today only the Rule C swap
+# notice; a grok wake marker from #378 or #398 is added here.
+GROK_DISPATCH_MARKERS = ("swap",)
 STATE_KEEP_DAYS = 60  # done days kept per mode in metrics-state.json
 ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
 SNAPSHOT_GAP = "queue_depth and stalls are a live snapshot; not available for a back-filled day"
@@ -303,7 +306,7 @@ def bump(d, *keys):
     d[keys[-1]] = d.get(keys[-1], 0) + 1
 
 
-def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at=None, tokens=None):
+def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at=None, tokens=None, lead_wakes=None):
     """Pure: the same inputs give the same output."""
     day = raw["day"]
     start, end = kst_day_window(day)
@@ -314,6 +317,8 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
     verify = {"runs": 0, "success": 0, "failure": 0, "first_pass": 0, "first_pass_n": 0, "approved_labels": 0}
     ds = {"dispatched": 0, "done": 0, "failed": 0, "timeout": 0, "by_repo": {}}
     grok = 0
+    wakes = {"verify_wake_comments": 0, "dispatches": {"deepseek": 0, "grok": 0}, "rework_dispatches": 0,
+             "lead_wakes": lead_wakes}
     ci = {"by_repo": {}, "separate": {}}
     codex = {"merged_prs_with_codex": 0, "rounds_declared": 0, "verify_reports": 0, "blocking_sum": 0}
     queue = {lb: 0 for lb in QUEUE_LABELS} if snapshot_at else None
@@ -368,6 +373,10 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
             by_issue.setdefault(c["issue"], []).append(c)
             k = orch.classify_comment(c["body"])
             if inwin(c["created_at"]):
+                wakes["verify_wake_comments"] += c["body"].split("\n", 1)[0].strip() == orch.WAKE_MARKER
+                wakes["rework_dispatches"] += orch.REWORK_MARKER in c["body"]
+                if k and k[0] == "marker" and k[1]["marker"] in GROK_DISPATCH_MARKERS:
+                    wakes["dispatches"]["grok"] += 1
                 codex["verify_reports"] += len(CODEX_BLOCKING_RE.findall(c["body"]))
                 codex["blocking_sum"] += sum(int(x) for x in CODEX_BLOCKING_RE.findall(c["body"]))
             if not k or not inwin(c["created_at"]):
@@ -466,7 +475,10 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
         gaps.append(SNAPSHOT_GAP)
     if tokens is None:
         gaps.append("no token-usage input for this day")
+    if lead_wakes is None:
+        gaps.append("no lead-wake input for this day")
     ds["dispatched_by_orchestrator"] = by_orch["dispatch"]
+    wakes["dispatches"]["deepseek"] = ds["dispatched"]
     out = {
         "schema": 1, "day": day, "timezone": "Asia/Seoul (UTC+9)", "window_utc": [orch.iso(start), orch.iso(end)],
         "repos": sorted(raw["repos"]), "archived_skipped": sorted(raw["archived"]),
@@ -476,6 +488,7 @@ def compute(raw, log_recs, log_covered, cfg, exclusions=frozenset(), snapshot_at
         "grok_swaps": {"labeled": grok, "by_orchestrator": by_orch["swap_label"]},
         "ci": ci, "codex": codex, "orchestrator": orch_stats,
         "queue_depth": queue, "stalls": stalls, "snapshot_at": snapshot_at, "tokens": tokens, "source_gaps": gaps,
+        "wakes": wakes,
     }
     out["content_sha256"] = content_hash(out)
     return out
@@ -589,7 +602,15 @@ def read_tokens(path):
     return {"total": sum(by.values()), "by_agent": by}
 
 
+def read_lead_wakes(path):
+    """Optional "lead_wakes": <int> in the same daily usage file. None when absent or invalid, never 0."""
+    data = orch.read_json(path, None)
+    v = data.get("lead_wakes") if isinstance(data, dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
 def headline(doc):
+    w = doc.get("wakes") or {}  # days written before vws-deploy#400 have none
     return {"day": doc["day"], "prs_opened": doc["prs"]["totals"]["opened"], "prs_merged": doc["prs"]["totals"]["merged"],
             "lead_time_median_h": doc["lead_time_hours"]["all"]["median"], "verify_pass_rate": doc["verify"]["pass_rate"],
             "deepseek_dispatched": doc["deepseek"]["dispatched"], "deepseek_done": doc["deepseek"]["done"],
@@ -597,7 +618,9 @@ def headline(doc):
             "grok_swaps": doc["grok_swaps"]["labeled"], "ci_failure_rate": doc["ci"]["failure_rate"],
             "verify_backlog": (doc.get("queue_depth") or {}).get("verify_backlog"),
             "stalls": None if doc.get("stalls") is None else len(doc["stalls"]),
-            "tokens": (doc.get("tokens") or {}).get("total"), "alerts": [a["kind"] for a in doc.get("alerts") or []]}
+            "tokens": (doc.get("tokens") or {}).get("total"), "alerts": [a["kind"] for a in doc.get("alerts") or []],
+            "verify_wakes": w.get("verify_wake_comments"), "grok_dispatches": (w.get("dispatches") or {}).get("grok"),
+            "rework_dispatches": w.get("rework_dispatches"), "lead_wakes": w.get("lead_wakes")}
 
 
 def summarize(docs, last_day):
@@ -609,17 +632,29 @@ def summarize(docs, last_day):
     fmt = lambda v: "-" if v is None or v == [] else (" ".join(v) if isinstance(v, list) else str(v))
     cols = ["day", "prs_opened", "prs_merged", "lead_time_median_h", "verify_pass_rate", "deepseek_dispatched",
             "deepseek_done", "deepseek_failed", "deepseek_timeout", "grok_swaps", "ci_failure_rate", "verify_backlog",
-            "stalls", "tokens", "alerts"]
+            "stalls", "tokens", "verify_wakes", "grok_dispatches", "rework_dispatches", "lead_wakes", "alerts"]
     lines = ["# Factory metrics summary", "", f"Through {last_day} (KST days). Written by .github/metrics/metrics.py "
              "in vws-deploy (#345); one file per day in metrics/daily/.", ""]
     for span in (7, SUMMARY_DAYS):
         since = (end - dt.timedelta(days=span - 1)).isoformat()  # calendar days, not the last N files
         part = [r for r in rows if r["day"] >= since]
-        total = lambda k: sum(r[k] for r in part if r[k] is not None)
+        known = lambda k: [r[k] for r in part if r[k] is not None]
+        total = lambda k: sum(known(k)) if known(k) else "-"  # a total over no day with data is unknown, not 0
         lines.append(f"- Last {span} days ({len(part)} with data): {total('prs_merged')} PRs merged, "
                      f"{total('prs_opened')} opened, {total('deepseek_dispatched')} DeepSeek dispatches "
                      f"({total('deepseek_done')} done, {total('deepseek_failed')} failed, {total('deepseek_timeout')} "
                      f"timed out), {total('grok_swaps')} grok swaps.")
+        lead = [r["lead_wakes"] for r in part if r["lead_wakes"] is not None]
+        tok = [(r["tokens"], r["prs_merged"]) for r in part if r["tokens"] is not None]
+        merged = sum(m for _, m in tok)
+        per_pr = round(sum(t for t, _ in tok) / merged) if merged else "-"
+        wake_days = len(known("verify_wakes"))  # days with a wakes block; days before #400 have none
+        partial = f" ({wake_days} days with data)" if wake_days < len(part) else ""
+        lines.append(f"- Last {span} days wakes: {total('verify_wakes')} verify wakes, {total('deepseek_dispatched')} "
+                     f"DeepSeek and {total('grok_dispatches')} grok dispatches ({total('rework_dispatches')} reworks)"
+                     f"{partial}, "
+                     f"lead wakes: {sum(lead) if lead else '-'} ({len(lead)} days with input); "
+                     f"tokens per merged PR: {per_pr} ({len(tok)} days with input).")
     lines += ["", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     lines += ["| " + " | ".join(fmt(r[c]) for c in cols) + " |" for r in reversed(rows)]
     return summary, "\n".join(lines) + "\n"
@@ -765,8 +800,9 @@ def run_day(ctx, gh, log, args, day, now, recompute=False):
     start, end = kst_day_window(day)
     recs, covered = read_orchestrator_log(args.orchestrator_log_dir or ctx.paths.log_dir, start, end)
     exclusions = orch.load_exclusions(os.path.join(HERE, "..", "orchestrate", "exclusions.tsv"))
-    tokens = read_tokens(os.path.join(ctx.token_dir, f"{day}.json"))
-    doc = compute(raw, recs, covered, cfg, exclusions, snapshot_at=orch.iso(now) if snap else None, tokens=tokens)
+    usage = os.path.join(ctx.token_dir, f"{day}.json")
+    doc = compute(raw, recs, covered, cfg, exclusions, snapshot_at=orch.iso(now) if snap else None,
+                  tokens=read_tokens(usage), lead_wakes=read_lead_wakes(usage))
     # History: the published files in apply mode, the local dry-run copies otherwise.
     path = f"metrics/daily/{day}.json"
     cutoff = (dt.date.fromisoformat(day) - dt.timedelta(days=SUMMARY_DAYS)).isoformat()

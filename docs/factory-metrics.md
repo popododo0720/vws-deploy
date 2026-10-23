@@ -56,7 +56,8 @@ are `.github/drift/repos.tsv` plus `ORCHESTRATE_EXTRA_REPOS`, and archived repos
 | `codex` | `merged_prs_with_codex` (body mentions a Codex review), `rounds_declared` (`Codex review, N rounds`), `verify_reports` and `blocking_sum` (`Codex review: <path> blocking=N` lines in comments created in D) |
 | `orchestrator` | ticks, failed ticks, `apply_failed`, `rate_low`, failure alerts and gh read/304/write totals from the orchestrator log. `null` when the log does not reach back to the start of D (`source_gaps`) |
 | `stalls` | open tasks (labelled `ready`, `deepseek`, `grok` or `in-review`, not `blocked`) and open non-draft PRs on main without `verify-approved` whose `updated_at` is at least `STALL_HOURS` before `snapshot_at`: `[{target, idle_hours}]`. Snapshot only, like `queue_depth` |
-| `tokens` | `{total, by_agent}` from the optional token-usage input (see [Alerts](#alerts)); `null` and a `source_gaps` entry when there is none |
+| `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0 |
+| `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the status thread). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (today only the Rule C swap notice `<!-- orchestrate:swap -->`). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input; `null` and a `source_gaps` entry when absent |
 | `alerts` | the anomalies found for D (empty on a normal day) |
 | `queue_depth` | open items per label (`ready`, `deepseek`, `grok`, `blocked`, `in-review`, `priority/blocker`) and `verify_backlog` (open non-draft PRs on main without `verify-approved`). A live snapshot taken when the day is computed (`snapshot_at`), so only for yesterday. A back-filled day has `null` |
 
@@ -100,10 +101,32 @@ in D's denominator. It alerts when D's rate is at least baseline + `RATE_MIN_RIS
 baseline is above 0, at least `RATE_MIN_RATIO = 2.0` times it. Rates are compared as exact fractions,
 so a rate exactly at a threshold alerts.
 
-**Token-usage input.** GitHub has no token counts, so this input is optional: a file
-`$METRICS_TOKEN_DIR/YYYY-MM-DD.json` (default `metrics-input/tokens/` under the state directory)
-with `{"by_agent": {"<agent>": <tokens>}}`. Whoever runs an agent can write it. Without it, `tokens`
-is `null` and no token alert is raised.
+**Token-usage input.** See [Daily usage input](#daily-usage-input). Without it, `tokens` is `null`
+and no token alert is raised.
+
+### Daily usage input
+
+GitHub has no token counts and does not see the lead's wakes, so both come from one optional file
+per KST day: `$METRICS_TOKEN_DIR/YYYY-MM-DD.json` (default
+`metrics-input/tokens/YYYY-MM-DD.json` under the state directory, `ORCHESTRATE_STATE_DIR`). Whoever runs an agent
+can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
+
+```json
+{"by_agent": {"<agent>": <tokens>}, "lead_wakes": <wakes>}
+```
+
+- `by_agent`: agent names match `[A-Za-z0-9._-]{1,40}` (lower-cased, summed per name); values are
+  integers >= 0. Any bad entry makes `tokens` `null`. Without the key, `tokens` is `null`, never 0.
+- `lead_wakes`: an integer >= 0, the number of times the lead (dr eggbot) was woken in D. Missing or
+  invalid: `null`, never 0.
+- Each key is read on its own: a file with only `lead_wakes` leaves `tokens` `null`.
+
+`SUMMARY.md` adds, for the last 7 and 28 days, the verify wakes, DeepSeek and grok dispatches,
+reworks and lead wakes, and tokens per merged PR (the sum of `tokens.total` over the days with token
+input, divided by the PRs merged on those days). A total over no day with input is `-`, never 0;
+this holds for every 7/28-day total, including a window with no daily file. When only some days in
+the window have a `wakes` block (days written before vws-deploy#400 have none), the verify-wake,
+grok-dispatch and rework totals are followed by `(N days with data)`.
 
 **Delivery.** No webhook, no secret, no extra channel: in apply mode, after the day is on the branch,
 the script posts one comment on the status thread (`ORCHESTRATE_STATUS_PR`, draft PR vws-deploy#339)
