@@ -16,6 +16,7 @@ import yaml
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LINT = os.path.join(ROOT, ".github", "ac", "ac-lint.sh")
 POST = os.path.join(ROOT, ".github", "ac", "post-merge.sh")
+GUARD = os.path.join(ROOT, "scripts", "guard-agents.sh")
 WF_PATH = os.path.join(ROOT, ".github", "workflows", "post-merge.yml")
 
 OPEN_BODY = "## Acceptance criteria\n- [x] parser (evidence: tests/x_test.go:12)\n- [ ] live run on vws-test\n"
@@ -218,6 +219,67 @@ class PostMerge(unittest.TestCase):
         s.run("<!-- Part of #7 -->\n```\nPart of #8\n```\nPart of #0\nnot apart of #9\n")
         self.assertEqual(s.calls(), [])
 
+    # vws-verify FAIL r1 on PR #429 (/workspace/handoff/verdicts/d429): guard-agents.sh pr-body sees
+    # "Part of #7" in each of these bodies, so post-merge must read #7 too.
+    GUARD_REGRESSIONS = [
+        ("fence line inside an HTML comment", "<!--\n```\n-->\nPart of #7\n"),
+        ("backtick fence inside a tilde fence", "~~~\n```\n~~~\nPart of #7\n"),
+        ("shorter fence inside a longer one", "````\n```\n````\nPart of #7\n"),
+    ]
+
+    def test_guard_agents_regression_bodies(self):
+        for name, body in self.GUARD_REGRESSIONS:
+            with self.subTest(name):
+                ok = subprocess.run(["bash", GUARD, "pr-body"], env=dict(os.environ, PR_BODY=body),
+                                    capture_output=True, text=True)
+                self.assertEqual(ok.returncode, 0, "guard-agents accepts it: " + ok.stderr)
+                s = Stub(self, {I + "7": issue(OPEN_BODY)})
+                r = s.run(body)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(s.writes(), [label_call(7)])
+                self.assertNotIn("No Part of #N", r.summary)
+
+    def test_hidden_text_comes_from_guard_agents_not_a_copy(self):
+        # One parser: post-merge.sh calls guard-agents.sh visible_text and PART_OF_RE, with no fence
+        # or comment handling of its own.
+        text = open(POST).read()
+        self.assertIn("visible_text", text)
+        self.assertIn("PART_OF_RE", text)
+        self.assertNotIn("<!--", text)
+        self.assertNotRegex(text, r"```|~~~|fence")
+        self.assertNotIn("part of[[:space:]]", text.lower())
+
+    def test_missing_guard_agents_fails_closed(self):
+        for name, guard in [("missing", "/nonexistent/guard-agents.sh"), ("no visible_text", "/dev/null")]:
+            with self.subTest(name):
+                s = Stub(self, {I + "7": issue(OPEN_BODY)})
+                r = s.run("Part of #7\n", GUARD_AGENTS=guard)
+                self.assertNotEqual(r.returncode, 0, "never read as 'no Part of #N'")
+                self.assertEqual(s.calls(), [])
+                self.assertIn("guard-agents", r.stderr)
+
+    def test_lint_exit_2_with_summary_is_a_crash(self):
+        # A summary line does not make exit 2 a normal result (lrc > 1, not lrc > 2).
+        self._crash_case("echo '0 boxes, 0 ticked without evidence'; exit 2", r"exit 2")
+
+    def test_lint_two_summary_lines_is_a_crash(self):
+        # The real ac-lint prints exactly one summary line; two mean corrupt or concatenated output.
+        self._crash_case("printf '1 boxes, 0 ticked without evidence\\n0 boxes, 0 ticked without evidence\\n'; exit 0",
+                         r"exit 0")
+
+    def _crash_case(self, script, exit_re):
+        crash = os.path.join(tempfile.mkdtemp(), "lint.sh")
+        self.addCleanup(subprocess.run, ["rm", "-rf", os.path.dirname(crash)])
+        with open(crash, "w") as f:
+            f.write("#!/usr/bin/env bash\ncat >/dev/null\n" + script + "\n")
+        os.chmod(crash, 0o755)
+        s = Stub(self, {I + "9": issue(DONE_BODY)})
+        r = s.run("Part of #9\n", AC_LINT=crash)
+        self.assertNotEqual(r.returncode, 0, "the job fails")
+        self.assertEqual(s.writes(), [label_call(9)], "and the issue is marked ac-pending")
+        self.assertRegex(r.summary, r"#9 ac-lint failed \(" + exit_re + r"\)")
+        self.assertNotIn("complete", r.summary)
+
     def test_lint_crash_fails_closed(self):
         # vws-deploy#418: ac-lint dying (exit 2+, or no summary line) is never "all AC met".
         crash = os.path.join(tempfile.mkdtemp(), "lint.sh")
@@ -294,7 +356,9 @@ class Workflow(unittest.TestCase):
         self.assertEqual(len(checkouts), 1)
         w = checkouts[0]["with"]
         self.assertEqual(w["ref"], "${{ github.event.repository.default_branch }}")
-        self.assertEqual(w["sparse-checkout"].split(), [".github/ac"])
+        self.assertEqual(w["sparse-checkout"].split(), [".github/ac", "scripts/guard-agents.sh"])
+        # Cone mode takes directories only; a file pattern needs non-cone mode (vws-deploy#418).
+        self.assertIs(w["sparse-checkout-cone-mode"], False)
         self.assertNotRegex(text, r"head\.(sha|ref)|refs/pull")
 
     def test_head_repo_passed_for_the_fork_skip(self):
