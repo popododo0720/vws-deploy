@@ -1434,10 +1434,45 @@ def main_ahead_of(gh, repo, old, new):
     return (data or {}).get("status") == "ahead"
 
 
-def required_checks(gh, repo):
-    """Required checks on main from the effective rulesets. [] if none. Classic branch protection is not
-    read: the PAT gets 403 there (vws-deploy#408); mergeable_state clean already enforces it."""
+def _app_id(v):
+    if v is not None and (type(v) is not int):
+        raise ValueError(f"required check app id is not an integer: {v!r}")
+    return v
+
+
+def classic_required(branch):
+    """Required checks of main's classic branch protection, from the GET branches/main body that
+    collect already read (its `protection` field needs no Administration read, unlike the protection
+    API, #408). [] when classic protection is off. Anything unexpected raises ValueError: fail closed."""
+    if not isinstance(branch, dict) or type(branch.get("protected")) is not bool:
+        raise ValueError("branches/main: no boolean protected field")
+    prot = branch.get("protection")
+    if not isinstance(prot, dict) or type(prot.get("enabled")) is not bool:
+        raise ValueError("branches/main: protection details not visible")
+    if not branch["protected"] or not prot["enabled"]:
+        return []  # no classic protection (the protection API would answer 404 Branch not protected)
+    rsc = prot.get("required_status_checks")
+    if (not isinstance(rsc, dict) or not isinstance(rsc.get("checks"), list)
+            or not isinstance(rsc.get("contexts"), list)):
+        raise ValueError("branches/main: required_status_checks not readable")
     out = []
+    for c in rsc["checks"]:
+        if not isinstance(c, dict) or not isinstance(c.get("context"), str):
+            raise ValueError(f"branches/main: malformed required check {c!r}")
+        out.append({"context": c["context"], "app_id": _app_id(c.get("app_id"))})
+    for ctx in rsc["contexts"]:
+        if not isinstance(ctx, str):
+            raise ValueError(f"branches/main: malformed required context {ctx!r}")
+        if not any(c["context"] == ctx for c in out):
+            out.append({"context": ctx, "app_id": None})  # listed without an app: any source
+    return out
+
+
+def required_checks(gh, repo, branch):
+    """Required checks on main: the effective rulesets plus classic branch protection (from the
+    branches/main body), deduped by (context, app id). head_check_reasons then needs each one to be
+    success, so a skipped or neutral required check never merges (AGENTS.md rule 5)."""
+    out = classic_required(branch)
     rules, _ = gh.get(f"repos/{OWNER}/{repo}/rules/branches/main?per_page=100")
     for rule in rules or []:
         if rule.get("type") == "required_status_checks":
@@ -1501,7 +1536,7 @@ def collect_merge(gh, snap, repo_names, state):
             if lock and lock.get("status") == "red" and lock.get("red_sha") != ctx["main_sha"]:
                 ctx["red_ahead"] = main_ahead_of(gh, name, lock["red_sha"], ctx["main_sha"])
             if cands:
-                ctx["required"] = required_checks(gh, name)
+                ctx["required"] = required_checks(gh, name, branch)
             for it in cands:
                 it["merge_info"] = merge_info(gh, name, it["number"])
                 for dep in parse_deps(it["body"], name)[0]:
