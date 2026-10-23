@@ -18,6 +18,7 @@ on:
       - .github/workflows/drift-check.yml
       - tests/drift/**
       - .github/workflows/repo-guard.yml
+      - .github/workflows/repo-guard-reusable.yml
       - tests/workflows/**
       - .github/ac/**
       - .github/workflows/post-merge.yml
