@@ -65,8 +65,11 @@ The gate records that a verdict was posted. It cannot prove who judged it.
 - **The PR can edit the gate's YAML.** On `pull_request`, GitHub runs the workflow from the
   PR's merge commit. The job checks out the base commit, so the guard script that judges is
   the one on main, but a PR can still change `repo-guard.yml` itself (for example, the
-  checkout ref or the step). The `vws-main` ruleset requires a pull request and the
-  `verify-gate` check, with no bypass actors, but it cannot judge a workflow the PR changes.
-  The remaining control is a person reviewing the `.github/` and `scripts/` diff.
+  checkout ref or the step). In repos other than vws-deploy the steps are pinned in
+  vws-deploy `repo-guard-reusable.yml`, but a PR can still edit the caller and its pin;
+  drift-check reports that after the fact (docs/design/repo-guard-reusable.md). The
+  `vws-main` ruleset requires a pull request and the `verify-gate` check, with no bypass
+  actors, but it cannot judge a workflow the PR changes. The remaining control is a person
+  reviewing the `.github/` and `scripts/` diff.
 - **Evidence is checked for form, not truth.** The gate checks that each item has a URL,
   path or `N/A: reason`. It does not open them.
