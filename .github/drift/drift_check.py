@@ -8,6 +8,8 @@ Checks per repo, on its default branch:
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist
+  incident    .github/ISSUE_TEMPLATE/incident.yml exists, applies the incident label, has every field
+              of vws-deploy's form, and no incident.md is left
   lint        Go repos: the golangci config enables every linter in .github/golangci-common.yml,
               sets lll to 120 and enables gofumpt and goimports
 An archived repo is reported and skipped; it is not drift.
@@ -99,6 +101,21 @@ def load_common(path):
     return c
 
 
+def load_incident(path):
+    """The incident form's field ids in order; exit 2 with a clear message when it is missing or malformed."""
+    try:
+        with open(path) as f:
+            c = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        _bad_baseline(f"drift-check: cannot read {path}: {e}")
+    body = c.get("body") if isinstance(c, dict) else None
+    ids = [x.get("id") for x in body if isinstance(x, dict)] if isinstance(body, list) else []
+    ids = [i for i in ids if isinstance(i, str) and i]
+    if not ids:
+        _bad_baseline(f"drift-check: {path} has no body field ids")
+    return ids
+
+
 def load_variants(path):
     """Accepted guard-agents.sh variants: {repo: sha256}. A missing file means none; a bad row exits 2."""
     if not os.path.exists(path):
@@ -158,6 +175,39 @@ def lint_drift(cfg, common):
     return out
 
 
+def incident_drift(tpl, legacy, want):
+    """Issue strings for one repo's incident form; empty means ok."""
+    out = []
+    if tpl is None:
+        out.append("no .github/ISSUE_TEMPLATE/incident.yml")
+    else:
+        try:
+            c = yaml.safe_load(tpl)
+        except yaml.YAMLError as e:
+            out.append(f"incident.yml does not parse: {e}")
+            c = None
+        else:
+            if not isinstance(c, dict):
+                out.append("incident.yml is not a YAML mapping")
+                c = None
+        if c is not None:
+            labels = c.get("labels")
+            labels = [x.strip() for x in labels.split(",")] if isinstance(labels, str) else _list(labels)
+            if "incident" not in labels:
+                out.append("does not apply the incident label")
+            body = c.get("body")
+            if not isinstance(body, list) or any(not isinstance(x, dict) for x in body):
+                ids = []
+            else:
+                ids = [x.get("id") for x in body]
+            missing = [i for i in want if i not in ids]
+            if missing:
+                out.append("missing fields: " + ",".join(missing))
+    if legacy is not None:
+        out.append("incident.md still exists")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--owner", default="popododo0720")
@@ -170,6 +220,7 @@ def main():
     common = load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
     want_sha = open(os.path.join(ROOT, "scripts", "guard-agents.sh.sha256")).read().split()[0]
     variants = load_variants(a.guard_variants)
+    want_incident = load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"))
 
     rows, drift = [], 0
     for line in open(a.repos):
@@ -178,11 +229,11 @@ def main():
         repo, kind, cfgpath, extra = (line.rstrip("\n").split("\t") + ["", "", ""])[:4]
         info = gh(f"repos/{a.owner}/{repo}")
         if info is None:
-            rows.append([repo, "unreadable", "", "", "", "", ""])
+            rows.append([repo, "unreadable", "", "", "", "", "", ""])
             drift += 1
             continue
         if info.get("archived"):
-            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-"])
+            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-"])
             continue
         issues = {}
         p = protection(a.owner, repo)
@@ -221,6 +272,13 @@ def main():
             docs.append("QUALITY.md")
         if docs:
             issues["docs"] = ["missing " + ",".join(docs)]
+        inc = incident_drift(
+            content(a.owner, repo, ".github/ISSUE_TEMPLATE/incident.yml"),
+            content(a.owner, repo, ".github/ISSUE_TEMPLATE/incident.md"),
+            want_incident,
+        )
+        if inc:
+            issues["incident"] = inc
         if kind == "go":
             cfg = content(a.owner, repo, cfgpath)
             issues_l = [f"no {cfgpath}"] if cfg is None else lint_drift(cfg, common)
@@ -240,10 +298,12 @@ def main():
             cell("workflows"),
             cell("guard", guard_ok),
             cell("docs"),
+            cell("incident"),
             cell("lint", "ok" if kind == "go" else "n/a"),
         ])
 
-    head = ["repo", "protection", "required checks", "workflows", "guard-agents.sh", "AGENTS/QUALITY", "lint"]
+    head = ["repo", "protection", "required checks", "workflows", "guard-agents.sh", "AGENTS/QUALITY",
+            "incident form", "lint"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
     text = "\n".join(table) + f"\n\ndrift: {drift} repo(s)\n"
