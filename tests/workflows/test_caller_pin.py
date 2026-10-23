@@ -171,6 +171,41 @@ class CallerPin(unittest.TestCase):
         self.assertTrue(cp.check("jobs: [unclosed\n")[0])
         self.assertTrue(cp.check("")[0])
 
+    def test_null_or_empty_values_fail(self):
+        # A null call job used to be skipped, so the caller still returned a pin (GitHub refuses the file,
+        # so that failed closed, but the check must say so). Every value the shape requires must be there.
+        good = caller()
+        cases = {
+            "null call job": good.replace(
+                "  reset:\n    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'\n"
+                "    uses: %srepo-guard-verify-reset.yml@%s\n    permissions: {issues: write, pull-requests: write}\n"
+                % (PFX, SHA), "  reset: null\n"),
+            "empty call job": good.replace("  rerun:\n    if: github.event_name == 'issue_comment'",
+                                           "  rerun: {}\n  rerun-x:\n    if: github.event_name == 'issue_comment'"),
+            "list call job": good.replace("  reset:\n", "  reset: []\n  reset-x:\n"),
+            "null uses": good.replace("uses: %srepo-guard-pr-hygiene.yml@%s" % (PFX, SHA), "uses: null"),
+            "empty if": good.replace("    if: github.event_name == 'pull_request'\n    uses: %srepo-guard-verify-gate"
+                                     % PFX, "    if: ''\n    uses: %srepo-guard-verify-gate" % PFX),
+            "null permissions": good.replace("permissions: {contents: read, pull-requests: read}\n",
+                                             "permissions: null\n", 1),
+            "null top permissions": good.replace("permissions: {}\n", "permissions: null\n", 1),
+            "null on": good.replace("on:\n  pull_request:\n    types: [opened, edited, reopened, synchronize, "
+                                    "labeled, unlabeled]\n  issue_comment:\n    types: [created, edited, deleted]\n",
+                                    "on: null\n"),
+            "empty name": good.replace("name: repo-guard\n", "name: ''\n"),
+            "null jobs": good.split("jobs:\n")[0] + "jobs: null\n",
+            "null shim": good.split("  pr-hygiene:\n")[0] + "  pr-hygiene: null\n" +
+            "  verify-gate:\n" + good.split("  verify-gate:\n")[1],
+            "number job key": good.replace("  reset:\n", "  1:\n"),
+            "number top key": good.replace("permissions: {}\n", "permissions: {}\n1: x\n", 1),
+        }
+        for what, text in cases.items():
+            with self.subTest(what=what):
+                self.assertNotEqual(text, good)
+                errs, pin = cp.check(text)
+                self.assertTrue(errs, what)
+                self.assertIsNone(pin, what)
+
     def test_this_repo_is_a_home_caller(self):
         path = os.path.join(ROOT, ".github", "workflows", "repo-guard.yml")
         self.assertEqual(cp.check(open(path).read(), home=True), ([], "local"))
