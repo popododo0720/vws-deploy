@@ -411,7 +411,7 @@ class Collect(unittest.TestCase):
         c = {"id": 1, "html_url": "u", "created_at": ts(1), "body": "b", "user": {"login": BOT},
              "author_association": "NONE"}
         self.assertEqual(orch.comment_record(c), {"id": 1, "url": "u", "created_at": ts(1), "body": "b",
-                                                  "author": BOT, "assoc": "NONE"})
+                                                  "author": BOT, "author_id": 0, "assoc": "NONE"})
 
     def test_history_cache_without_authors_is_reread(self):
         self.assertGreaterEqual(orch.HISTORY_VERSION, 3)

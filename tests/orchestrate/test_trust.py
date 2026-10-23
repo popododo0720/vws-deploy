@@ -25,7 +25,7 @@ def gh_comment(cid, created_at, body, login="popododo0720", association="OWNER")
 
 
 def record(body, author="popododo0720", association="OWNER"):
-    return {"id": 1, "url": U + "1", "created_at": OLD1, "body": body, "author": author, "association": association}
+    return {"id": 1, "url": U + "1", "created_at": OLD1, "body": body, "author": author, "assoc": association}
 
 
 class TrustedResetAuthor(unittest.TestCase):
@@ -257,8 +257,8 @@ class TrustTicks(Env):
         reset = gh_comment(3, "2026-10-03T00:00:00Z", "/orchestrate reset-failures", "mallory", "NONE")
         self.tick_with(self.two_failures(reset))
         cache = load(orch.history_path(self.paths))
-        self.assertEqual(cache["version"], 3)
-        got = [(c["id"], c["author"], c["association"]) for c in cache["items"]["vws-iam#1"]["comments"]]
+        self.assertEqual(cache["version"], orch.HISTORY_VERSION)
+        got = [(c["id"], c["author"], c["assoc"]) for c in cache["items"]["vws-iam#1"]["comments"]]
         self.assertEqual(got, [(1, "popododo0720", "OWNER"), (2, "popododo0720", "OWNER"), (3, "mallory", "NONE")],
                          "the cache keeps every comment with its author; trust is decided on every tick")
 
