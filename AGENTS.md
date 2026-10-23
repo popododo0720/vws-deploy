@@ -117,3 +117,7 @@ Standard commands: per PR `codex review --base <PR base branch>` (usually `main`
 the number of blocking findings in that saved review for the head being verified; the Verified-by
 line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
 Fix the findings and re-run on the new head until N is 0.
+Codex rounds are capped per issue, not per PR: at most 3 rounds (`CODEX_ROUND_CAP`) across all PRs
+whose body has `Part of #N` or `Closes #N` for that issue, including rebuilt and superseded PRs.
+`scripts/codex-round-count.sh` keeps the count in `/workspace/handoff/codex/rounds.tsv` (local files
+only) and refuses the 4th round; then split the work or move the rest to issues.

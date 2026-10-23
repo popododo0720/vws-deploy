@@ -20,6 +20,8 @@ on:
       - tests/orchestrate/**
       - .github/metrics/**
       - tests/metrics/**
+      - scripts/codex-round-count.sh
+      - tests/codex/**
 
 permissions:
   contents: read
@@ -42,6 +44,11 @@ jobs:
       # Daily factory metrics (vws-deploy#345) import the orchestrator; stub gh, no network.
       - name: Metrics unit tests
         run: python3 -m unittest discover -s tests/metrics -v
+      # Per-issue Codex round cap (vws-deploy#403); local files only, no network.
+      - name: Codex round cap tests
+        run: |
+          python3 -m unittest discover -s tests/codex -v
+          shellcheck scripts/codex-round-count.sh
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
