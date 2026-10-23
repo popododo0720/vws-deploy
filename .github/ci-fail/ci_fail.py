@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,8 @@ MAX_LINE = 200
 MAX_TAIL_BYTES = 4 * 1024
 MAX_TAILS = 5
 API_VERSION = "2022-11-28"
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+RETRY_ATTEMPTS = 3
 
 # The exact line-1 format from vws-deploy#412. Any change is a schema change (v=2).
 MARKER_RE = re.compile(
@@ -302,24 +305,29 @@ class Client:
         self.api = api.rstrip("/")
         self.opener = urllib.request.build_opener(_NoAuthRedirect)
 
-    def _request(self, method, path, params=None, data=None, text=False):
+    def _request(self, method, path, params=None, data=None, text=False, retry=True):
         url = path if path.startswith("http") else f"{self.api}/{path.lstrip('/')}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
         body = json.dumps(data).encode("utf-8") if data is not None else None
-        req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", f"Bearer {self.token}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("X-GitHub-Api-Version", API_VERSION)
-        req.add_header("User-Agent", "vws-ci-fail")
-        try:
-            with self.opener.open(req, timeout=60) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:500]
-            if exc.code in (404, 410):
-                return None
-            raise GhError(exc.code, path, detail) from exc
+        for attempt in range(RETRY_ATTEMPTS):
+            req = urllib.request.Request(url, data=body, method=method)
+            req.add_header("Authorization", f"Bearer {self.token}")
+            req.add_header("Accept", "application/vnd.github+json")
+            req.add_header("X-GitHub-Api-Version", API_VERSION)
+            req.add_header("User-Agent", "vws-ci-fail")
+            try:
+                with self.opener.open(req, timeout=60) as resp:
+                    raw = resp.read()
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:500]
+                if exc.code in (404, 410):
+                    return None
+                if retry and exc.code in RETRY_STATUS and attempt + 1 < RETRY_ATTEMPTS:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise GhError(exc.code, path, detail) from exc
         if text:
             return raw.decode("utf-8", "replace")
         return json.loads(raw) if raw else None
@@ -345,8 +353,8 @@ class Client:
     def get_text(self, path):
         return self._request("GET", path, text=True)
 
-    def post(self, path, data):
-        return self._request("POST", path, data=data)
+    def post(self, path, data, retry=True):
+        return self._request("POST", path, data=data, retry=retry)
 
     def patch(self, path, data):
         return self._request("PATCH", path, data=data)
@@ -556,7 +564,8 @@ def run(client, event, workflows, now=None):
         "failed_jobs": jobs, "created_at": rfc3339(now), "updated_at": rfc3339(now),
     }
     body = render(record, jobs, tails, escalation)
-    posted = client.post(f"repos/{client.repo}/issues/{pr['number']}/comments", {"body": body})
+    posted = client.post(f"repos/{client.repo}/issues/{pr['number']}/comments", {"body": body},
+                         retry=False)
     return {"action": "created", "comment": (posted or {}).get("id"), "pr": pr["number"], "sha": sha,
             "n": n, "wake": wake, "runs": len(runs), "jobs": len(jobs)}
 
