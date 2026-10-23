@@ -235,6 +235,14 @@ class InFlight(unittest.TestCase):
         self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"], "one task, one slot")
         self.assertIn({"kind": "grok_in_flight", "targets": ["vws-iam#1"]}, r["notes"])
 
+    def test_cross_repo_pr_keeps_its_own_repo_busy(self):
+        """verify r2 (P2): a grok PR in vws-proto working on vws-iam#1 occupies vws-proto too."""
+        cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
+        s = snapshot(grok_task("vws-proto", 3), self.grok_pr("vws-proto", 20, "Part of vws-iam#1"))
+        r = run(s, cfg)
+        self.assertEqual(wakes(r), [])
+        self.assertIn({"kind": "repo_busy", "target": "vws-proto#3", "repo": "vws-proto"}, r["notes"])
+
     def test_held_repo_is_busy(self):
         cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
         s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-iam", 4, 20), self.grok_pr("vws-iam", 20, "Part of #1"))
@@ -253,17 +261,37 @@ class OptOut(unittest.TestCase):
         self.assertEqual({"hold", "do-not-merge"} - set(orch.OPT_OUT_LABELS), set())
 
 
+def gh_item(number, labels=("grok",), body="", pr=False, assignees=()):
+    """An entry of GET issues?state=open&labels=grok as GitHub returns it."""
+    d = {"number": number, "state": "open", "body": body, "labels": [{"name": n} for n in labels],
+         "assignees": [{"login": a} for a in assignees]}
+    if pr:
+        d["pull_request"] = {}
+    return d
+
+
+CAND = gh_item(1, ("ready", "grok"))  # the candidate vws-iam#1 itself, still unassigned
+
+
 class FakeGh:
-    def __init__(self, labels=("ready", "grok"), state="open", comments=(), assignees=(), open_items=()):
+    def __init__(self, labels=("ready", "grok"), state="open", comments=(), assignees=(), open_items=(),
+                 fail_list=False):
         self.issue = {"state": state, "labels": [{"name": n} for n in labels],
                       "assignees": [{"login": a} for a in assignees]}
-        self.comments, self.open_items, self.writes = list(comments), list(open_items), []
+        # open_items: vws-iam's open grok items as a list, or {repo: [items]} for several repos.
+        self.open_items = dict(open_items) if isinstance(open_items, dict) else {"vws-iam": list(open_items)}
+        self.comments, self.writes, self.lists, self.fail_list = list(comments), [], [], fail_list
 
     def get(self, path):
         return self.issue, None
 
     def get_all(self, path, limit=20):
-        return self.open_items if "/issues?" in path else self.comments
+        if "/issues?" not in path:
+            return self.comments
+        self.lists.append(path)
+        if self.fail_list:
+            raise orch.GhError(502, "bad gateway")
+        return self.open_items.get(path.split("/")[2], [])
 
     def write(self, method, path, payload=None):
         self.writes.append((method, path, payload))
@@ -271,12 +299,12 @@ class FakeGh:
 
 
 class Apply(unittest.TestCase):
-    def plan(self):
-        s = snapshot(grok_task("vws-iam", 1))
-        return run(s), s
+    def plan(self, s=None, cfg=ON):
+        s = s or snapshot(grok_task("vws-iam", 1))
+        return run(s, cfg), s
 
-    def apply(self, gh, cfg=ON):
-        r, s = self.plan()
+    def apply(self, gh, cfg=ON, s=None):
+        r, s = self.plan(s, cfg)
         events = []
         orch.apply(r, s, gh, dict(cfg, ORCHESTRATE_MERGE="dry-run"), None,
                    lambda ev, **kw: events.append(dict(kw, event=ev)), {}, NOW)
@@ -301,13 +329,90 @@ class Apply(unittest.TestCase):
             self.apply(gh)
             self.assertEqual(gh.writes, [])
 
-    def test_recheck_ignores_unrelated_open_items(self):
-        other = [{"number": 20, "pull_request": {}, "body": "Part of #2", "labels": [{"name": "grok"}]},
-                 {"number": 21, "pull_request": {}, "body": "Part of #1", "labels": [{"name": "deepseek"}]},
-                 {"number": 22, "body": "Part of #1", "labels": [{"name": "grok"}]}]
-        gh = FakeGh(open_items=other)
+    def grok_skips(self, events):
+        return [e for e in events if e["event"] == "skipped" and e.get("action") == "grok_wake"]
+
+    def test_recheck_counts_other_grok_work_toward_the_cap(self):
+        """verify r2 (P1): Grok work that started between collect and apply, for any issue, fills the
+        single slot, so the planned wake is not posted."""
+        others = {"grok PR for another issue": gh_item(20, body="Part of #2", pr=True),
+                  "assigned grok issue": gh_item(5, assignees=("grok-dev",)),
+                  "assigned grok PR without a link": gh_item(21, pr=True, assignees=("grok-dev",)),
+                  "grok PR for an issue in another repo": gh_item(22, pr=True, body="Part of vws-proto#3")}
+        for name, other in others.items():
+            with self.subTest(name):
+                gh = FakeGh(open_items=[CAND, other])
+                _, events = self.apply(gh)
+                self.assertEqual(gh.writes, [])
+                self.assertEqual(len(self.grok_skips(events)), 1)
+                self.assertIn("Grok cap 1 reached", self.grok_skips(events)[0]["reason"])
+
+    def test_recheck_ignores_idle_and_non_grok_items(self):
+        idle = [CAND, gh_item(21, ("deepseek",), body="Part of #1", pr=True),
+                gh_item(22, body="Part of #1"), gh_item(23, ("ready", "grok"))]
+        gh = FakeGh(open_items=idle)
         self.apply(gh)
         self.assertEqual(len(gh.writes), 1)
+
+    def test_recheck_reads_every_scoped_repo(self):
+        gh = FakeGh(open_items=[CAND])
+        self.apply(gh)
+        self.assertEqual(len(gh.writes), 1)
+        self.assertEqual(sorted(p.split("/")[2] for p in gh.lists), ["vws-deploy", "vws-iam", "vws-proto"],
+                         "every non-archived scoped repo, once")
+        self.assertTrue(all(p.endswith("/issues?state=open&labels=grok&per_page=100") for p in gh.lists))
+
+    def test_recheck_cross_repo_work_blocks_the_wake(self):
+        """Grok work held in another repo blocks the wake for vws-iam#1 at cap 1."""
+        for other in ({"vws-proto": [gh_item(9, assignees=("grok-dev",))]},
+                      {"vws-deploy": [gh_item(30, pr=True, body="Part of vws-proto#3")]},
+                      {"vws-proto": [gh_item(31, pr=True, body="Part of vws-deploy#2")]}):
+            with self.subTest(other=other):
+                gh = FakeGh(open_items=dict(other, **{"vws-iam": [CAND]}))
+                _, events = self.apply(gh)
+                self.assertEqual(gh.writes, [])
+                self.assertIn("Grok cap 1 reached", self.grok_skips(events)[0]["reason"])
+
+    def test_recheck_cap_two_keeps_one_per_repo(self):
+        cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
+        gh = FakeGh(open_items={"vws-iam": [CAND], "vws-proto": [gh_item(9, assignees=("grok-dev",))]})
+        self.apply(gh, cfg)
+        self.assertEqual(len(gh.writes), 1, "a free slot and a free repo")
+        gh = FakeGh(open_items={"vws-iam": [CAND, gh_item(20, pr=True, body="Part of vws-proto#3")]})
+        _, events = self.apply(gh, cfg)
+        self.assertEqual(gh.writes, [], "a grok PR in vws-iam keeps vws-iam busy whatever issue it works on")
+        self.assertIn("vws-iam", self.grok_skips(events)[0]["reason"])
+
+    def test_recheck_counts_wakes_posted_this_tick(self):
+        cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
+        s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-deploy", 2, 10))
+        self.assertEqual([a["item"] for a in wakes(run(s, cfg))], ["vws-iam#1", "vws-deploy#2"])
+        gh = FakeGh(open_items={"vws-iam": [CAND], "vws-deploy": [gh_item(2, ("ready", "grok"))],
+                                "vws-proto": [gh_item(9, assignees=("grok-dev",))]})
+        _, events = self.apply(gh, cfg, s)
+        self.assertEqual(len(gh.writes), 1, "vws-proto#9 started since collect: one slot left")
+        self.assertIn("vws-iam/issues/1", gh.writes[0][2]["body"])
+        self.assertIn("Grok cap 2 reached", self.grok_skips(events)[0]["reason"])
+
+    def test_recheck_counts_woken_tasks_still_open(self):
+        cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
+        s = snapshot(grok_task("vws-proto", 3, 30))
+        s = posted(s, run(s, cfg))
+        s["items"]["vws-iam#1"] = grok_task("vws-iam", 1, 10)
+        self.assertEqual([a["item"] for a in wakes(run(s, cfg))], ["vws-iam#1"])
+        fresh = {"vws-iam": [CAND], "vws-deploy": [gh_item(7, assignees=("grok-dev",))]}
+        gh = FakeGh(open_items=dict(fresh, **{"vws-proto": [gh_item(3, ("ready", "grok"))]}))
+        self.apply(gh, cfg, s)
+        self.assertEqual(gh.writes, [], "woken vws-proto#3 and the new vws-deploy#7 fill both slots")
+        gh = FakeGh(open_items=fresh)
+        self.apply(gh, cfg, s)
+        self.assertEqual(len(gh.writes), 1, "vws-proto#3 closed since collect: its slot is free")
+
+    def test_recheck_read_error_fails_closed(self):
+        gh = FakeGh(fail_list=True)
+        _, events = self.apply(gh)
+        self.assertEqual(gh.writes, [])
+        self.assertIn("re-read failed", self.grok_skips(events)[0]["reason"])
 
     def test_recheck_skips_posted_key(self):
         r, _ = self.plan()
