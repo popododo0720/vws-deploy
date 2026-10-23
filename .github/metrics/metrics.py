@@ -628,10 +628,16 @@ def alert_webhook(environ, log, summary, comment_url, opener=None, sleep=None):
     data = json.dumps({"kind": "metrics-alert", "summary": summary, "comment_url": comment_url}).encode()
     opener = opener or urllib.request.build_opener(_NoRedirect)
     sleep = sleep or time.sleep
-    status, error, attempt = 0, "", 0
-    for attempt in range(1, WEBHOOK_TRIES + 1):
+    try:
+        # Inside the try: urllib parses the URL here, and its exception text can carry part of it (for
+        # example a bracketed host). A URL that does not parse does not get better with a retry.
         req = urllib.request.Request(url, data=data, method="POST", headers={
             "Content-Type": "application/json", "Authorization": auth, "User-Agent": "vws-metrics"})
+    except Exception as e:  # noqa: BLE001 - only the class name is logged (no URL, no key)
+        log("metrics_webhook_failed", error=type(e).__name__, http_status=0, attempts=0)
+        return False
+    status, error, attempt = 0, "", 0
+    for attempt in range(1, WEBHOOK_TRIES + 1):
         try:
             with opener.open(req, timeout=WEBHOOK_TIMEOUT_S) as r:
                 status = r.status

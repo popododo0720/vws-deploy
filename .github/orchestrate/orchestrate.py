@@ -68,9 +68,12 @@ CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "s
 # match on it.
 WAKE_MARKER = "<!-- vws-orchestrate:verify-wake -->"
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
-# The status issue (vws-deploy#416): its body starts with STATUS_MARKER and is rewritten in place. Its
-# comments are metrics alerts only (.github/metrics posts them); the orchestrator never comments there.
+# The status issue (vws-deploy#416): the orchestrator owns only the block from STATUS_MARKER to
+# STATUS_END_MARKER in its body and rewrites that block in place; text outside it is kept byte for byte,
+# and a body without exactly one block is never written. Its comments are metrics alerts only
+# (.github/metrics posts them); the orchestrator never comments there.
 STATUS_MARKER = "<!-- vws-orchestrate:status -->"
+STATUS_END_MARKER = "<!-- /vws-orchestrate:status -->"
 METRICS_ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
 STATUS_UPDATED_RE = re.compile(r"^_Updated [^\n]*_$", re.M)  # the one volatile line; ignored when comparing
 STATUS_EVENT_KEY_RE = re.compile(r"key `(sha256:[0-9a-f]{64})`")
@@ -470,11 +473,11 @@ class Gh:
                     or not re.fullmatch(r"[0-9a-f]{40}", str(p.get("sha", "")))):
                 raise PermissionError("merge refused: squash with a 40-hex head sha only")
         if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/issues/[0-9]+", path):
-            # The only issue edit: the status issue's body, rewritten with its marker first.
+            # The only issue edit: the status issue's body, with exactly one managed status block.
             body = payload.get("body") if isinstance(payload, dict) and set(payload) == {"body"} else None
             if (not self.status_issue or path != f"repos/{OWNER}/{STATUS_REPO}/issues/{self.status_issue}"
-                    or not isinstance(body, str) or not body.startswith(STATUS_MARKER + "\n")):
-                raise PermissionError("issue edit refused: only the status issue body, starting with its marker")
+                    or not isinstance(body, str) or status_unowned(body)):
+                raise PermissionError("issue edit refused: only the status issue body, with one status block")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -1708,7 +1711,8 @@ def status_body(snapshot, result, cfg, state, mode, now, failure=""):
     in_flight = next((n["targets"] for n in notes if n.get("kind") == "in_flight"), [])
     wake = wake_target(cfg)
     lines = [STATUS_MARKER,
-             "Factory status. The orchestrator rewrites this body in place each tick; it does not post status comments.",
+             "Factory status. The orchestrator rewrites this block (down to the end marker) in place each tick; "
+             "text outside it is yours and is kept. It does not post status comments.",
              "",
              f"Comments here are metrics alerts only (marker `{METRICS_ALERT_MARKER}`). verify-wake does not post here.",
              "", "## Now", "",
@@ -1728,8 +1732,44 @@ def status_body(snapshot, result, cfg, state, mode, now, failure=""):
     lines += [f"- {iso(e['at'])} {e['kind']}: {e['text']} (key `{e['key']}`)" for e in events] or ["- none"]
     if failure:
         lines += ["", failure.rstrip("\n")]
-    lines += ["", f"_Updated {iso(now)} by run `{snapshot.get('run_id', '')}`._"]
+    lines += ["", f"_Updated {iso(now)} by run `{snapshot.get('run_id', '')}`._", STATUS_END_MARKER]
     return "\n".join(lines) + "\n"
+
+
+def status_unowned(body):
+    """'' when body has exactly one status block (STATUS_MARKER, later STATUS_END_MARKER), else why not.
+    The orchestrator writes only inside that block and never writes a body that lacks one."""
+    body = body or ""
+    starts, ends = body.count(STATUS_MARKER), body.count(STATUS_END_MARKER)
+    if starts != 1 or ends != 1:
+        return (f"the body needs exactly one {STATUS_MARKER} ... {STATUS_END_MARKER} block; "
+                f"found {starts} start and {ends} end markers")
+    if body.index(STATUS_END_MARKER) < body.index(STATUS_MARKER):
+        return "the end marker comes before the start marker"
+    return ""
+
+
+def _status_span(body):
+    """(start, end) of the status block, end just past STATUS_END_MARKER; body must be owned."""
+    return body.index(STATUS_MARKER), body.index(STATUS_END_MARKER) + len(STATUS_END_MARKER)
+
+
+def status_block(body):
+    """The status block of body, from the start marker through the end marker ('' when unowned)."""
+    if status_unowned(body):
+        return ""
+    s, e = _status_span(body)
+    return body[s:e]
+
+
+def splice_status(current, block):
+    """current with its status block replaced by the block in block; everything outside is kept byte for
+    byte. None when either has no single status block (the caller writes nothing)."""
+    if status_unowned(current) or status_unowned(block):
+        return None
+    s, e = _status_span(current)
+    bs, be = _status_span(block)
+    return current[:s] + block[bs:be] + current[e:]
 
 
 def _status_norm(body):
@@ -1741,33 +1781,46 @@ def status_same(old, new):
     return _status_norm(old) == _status_norm(new)
 
 
+FAILURE_SECTION_RE = re.compile(rf"^## Failed ticks\n.*?(?=^## |^_Updated |^{re.escape(STATUS_END_MARKER)}|\Z)",
+                                re.M | re.S)
+
+
 def failure_section(body):
-    """The '## Failed ticks' section of a status body ('' when there is none)."""
-    m = re.search(r"^## Failed ticks\n.*?(?=^## |^_Updated |\Z)", body or "", re.M | re.S)
+    """The '## Failed ticks' section inside the status block ('' when there is none or no block)."""
+    m = FAILURE_SECTION_RE.search(status_block(body))
     return m.group(0).rstrip("\n") if m else ""
 
 
 def set_failure_section(body, section):
-    """The status body with its failure section replaced by section (a body without the marker is
-    replaced by a minimal one: the orchestrator owns this body)."""
-    if not (body or "").startswith(STATUS_MARKER + "\n"):
-        body = f"{STATUS_MARKER}\nFactory status. The orchestrator rewrites this body in place each tick.\n"
+    """body with the failure section inside its status block replaced by section; text outside the block
+    is kept byte for byte. None when body has no single status block (the caller writes nothing)."""
+    if status_unowned(body):
+        return None
+    s, e = _status_span(body)
+    inner = body[s:e - len(STATUS_END_MARKER)]
     old = failure_section(body)
     if old:
-        body = body.replace(old, section.rstrip("\n"), 1)
+        inner = inner.replace(old, section.rstrip("\n"), 1)
     else:
-        m = STATUS_UPDATED_RE.search(body)
-        at = m.start() if m else len(body)
-        body = body[:at].rstrip("\n") + "\n\n" + section.rstrip("\n") + "\n\n" + body[at:].lstrip("\n")
-    return body.rstrip("\n") + "\n"
+        m = STATUS_UPDATED_RE.search(inner)
+        at = m.start() if m else len(inner)
+        inner = inner[:at].rstrip("\n") + "\n\n" + section.rstrip("\n") + "\n\n" + inner[at:].lstrip("\n")
+    return body[:s] + inner.rstrip("\n") + "\n" + STATUS_END_MARKER + body[e:]
 
 
 def publish_status(gh, cfg, snapshot, body, log):
-    """Edit the status issue body when its content changed. Returns the number of failed writes (0 or 1)."""
+    """Replace the status block of the status issue body when its content changed; text outside the block
+    is kept. A body without a single block is not written (fail closed). Returns failed writes (0 or 1)."""
     repo, number = status_target(cfg).split("#")
-    if status_same(snapshot.get("status_issue", {}).get("body", ""), body):
+    current = snapshot.get("status_issue", {}).get("body", "")
+    reason = status_unowned(current)
+    if reason:
+        log("status_body_unowned", target=status_target(cfg), reason=reason)
+        return 1
+    if status_same(status_block(current), body):
         log("status_unchanged", target=status_target(cfg))
         return 0
+    body = splice_status(current, body)
     try:
         gh.write("PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": body})
     except (GhError, PermissionError) as e:
@@ -2231,7 +2284,11 @@ def notify_failure(paths, cfg, args, gh=None, now=None):
             write_json(paths.failure_file, {"key": key, "at": now, "section": section})
             log("failure_alert_skipped", reason="the status issue already has this key", failures=args.failures)
             return 0
-        gh.write("PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": set_failure_section(current, section)})
+        new_body = set_failure_section(current, section)
+        if new_body is None:
+            log("failure_alert_failed", error=f"status_body_unowned: {status_unowned(current)}", failures=args.failures)
+            return 0
+        gh.write("PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": new_body})
     except (GhError, PermissionError) as e:
         log("failure_alert_failed", error=str(e), failures=args.failures)
         return 0
