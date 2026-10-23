@@ -46,7 +46,7 @@ jobs:
 - Keep `repo-guard`, `direct-push-watch` and `drift-check` out of the list. `verify-gate` is red
   until `vws-verify` approves, so it would produce a rework marker on every PR.
 - The `needs-human` label must exist. Add it with
-  `gh label create needs-human --color b60205 --description "CI rework stopped after 3 attempts in the head chain; remove it to allow 3 more" --force`.
+  `gh label create needs-human --color b60205 --description "CI rework stopped after 3 attempts in the head chain (vws-deploy#412); remove it to allow 3 more" --force`.
 
 A third failing workflow can replace the pending run in the concurrency group. That is safe: each
 run reads every failed workflow on the SHA, so the surviving run still records all of them.
