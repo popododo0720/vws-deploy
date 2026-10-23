@@ -193,12 +193,30 @@ def parse_heads(args, repos):
     return out
 
 
+MAX_PR_PAGES = 20  # 2000 open PRs; a longer list is reported, not read forever
+
+
 def open_pr_heads(owner, repo, api=None):
-    """[(label, head sha)] of the open PRs, or None when the list cannot be read (reported, never skipped)."""
-    d = (api or gh)(f"repos/{owner}/{repo}/pulls?state=open&per_page=100")
-    if not isinstance(d, list):
-        return None
-    return [(f"#{p['number']}", p["head"]["sha"]) for p in d]
+    """[(label, head sha)] of every open PR, page by page, or None when the list cannot be read in full.
+
+    None is reported as drift, never skipped: an error on any page, an entry without a number and a 40-hex
+    head SHA, or more than MAX_PR_PAGES full pages.
+    """
+    api = api or gh
+    out = []
+    for page in range(1, MAX_PR_PAGES + 1):
+        d = api(f"repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}")
+        if not isinstance(d, list):
+            return None
+        for p in d:
+            sha = _map(_map(p).get("head")).get("sha")
+            num = _map(p).get("number")
+            if not isinstance(num, int) or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                return None
+            out.append((f"#{num}", sha))
+        if len(d) < 100:
+            return out
+    return None
 
 
 def content_at(owner, repo, path, ref):
