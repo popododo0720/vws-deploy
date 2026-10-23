@@ -169,7 +169,7 @@ class Exhaustion(unittest.TestCase):
 
     def test_posts_one_marker_and_blocks(self):
         r = run(snapshot(self.exhausted()))
-        self.assertEqual(kinds(r), [("infra_status", "vws-deploy#339"), ("add_label", "vws-iam#1")])
+        self.assertEqual(kinds(r), [("infra_status", "vws-deploy#415"), ("add_label", "vws-iam#1")])
         a = r["actions"][0]
         lines = a["body"].split("\n")
         self.assertEqual(lines[0], orch.FAILURE_MARKER)
@@ -255,10 +255,10 @@ class ApplyTicks(Env):
                         "body": f"[deepseek-dev] Failed for {self.URL}{2 * i + 1}: " + RATE_LIMIT_429.split(": ", 1)[1]})
         return out
 
-    def with_history(self, comments, status=()):
+    def with_history(self, comments, status="<!-- vws-orchestrate:status -->\n"):
         r = routes()
         r[f"{O}/vws-iam/issues/1/comments"] = {"body": comments}
-        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": list(status)}
+        r[f"{O}/vws-deploy/issues/415"] = {"body": {"number": 415, "state": "open", "body": status}}
         self.set_routes(r)
 
     def test_retry_is_a_dispatch_comment_under_the_write_cap(self):
@@ -282,16 +282,19 @@ class ApplyTicks(Env):
         self.with_history(self.history(4, 600))
         self.tick(ORCHESTRATE_MODE="apply")
         w = [(c["method"], c["path"]) for c in self.writes()]
-        self.assertIn(("POST", f"{O}/vws-deploy/issues/339/comments"), w[:2])
         self.assertIn(("POST", f"{O}/vws-iam/issues/1/labels"), w)
         self.assertNotIn(("POST", f"{O}/vws-iam/issues/1/comments"), w, "no dispatch after exhaustion")
-        marker = [json.loads(c["stdin"])["body"] for c in self.writes()
-                  if c["path"] == f"{O}/vws-deploy/issues/339/comments" and "infra-retries" in c["stdin"]]
-        self.assertEqual(len(marker), 1)
-        # Rerun: the marker is on the status thread now, so it is not posted again.
-        self.with_history(self.history(4, 600), status=[{"id": 77, "created_at": iso_ago(60), "body": marker[0]}])
+        self.assertFalse([c for c in self.writes() if orch.FAILURE_MARKER in c["stdin"]], "no status comment (vws-deploy#416)")
+        body = self.status_edits()
+        self.assertEqual(len(body), 1)
+        self.assertIn("vws-iam#1: infra retries exhausted", body[0])
+        # Rerun with the state gone: the entry is in the status issue body now, so it is not added again.
+        os.remove(self.paths.state_file)
+        self.with_history(self.history(4, 600), status=body[0])
         os.remove(self.calls_file)
+        seen = len(self.log())
         self.tick(ORCHESTRATE_MODE="apply")
+        self.assertFalse([e for e in self.log()[seen:] if e["event"] == "status_event"])
         self.assertFalse(any("infra-retries" in c["stdin"] for c in self.writes()))
 
 

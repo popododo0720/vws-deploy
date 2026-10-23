@@ -1,7 +1,8 @@
 """Anomaly alert tests for .github/metrics/metrics.py (vws-deploy#345): a normal day raises no alert,
 each anomaly type (stall, a rising failure or grok-escalation rate, a token spike) raises one at its
-threshold constant and not just below it, and the alert is one marker comment on the status thread,
-posted at most once, in apply mode only.
+threshold constant and not just below it, and the alert is one marker comment on the status issue
+(vws-deploy#415, ORCHESTRATE_STATUS_ISSUE; vws-deploy#416), posted at most once, in apply mode only,
+plus a best-effort POST to the alert webhook when VWS_ALERT_WEBHOOK_URL and VWS_ALERT_WEBHOOK_KEY are set.
 Run: python3 -m unittest discover -s tests/metrics"""
 import copy
 import datetime as dt
@@ -164,13 +165,13 @@ class Delivery(Env):
     def test_normal_day_is_silent(self):
         self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply"), 0)
         self.assertEqual(self.comments(), [])
-        self.assertNotIn(f"{D}/issues/339/comments", [c["path"].split("?")[0] for c in self.calls()])
+        self.assertNotIn(f"{D}/issues/415/comments", [c["path"].split("?")[0] for c in self.calls()])
 
     def test_anomaly_posts_one_marker_comment_after_publishing(self):
         with mock.patch.object(metrics, "anomalies", return_value=ALERT):
             self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply"), 0)
             w = [(c["method"], c["path"]) for c in self.writes()]
-            self.assertEqual(w[-1], ("POST", f"{D}/issues/339/comments"))
+            self.assertEqual(w[-1], ("POST", f"{D}/issues/415/comments"))
             self.assertEqual(w[:3][2][0], "PATCH", "the data is on the branch before the alert")
             body = json.loads(self.comments()[0]["stdin"])["body"]
             self.assertEqual(body.splitlines()[0], metrics.ALERT_MARKER)
@@ -186,7 +187,7 @@ class Delivery(Env):
             body = json.loads(self.comments()[0]["stdin"])["body"]
         os.remove(os.path.join(self.state, "metrics-state.json"))
         r = routes()
-        r[f"{D}/issues/339/comments?per_page=100"] = {"body": [{"body": body}]}
+        r[f"{D}/issues/415/comments?per_page=100"] = {"body": [{"body": body}]}
         self.set_routes(r)
         with mock.patch.object(metrics, "anomalies", return_value=ALERT):
             self.assertEqual(self.run_m("--recompute", DAY, METRICS_MODE="apply"), 0)
@@ -201,22 +202,25 @@ class Delivery(Env):
         with open(os.path.join(self.state, "metrics", "dry-run", "alerts", f"{DAY}.md")) as f:
             self.assertEqual(f.readline().strip(), metrics.ALERT_MARKER)
 
-    def test_status_pr_comes_from_config(self):
+    def test_status_issue_comes_from_config(self):
         with mock.patch.object(metrics, "anomalies", return_value=ALERT):
-            self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply", ORCHESTRATE_STATUS_PR="400"), 0)
+            self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply", ORCHESTRATE_STATUS_ISSUE="400"), 0)
         self.assertEqual(self.comments()[0]["path"], f"{D}/issues/400/comments")
 
-    def test_only_an_alert_comment_on_the_status_thread_may_be_posted(self):
-        gh = metrics.MetricsGh(status_pr=339)
-        for path, body in ((f"{D}/issues/339/comments", "hello"), (f"{D}/issues/12/comments", metrics.ALERT_MARKER + "\nx"),
-                           ("repos/popododo0720/vws-iam/issues/339/comments", metrics.ALERT_MARKER + "\nx")):
+    def test_only_an_alert_comment_on_the_status_issue_may_be_posted(self):
+        gh = metrics.MetricsGh(status_issue=415)
+        for path, body in ((f"{D}/issues/415/comments", "hello"), (f"{D}/issues/12/comments", metrics.ALERT_MARKER + "\nx"),
+                           (f"{D}/issues/339/comments", metrics.ALERT_MARKER + "\nx"),
+                           ("repos/popododo0720/vws-iam/issues/415/comments", metrics.ALERT_MARKER + "\nx")):
             with self.subTest(path=path, body=body), self.assertRaises(PermissionError):
                 gh.write("POST", path, {"body": body})
+        with self.assertRaises(PermissionError):
+            metrics.MetricsGh().write("POST", f"{D}/issues/415/comments", {"body": metrics.ALERT_MARKER + "\nx"})
         self.assertEqual(self.calls(), [])
 
     def test_a_journaled_alert_is_posted_even_if_the_anomaly_is_gone(self):
         r = routes()
-        r[f"POST {D}/issues/339/comments"] = {"status": 502, "body": {"message": "Bad Gateway"}}
+        r[f"POST {D}/issues/415/comments"] = {"status": 502, "body": {"message": "Bad Gateway"}}
         self.set_routes(r)
         with mock.patch.object(metrics, "anomalies", return_value=ALERT):
             self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply"), metrics.FAIL_EXIT)
@@ -247,7 +251,7 @@ class Delivery(Env):
 
     def test_failed_alert_fails_the_run_and_retries_next_tick(self):
         r = routes()
-        r[f"POST {D}/issues/339/comments"] = {"status": 502, "body": {"message": "Bad Gateway"}}
+        r[f"POST {D}/issues/415/comments"] = {"status": 502, "body": {"message": "Bad Gateway"}}
         self.set_routes(r)
         with mock.patch.object(metrics, "anomalies", return_value=ALERT):
             self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply"), metrics.FAIL_EXIT)
