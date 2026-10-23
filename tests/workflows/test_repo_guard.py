@@ -1,4 +1,6 @@
-"""Behavior tests for .github/workflows/repo-guard.yml run scripts, with gh and sleep stubbed.
+"""Behavior tests for the shared repo-guard jobs, with gh and sleep stubbed.
+
+The jobs live in .github/workflows/repo-guard-reusable.yml (vws-deploy#402); repo-guard.yml is a caller.
 
 Run: python3 -m unittest discover -s tests/workflows
 """
@@ -11,8 +13,9 @@ import unittest
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-WF = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard.yml")))
-ON = WF.get("on", WF.get(True))  # PyYAML reads the "on" key as True
+WF = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard-reusable.yml")))
+CALLER = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard.yml")))
+ON = CALLER.get("on", CALLER.get(True))  # PyYAML reads the "on" key as True
 
 
 def step(job, name):
@@ -81,6 +84,48 @@ esac"""
             self.assertIn("github.event_name == 'pull_request'", WF["jobs"][job]["if"])
         self.assertIn("issue_comment", WF["jobs"]["verify-rerun"]["if"])
         self.assertEqual(WF["jobs"]["verify-rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
+
+    def test_reruns_the_called_gate_job_not_the_shim(self):
+        # The caller's bare "verify-gate" shim only reads the result of "gate / verify-gate"; re-running the
+        # shim alone would replay the old result, so the called job is the one re-run.
+        rc, calls, out = Stub(self, self.GH % 0).run(self.script(), self.ENV)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('.name == "gate / verify-gate"', calls)
+
+
+class Reusable(unittest.TestCase):
+    """The callee runs only on workflow_call, picks one job per call and never sees pull_request_target."""
+
+    def test_only_workflow_call(self):
+        on = WF.get("on", WF.get(True))
+        self.assertEqual(list(on), ["workflow_call"])
+        self.assertEqual(on["workflow_call"]["inputs"]["job"]["type"], "string")
+        self.assertTrue(on["workflow_call"]["inputs"]["job"]["required"])
+        self.assertNotIn("secrets", on["workflow_call"])
+        self.assertEqual(WF["permissions"], {})
+
+    def test_each_job_runs_only_for_its_input(self):
+        for job in ("pr-hygiene", "verify-gate", "verify-reset", "verify-rerun"):
+            self.assertIn("inputs.job == '%s'" % job, WF["jobs"][job]["if"])
+
+    def test_no_pull_request_target(self):
+        for name in ("repo-guard-reusable.yml", "repo-guard.yml"):
+            self.assertNotIn("pull_request_target", open(os.path.join(ROOT, ".github", "workflows", name)).read())
+
+    def test_gate_jobs_report_passed_last(self):
+        for job in ("pr-hygiene", "verify-gate"):
+            j = WF["jobs"][job]
+            self.assertEqual(j["outputs"], {"passed": "${{ steps.passed.outputs.passed }}"})
+            last = j["steps"][-1]
+            self.assertEqual(last["id"], "passed")
+            self.assertEqual(last["run"].strip(), 'echo "passed=%s" >>"$GITHUB_OUTPUT"' % job)
+        out = WF.get("on", WF.get(True))["workflow_call"]["outputs"]["passed"]["value"]
+        self.assertEqual(out, "${{ jobs.pr-hygiene.outputs.passed || jobs.verify-gate.outputs.passed }}")
+
+    def test_verify_gate_runs_the_base_commit_guard(self):
+        co = WF["jobs"]["verify-gate"]["steps"][0]
+        self.assertTrue(co["uses"].startswith("actions/checkout@"))
+        self.assertEqual(co["with"]["ref"], "${{ github.event.pull_request.base.sha }}")
 
     def script(self):
         return step("verify-rerun", "Re-run verify-gate for the PR head")["run"]
