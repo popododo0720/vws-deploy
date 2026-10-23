@@ -1,0 +1,27 @@
+# Copy this file to .github/workflows/ci-fail.yml in each vws-* repo (vws-deploy#412).
+# The workflow names in `on.workflow_run.workflows` and in `with.workflows` must be the same
+# list. Keep out repo-guard, direct-push-watch and drift-check: they are not PR CI, and
+# verify-gate is red until vws-verify approves.
+name: ci-fail
+
+on:
+  workflow_run:
+    workflows: [ci, english]
+    types: [completed]
+
+concurrency:
+  # Two workflows failing on one SHA queue instead of posting twice. A third replaces the
+  # pending run; its marker still lists every failed run on the SHA because the script reads them.
+  group: vws-ci-fail-${{ github.repository }}-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  marker:
+    uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@main
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    with:
+      workflows: ci,english

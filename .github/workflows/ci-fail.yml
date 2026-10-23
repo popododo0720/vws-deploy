@@ -1,0 +1,48 @@
+# Reusable CI-failure marker workflow (vws-deploy#412).
+#
+# A vws-* repo calls this from a thin workflow_run caller (see .github/ci-fail/caller.yml and
+# docs/ci-fail.md). The called workflow runs with the caller's GITHUB_TOKEN, so it can read the
+# caller's runs and write one comment on the caller's PR. The marker script lives in this public
+# repository and is checked out at main, the same ref the caller pins.
+name: ci-fail
+
+on:
+  workflow_call:
+    inputs:
+      workflows:
+        description: "Comma list of CI workflow names on PRs; keep it equal to on.workflow_run.workflows in the caller."
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  marker:
+    # A push, main, or a non-PR run never reaches the script. The caller repeats this filter so a
+    # stray trigger costs no runner.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_branch != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the marker script
+        uses: actions/checkout@v4
+        with:
+          repository: popododo0720/vws-deploy
+          ref: main
+          path: vws-deploy
+          persist-credentials: false
+          sparse-checkout: .github/ci-fail
+
+      - name: Update the marker comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CI_FAIL_WORKFLOWS: ${{ inputs.workflows }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python3 vws-deploy/.github/ci-fail/ci_fail.py run

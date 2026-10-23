@@ -21,3 +21,6 @@
 - name: priority/blocker
   color: "d73a4a"
   description: "The factory orchestrator dispatches this task before all other queued tasks (vws-deploy#333)"
+- name: needs-human
+  color: "b60205"
+  description: "CI rework stopped after 3 attempts in the head chain (vws-deploy#412); remove it to allow 3 more"
