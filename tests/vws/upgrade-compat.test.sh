@@ -8,6 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/installer_lib.sh"
 
 FIXTURE="${VWS_TEST_ROOT}/testdata/upgrade/0.1.0/vwscluster.json"
+INPUT="${VWS_TEST_ROOT}/testdata/upgrade/0.1.0/vwscluster.yaml"
 
 # fixture OUT: the record as the cluster returns it. apiVersion is FILLED_BY_TEST in the fixture
 # because R18 keeps the API group only in charts/vws/crds/vwsclusters.yaml.
@@ -15,10 +16,10 @@ fixture() {
   jq --arg v "${GROUP}/v1alpha1" '.apiVersion = $v' "$FIXTURE" >"$1"
 }
 
-# behind_release IN OUT: the record while the release is behind it. Its status.observedGeneration
-# is older than metadata.generation, the state vws apply upgrades from.
+# behind_release IN OUT: the record after one spec change, so metadata.generation is newer than
+# status.observedGeneration, the state vws apply upgrades from.
 behind_release() {
-  jq '.status.observedGeneration = 1' "$1" >"$2"
+  jq '.metadata.generation = 2' "$1" >"$2"
 }
 
 # rendered_hash VALUES_FILE: the applied hash the current chart gives those values.
@@ -32,14 +33,28 @@ status_hash() {
   grep $'^kubectl\tpatch' "$VWS_FAKE_LOG" | grep -o '{"status".*}' | jq -r '.status.appliedValuesHash'
 }
 
-# The fields vws apply reads outside the spec keep their names, types and values.
-if jq -e '(.metadata.name == "vws") and (.metadata.generation == 2) and
-          (.status.observedGeneration == 2) and
+# The fields vws apply reads outside the spec keep their names, types and values, and the record
+# keeps the full status 0.1.0 wrote.
+if jq -e '(.metadata.name == "vws") and (.metadata.generation == 1) and
+          (.status.observedGeneration == 1) and
           ((.status.appliedValuesHash | type) == "string") and
-          (.status.appliedValuesHash | test("^[0-9a-f]{64}$"))' "$FIXTURE" >/dev/null; then
-  ok "the fixture keeps the identity and status fields vws apply reads"
+          (.status.appliedValuesHash | test("^[0-9a-f]{64}$")) and
+          (.status.specHistory == []) and
+          (.status.conditions == [{type: "Applied", status: "True", reason: "Applied", message: "vws apply"}])' "$FIXTURE" >/dev/null; then
+  ok "the fixture keeps the identity and full status vws apply wrote"
 else
   bad "fixture shape" "$(jq -c '{metadata, status}' "$FIXTURE")"
+fi
+
+# The record was made from the committed input CR: the two specs are the same.
+if python3 - "$FIXTURE" "$INPUT" <<'PY'
+import json, sys, yaml
+sys.exit(0 if json.load(open(sys.argv[1]))["spec"] == yaml.safe_load(open(sys.argv[2]))["spec"] else 1)
+PY
+then
+  ok "the record keeps the spec of the input CR"
+else
+  bad "input CR" "$(jq -c '.spec' "$FIXTURE")"
 fi
 
 # The record decodes: every spec field 0.1.0 wrote still reaches the values.

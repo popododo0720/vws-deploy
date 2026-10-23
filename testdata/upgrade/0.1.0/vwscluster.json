@@ -4,7 +4,7 @@
   "metadata": {
     "name": "vws",
     "namespace": "vws",
-    "generation": 2
+    "generation": 1
   },
   "spec": {
     "profile": "single-node",
@@ -31,7 +31,16 @@
     }
   },
   "status": {
-    "observedGeneration": 2,
-    "appliedValuesHash": "3883248714bfe18aac81d35c30824400d21feeeeb0cc92e209f29bbf0ddff3b1"
+    "observedGeneration": 1,
+    "appliedValuesHash": "3883248714bfe18aac81d35c30824400d21feeeeb0cc92e209f29bbf0ddff3b1",
+    "specHistory": [],
+    "conditions": [
+      {
+        "type": "Applied",
+        "status": "True",
+        "reason": "Applied",
+        "message": "vws apply"
+      }
+    ]
   }
 }
