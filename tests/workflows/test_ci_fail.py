@@ -534,6 +534,7 @@ class Workflows(unittest.TestCase):
         self.assertEqual(checkout["with"]["ref"], "main")
         self.assertEqual(checkout["with"]["path"], "vws-deploy")
         self.assertEqual(checkout["with"]["persist-credentials"], False)
+        self.assertEqual(checkout["with"]["token"], "")
         run = next(s for s in job["steps"] if s.get("name") == "Update the marker comment")
         self.assertIn("ci_fail.py run", run["run"])
         self.assertEqual(wf["permissions"], {"actions": "read", "contents": "read",
