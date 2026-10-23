@@ -48,7 +48,8 @@ GREEN = [run_(1, "test"), run_(2, "lint"), run_(3, "pr-hygiene"), run_(4, "verif
 class Shape(unittest.TestCase):
     def test_triggers(self):
         on = load().get("on", load().get(True))
-        self.assertEqual(on["workflow_run"], {"workflows": ["ci", "repo-guard"], "types": ["completed"]})
+        # Every PR workflow in the vws-* repos: vws-console names its CI "CI", vws-conformance adds english.
+        self.assertEqual(on["workflow_run"], {"workflows": ["ci", "CI", "english", "repo-guard"], "types": ["completed"]})
         self.assertEqual(sorted(on["pull_request"]["types"]), ["ready_for_review", "synchronize"])
         self.assertEqual(sorted(on), ["pull_request", "workflow_run"])
 
