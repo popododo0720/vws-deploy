@@ -100,6 +100,7 @@ class RoundCountTest(unittest.TestCase):
             ["check", *self.common(7, 8), "--cap", "0"],
             ["record", *self.common(7, 8), "--sha", "ZZZZZZZ"],
             ["record", *self.common(7, 8)],
+            ["check-and-record", *self.common(7, 8), "--sha", "xyz"],
             ["check", *self.common(7, 8), "--bogus", "1"],
             ["nope"],
         ]
@@ -107,6 +108,47 @@ class RoundCountTest(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(self.run_script(*args).returncode, 2)
         self.assertFalse(pathlib.Path(self.out, "rounds.tsv").exists())
+
+    def check_and_record(self, issue, pr, sha):
+        return self.run_script("check-and-record", *self.common(issue, pr), "--sha", sha)
+
+    def index_lines(self):
+        path = pathlib.Path(self.out, "rounds.tsv")
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_check_and_record_refuses_at_the_cap_without_recording(self):
+        for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
+            self.assertEqual(self.check_and_record(50, 51, sha).returncode, 0)
+        res = self.check_and_record(50, 52, "ddddddd")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("already had 3 Codex rounds (max 3)", res.stderr)
+        self.assertEqual(len(self.index_lines()), 3)
+        self.assertTrue(pathlib.Path(self.out, "rounds.tsv.lock").exists())
+
+    def test_check_and_record_same_head_is_a_retry(self):
+        self.assertEqual(self.check_and_record(60, 61, "aaaaaaa").returncode, 0)
+        res = self.check_and_record(60, 61, "aaaaaaa")
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("already recorded", res.stdout)
+        self.assertEqual(len(self.index_lines()), 1)
+
+    def test_parallel_check_and_record_never_passes_the_cap(self):
+        n = 12
+        procs = [
+            subprocess.Popen(
+                [str(SCRIPT), "check-and-record", *self.common(70, 71 + i % 2), "--sha", f"{i:07x}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for i in range(n)
+        ]
+        codes = [p.wait(timeout=60) for p in procs]
+        for p in procs:
+            p.stdout.close()
+            p.stderr.close()
+        self.assertEqual(sorted(codes), [0] * 3 + [1] * (n - 3))
+        lines = self.index_lines()
+        self.assertEqual(len(lines), 3, lines)
+        self.assertEqual(self.run_script("count", *self.common(70, 71)).stdout.strip(), "3")
 
     def test_issue_from_body(self):
         res = self.run_script("issue-from-body", stdin="Fix the thing.\n\nPart of #403\n")
