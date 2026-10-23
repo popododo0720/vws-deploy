@@ -1,0 +1,55 @@
+# verify-rerun: a PR comment re-runs the gate job of the PR head's pull_request run.
+# One of the four shared repo-guard jobs (vws-deploy#402), one job per file: GitHub validates the permissions
+# of every job in a called file before any if:, so a file holds only jobs its caller job may grant.
+# Every vws-* repo calls it from a short .github/workflows/repo-guard.yml pinned by full commit SHA;
+# vws-deploy calls it from the same commit. docs/design/repo-guard-reusable.md has the trust model.
+# The github, vars and token contexts are the caller's, with at most the caller job's permissions, and
+# no secrets are passed.
+name: repo-guard-verify-rerun
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # A comment event runs on the default branch, and its check would not attach to the PR head. So this job
+  # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
+  # the comments again. It checks out nothing and runs no PR code; it may only re-run jobs (actions: write).
+  # The job to re-run is the called one, "gate / verify-gate" ("caller job / called job"). The caller's bare
+  # "verify-gate" shim depends on it, so GitHub re-runs the shim after it; re-running only the shim would
+  # replay the old result.
+  verify-rerun:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Re-run verify-gate for the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
+          # Several PRs can share a head SHA: prefer the newest run linked to this PR number. Fork PRs list no
+          # pull_requests on the run, so the newest run for the head is the fallback.
+          run=$(gh api "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=100" \
+            --jq "([.workflow_runs[] | select(any(.pull_requests[]?; .number == ${NUMBER}))][0].id) // .workflow_runs[0].id // empty")
+          if [[ -z $run ]]; then echo "no pull_request run for ${head} yet"; exit 0; fi
+          job=$(gh api "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "gate / verify-gate") | .id')
+          if [[ -z $job ]]; then echo "run ${run} has no verify-gate job"; exit 0; fi
+          status=
+          # A job that is still running cannot be re-run yet: wait for it (up to 15 minutes), then re-run.
+          # Giving up fails this job, so a changed verdict is never silently left unchecked.
+          for _ in $(seq 1 30); do
+            status=$(gh api "repos/${REPO}/actions/jobs/${job}" --jq '.status')
+            if [[ $status == completed ]] && gh api -X POST "repos/${REPO}/actions/jobs/${job}/rerun" >/dev/null; then
+              echo "verify-gate job ${job} re-run"; exit 0
+            fi
+            sleep 30
+          done
+          echo "verify-gate job ${job} could not be re-run (status ${status})" >&2
+          exit 1
