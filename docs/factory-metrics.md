@@ -4,8 +4,8 @@ A deterministic script on the shared box writes one JSON file of factory metrics
 never calls an LLM, never writes `main`, and never opens a PR. Design: vws-deploy#345.
 
 Nothing polls the metrics. On a normal day the script is silent and only appends to the
-`factory-metrics` branch. On an abnormal day it posts one alert comment to the status thread, which
-reaches tmp (see [Alerts](#alerts)).
+`factory-metrics` branch. On an abnormal day it posts one alert comment on the status issue (vws-deploy#415)
+and, when configured, POSTs a short JSON to the alert webhook (see [Alerts](#alerts)).
 
 Code: `.github/metrics/metrics.py` (Python 3 stdlib). It imports the orchestrator
 (`.github/orchestrate/orchestrate.py`) for the gh wrapper, log format, config file and comment parsers.
@@ -57,7 +57,7 @@ are `.github/drift/repos.tsv` plus `ORCHESTRATE_EXTRA_REPOS`, and archived repos
 | `orchestrator` | ticks, failed ticks, `apply_failed`, `rate_low`, failure alerts and gh read/304/write totals from the orchestrator log. `null` when the log does not reach back to the start of D (`source_gaps`) |
 | `stalls` | open tasks (labelled `ready`, `deepseek`, `grok` or `in-review`, not `blocked`) and open non-draft PRs on main without `verify-approved` whose `updated_at` is at least `STALL_HOURS` before `snapshot_at`: `[{target, idle_hours}]`. Snapshot only, like `queue_depth` |
 | `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0 |
-| `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the status thread). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (today only the Rule C swap notice `<!-- orchestrate:swap -->`). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input; `null` and a `source_gaps` entry when absent |
+| `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the verify-wake thread, `ORCHESTRATE_WAKE_THREAD`). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (today only the Rule C swap notice `<!-- orchestrate:swap -->`). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input; `null` and a `source_gaps` entry when absent |
 | `alerts` | the anomalies found for D (empty on a normal day) |
 | `queue_depth` | open items per label (`ready`, `deepseek`, `grok`, `blocked`, `in-review`, `priority/blocker`) and `verify_backlog` (open non-draft PRs on main without `verify-approved`). A live snapshot taken when the day is computed (`snapshot_at`), so only for yesterday. A back-filled day has `null` |
 
@@ -128,9 +128,8 @@ this holds for every 7/28-day total, including a window with no daily file. When
 the window have a `wakes` block (days written before vws-deploy#400 have none), the verify-wake,
 grok-dispatch and rework totals are followed by `(N days with data)`.
 
-**Delivery.** No webhook, no secret, no extra channel: in apply mode, after the day is on the branch,
-the script posts one comment on the status thread (`ORCHESTRATE_STATUS_PR`, draft PR vws-deploy#339)
-whose first line is:
+**Delivery.** In apply mode, after the day is on the branch, the script posts one comment on the
+status issue (`ORCHESTRATE_STATUS_ISSUE`, default vws-deploy#415; vws-deploy#416) whose first line is:
 
 ```
 <!-- vws-orchestrate:metrics-alert -->
@@ -142,12 +141,31 @@ the day and the alert kinds). Before any branch write the alert is journaled in 
 next tick posts the same journaled alert, even if a fresh computation no longer sees the anomaly. Posted keys are kept
 in `alerted` and searched in the thread before posting, so a re-run, a timed-out POST that landed, or
 `--recompute` never posts the same alert twice. The gh wrapper refuses any other
-comment: another issue or repo, or a body that does not start with the marker.
+comment: another issue or repo, or a body that does not start with the marker. Comments on the status
+issue are metrics alerts only; the orchestrator edits its body and posts no comments there.
 
-**tmp receives it** through a GitHub-trigger routine on vws-deploy#339 that matches comments
-containing `<!-- vws-orchestrate:metrics-alert -->`. That routine lives in tmp's own setup, not in
-this repo; nothing here polls. In dry-run the alert is only written to
-`metrics/dry-run/alerts/YYYY-MM-DD.md` and logged as `metrics_alert_planned`.
+**Alert webhook (vws-deploy#416).** Right after the alert comment is posted, the script POSTs
+
+```json
+{"kind": "metrics-alert", "summary": "1 anomalies for the KST day 2026-10-20: stall", "comment_url": "https://github.com/..."}
+```
+
+to `VWS_ALERT_WEBHOOK_URL` with the header `Authorization: Bearer <VWS_ALERT_WEBHOOK_KEY>` (a Cursor
+automation webhook key; a value that already starts with `Bearer ` is sent as is). Rules:
+- both values come from the **process environment** of the loop only, never from the env file, and
+  are never logged or printed; if either is unset the POST is skipped (`metrics_webhook_skipped`) and
+  the run still succeeds;
+- `https://` only (plain `http://` only to `127.0.0.1`/`localhost`, for tests); redirects are not
+  followed, so the key is never sent to another URL;
+- 10 s timeout per try, at most 3 tries (1 s, then 2 s backoff) on a network error, 429 or 5xx; no
+  retry on another 4xx;
+- a failed POST is logged as `metrics_webhook_failed` with the HTTP status or the error class only,
+  and never fails the run; it is not retried on a later run (the comment on the status issue is the
+  durable record);
+- no alert, no POST; dry-run never POSTs.
+
+In dry-run the alert is only written to `metrics/dry-run/alerts/YYYY-MM-DD.md` and logged as
+`metrics_alert_planned`.
 
 ## Reads, cache and limits
 
@@ -158,10 +176,10 @@ this repo; nothing here polls. In dry-run the alert is only written to
 - **Read budget:** `METRICS_MAX_GETS` (1500) reads per run; over it the run fails (exit 4) without writing.
 - **Allowlist:**
   - reads of pulls, issues, comments, issue events, PR commits, check runs and Actions runs in
-    `vws-*` repos, plus the `factory-metrics` ref, trees, blobs and commits and the status thread's
+    `vws-*` repos, plus the `factory-metrics` ref, trees, blobs and commits and the status issue's
     comments in vws-deploy;
   - writes only `POST git/trees`, `POST git/commits`, `PATCH git/refs/heads/factory-metrics`
-    with `force: false`, and the alert comment on the status thread;
+    with `force: false`, and the alert comment on the status issue;
   - `POST git/refs` only under `--init` and only for `refs/heads/factory-metrics`.
 
 ## Commands and config
@@ -182,8 +200,11 @@ Env file keys (`/home/box/.config/vws-orchestrate/env`):
 - `METRICS_MAX_GETS=1500`;
 - `METRICS_TOKEN_DIR` (optional token-usage input).
 
-`ORCHESTRATE_RATE_FLOOR`, `ORCHESTRATE_EXTRA_REPOS`, `ORCHESTRATE_STATUS_PR`, `DEEPSEEK_TIMEOUT_HOURS`
+`ORCHESTRATE_RATE_FLOOR`, `ORCHESTRATE_EXTRA_REPOS`, `ORCHESTRATE_STATUS_ISSUE`, `DEEPSEEK_TIMEOUT_HOURS`
 and the `STOP` file are shared with the orchestrator.
+
+Process environment only (export it where `orchestrate-ensure.sh` starts the loop, then restart the
+loop; not the env file): `VWS_ALERT_WEBHOOK_URL`, `VWS_ALERT_WEBHOOK_KEY`.
 
 | path under `/home/box/.local/state/vws-orchestrate/` | content |
 |---|---|
@@ -204,7 +225,8 @@ Exit status: 0 done, skipped or not due; 2 usage or config; 4 failed (GitHub, bu
 3. Once only, with the approval recorded on #345: set `METRICS_MODE=apply`, then run
    `python3 "$M" --init`.
 4. Leave it on apply. The next due day is published by the loop.
-5. In tmp's setup: a GitHub-trigger routine on vws-deploy#339 for comments with the alert marker.
+5. Alerts arrive as comments on the status issue (vws-deploy#415) and, with `VWS_ALERT_WEBHOOK_URL` and
+   `VWS_ALERT_WEBHOOK_KEY` in the loop's environment, at the alert webhook.
 
 ## Roll back
 

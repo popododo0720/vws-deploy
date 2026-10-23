@@ -4,11 +4,11 @@ A deterministic script that runs four routine factory steps on GitHub state. It 
 
 | rule | what it does |
 |---|---|
-| A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the status thread, draft PR vws-deploy#339 (`ORCHESTRATE_STATUS_PR`; PR comments go through the issues comments API). The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
+| A, verify wake | When at least 5 open, non-draft PRs on `main` lack `verify-approved` and their CI is not failing, it posts **one** comment on the verify-wake thread (`ORCHESTRATE_WAKE_THREAD`, a vws-deploy issue or PR number; unset means no wake). It never posts on the status issue. PR comments go through the issues comments API. The comment's first line is `<!-- vws-orchestrate:verify-wake -->`. Each pending set (sorted `repo#number@head_sha`, sha256) is posted only once. After a rising edge the next comment waits at least 1h; while the count stays at or above the threshold, at least 6h. |
 | B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | B2, verify rework (vws-deploy#373) | A DeepSeek PR (an open PR labeled `ready`+`deepseek`, or the open PR a `ready`+`deepseek` issue's Done report named) whose newest vws-verify verdict on its current head is a FAIL (a `CHANGES_REQUESTED` review by `vws-verify[bot]`, or a `# repo#N @ <head>` / `Result: FAIL` comment) gets `@deepseek-dev please rework this PR ...` on the PR, with the verdict quoted, through the same queue, cap and `ORCHESTRATE_DISPATCH` switch, ahead of new tasks. A `<!-- orchestrate:rework head=<sha> ... -->` marker, or any dispatch after the verdict, means that head is done: one rework per head. Conflict-only verdicts are skipped for an eggbot rebuild (note `rework_skipped`). Each rework, and a pending FAIL, counts as one failure toward the grok swap below. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. A Failed report that shows a provider error is an infra failure instead: never counted, re-mentioned after 5 minutes, at most 3 times. See "Infra retries" below. |
-| D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and posts one failure comment on #339. See "Rule D" below. |
+| D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and adds one entry to the status issue body. See "Rule D" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
@@ -70,7 +70,7 @@ A PR is eligible only when all of these hold:
 |---|---|
 | not a draft, base `main` | `draft`, `base_not_main` (stacked PRs never merge) |
 | label `verify-approved` | `no_verify_approved` |
-| not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status thread | `opted_out` |
+| not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status issue or the verify-wake thread | `opted_out` |
 | the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
 | a `verify-gate` check run from GitHub Actions (app id 15368) on the **current head**, and every such run is success, even when `main`'s protection does not require it | `verify_gate_missing`, `verify_gate_pending`, `verify_gate_<conclusion>` |
 | every required check of `main` (classic protection plus rulesets, bound to its app id) is success on the head | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
@@ -116,13 +116,12 @@ was cancelled; `pending` while any is running; `none` when there is no run yet.
 A different main sha alone never releases a lock, because `branches/main` may still show the
 pre-merge head right after a merge. While a repo is locked, nothing in it merges (`repo_locked`).
 
-**Status comments.** A red main (after our merge, or a red current main head in a repo with a
-candidate) posts **one** comment on #339 per repo and commit. Its first line is
-`<!-- vws-orchestrate:failure -->` and it has `Kind: merge-main-CI-red`. A lock still waiting after
-`ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS` (2) posts one `Kind: merge-main-CI-wait-timeout` comment and
-stays locked. The key (sha256 of kind, repo and commit) is checked against #339 before posting, so
-there is no retry loop. These comments count toward the write cap and are skipped while
-`ORCHESTRATE_SCOPE` is set.
+**Status entries.** A red main (after our merge, or a red current main head in a repo with a
+candidate) adds **one** entry per repo and commit to "Recent entries" in the status issue body
+(`merge: main CI red in <repo> at <sha7> (key ...)`). A lock still waiting after
+`ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS` (2) adds one `main CI wait timeout` entry and stays locked. The
+key (sha256 of kind, repo and commit) is kept in `state.json` and in the body, so there is no retry
+loop. No comment is posted. Entries are skipped while `ORCHESTRATE_SCOPE` is set.
 
 **Switches.** Merges need both `ORCHESTRATE_MODE=apply` and `ORCHESTRATE_MERGE=apply`. The default
 `ORCHESTRATE_MERGE=dry-run` plans and logs merges but never calls the merge API, even in apply mode.
@@ -167,14 +166,13 @@ DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at
 - **Count:** N is the number of infra failures since the last failure reset, read from the comments
   every tick, so a restart or a rerun never repeats or skips a retry.
 - **Exhausted:** when the newest attempt is the 4th infra failure since the last reset (the first
-  dispatch plus 3 retries), the item is not dispatched again. The orchestrator posts one comment on #339 whose first line is
-  `<!-- vws-orchestrate:failure -->`, with `Kind: infra-retries-exhausted`, the item, the last report
-  and the last error (redacted), and an idempotency key (sha256 of the item and the last report URL),
-  so a rerun never posts it twice. It also adds `blocked` (owned, so it stays until a reset). It never
+  dispatch plus 3 retries), the item is not dispatched again. The orchestrator adds one entry to the status issue body
+  (`infra: <item>: infra retries exhausted (key ...)`), with an idempotency key (sha256 of the item and
+  the last report URL) kept in `state.json` and in the body, so a rerun never adds it twice. It also adds `blocked` (owned, so it stays until a reset). It never
   swaps to grok. To retry after the provider recovers, comment `/orchestrate reset-failures` on the
   item: the next tick removes `blocked`, and the tick after that dispatches it. Removing `blocked` by
-  hand without a reset does not help; the next tick adds it again. The comment counts toward the
-  write cap and is skipped while `ORCHESTRATE_SCOPE` is set, like the merge failure comments.
+  hand without a reset does not help; the next tick adds it again. The entry is skipped while
+  `ORCHESTRATE_SCOPE` is set, like the merge entries.
 
 ## Board sync (vws-deploy#347)
 
@@ -227,42 +225,62 @@ board is overwritten on the next sync. Design: vws-deploy#347.
 - **No retried writes:** a write is never retried, because a timed-out POST may have landed. Every
   attempt uses the write budget, failed ones included. Reads retry 5xx and 429 twice.
 - **Failed writes:** any failed write makes the tick fail (exit 4, `health.json` result
-  `apply_failed`), so backoff and the failure comment start.
+  `apply_failed`), so backoff and the failure section start.
 - **Crash recovery:**
   - An interrupted grok swap (`grok` added, `deepseek` still there) is finished on the next tick.
   - Ownership of `blocked` and `in-review` is journaled in `state.json` before the write, and pruned
     when the label is not on the item.
 - **Re-check before posting:** a dispatch is skipped if the target got a new dispatch, lost its
-  labels, or got `blocked` or `grok` since collect. A wake, a merge failure comment or an
-  infra-retries-exhausted comment is skipped if #339 already has a comment with its key.
+  labels, or got `blocked` or `grok` since collect. A wake is skipped if the verify-wake thread
+  already has a comment with its key; a merge or infra entry if its key is in `state.json` or the
+  status issue body.
 - **One tick at a time:** each tick takes `run.lock` (non-blocking), so overlapping or manual runs log
   `skipped` and exit 0.
 
-## Failure handling and the failure comment
+## The status issue (vws-deploy#416)
+
+The status lives in the **body** of one pinned issue, vws-deploy#415 (`ORCHESTRATE_STATUS_ISSUE`). Its
+first line is `<!-- vws-orchestrate:status -->`. Each apply tick renders the body (mode and switches,
+PRs waiting for verify and where wakes go, DeepSeek in flight, merge locks, the last 20 merge and infra
+entries, and a "Failed ticks" section during a failure streak) and edits it with one
+`PATCH repos/popododo0720/vws-deploy/issues/415` only when the content changed: the last line
+(`_Updated ... by run ..._`) and line endings are ignored when comparing, so a quiet tick writes
+nothing. The read is ETag-cached, so an unchanged issue costs a 304. The edit is outside the write cap
+(at most one per tick); a failed edit fails the tick. Dry-run writes the rendered body to
+`status-body.md` in the state directory instead. While `ORCHESTRATE_SCOPE` is set, the edit is skipped
+unless the scope is the status issue itself.
+
+The gh wrapper allows only this edit: `PATCH` of the configured status issue, with `body` as the only
+field and the status marker as the first line. The orchestrator posts no comments on the status issue
+and no status comments anywhere; comments there are metrics alerts only (see
+[factory-metrics.md](factory-metrics.md#alerts)). verify-wake never posts there:
+`ORCHESTRATE_WAKE_THREAD` equal to `ORCHESTRATE_STATUS_ISSUE` is refused.
+
+## Failure handling and the failure section
 
 `orchestrate-loop.sh` runs every tick as a new process, so a crash ends one tick, not the loop.
 Stopping the loop (`kill` of `loop.pid`) also stops a running tick, and children never hold
 `loop.lock`.
 With `METRICS_ENABLED=1` in the env file, each iteration also runs the daily metrics script
 (`.github/metrics/metrics.py --if-due`, see [factory-metrics.md](factory-metrics.md)). Its exit status
-never counts as a failed tick. On an abnormal day that script posts its own alert on #339 (first line
+never counts as a failed tick. On an abnormal day that script posts its own alert comment on the status issue (first line
 `<!-- vws-orchestrate:metrics-alert -->`); see [factory-metrics.md](factory-metrics.md#alerts).
 - **Backoff:** after a failed tick (exit status not 0) the loop waits `ORCHESTRATE_BACKOFF_BASE`
   (60 s) times 2^(failures-1), capped at `ORCHESTRATE_BACKOFF_MAX` (1800 s).
-- **Failure comment:** after each failed tick the loop runs `orchestrate.py --notify-failure`. At
-  `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it posts one comment on #339 whose first line
-  is `<!-- vws-orchestrate:failure -->`, with the count, host, last exit code and the last 3 errors
-  (redacted).
-- **Scoped trials:** while `ORCHESTRATE_SCOPE` is set, the failure comment is skipped and logged
+- **Failure section:** after each failed tick the loop runs `orchestrate.py --notify-failure`. At
+  `ORCHESTRATE_FAILURE_THRESHOLD` (3) failures in a row, it writes one "## Failed ticks" section into
+  the status issue body (no comment), starting with `<!-- vws-orchestrate:failure -->`, with the count,
+  host, last exit code and the last 3 errors (redacted). The next good tick renders the body without it.
+- **Scoped trials:** while `ORCHESTRATE_SCOPE` is set, the failure section is skipped and logged
   (`failure_alert_skipped`), like every other write outside the scope, unless the scope is the status
-  thread itself. Watch `health.json` during a scoped trial.
+  issue itself. Watch `health.json` during a scoped trial.
 - **Once per streak:** the key is sha256 of host and streak start, stored in `failure.json` only after
-  a successful POST. A good tick deletes `failure.json`. A 1h minimum gap stops a restarted loop from
+  a successful edit; a key already in the body is not written again. A good tick deletes `failure.json`. A 1h minimum gap stops a restarted loop from
   posting again for the same outage.
-- **GitHub-wide failures:** the failure comment ignores the write cap and the rate floor, because it is
-  one call, so it still goes out when every tick fails. If GitHub itself is down, the POST fails, is
-  logged, and the next failed tick tries again.
-- **When it posts:** `ORCHESTRATE_FAILURE_ALERT=apply` (default) posts only in apply mode, `always`
+- **GitHub-wide failures:** the failure section ignores the write cap and the rate floor, because it is
+  one read and one edit, so it still goes out when every tick fails. If GitHub itself is down, the edit
+  fails, is logged, and the next failed tick tries again.
+- **When it writes:** `ORCHESTRATE_FAILURE_ALERT=apply` (default) writes only in apply mode, `always`
   also in dry-run, `never` turns it off.
 
 ## Files on the box
@@ -273,17 +291,18 @@ never counts as a failed tick. On an abnormal day that script posts its own aler
 | `/home/box/.local/opt/vws-orchestrate/current` | symlink to the active release |
 | `/home/box/.config/vws-orchestrate/env` | `KEY=VALUE` config, re-read every tick (no shell evaluation) |
 | `/home/box/.config/vws-orchestrate/STOP` | if present, ticks are skipped |
-| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `etag-cache.json`, `history-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
+| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `status-body.md`, `etag-cache.json`, `history-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
 | `/home/box/.local/state/vws-orchestrate/log/orchestrate.jsonl` | one JSON object per event; rotated at 5 MiB, keeps 5 |
 | `/home/box/.local/state/vws-orchestrate/log/loop.log` | loop output; rotated at 1 MiB, keeps 1 |
 
 Config keys and defaults:
 - `ORCHESTRATE_MODE=dry-run`
-- `ORCHESTRATE_SCOPE=` (for example `vws-deploy#999` limits writes to one target and skips the wake and the failure comment)
+- `ORCHESTRATE_SCOPE=` (for example `vws-deploy#999` limits writes to one target and skips the wake, the status entries and the failure section)
 - `ORCHESTRATE_INTERVAL=600`
 - `ORCHESTRATE_MAX_WRITES=5`
 - `ORCHESTRATE_RATE_FLOOR=1000`
-- `ORCHESTRATE_STATUS_PR=339` (the status thread: a never-merged draft PR in vws-deploy; a positive integer)
+- `ORCHESTRATE_STATUS_ISSUE=415` (the status issue in vws-deploy whose body the orchestrator edits; a positive integer)
+- `ORCHESTRATE_WAKE_THREAD=` (the vws-deploy issue or PR that gets verify-wake comments; empty turns the wake off; never the status issue). `ORCHESTRATE_STATUS_PR` from before vws-deploy#416 is ignored
 - `ORCHESTRATE_FAILURE_ALERT=apply`
 - `ORCHESTRATE_FAILURE_THRESHOLD=3`
 - `DEEPSEEK_TIMEOUT_HOURS=3`
