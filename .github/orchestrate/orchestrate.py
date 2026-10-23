@@ -78,7 +78,9 @@ OPT_OUT_LABELS = ("do-not-merge", "hold", "blocked")
 # repo-guard / verify-gate must pass on the head by name, even when main's protection does not list it.
 GATE_CHECK = "verify-gate"
 OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
-MERGEABLE_OK = {"clean", "has_hooks", "unstable"}
+# GitHub's own verdict (REST mergeable_state = GraphQL mergeStateStatus) must be clean: it already counts
+# main's protection and rulesets, which the PAT cannot read (vws-deploy#408). Anything else never merges.
+MERGEABLE_OK = {"clean"}
 PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 AGENT_RE = re.compile(r"(?im)^\s*Agent:\s*(\S.*?)\s*$")
@@ -291,7 +293,6 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
         re.compile(rf"^{_REPO}/branches/main$"),
         re.compile(rf"^{_REPO}/compare/[0-9a-f]{{40}}\.\.\.[0-9a-f]{{40}}\?per_page=1$"),
-        re.compile(rf"^{_REPO}/branches/main/protection/required_status_checks$"),
         re.compile(rf"^{_REPO}/rules/branches/main(\?.*)?$"),
         re.compile(rf"^{_REPO}/actions/runs\?event=push&branch=main&head_sha=[0-9a-f]{{40}}&per_page=100$"),
         re.compile(rf"^{_REPO}/actions/runs\?head_sha=[0-9a-f]{{40}}&per_page=100$"),
@@ -1440,16 +1441,47 @@ def main_ahead_of(gh, repo, old, new):
     return (data or {}).get("status") == "ahead"
 
 
-def required_checks(gh, repo):
-    """Required checks on main: classic protection plus effective rulesets. [] if neither exists."""
+def _app_id(v):
+    if v is not None and (type(v) is not int):
+        raise ValueError(f"required check app id is not an integer: {v!r}")
+    return v
+
+
+def classic_required(branch):
+    """Required checks of main's classic branch protection, from the GET branches/main body that
+    collect already read (its `protection` field needs no Administration read, unlike the protection
+    API, #408). [] when classic protection is off. Anything unexpected raises ValueError: fail closed."""
+    if not isinstance(branch, dict) or type(branch.get("protected")) is not bool:
+        raise ValueError("branches/main: no boolean protected field")
+    prot = branch.get("protection")
+    if not isinstance(prot, dict) or type(prot.get("enabled")) is not bool:
+        raise ValueError("branches/main: protection details not visible")
+    if not branch["protected"] or not prot["enabled"]:
+        return []  # no classic protection (the protection API would answer 404 Branch not protected)
+    rsc = prot.get("required_status_checks")
+    if (not isinstance(rsc, dict) or not isinstance(rsc.get("checks"), list)
+            or not isinstance(rsc.get("contexts"), list)):
+        raise ValueError("branches/main: required_status_checks not readable")
     out = []
-    try:
-        data, _ = gh.get(f"repos/{OWNER}/{repo}/branches/main/protection/required_status_checks")
-        checks = data.get("checks") or [{"context": c, "app_id": None} for c in data.get("contexts", [])]
-        out += [{"context": c["context"], "app_id": c.get("app_id")} for c in checks]
-    except GhError as e:
-        if e.status != 404:
-            raise
+    for c in rsc["checks"]:
+        if not isinstance(c, dict) or not isinstance(c.get("context"), str) or "app_id" not in c:
+            raise ValueError(f"branches/main: malformed required check {c!r}")
+        out.append({"context": c["context"], "app_id": _app_id(c["app_id"])})
+    for ctx in rsc["contexts"]:
+        if not isinstance(ctx, str):
+            raise ValueError(f"branches/main: malformed required context {ctx!r}")
+        if not any(c["context"] == ctx for c in out):
+            # A context with no checks entry has no app binding we can read: fail closed rather
+            # than accept the check from any app.
+            raise ValueError(f"branches/main: required context {ctx!r} has no checks entry")
+    return out
+
+
+def required_checks(gh, repo, branch):
+    """Required checks on main: the effective rulesets plus classic branch protection (from the
+    branches/main body), deduped by (context, app id). head_check_reasons then needs each one to be
+    success, so a skipped or neutral required check never merges (AGENTS.md rule 5)."""
+    out = classic_required(branch)
     rules, _ = gh.get(f"repos/{OWNER}/{repo}/rules/branches/main?per_page=100")
     for rule in rules or []:
         if rule.get("type") == "required_status_checks":
@@ -1513,7 +1545,7 @@ def collect_merge(gh, snap, repo_names, state):
             if lock and lock.get("status") == "red" and lock.get("red_sha") != ctx["main_sha"]:
                 ctx["red_ahead"] = main_ahead_of(gh, name, lock["red_sha"], ctx["main_sha"])
             if cands:
-                ctx["required"] = required_checks(gh, name)
+                ctx["required"] = required_checks(gh, name, branch)
             for it in cands:
                 it["merge_info"] = merge_info(gh, name, it["number"])
                 for dep in parse_deps(it["body"], name)[0]:
@@ -1669,10 +1701,15 @@ def recheck_merge(gh, repo, number, head, new_state, ctx):
         return f"re-read failed: {scrub(e)}"
     if info["head_sha"] != head:
         return "head moved"
+    if info.get("mergeable") is not True or info.get("mergeable_state") not in MERGEABLE_OK:
+        return f"merge state changed: mergeable={info.get('mergeable')} state={info.get('mergeable_state')}"
     bad = head_check_reasons(info, ctx.get("required"))
     if bad:
         return "head checks changed: " + ", ".join(bad[:3])
-    pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    try:
+        pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    except (GhError, PermissionError) as e:
+        return f"re-read failed: {scrub(e)}"
     names = {lb["name"] for lb in pr.get("labels", [])}
     if pr.get("state") != "open" or pr.get("merged"):
         return "not open"

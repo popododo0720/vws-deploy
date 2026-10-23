@@ -3,6 +3,7 @@ passed vws-verify. decide() table tests for every eligibility condition, the per
 green-wait, plus apply against the stub gh. Run: python3 -m unittest discover -s tests/orchestrate"""
 import json
 import os
+import shutil
 import unittest
 from unittest import mock
 
@@ -409,6 +410,14 @@ class Verdicts(unittest.TestCase):
                 self.assertEqual(orch.main_ci_verdict(runs), want)
 
 
+def branch(sha, classic=(), protected=True, enabled=True):
+    """GET branches/main as GitHub sends it: classic protection with its required checks ({context, app_id})."""
+    checks = [{"context": c, "app_id": a} for c, a in classic]
+    rsc = {"enforcement_level": "everyone" if checks else "off", "contexts": [c for c, _ in classic], "checks": checks}
+    return {"name": "main", "commit": {"sha": sha}, "protected": protected,
+            "protection": {"enabled": enabled, "required_status_checks": rsc}}
+
+
 def routes(labels=("verify-approved",), head="1" * 40):
     r = rt.routes()
     issue = {"number": 500, "html_url": "https://github.com/popododo0720/vws-deploy/pull/500", "state": "open",
@@ -423,10 +432,9 @@ def routes(labels=("verify-approved",), head="1" * 40):
              "conclusion": c["conclusion"], "head_sha": c["head_sha"]} for c in green_checks(head)]
     r[f"{O}/vws-deploy/commits/{head}/check-runs"] = {"body": {"total_count": len(runs), "check_runs": runs}}
     r[f"{O}/vws-deploy/commits/{head}/status"] = {"body": {"statuses": []}}
-    r[f"{O}/vws-deploy/branches/main"] = {"body": {"commit": {"sha": MAIN}}}
+    r[f"{O}/vws-deploy/branches/main"] = {"body": branch(MAIN)}
     r[f"{O}/vws-deploy/actions/runs"] = {"body": {"total_count": 1, "workflow_runs": [
         {"id": 1, "workflow_id": 7, "name": "ci", "status": "completed", "conclusion": "success"}]}}
-    r[f"{O}/vws-deploy/branches/main/protection/required_status_checks"] = {"body": {"checks": REQUIRED}}
     r[f"{O}/vws-deploy/rules/branches/main"] = {"body": []}
     r[f"PUT {O}/vws-deploy/pulls/500/merge"] = {"body": {"sha": MERGED, "merged": True, "message": "Pull Request successfully merged"}}
     r[f"{O}/vws-deploy/compare/{MERGED}...{MAIN}"] = {"body": {"status": "behind"}}
@@ -513,11 +521,9 @@ class ApplyMerges(rt.Env):
         check_ = next(e for e in self.log() if e.get("kind") == "merge_check" and e["target"] == "vws-deploy#500")
         self.assertIn("required_missing:english", check_["reasons"])
 
-    def test_no_classic_protection_uses_rulesets_only(self):
-        r = routes()
-        r[f"{O}/vws-deploy/branches/main/protection/required_status_checks"] = {"status": 404, "body": {"message": "Not Found"}}
-        self.set_routes(r)
+    def test_rulesets_only_no_classic_protection_read(self):
         self.assertEqual(self.tick(), 0)
+        self.assertFalse([c for c in self.calls() if "/protection" in c["path"]])
         self.assertIn(("merge", "vws-deploy#500"),
                       [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"])
 
@@ -601,6 +607,131 @@ class MergeAllowlist(unittest.TestCase):
                           ("PUT", f"{O}/other/pulls/5/merge"), ("PATCH", f"{O}/vws-deploy/pulls/5")):
             with self.subTest(path=p), self.assertRaises(PermissionError):
                 gh.write(method, p, {"merge_method": "squash", "sha": "1" * 40})
+
+
+PROTECTION = f"{O}/vws-deploy/branches/main/protection/required_status_checks"
+PAT_403 = {"status": 403, "body": {"message": "Resource not accessible by personal access token"}}
+NOT_CLEAN = ("blocked", "behind", "dirty", "unknown", "unstable", "has_hooks", "draft", None)
+
+
+class MergeStateOnly408(unittest.TestCase):
+    """vws-deploy#408: GitHub's mergeable_state (GraphQL mergeStateStatus) must be clean; nothing else merges."""
+
+    def test_only_clean_merge_state_merges(self):
+        for state in NOT_CLEAN:
+            with self.subTest(state=state):
+                r = run(snap(candidate(info={"mergeable": True, "mergeable_state": state})))
+                self.assertEqual(merges(r), [])
+                self.assertIn(f"mergeable_state:{state}", reasons(r, "vws-deploy#500"))
+        for mergeable, want in ((None, "mergeable_unknown"), (False, "conflicts")):
+            with self.subTest(mergeable=mergeable):
+                r = run(snap(candidate(info={"mergeable": mergeable, "mergeable_state": "clean"})))
+                self.assertEqual(merges(r), [])
+                self.assertIn(want, reasons(r, "vws-deploy#500"))
+        self.assertEqual(merges(run(snap(candidate()))), ["vws-deploy#500"])
+
+    def test_protection_path_is_not_allowlisted(self):
+        gh = orch.Gh(runner=mock.Mock(side_effect=AssertionError("must not run")))
+        with self.assertRaises(PermissionError):
+            gh.get(PROTECTION)
+
+
+class NoProtectionRead408(rt.Env):
+    APPLY = dict(ORCHESTRATE_MODE="apply", ORCHESTRATE_MERGE="apply", ORCHESTRATE_SCOPE="vws-deploy#500")
+
+    def setUp(self):
+        super().setUp()
+        self.set_routes(routes())
+
+    def merge_writes(self):
+        return [c for c in self.writes() if c["method"] == "PUT"]
+
+    def fresh(self, r):
+        """One isolated tick per case: new routes, no calls, no state from an earlier case."""
+        self.set_routes(r)
+        if os.path.exists(self.calls_file):
+            os.remove(self.calls_file)
+        shutil.rmtree(self.env["ORCHESTRATE_STATE_DIR"], ignore_errors=True)
+
+    def unreadable(self):
+        return [e for e in self.log() if e.get("kind") == "merge_repo_unreadable"]
+
+    def test_protection_403_does_not_block_a_clean_green_pr(self):
+        r = routes()
+        r[PROTECTION] = PAT_403
+        self.set_routes(r)
+        self.assertEqual(self.tick(), 0)
+        self.assertEqual(self.unreadable(), [])
+        self.assertIn(("merge", "vws-deploy#500"),
+                      [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"])
+        self.assertFalse([c for c in self.calls() if "/protection" in c["path"]], "branch protection is never read")
+        os.remove(self.calls_file)
+        self.assertEqual(self.tick(**self.APPLY), 0)
+        self.assertEqual([c["path"] for c in self.merge_writes()], [f"{O}/vws-deploy/pulls/500/merge"])
+
+    def test_non_clean_state_never_merges_in_apply(self):
+        for state in NOT_CLEAN:
+            with self.subTest(state=state):
+                r = routes()
+                r[f"{O}/vws-deploy/pulls/500"]["body"]["mergeable_state"] = state
+                self.fresh(r)
+                self.assertEqual(self.tick(**self.APPLY), 0)
+                self.assertEqual(self.merge_writes(), [])
+                check_ = [e for e in self.log() if e.get("kind") == "merge_check" and e["target"] == "vws-deploy#500"][-1]
+                self.assertIn(f"mergeable_state:{state}", check_["reasons"])
+
+    def test_read_errors_fail_closed_with_a_reason(self):
+        head = "1" * 40
+        cases = {"rulesets 403": f"{O}/vws-deploy/rules/branches/main",
+                 "pull 403": f"{O}/vws-deploy/pulls/500",
+                 "check runs 403": f"{O}/vws-deploy/commits/{head}/check-runs",
+                 "status 404": f"{O}/vws-deploy/commits/{head}/status",
+                 "main 500": f"{O}/vws-deploy/branches/main"}
+        for why, path in cases.items():
+            with self.subTest(why):
+                r = routes()
+                r[PROTECTION] = PAT_403
+                r[path] = {"status": int(why.split()[-1]), "body": {"message": "nope"}}
+                self.fresh(r)
+                self.assertEqual(self.tick(**self.APPLY), 0, "a read error never fails the tick")
+                self.assertEqual(self.merge_writes(), [])
+                notes = self.unreadable()
+                self.assertTrue(notes and notes[-1]["repo"] == "vws-deploy" and notes[-1]["error"], why)
+
+    def test_recheck_refuses_a_state_that_is_no_longer_clean(self):
+        snap_file = os.path.join(self.tmp, "snap.json")
+        r = routes()
+        r[PROTECTION] = PAT_403
+        self.set_routes(r)
+        self.tick("--dump-snapshot", snap_file)
+        c = rt.load(snap_file)["merge"]["vws-deploy"]
+        self.assertNotIn("error", c)
+        for state, mergeable in (("blocked", True), ("unstable", True), (None, True), ("clean", None), ("clean", False)):
+            with self.subTest(state=state, mergeable=mergeable):
+                r2 = routes()
+                r2[f"{O}/vws-deploy/pulls/500"]["body"].update(mergeable_state=state, mergeable=mergeable)
+                self.set_routes(r2)
+                got = orch.recheck_merge(orch.Gh(), "vws-deploy", "500", "1" * 40, {}, c)
+                self.assertTrue(got.startswith("merge state changed"), got)
+        self.set_routes(routes())
+        self.assertEqual(orch.recheck_merge(orch.Gh(), "vws-deploy", "500", "1" * 40, {}, c), "")
+
+    def test_recheck_error_on_the_last_pr_read_fails_closed(self):
+        snap_file = os.path.join(self.tmp, "snap.json")
+        self.tick("--dump-snapshot", snap_file)
+        c = rt.load(snap_file)["merge"]["vws-deploy"]
+        real, pulls = orch.Gh(), []
+
+        class Flaky:
+            def get(self, path):
+                if path.endswith("/pulls/500"):
+                    pulls.append(path)
+                    if len(pulls) == 2:
+                        raise orch.GhError(403, "Resource not accessible by personal access token")
+                return real.get(path)
+
+        got = orch.recheck_merge(Flaky(), "vws-deploy", "500", "1" * 40, {}, c)
+        self.assertTrue(got.startswith("re-read failed: "), got)
 
 
 if __name__ == "__main__":
