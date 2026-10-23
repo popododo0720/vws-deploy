@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary: record the state before a reboot and check recovery after it (read only, never reboots)
-# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
+# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
 # and boot IDs, restartCount per container of the release's pods. No pod UID, no data, no Secret.
@@ -9,6 +9,8 @@
 # workload) exits 1; a gate still waiting at --timeout exits 3. Either way the blocked gate is the
 # first output line. Then the comparisons with the snapshot (FAIL: 1) and whether a reboot was
 # observed (WARN when no node has a new boot ID).
+# --drained waits for the rbd.csi.ceph.com detach up to --timeout and names the PVs still attached;
+# the cordon is checked at once, and a detach still present at the timeout is a FAIL.
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl)
 
@@ -101,22 +103,38 @@ vws_verify_krbd() { # VOLUMEATTACHMENTS_FILE
   [[ $attached != "[]" ]] || vws_emit OK krbd "no RBD volume attached"
 }
 
-# vws_verify_drained NODE: the gate between drain and reboot. Exit 0 only when NODE is cordoned and no
-# rbd.csi.ceph.com VolumeAttachment is attached to it; 1 when the drain is not done; 3 when it cannot
-# be read. A reboot goes ahead only on 0 (vws-deploy#150). Read only.
+# vws_verify_drained NODE TIMEOUT_SECONDS: the gate between drain and reboot. The cordon is checked
+# at once; the rbd.csi.ceph.com detach is waited for up to TIMEOUT_SECONDS and the remaining PVs go
+# to stderr, so a detach still present at the timeout is the only FAIL. Exit 0 only when NODE is
+# cordoned and no rbd.csi.ceph.com VolumeAttachment is attached to it; 1 when the drain is not done;
+# 3 when it cannot be read. A reboot goes ahead only on 0 (vws-deploy#150). Read only.
 vws_verify_drained() {
-  local node=$1 json attached
+  local node=$1 timeout=$2 json attached pvs count deadline
   json=$(vws_kubectl get nodes "$node" -o json 2>/dev/null) || vws_die_env "cannot read node ${node}; do not reboot"
   attached=$(vws_kubectl get volumeattachments -o json 2>/dev/null |
-    jq -er --arg n "$node" '[.items[] | select(.spec.nodeName == $n and .spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)] | length') ||
+    jq -er --arg n "$node" '[.items[] | select(.spec.nodeName == $n and .spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)]') ||
     vws_die_env "cannot read volumeattachments; do not reboot ${node}"
   if [[ $(jq -r '.spec.unschedulable // false' <<<"$json") != true ]]; then
     vws_emit FAIL drained "${node} is not cordoned: the drain did not run or failed; do not reboot"
-  elif ((attached > 0)); then
-    vws_emit FAIL drained "${node} still has ${attached} RBD volumes attached: the drain did not finish; do not reboot"
-  else
-    vws_emit OK drained "${node} is cordoned and has no RBD volume attached; safe to reboot"
+    return
   fi
+  deadline=$(($(date +%s) + timeout))
+  while :; do
+    count=$(jq 'length' <<<"$attached")
+    ((count > 0)) || break
+    pvs=$(jq -r '[.[].spec.source.persistentVolumeName | select(. != null and . != "")] | join(", ")' <<<"$attached")
+    [[ -n $pvs ]] || pvs='(names unavailable)'
+    if (($(date +%s) >= deadline)); then
+      vws_emit FAIL drained "${node} still has ${count} RBD volumes attached after ${timeout}s: ${pvs}; the drain did not finish; do not reboot"
+      return
+    fi
+    echo "vws: drained ${node}: ${count} RBD volumes still attached: ${pvs}; waiting up to ${timeout}s" >&2
+    sleep "$VWS_VERIFY_INTERVAL"
+    attached=$(vws_kubectl get volumeattachments -o json 2>/dev/null |
+      jq -er --arg n "$node" '[.items[] | select(.spec.nodeName == $n and .spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)]') ||
+      vws_die_env "cannot read volumeattachments; do not reboot ${node}"
+  done
+  vws_emit OK drained "${node} is cordoned and has no RBD volume attached; safe to reboot"
 }
 
 # Each gate prints "pass", "wait <reason>" or "fail <reason>".
@@ -280,7 +298,7 @@ vws_verify_check() {
 
 vws_cmd_main() {
   VWS_VERIFY_ALLOW_HEALTH_CHECKS='' VWS_VERIFY_CEPH_HEALTH_FILE='' VWS_VERIFY_SKIP_CEPH=''
-  local snapshot='' check='' drained='' timeout=20m seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]"
+  local snapshot='' check='' drained='' timeout='' seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]"
   while (($#)); do
     case $1 in
       --snapshot) (($# >= 2)) || vws_usage "--snapshot needs a file"; snapshot=$2; shift 2 ;;
@@ -295,12 +313,15 @@ vws_cmd_main() {
     esac
   done
   [[ $(printf '%s' "${snapshot:+x}${check:+x}${drained:+x}") == x ]] || vws_usage "$usage"
+  if [[ -z $timeout ]]; then
+    if [[ -n $drained ]]; then timeout=5m; else timeout=20m; fi
+  fi
   [[ $timeout =~ ^([0-9]+)([smh])$ ]] || vws_usage "--timeout must look like 90s, 20m or 1h"
   case ${BASH_REMATCH[2]} in s) seconds=${BASH_REMATCH[1]} ;; m) seconds=$((BASH_REMATCH[1] * 60)) ;; h) seconds=$((BASH_REMATCH[1] * 3600)) ;; esac
   release=${VWS_NAMESPACE:-vws}
   VWS_NAMESPACE=''
   if [[ -n $drained ]]; then
-    vws_verify_drained "$drained"
+    vws_verify_drained "$drained" "$seconds"
   elif [[ -n $snapshot ]]; then
     [[ ! -e $snapshot ]] || vws_usage "${snapshot} exists; verify-reboot never overwrites"
     vws_verify_snapshot "$snapshot" "$release"
