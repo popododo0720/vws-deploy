@@ -62,7 +62,7 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
 `.github/workflows/verify-queue.yml` ships unchanged to every vws-* repo with `repo-guard.yml`. It keeps
 the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
 
-- It runs when the `ci` or `repo-guard` workflow completes on a PR head (`workflow_run`, from the
+- It runs when a PR workflow (`ci`, `CI`, `english` or `repo-guard`) completes on a PR head (`workflow_run`, from the
   default branch) and on `pull_request` `ready_for_review` and `synchronize`.
 - It adds `needs-verify` when the PR is open, not a draft, on base `main`, has no `verify-approved`, and
   the newest run of every check on its head (and every commit status) is green, except `verify-gate`
