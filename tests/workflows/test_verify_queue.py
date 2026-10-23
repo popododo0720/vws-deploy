@@ -48,8 +48,11 @@ GREEN = [run_(1, "test"), run_(2, "lint"), run_(3, "pr-hygiene"), run_(4, "verif
 class Shape(unittest.TestCase):
     def test_triggers(self):
         on = load().get("on", load().get(True))
-        # Every PR workflow in the vws-* repos: vws-console names its CI "CI", vws-conformance adds english.
-        self.assertEqual(on["workflow_run"], {"workflows": ["ci", "CI", "english", "repo-guard"], "types": ["completed"]})
+        # Every PR workflow in the vws-* repos: vws-deploy's own (checked by EveryPrWorkflow below),
+        # vws-console's CI named "CI" and vws-conformance's english.
+        self.assertEqual(on["workflow_run"], {
+            "workflows": ["ci", "CI", "drift-check", "english", "installer-image", "post-merge", "repo-guard"],
+            "types": ["completed"]})
         self.assertEqual(sorted(on["pull_request"]["types"]), ["ready_for_review", "synchronize"])
         self.assertEqual(sorted(on), ["pull_request", "workflow_run"])
 
@@ -67,6 +70,46 @@ class Shape(unittest.TestCase):
             for s in job["steps"]:
                 self.assertNotIn("uses", s, "no actions: nothing checks out PR code")
                 self.assertNotRegex(s.get("run", ""), re.compile(r"\$\{\{"), "event data only reaches the script via env")
+
+
+def triggers(wf):
+    """The event names in a workflow's `on:` (a string, a list or a mapping)."""
+    on = wf.get("on", wf.get(True))
+    if isinstance(on, str):
+        return {on}
+    return set(on or [])
+
+
+class EveryPrWorkflow(unittest.TestCase):
+    """vws-deploy#397 round 2: a PR workflow missing from workflow_run.workflows can finish last, and then no
+    verify-queue run sees the head green, so the PR never gets needs-verify. Scans .github/workflows."""
+
+    def pr_workflows(self):
+        d = os.path.dirname(PATH)
+        names = {}
+        for f in sorted(os.listdir(d)):
+            if not f.endswith((".yml", ".yaml")) or os.path.join(d, f) == PATH:
+                continue
+            with open(os.path.join(d, f), encoding="utf-8") as fh:
+                wf = yaml.safe_load(fh)
+            if triggers(wf) & {"pull_request", "pull_request_target"}:
+                names[f] = wf.get("name", f)
+        return names
+
+    def test_scan_finds_the_known_pr_workflows(self):
+        # Guards the scan itself: a parser that finds nothing would pass the check below trivially.
+        found = set(self.pr_workflows().values())
+        self.assertTrue({"ci", "repo-guard", "drift-check", "installer-image"} <= found, found)
+
+    def test_every_pull_request_workflow_wakes_the_queue(self):
+        listed = set(load().get("on", load().get(True))["workflow_run"]["workflows"])
+        missing = {f: n for f, n in self.pr_workflows().items() if n not in listed}
+        self.assertEqual(missing, {}, "PR workflows missing from verify-queue workflow_run.workflows")
+
+    def test_triggers_parser_forms(self):
+        self.assertEqual(triggers({"on": "pull_request"}), {"pull_request"})
+        self.assertEqual(triggers({True: ["push", "pull_request"]}), {"push", "pull_request"})
+        self.assertEqual(triggers({True: {"pull_request_target": None}}), {"pull_request_target"})
 
 
 class Label(unittest.TestCase):
