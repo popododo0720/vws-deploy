@@ -18,15 +18,19 @@ on:
   pull_request:
     types: [ready_for_review, synchronize]
 
-permissions:
-  issues: write
-  pull-requests: read
-  checks: read
-  statuses: read
+permissions: {}
 
 jobs:
   needs-verify:
     runs-on: ubuntu-latest
+    # Job-level permissions replace the workflow's. Adding or removing a label on a PR goes through the
+    # issues API but needs pull-requests: write as well (without it: 403 "Resource not accessible by
+    # integration"). Writes are labels only; checks and statuses are read.
+    permissions:
+      issues: write
+      pull-requests: write
+      checks: read
+      statuses: read
     steps:
       - name: Label PRs whose CI is green
         env:
