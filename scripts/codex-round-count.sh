@@ -10,11 +10,14 @@ usage() {
   cat <<'U'
 Usage: codex-round-count.sh check  --out-dir DIR --repo REPO --issue N --pr N [--cap N]
        codex-round-count.sh record --out-dir DIR --repo REPO --issue N --pr N --sha SHA
+       codex-round-count.sh check-and-record --out-dir DIR --repo REPO --issue N --pr N --sha SHA [--cap N]
        codex-round-count.sh count  --out-dir DIR --repo REPO --issue N --pr N
        codex-round-count.sh issue-from-body < PR_BODY
 
 check   exits 0 while the issue has fewer rounds than the cap, 1 at or past it.
 record  adds one round to OUT_DIR/rounds.tsv; recording the same repo/pr/sha again is a no-op.
+check-and-record runs check and record under flock on OUT_DIR/rounds.tsv.lock (waits up to 30s);
+        at the cap it exits 1 and records nothing. Use it so parallel reviews cannot pass the cap.
 count   prints the number of rounds for the issue.
 issue-from-body prints N from the first "Part of #N" or "Closes/Fixes/Resolves #N" line; exit 1 if none.
 Rounds = index lines for REPO and ISSUE, plus unindexed legacy files OUT_DIR/REPO-PR-*.md for this PR.
@@ -34,7 +37,7 @@ case $cmd in
     [[ $n =~ ^[1-9][0-9]*$ ]] || { echo "codex-round-count: no 'Part of #N' or 'Closes #N' in the PR body" >&2; exit 1; }
     echo "$n"
     exit 0 ;;
-  check | record | count) ;;
+  check | record | check-and-record | count) ;;
   *) die "unknown command: $cmd" ;;
 esac
 
@@ -71,23 +74,47 @@ count_rounds() {
   echo $((indexed + legacy))
 }
 
+recorded_head() {
+  [[ -f $index ]] && awk -F'\t' -v r="$repo" -v p="$pr" -v s="$sha" '$1 == r && $3 == p && $4 == s { found = 1 } END { exit !found }' "$index"
+}
+
+do_check() {
+  local n
+  n=$(count_rounds)
+  if ((n >= cap)); then
+    echo "issue $repo#$issue already had $n Codex rounds (max $cap) across its PRs: split the work or move the rest to issues" >&2
+    return 1
+  fi
+  echo "issue $repo#$issue: $n of $cap Codex rounds used"
+}
+
+do_record() {
+  if recorded_head; then
+    echo "already recorded: $repo#$pr $sha"
+    return 0
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$repo" "$issue" "$pr" "$sha" >>"$index"
+  echo "recorded: $repo issue #$issue PR #$pr $sha"
+}
+
+if [[ $cmd == record || $cmd == check-and-record ]]; then
+  [[ $sha =~ ^[0-9a-f]{7,40}$ ]] || die "--sha must be 7-40 lowercase hex, got '$sha'"
+  sha=${sha:0:7}
+fi
+
 case $cmd in
   count) count_rounds ;;
-  check)
-    n=$(count_rounds)
-    if ((n >= cap)); then
-      echo "issue $repo#$issue already had $n Codex rounds (max $cap) across its PRs: split the work or move the rest to issues" >&2
-      exit 1
-    fi
-    echo "issue $repo#$issue: $n of $cap Codex rounds used" ;;
-  record)
-    [[ $sha =~ ^[0-9a-f]{7,40}$ ]] || die "--sha must be 7-40 lowercase hex, got '$sha'"
-    sha=${sha:0:7}
+  check) do_check || exit 1 ;;
+  record) mkdir -p "$out"; do_record ;;
+  check-and-record)
     mkdir -p "$out"
-    if [[ -f $index ]] && awk -F'\t' -v r="$repo" -v p="$pr" -v s="$sha" '$1 == r && $3 == p && $4 == s { found = 1 } END { exit !found }' "$index"; then
+    exec 9>"$index.lock"
+    flock -w 30 9 || die "timed out waiting for the lock $index.lock"
+    # A head already recorded is a retry of the same round, not a new one.
+    if recorded_head; then
       echo "already recorded: $repo#$pr $sha"
       exit 0
     fi
-    printf '%s\t%s\t%s\t%s\n' "$repo" "$issue" "$pr" "$sha" >>"$index"
-    echo "recorded: $repo issue #$issue PR #$pr $sha" ;;
+    do_check || exit 1
+    do_record ;;
 esac
