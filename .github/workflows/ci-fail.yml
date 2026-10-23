@@ -1,0 +1,38 @@
+# CI-failure marker comment (vws-deploy#412). Reusable: each vws-* repo calls it from a thin caller
+# on workflow_run completed (sample in docs/ci-fail.md). For a failed run on a same-repo PR head it
+# posts one marker comment per head SHA, or edits it; the format and the 3-rework cap are in
+# docs/ci-fail.md. The script reads the event file itself; no event field is put into a shell line.
+name: ci-fail
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  marker:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      contains(fromJSON('["failure","timed_out","startup_failure","action_required"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: vws-ci-fail-${{ github.repository }}-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: popododo0720/vws-deploy
+          ref: main
+          path: vws-deploy-ci-fail
+          sparse-checkout: .github/ci-fail
+          persist-credentials: false
+      - name: Post or update the marker comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 vws-deploy-ci-fail/.github/ci-fail/ci_fail.py
