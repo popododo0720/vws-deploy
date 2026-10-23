@@ -750,6 +750,46 @@ cmd_vws() {
   rm -rf "$tmp"
 }
 
+# upgrade_compat_check: every testdata/upgrade/<version>/ record decodes with the current code, its
+# README names the tag and command that wrote it, and its commit carries that chart version
+# (R23, vws-deploy#396).
+upgrade_compat_die() {
+  rm -rf "${upgrade_compat_tmp:-}"
+  die "R23: $*"
+}
+
+cmd_upgrade_compat() {
+  local dir version fixture group commit chart_version
+  group=$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)
+  [[ -n $group ]] || die "R23: charts/vws/crds/vwsclusters.yaml has no spec.group"
+  [[ -d testdata/upgrade ]] || die "R23: testdata/upgrade does not exist"
+  [[ -f tests/vws/upgrade-compat.test.sh ]] || die "R23: tests/vws/upgrade-compat.test.sh does not exist"
+  upgrade_compat_tmp=$(mktemp -d)
+  for dir in testdata/upgrade/*/; do
+    [[ -d $dir ]] || upgrade_compat_die "testdata/upgrade has no <version> directory"
+    version=$(basename "$dir")
+    [[ -f ${dir}README.md ]] || upgrade_compat_die "${dir}README.md does not exist"
+    grep -q -E '^Tag: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Tag: <tag>' line"
+    grep -q -E '^Command: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Command: <command>' line"
+    commit=$(sed -n 's/^Commit: //p' "${dir}README.md")
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || upgrade_compat_die "${dir}README.md has no 'Commit: <full sha>' line"
+    git cat-file -e "${commit}^{commit}" 2>/dev/null || upgrade_compat_die "commit ${commit} is not in this repo"
+    git merge-base --is-ancestor "$commit" HEAD || upgrade_compat_die "commit ${commit} is not in this history"
+    chart_version=$(git show "${commit}:charts/vws/Chart.yaml" | sed -n 's/^version: //p')
+    [[ $chart_version == "$version" ]] ||
+      upgrade_compat_die "${dir} is version ${version} but charts/vws/Chart.yaml at ${commit:0:7} is ${chart_version}"
+    for fixture in "${dir}"*.json; do
+      [[ -f $fixture ]] || upgrade_compat_die "testdata/upgrade/${version} holds no .json record"
+      jq --arg v "${group}/v1alpha1" '.apiVersion = $v' "$fixture" >"${upgrade_compat_tmp}/cr.json" ||
+        upgrade_compat_die "${fixture} is not JSON"
+      python3 scripts/vws.d/lib/render.py "${upgrade_compat_tmp}/cr.json" /dev/null >/dev/null ||
+        upgrade_compat_die "${fixture} does not decode with the current code"
+    done
+  done
+  rm -rf "$upgrade_compat_tmp"
+  echo "upgrade-compat: records decode"
+}
+
 # crd_check ROOT: the only VWS CRD is VWSCluster in charts/vws/crds/vwsclusters.yaml, its schema has no
 # secret-shaped field name, and its API group is written there and in the example CRs only.
 crd_check() {
@@ -1129,6 +1169,7 @@ cmd_all() {
   cmd_agents
   cmd_config
   cmd_vws
+  cmd_upgrade_compat
   cmd_bootstrap
   cmd_crd
   cmd_bundle
@@ -1147,7 +1188,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|bootstrap|crd|profiles|schema|hooks|docs|recovery|english|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|english|commits|commit-msg|all>
 EOF
 }
 
@@ -1163,6 +1204,7 @@ case "$command_name" in
   bundle) cmd_bundle ;;
   config) cmd_config ;;
   vws) cmd_vws ;;
+  upgrade-compat) cmd_upgrade_compat ;;
   bootstrap) cmd_bootstrap ;;
   crd) cmd_crd ;;
   profiles) cmd_profiles ;;

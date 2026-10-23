@@ -1,0 +1,46 @@
+{
+  "apiVersion": "FILLED_BY_TEST",
+  "kind": "VWSCluster",
+  "metadata": {
+    "name": "vws",
+    "namespace": "vws",
+    "generation": 1
+  },
+  "spec": {
+    "profile": "single-node",
+    "version": "sha-0123456",
+    "storage": {
+      "driver": "existing",
+      "storageClass": "fast-rbd"
+    },
+    "network": {
+      "driver": "kube-ovn",
+      "vmMTU": 8900
+    },
+    "services": {
+      "network": {
+        "flags": {
+          "pool": "198.18.0.0/24"
+        }
+      },
+      "console-api": {
+        "flags": {
+          "console-origins": "https://console.example.invalid"
+        }
+      }
+    }
+  },
+  "status": {
+    "observedGeneration": 1,
+    "appliedValuesHash": "3883248714bfe18aac81d35c30824400d21feeeeb0cc92e209f29bbf0ddff3b1",
+    "specHistory": [],
+    "conditions": [
+      {
+        "type": "Applied",
+        "status": "True",
+        "reason": "Applied",
+        "message": "vws apply"
+      }
+    ]
+  }
+}

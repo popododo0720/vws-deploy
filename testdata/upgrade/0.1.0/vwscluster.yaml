@@ -1,0 +1,24 @@
+# The VWSCluster the 0.1.0 record was made from: a one-node lab install on an existing StorageClass,
+# with a pinned image tag and the VM MTU of that underlay.
+# apiVersion is FILLED_BY_TEST because R18 keeps the API group only in charts/vws/crds/vwsclusters.yaml.
+apiVersion: FILLED_BY_TEST
+kind: VWSCluster
+metadata:
+  name: vws
+  namespace: vws
+spec:
+  profile: single-node
+  version: sha-0123456
+  storage:
+    driver: existing
+    storageClass: fast-rbd
+  network:
+    driver: kube-ovn
+    vmMTU: 8900
+  services:
+    network:
+      flags:
+        pool: 198.18.0.0/24
+    console-api:
+      flags:
+        console-origins: https://console.example.invalid
