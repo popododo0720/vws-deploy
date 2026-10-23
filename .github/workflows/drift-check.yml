@@ -18,6 +18,9 @@ on:
       - tests/workflows/**
       - .github/orchestrate/**
       - tests/orchestrate/**
+      - .github/ci-fail/**
+      - .github/workflows/ci-fail.yml
+      - tests/ci_fail/**
       - .github/metrics/**
       - tests/metrics/**
 
@@ -39,6 +42,9 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/orchestrate -v
           shellcheck .github/orchestrate/box/*.sh
+      # CI-failure marker comment (vws-deploy#412); fake gh, no network.
+      - name: CI-failure marker unit tests
+        run: python3 -m unittest discover -s tests/ci_fail -v
       # Daily factory metrics (vws-deploy#345) import the orchestrator; stub gh, no network.
       - name: Metrics unit tests
         run: python3 -m unittest discover -s tests/metrics -v
