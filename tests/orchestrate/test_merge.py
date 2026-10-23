@@ -427,7 +427,6 @@ def routes(labels=("verify-approved",), head="1" * 40):
     r[f"{O}/vws-deploy/branches/main"] = {"body": {"commit": {"sha": MAIN}}}
     r[f"{O}/vws-deploy/actions/runs"] = {"body": {"total_count": 1, "workflow_runs": [
         {"id": 1, "workflow_id": 7, "name": "ci", "status": "completed", "conclusion": "success"}]}}
-    r[f"{O}/vws-deploy/branches/main/protection/required_status_checks"] = {"body": {"checks": REQUIRED}}
     r[f"{O}/vws-deploy/rules/branches/main"] = {"body": []}
     r[f"PUT {O}/vws-deploy/pulls/500/merge"] = {"body": {"sha": MERGED, "merged": True, "message": "Pull Request successfully merged"}}
     r[f"{O}/vws-deploy/compare/{MERGED}...{MAIN}"] = {"body": {"status": "behind"}}
@@ -514,11 +513,9 @@ class ApplyMerges(rt.Env):
         check_ = next(e for e in self.log() if e.get("kind") == "merge_check" and e["target"] == "vws-deploy#500")
         self.assertIn("required_missing:english", check_["reasons"])
 
-    def test_no_classic_protection_uses_rulesets_only(self):
-        r = routes()
-        r[f"{O}/vws-deploy/branches/main/protection/required_status_checks"] = {"status": 404, "body": {"message": "Not Found"}}
-        self.set_routes(r)
+    def test_rulesets_only_no_classic_protection_read(self):
         self.assertEqual(self.tick(), 0)
+        self.assertFalse([c for c in self.calls() if "/protection" in c["path"]])
         self.assertIn(("merge", "vws-deploy#500"),
                       [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"])
 
@@ -634,6 +631,10 @@ class MergeStateOnly408(unittest.TestCase):
 class NoProtectionRead408(rt.Env):
     APPLY = dict(ORCHESTRATE_MODE="apply", ORCHESTRATE_MERGE="apply", ORCHESTRATE_SCOPE="vws-deploy#500")
 
+    def setUp(self):
+        super().setUp()
+        self.set_routes(routes())
+
     def merge_writes(self):
         return [c for c in self.writes() if c["method"] == "PUT"]
 
@@ -706,6 +707,23 @@ class NoProtectionRead408(rt.Env):
                 self.assertTrue(got.startswith("merge state changed"), got)
         self.set_routes(routes())
         self.assertEqual(orch.recheck_merge(orch.Gh(), "vws-deploy", "500", "1" * 40, {}, c), "")
+
+    def test_recheck_error_on_the_last_pr_read_fails_closed(self):
+        snap_file = os.path.join(self.tmp, "snap.json")
+        self.tick("--dump-snapshot", snap_file)
+        c = rt.load(snap_file)["merge"]["vws-deploy"]
+        real, pulls = orch.Gh(), []
+
+        class Flaky:
+            def get(self, path):
+                if path.endswith("/pulls/500"):
+                    pulls.append(path)
+                    if len(pulls) == 2:
+                        raise orch.GhError(403, "Resource not accessible by personal access token")
+                return real.get(path)
+
+        got = orch.recheck_merge(Flaky(), "vws-deploy", "500", "1" * 40, {}, c)
+        self.assertTrue(got.startswith("re-read failed: "), got)
 
 
 if __name__ == "__main__":
