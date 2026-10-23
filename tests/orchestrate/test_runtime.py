@@ -31,6 +31,11 @@ def read(path):
 NOWISO = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# The status issue body as created by hand (vws-deploy#415), before the orchestrator first writes it. The
+# orchestrator owns only the block between the two markers (vws-deploy#431 verdict).
+STATUS_SEED = "<!-- vws-orchestrate:status -->\nFactory status.\n<!-- /vws-orchestrate:status -->\n"
+
+
 def pr_issue(repo, n, labels=()):
     return {"number": n, "html_url": f"https://github.com/popododo0720/{repo}/pull/{n}", "state": "open",
             "created_at": "2026-10-01T00:00:00Z", "labels": [{"name": x} for x in labels], "body": "", "pull_request": {}}
@@ -38,7 +43,7 @@ def pr_issue(repo, n, labels=()):
 
 def routes():
     pulls = [{"number": n, "draft": False, "base": {"ref": "main"}, "head": {"sha": f"{n:040x}"}} for n in range(400, 405)]
-    # The status thread is a never-merged draft PR; a draft never counts as pending.
+    # The verify-wake thread (ORCHESTRATE_WAKE_THREAD here) is a never-merged draft PR; a draft never counts as pending.
     pulls.append({"number": 339, "draft": True, "base": {"ref": "main"}, "head": {"sha": f"{339:040x}"}})
     # verify-queue.yml labeled the five green PRs needs-verify (vws-deploy#397).
     issues = [pr_issue("vws-deploy", n, ("needs-verify",)) for n in range(400, 405)] + [pr_issue("vws-deploy", 339)]
@@ -56,6 +61,7 @@ def routes():
                                           "state": "open", "created_at": "2026-10-01T00:00:00Z", "body": "",
                                           "labels": [{"name": "ready"}, {"name": "deepseek"}]}]},
         f"{O}/vws-iam/issues/1": {"body": {"state": "open", "labels": [{"name": "ready"}, {"name": "deepseek"}]}},
+        f"{O}/vws-deploy/issues/415": {"body": {"number": 415, "state": "open", "body": STATUS_SEED}},
     }
     for n in range(400, 405):
         r[f"{O}/vws-deploy/commits/{n:040x}/check-runs"] = {"body": {"check_runs": []}}
@@ -78,7 +84,7 @@ class Env(unittest.TestCase):
         self.calls_file = os.path.join(self.tmp, "calls.jsonl")
         self.env = {"ORCHESTRATE_STATE_DIR": os.path.join(self.tmp, "state"),
                     "ORCHESTRATE_CONFIG_DIR": os.path.join(self.tmp, "config"),
-                    "ORCHESTRATE_EXTRA_REPOS": "vws-iam"}
+                    "ORCHESTRATE_EXTRA_REPOS": "vws-iam", "ORCHESTRATE_WAKE_THREAD": "339"}
         patch = mock.patch.dict(os.environ, {"PATH": self.bin + os.pathsep + os.environ["PATH"],
                                              "STUB_ROUTES": self.routes_file, "STUB_LOG": self.calls_file,
                                              "GH_TOKEN": "ghp_should_never_be_used_123"})
@@ -100,7 +106,15 @@ class Env(unittest.TestCase):
             return [json.loads(line) for line in f]
 
     def writes(self):
-        return [c for c in self.calls() if c["method"] != "GET"]
+        """Every write except the status issue body edit (at most one per tick; see status_edits)."""
+        return [c for c in self.calls() if c["method"] != "GET" and not self.is_status_edit(c)]
+
+    @staticmethod
+    def is_status_edit(c):
+        return c["method"] == "PATCH" and c["path"] == f"{O}/vws-deploy/issues/415"
+
+    def status_edits(self):
+        return [json.loads(c["stdin"])["body"] for c in self.calls() if self.is_status_edit(c)]
 
     def log(self):
         with open(self.paths.log, encoding="utf-8") as f:
@@ -447,22 +461,27 @@ class Ticks(Env):
         with open(self.paths.env_file, "w") as f:
             f.write("ORCHESTRATE_MODE=yes\n")
         self.assertEqual(self.tick(), 2)
-        for bad in ("0", "-1", "3.5", "vws-deploy#339", "abc", ""):
+        for key, bad in [("ORCHESTRATE_STATUS_ISSUE", b) for b in ("0", "-1", "3.5", "vws-deploy#415", "abc", "")] + \
+                [("ORCHESTRATE_WAKE_THREAD", b) for b in ("0", "-1", "3.5", "vws-deploy#339", "abc", "415")]:
             with open(self.paths.env_file, "w") as f:
-                f.write(f"ORCHESTRATE_STATUS_PR={bad}\n")
-            self.assertEqual(self.tick(), 2, f"ORCHESTRATE_STATUS_PR={bad!r} is refused")
+                f.write("")
+            self.assertEqual(self.tick(**{key: bad}), 2, f"{key}={bad!r} is refused")
         with open(self.paths.env_file, "w") as f:
             f.write("ORCHESTRATE_DEEPSEEK_CAP=0\n")
         self.assertEqual(self.tick(), 2, "ORCHESTRATE_DEEPSEEK_CAP=0 is refused")
 
-    def test_status_pr_is_configurable(self):
+    def test_wake_thread_and_status_issue_are_configurable(self):
         r = routes()
         r[f"{O}/vws-deploy/issues/12/comments"] = {"body": []}
+        r[f"{O}/vws-deploy/issues/20"] = {"body": {"number": 20, "state": "open", "body": STATUS_SEED}}
         self.set_routes(r)
-        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_STATUS_PR="12"), 0)
-        self.assertIn(("POST", f"{O}/vws-deploy/issues/12/comments"),
-                      [(c["method"], c["path"]) for c in self.writes()])
-        self.assertNotIn(f"{O}/vws-deploy/issues/339/comments", [c["path"] for c in self.calls()])
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_WAKE_THREAD="12",
+                                   ORCHESTRATE_STATUS_ISSUE="20"), 0)
+        calls = [(c["method"], c["path"]) for c in self.calls()]
+        self.assertIn(("POST", f"{O}/vws-deploy/issues/12/comments"), calls)
+        self.assertIn(("PATCH", f"{O}/vws-deploy/issues/20"), calls)
+        self.assertNotIn(f"{O}/vws-deploy/issues/339/comments", [p for _, p in calls])
+        self.assertFalse([p for _, p in calls if "/issues/415" in p])
 
     def test_fixture_mode(self):
         snap = os.path.join(self.tmp, "snap.json")
@@ -587,10 +606,13 @@ class FailureComments(Env):
         self.assertEqual(self.writes(), [])
         self.notify(3, ORCHESTRATE_MODE="apply")
         self.notify(4, ORCHESTRATE_MODE="apply")
-        w = self.writes()
-        self.assertEqual([c["path"] for c in w], [f"{O}/vws-deploy/issues/339/comments"])
-        body = json.loads(w[0]["stdin"])["body"]
-        self.assertEqual(body.split("\n")[0], "<!-- vws-orchestrate:failure -->")
+        self.assertEqual(self.writes(), [], "no failure comment anywhere (vws-deploy#416)")
+        edits = self.status_edits()
+        self.assertEqual(len(edits), 1, "one status body edit per streak")
+        body = edits[0]
+        self.assertTrue(body.startswith("<!-- vws-orchestrate:status -->\nFactory status.\n"), "the rest of the status body is kept")
+        self.assertTrue(body.endswith("<!-- /vws-orchestrate:status -->\n"), "the section goes inside the block")
+        self.assertIn("## Failed ticks\n\n<!-- vws-orchestrate:failure -->\n", body)
         self.assertIn("3 failed ticks in a row", body)
         self.assertNotIn("SECRETSECRET", body)
         self.assertIn("[redacted]", body)
@@ -598,37 +620,40 @@ class FailureComments(Env):
     def test_new_streak_after_success_and_min_gap(self):
         self.notify(3, ORCHESTRATE_MODE="apply")
         self.notify(3, start=2000.0, ORCHESTRATE_MODE="apply")
-        self.assertEqual(len(self.writes()), 1, "a loop restart inside the gap does not post again")
+        self.assertEqual(len(self.status_edits()), 1, "a loop restart inside the gap does not write again")
         self.tick()  # a good tick ends the streak
         self.assertFalse(os.path.exists(self.paths.failure_file))
         self.notify(3, start=3000.0, ORCHESTRATE_MODE="apply")
-        self.assertEqual(len(self.writes()), 2)
+        self.assertEqual(len(self.status_edits()), 2)
 
     def test_alert_mode(self):
         self.notify(3)
         self.assertEqual(self.writes(), [], "dry-run with ORCHESTRATE_FAILURE_ALERT=apply posts nothing")
         self.notify(3, ORCHESTRATE_FAILURE_ALERT="always")
-        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(len(self.status_edits()), 1)
 
     def test_scoped_trial_posts_no_failure_comment(self):
         # vws-deploy#341: ORCHESTRATE_SCOPE limits every write, the failure comment included.
         self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1")
         self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-iam#1", ORCHESTRATE_FAILURE_ALERT="always")
-        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.writes() + self.status_edits(), [])
         self.assertTrue(any(e.get("event") == "failure_alert_skipped" and "ORCHESTRATE_SCOPE" in e.get("reason", "")
                             for e in self.log()))
-        self.assertFalse(os.path.exists(self.paths.failure_file), "a later unscoped streak still posts")
+        self.assertFalse(os.path.exists(self.paths.failure_file), "a later unscoped streak still writes")
         self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-deploy#339")
-        self.assertEqual(len(self.writes()), 1, "a scope on the status thread itself allows the comment")
+        self.assertEqual(self.status_edits(), [], "the wake thread is not the status issue")
+        self.notify(3, ORCHESTRATE_MODE="apply", ORCHESTRATE_SCOPE="vws-deploy#415")
+        self.assertEqual(len(self.status_edits()), 1, "a scope on the status issue itself allows the edit")
+        self.assertEqual(self.writes(), [])
 
-    def test_key_already_on_status_thread_is_not_reposted(self):
+    def test_key_already_in_status_body_is_not_rewritten(self):
         key = "sha256:" + orch.hashlib.sha256(f"failure:{orch.socket.gethostname()}:1000.0".encode()).hexdigest()
         r = routes()
-        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 1, "created_at": NOWISO,
-                                                             "body": f"<!-- vws-orchestrate:failure -->\nIdempotency key: `{key}`"}]}
+        r[f"{O}/vws-deploy/issues/415"] = {"body": {"number": 415, "state": "open", "body": STATUS_SEED +
+                                                    f"\n## Failed ticks\n\n<!-- vws-orchestrate:failure -->\nIdempotency key: `{key}`\n"}}
         self.set_routes(r)
         self.notify(3, ORCHESTRATE_MODE="apply")
-        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.writes() + self.status_edits(), [])
         self.assertTrue(os.path.exists(self.paths.failure_file))
 
     def test_post_failure_is_retried_next_time(self):
@@ -636,7 +661,7 @@ class FailureComments(Env):
             self.assertEqual(self.notify(3, ORCHESTRATE_MODE="apply"), 0)
         self.assertFalse(os.path.exists(self.paths.failure_file))
         self.notify(4, ORCHESTRATE_MODE="apply")
-        self.assertEqual(len(self.writes()), 2)
+        self.assertEqual(len(self.status_edits()), 2)
 
 
 class BoxScripts(unittest.TestCase):
