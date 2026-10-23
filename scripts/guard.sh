@@ -472,22 +472,33 @@ PY
 }
 
 cmd_agents() {
+  # The jobs live in one reusable workflow per job; repo-guard.yml is their short caller (#402).
+  local rg_dir=.github/workflows rg_hy=.github/workflows/repo-guard-pr-hygiene.yml rg_vg=.github/workflows/repo-guard-verify-gate.yml f
+  local rg_all=("$rg_dir/repo-guard.yml" "$rg_hy" "$rg_vg" "$rg_dir/repo-guard-verify-reset.yml" "$rg_dir/repo-guard-verify-rerun.yml")
+  for f in "${rg_all[@]:1}"; do
+    [[ -f $f ]] || die "R13: ${f} is missing; the shared repo-guard jobs live there, one per file (#402)"
+    grep -q -x '  workflow_call:' "$f" || die "R13: ${f} must be a reusable workflow (on: workflow_call)"
+  done
+  python3 .github/drift/caller_pin.py --home .github/workflows/repo-guard.yml >/dev/null \
+    || die "R13: .github/workflows/repo-guard.yml must be the caller of the repo-guard job files (.github/drift/caller_pin.py, #402)"
+  python3 -m unittest discover -s tests/workflows >/dev/null 2>&1 \
+    || die "R13: tests/workflows fail (python3 -m unittest discover -s tests/workflows -v)"
   scripts/guard-agents.sh agents AGENTS.md || die "R13: AGENTS.md lost the Insider-risk guardrails"
   scripts/guard-agents.sh selftest >/dev/null || die "R13: scripts/guard-agents.sh accepted a bad input"
   scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
-  grep -q 'guard-agents.sh pr-base' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the base"
-  grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Part of #N"
+  grep -q 'guard-agents.sh pr-base' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check the base"
+  grep -q 'guard-agents.sh pr-body' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check Part of #N"
   (cd scripts && sha256sum --quiet -c guard-agents.sh.sha256) || die "R13: scripts/guard-agents.sh.sha256 does not match scripts/guard-agents.sh; this repo holds the canonical copy, so update the sum in the same commit (cd scripts && sha256sum guard-agents.sh > guard-agents.sh.sha256)"
-  grep -q 'guard-agents.sh identity' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the guard-agents.sh identity"
-  grep -q 'guard-agents.sh pr-commits' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check that no commit closes an issue"
+  grep -q 'guard-agents.sh identity' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check the guard-agents.sh identity"
+  grep -q 'guard-agents.sh pr-commits' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check that no commit closes an issue"
   grep -q 'guard-agents.sh push-watch' .github/workflows/direct-push-watch.yml || die "R13: direct-push-watch.yml does not watch pushes to main"
-  ! grep -q 'push:' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must run on pull requests only, so a pull request has no skipped check"
-  grep -q -E 'guard-agents.sh verify-gate( |$)' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml has no verify-gate (#249)"
+  ! grep -q 'push:' "${rg_all[@]}" || die "R13: repo-guard must run on pull requests only, so a pull request has no skipped check"
+  grep -q -E 'guard-agents.sh verify-gate( |$)' "$rg_vg" || die "R13: repo-guard-verify-gate.yml has no verify-gate (#249)"
   grep -q -e 'labeled, unlabeled' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must re-run verify-gate on labeled/unlabeled"
-  ! grep -q 'pull_request_target' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must not use pull_request_target"
-  grep -q 'ref: ${{ github.event.pull_request.base.sha }}' .github/workflows/repo-guard.yml || die "R13: verify-gate must run the guard from the base commit"
-  grep -q 'GUARD_VERIFY_EXCLUDE=' .github/workflows/repo-guard.yml || die "R13: verify-gate must exclude the PR author and the head pusher"
-  grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' .github/workflows/repo-guard.yml || die "R13: verify-gate must pass the vws-verify identity"
+  ! grep -q 'pull_request_target' "${rg_all[@]}" || die "R13: repo-guard must not use pull_request_target"
+  grep -q 'ref: ${{ github.event.pull_request.base.sha }}' "$rg_vg" || die "R13: verify-gate must run the guard from the base commit"
+  grep -q 'GUARD_VERIFY_EXCLUDE=' "$rg_vg" || die "R13: verify-gate must exclude the PR author and the head pusher"
+  grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' "$rg_vg" || die "R13: verify-gate must pass the vws-verify identity"
 }
 
 console_api_closed() {

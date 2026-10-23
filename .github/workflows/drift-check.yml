@@ -7,6 +7,16 @@ on:
   schedule:
     - cron: "17 0 * * *"
   workflow_dispatch:
+    # Check one PR head's repo-guard.yml on demand, e.g. a caller PR in another repo (vws-deploy#402).
+    inputs:
+      repo:
+        description: "repo of the PR head to check (from repos.tsv); empty checks only the open PRs"
+        required: false
+        type: string
+      sha:
+        description: "40-hex head SHA of that PR"
+        required: false
+        type: string
   pull_request:
     paths:
       - .github/drift/drift-check.sh
@@ -15,6 +25,7 @@ on:
       - .github/workflows/drift-check.yml
       - tests/drift/**
       - .github/workflows/repo-guard.yml
+      - .github/workflows/repo-guard-*.yml
       - tests/workflows/**
       - .github/ac/**
       - .github/workflows/post-merge.yml
@@ -61,13 +72,22 @@ jobs:
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
+          # The caller is checked at every open PR head, and also at the head named by the event: this
+          # PR's head on pull_request, or the dispatch inputs. drift_check.py validates REPO=SHA.
+          EVENT: ${{ github.event_name }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          IN_REPO: ${{ inputs.repo }}
+          IN_SHA: ${{ inputs.sha }}
         # Exit 3 is drift, anything else non-zero is an error or a crash (Python exits 1 on a traceback).
         # The schedule fails on both. A pull request fails on an error or crash, but only warns on drift:
         # the other repos hold the published guard-agents.sh, so a PR that changes the canonical
         # checksum always drifts until it merges.
         run: |
           set +e
-          .github/drift/drift-check.sh --markdown "$RUNNER_TEMP/drift.md"
+          heads=()
+          if [[ $EVENT == pull_request ]]; then heads=(--head "vws-deploy=${PR_HEAD}"); fi
+          if [[ -n $IN_REPO || -n $IN_SHA ]]; then heads+=(--head "${IN_REPO}=${IN_SHA}"); fi
+          .github/drift/drift-check.sh --markdown "$RUNNER_TEMP/drift.md" "${heads[@]}"
           rc=$?
           if [[ -f "$RUNNER_TEMP/drift.md" ]]; then cat "$RUNNER_TEMP/drift.md" >> "$GITHUB_STEP_SUMMARY"; fi
           if [[ $rc -eq 3 && "${{ github.event_name }}" == "pull_request" ]]; then
