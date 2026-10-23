@@ -55,6 +55,21 @@ REWORK_TEXT = (
 )
 REWORK_MARKER = "<!-- orchestrate:rework head="
 VERIFY_LOGIN = "vws-verify[bot]"
+# CI-failure marker (vws-deploy#412): a PR comment that #420's ci-fail workflow posts with the caller's
+# GITHUB_TOKEN. Line 1 is the marker and a fenced json block is the record; the comment counts only as
+# #420 parse_comment accepts it (.github/ci-fail/ci_fail.py, ported below). Only github-actions[bot]
+# is trusted, and n/wake are recomputed from the comments (the marker can only tighten them).
+CI_FAIL_LOGIN = "github-actions[bot]"
+# Exactly #420 MARKER_RE, JSON_BLOCK_RE and marker_line's field checks.
+CI_FAIL_RE = re.compile(r"<!-- vws-ci-fail sha=([0-9a-f]{40}) v=(\d+) repo=(vws-[a-z0-9-]+) pr=(\d+) "
+                        r"owner=(deepseek|grok|none) agent=([a-z0-9][a-z0-9-]{0,38}|-) n=(\d+) wake=(true|false) -->")
+CI_FAIL_JSON_RE = re.compile(r"^```json\n(.*?)^```$", re.M | re.S)
+CI_FAIL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+CI_FAIL_REPO_RE = re.compile(r"vws-[a-z0-9-]+")
+CI_FAIL_AGENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,38}")
+CI_FAIL_OWNERS = {"deepseek", "grok", "none"}
+CI_FAIL_CAP = 3  # CI reworks per head chain; the 4th failing head waits for a human
+RESET_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}  # who may reset the CI cap
 # A verify verdict comment or review body: "# vws-iam#127 @ <40-hex head>" then "Result: FAIL ...".
 VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s*\n+Result:\s*(PASS|FAIL)\b")
 # Conflict-only verdicts are a rebuild for eggbot, not a DeepSeek rework.
@@ -507,8 +522,44 @@ def parse_deps(body, repo):
     return deps, bad
 
 
+def ci_fail_marker_line(rec):
+    """#420 marker_line: line 1 for a record; raises on an invalid field (KeyError/TypeError/ValueError)."""
+    if not (CI_FAIL_SHA_RE.fullmatch(rec["head_sha"]) and CI_FAIL_REPO_RE.fullmatch(rec["repo"])
+            and rec["owner"] in CI_FAIL_OWNERS and (rec["agent"] == "" or CI_FAIL_AGENT_RE.fullmatch(rec["agent"]))):
+        raise ValueError("record has an invalid marker field")
+    return (f"<!-- vws-ci-fail sha={rec['head_sha']} v={int(rec['v'])} repo={rec['repo']} pr={int(rec['pr'])} "
+            f"owner={rec['owner']} agent={rec['agent'] or '-'} n={int(rec['n'])} "
+            f"wake={'true' if rec['wake'] else 'false'} -->")
+
+
+def ci_fail_record(body):
+    """#420 parse_comment: the JSON record of a CI-failure comment, or None when line 1 and the record
+    (the last json block) disagree or are absent."""
+    body = (body or "").replace("\r\n", "\n")
+    m = CI_FAIL_RE.fullmatch(body.split("\n", 1)[0])
+    blocks = CI_FAIL_JSON_RE.findall(body)
+    if not m or not blocks:
+        return None
+    try:
+        rec = json.loads(blocks[-1])
+    except ValueError:
+        return None
+    try:
+        if not isinstance(rec, dict) or ci_fail_marker_line(rec) != m.group(0):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return rec
+
+
 def classify_comment(body):
     """Return (kind, data) for comments the orchestrator cares about, else None."""
+    rec = ci_fail_record(body)
+    if rec is not None:
+        m = CI_FAIL_RE.fullmatch((body or "").replace("\r\n", "\n").split("\n", 1)[0])
+        return "ci_fail", {"sha": m.group(1), "v": int(m.group(2)), "repo": m.group(3), "pr": int(m.group(4)),
+                           "owner": m.group(5), "agent": m.group(6), "n": int(m.group(7)),
+                           "wake": m.group(8) == "true", "record": rec}
     text = (body or "").lstrip()
     first = text.split("\n", 1)[0].strip()
     if text.startswith(DEEPSEEK):
@@ -1054,34 +1105,134 @@ def rework_prs(k, it, items):
     return [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
 
 
+def ci_fails(pr):
+    """CI-failure markers on a PR, oldest first: (accepted, untrusted). Accepted means posted by
+    github-actions[bot], v=1, and naming this repo#N. A comment with no recorded author is untrusted."""
+    ok, bad = [], []
+    for c in sorted(pr.get("comments", []), key=lambda c: (c["created_at"], c["id"])):
+        kind = classify_comment(c["body"])
+        if not kind or kind[0] != "ci_fail":
+            continue
+        d = kind[1]
+        if c.get("author") != CI_FAIL_LOGIN:
+            bad.append(c)
+        elif d["v"] == 1 and d["repo"] == pr["repo"] and d["pr"] == pr["number"]:
+            ok.append(dict(d, id=c["id"], url=c["url"], at=c["created_at"], body=c["body"]))
+    return ok, bad
+
+
+def authorized_reset(c):
+    """A `/orchestrate reset-failures` comment by an OWNER, MEMBER or COLLABORATOR (author_association as
+    recorded by comment_record). Only the CI cap uses it so far; vws-deploy#419 can reuse it."""
+    kind = classify_comment(c.get("body"))
+    return bool(kind and kind[0] == "reset" and c.get("assoc") in RESET_ASSOC)
+
+
+def ci_reset_time(pr, owner):
+    """Latest CI-cap reset: /orchestrate reset-failures by an OWNER, MEMBER or COLLABORATOR on the PR or
+    its owner item, or needs-human removed from the PR."""
+    t = 0.0
+    for c in pr.get("comments", []) + (owner.get("comments", []) if owner is not pr else []):
+        if authorized_reset(c):
+            t = max(t, utc(c["created_at"]))
+    for e in pr.get("events", []):
+        if e.get("event") == "unlabeled" and (e.get("label") or {}).get("name") == "needs-human":
+            t = max(t, utc(e["created_at"]))
+    return t
+
+
+def ci_fail_head(pr, owner):
+    """The CI failure on the PR's current head and why it is not reworked ('' = rework it), or (None, '').
+    n is recomputed: the distinct failing shas on this PR since the last CI reset, this head included.
+    A marker posted after that reset can only raise n (it also counts rebuilt predecessors)."""
+    ok, _ = ci_fails(pr)
+    m = next((x for x in ok if x["sha"] == pr["head_sha"]), None)
+    if not m:
+        return None, ""
+    since = ci_reset_time(pr, owner)
+    shas = []
+    for x in ok:
+        if utc(x["at"]) > since and x["sha"] not in shas:
+            shas.append(x["sha"])
+    n = shas.index(m["sha"]) + 1 if m["sha"] in shas else len(shas) + 1
+    if utc(m["at"]) > since:
+        n = max(n, m["n"])
+    m = dict(m, n=n)
+    labels = set(pr["labels"]) | set(owner["labels"])
+    if m["owner"] != "deepseek":
+        return m, f"owner_{m['owner']}"
+    for reason, bad in (("wake_false", not m["wake"]),
+                        ("needs-human", "needs-human" in labels), ("blocked", "blocked" in labels),
+                        ("cap", n > CI_FAIL_CAP)):
+        if bad:
+            return m, reason
+    return m, ""
+
+
+def rework_kind(body):
+    tail = body.split(REWORK_MARKER, 1)[1].split("-->", 1)[0]
+    return "ci_fail_rework" if " ci=" in tail and " verdict=" not in tail else "verify_fail_rework"
+
+
 def rework_plan(k, it, items, since):
-    """Rework state of the item's DeepSeek PR (vws-deploy#373). counted: the reworks already dispatched
-    since the last reset plus a pending FAIL, each one failure toward the grok swap. state: pending |
-    done (this head was reworked already) | conflict_only (left to eggbot) | None (no FAIL on the head)."""
-    plan = {"target": "", "verdict": None, "state": None, "counted": []}
+    """Rework state of the item's DeepSeek PR (vws-deploy#373, #412). counted: the reworks already
+    dispatched since the last reset plus a pending FAIL, each one failure toward the grok swap. A head
+    with a verify FAIL and a CI failure is one rework and one count. state: pending | done (this head
+    was reworked already) | conflict_only (left to eggbot) | None (no FAIL on the head)."""
+    plan = {"target": "", "verdict": None, "ci": None, "state": None, "counted": [], "ci_skipped": []}
     for pk in rework_prs(k, it, items):
         pr = items[pk]
         dispatches = [c for c in pr.get("comments", []) if (classify_comment(c["body"]) or ("",))[0] == "dispatch"]
-        plan["counted"] += [{"url": c["url"], "kind": "verify_fail_rework", "report": ""} for c in dispatches
+        plan["counted"] += [{"url": c["url"], "kind": rework_kind(c["body"]), "report": ""} for c in dispatches
                             if REWORK_MARKER in c["body"] and utc(c["created_at"]) > since]
-        v = head_verdict(pr)
-        if plan["state"] or not v or v["result"] != "fail":
+        if plan["state"]:
             continue
-        plan["target"], plan["verdict"] = pk, v
-        if conflict_only(v["body"]):
-            plan["state"] = "conflict_only"
-        elif any(f"{REWORK_MARKER}{pr['head_sha']} " in c["body"] or c["created_at"] >= v["at"] for c in dispatches):
+        v = head_verdict(pr)
+        if v and v["result"] != "fail":
+            v = None
+        cf, why = ci_fail_head(pr, it)
+        if cf and why:
+            plan["ci_skipped"].append({"kind": "ci_fail_skipped", "target": pk, "comment": cf["url"],
+                                       "reason": why, "n": cf["n"]})
+            cf = None
+        if v and conflict_only(v["body"]):
+            if not cf:
+                plan["target"], plan["verdict"], plan["state"] = pk, v, "conflict_only"
+                continue
+            v = None  # the CI failure is still reworked; the conflict stays with eggbot
+        if not v and not cf:
+            continue
+        plan["target"], plan["verdict"], plan["ci"] = pk, v, cf
+        first = min(x["at"] for x in (v, cf) if x)
+        if any(f"{REWORK_MARKER}{pr['head_sha']} " in c["body"] or c["created_at"] >= first for c in dispatches):
             plan["state"] = "done"
         else:
             plan["state"] = "pending"
-            plan["counted"].append({"url": v["url"], "kind": "verify_fail", "report": ""})
+            plan["counted"].append({"url": (v or cf)["url"], "kind": "verify_fail" if v else "ci_fail", "report": ""})
     return plan
 
 
-def rework_body(pr, v):
-    quoted = "\n".join("> " + ln for ln in scrub(v["body"])[:3000].splitlines())
-    return (f"{REWORK_TEXT}\n\nVerify verdict: {v['url']} (head `{pr['head_sha'][:7]}`)\n\n{quoted}\n\n"
-            f"{REWORK_MARKER}{pr['head_sha']} verdict={v['id']} -->")
+def ci_fail_text(body):
+    """The human part of a CI-failure comment (failed jobs, log tails): no marker line, no JSON record,
+    and no HTML comment opener, so a log line cannot add an orchestrator marker."""
+    lines = (body or "").replace("\r\n", "\n").split("\n")[1:]
+    end = next((i for i, ln in enumerate(lines) if ln.strip() == "```json"), len(lines))
+    return scrub("\n".join(lines[:end]).strip()).replace("<!--", "&lt;!--")
+
+
+def rework_body(pr, v, cf=None):
+    def quote(text):
+        return "\n".join("> " + ln for ln in text[:3000].splitlines())
+    parts, keys = [REWORK_TEXT], ""
+    if v:
+        parts.append(f"Verify verdict: {v['url']} (head `{pr['head_sha'][:7]}`)\n\n{quote(scrub(v['body']))}")
+        keys += f" verdict={v['id']}"
+    if cf:
+        parts.append(f"CI failure: {cf['url']} (head `{pr['head_sha'][:7]}`, failing head {cf['n']} of {CI_FAIL_CAP})"
+                     f"\n\n{quote(ci_fail_text(cf['body']))}")
+        keys += f" ci={cf['id']}"
+    parts.append(f"{REWORK_MARKER}{pr['head_sha']}{keys} -->")
+    return "\n\n".join(parts)
 
 
 def decide(snapshot, state, now, cfg, exclusions):
@@ -1123,6 +1274,20 @@ def decide(snapshot, state, now, cfg, exclusions):
                         "body": wake_body(pending, key, snapshot["run_id"], threshold, max_wait, sorted(repos))})
     new_state["prev_pending_count"] = len(pending)
 
+    # CI-failure markers (vws-deploy#412): untrusted authors are ignored; owner=grok waits for #398(a).
+    for k in sorted(items):
+        it = items[k]
+        if not (it["is_pr"] and it["state"] == "open"):
+            continue
+        ok, bad = ci_fails(it)
+        for c in bad:
+            notes.append({"kind": "ci_fail_untrusted", "target": k, "comment": c["url"], "author": c.get("author", "")})
+        for m in ok:
+            if m["sha"] == it["head_sha"] and m["owner"] == "grok":
+                notes.append({"kind": "ci_fail_grok_pending", "target": k, "comment": m["url"], "sha": m["sha"],
+                              "agent": m["agent"]})
+                break
+
     # Rules B and C
     in_flight, queue, slots_used = [], [], 0
     for k in sorted(items):
@@ -1145,6 +1310,7 @@ def decide(snapshot, state, now, cfg, exclusions):
             continue
         since = reset_time(it)
         rw = rework_plan(k, it, items, since)
+        notes += rw["ci_skipped"]
         counted = [h for h in hist if h["outcome"] == "failed" and h["at"] > since] + rw["counted"]
         latest = hist[-1] if hist else None
         if len(counted) >= max_fail:
@@ -1209,7 +1375,7 @@ def decide(snapshot, state, now, cfg, exclusions):
             if rw["state"] == "pending" and not (running or pr_running or blocked or "blocked" in labels or pr.get("draft")):
                 queue.append((1, ready_time(it), pr["repo"], pr["number"], rw["target"], 0, k))
             else:
-                notes.append({"kind": "rework_skipped", "target": rw["target"], "verdict": rw["verdict"]["url"],
+                notes.append({"kind": "rework_skipped", "target": rw["target"], "verdict": (rw["verdict"] or rw["ci"])["url"],
                               "reason": "in flight or blocked" if rw["state"] == "pending" else rw["state"]})
             continue
         # A running target is never dispatched again, even after a failure reset.
@@ -1248,10 +1414,12 @@ def decide(snapshot, state, now, cfg, exclusions):
         picked += 1
         if q[0] == 1:
             pr = items[q[4]]
-            v = rework_plan(q[6], items[q[6]], items, reset_time(items[q[6]]))["verdict"]
+            plan = rework_plan(q[6], items[q[6]], items, reset_time(items[q[6]]))
+            v, cf = plan["verdict"], plan["ci"]
+            why = f"verify FAIL {v['url']}" if v else f"CI failure {cf['url']}"
             actions.append({"type": "dispatch", "target": q[4], "owner": q[6], "head": pr["head_sha"],
-                            "reason": f"rework after verify FAIL {v['url']}, DeepSeek slot {slots_used + picked} of {cap}",
-                            "body": rework_body(pr, v)})
+                            "reason": f"rework after {why}, DeepSeek slot {slots_used + picked} of {cap}",
+                            "body": rework_body(pr, v, cf)})
             continue
         retry_line = f"Retry {q[5]}/{INFRA_MAX_RETRIES} after provider error.\n\n" if q[5] else ""
         actions.append({"type": "dispatch", "target": q[4],
@@ -1292,7 +1460,7 @@ def ci_state(gh, repo, sha):
 # since the copy in history-cache.json (a new comment or label change bumps it), so a quiet tick costs
 # no per-item reads. A full re-read every HISTORY_REFRESH_S (plus up to an hour of per-item jitter,
 # so entries do not all expire on one tick) catches edits and deletes, which do not bump updated_at.
-HISTORY_VERSION = 2  # 2: verdict comments are kept (vws-deploy#373)
+HISTORY_VERSION = 3  # 2: verdict comments are kept (vws-deploy#373); 3: comment author recorded (#412)
 HISTORY_REFRESH_S = 6 * 3600
 
 
@@ -1341,8 +1509,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         for c in gh.get_all(f"repos/{OWNER}/{name}/issues/comments?since={since}&sort=created&direction=asc&per_page=100", limit=50):
             k = f"{name}#{c['issue_url'].rsplit('/', 1)[1]}"
             if k in snap["items"] and classify_comment(c.get("body")):
-                snap["items"][k]["comments"].append({"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
-                                                     "body": c.get("body") or ""})
+                snap["items"][k]["comments"].append(comment_record(c))
     for k, it in sorted(snap["items"].items()):
         labels = set(it["labels"])
         if labels & {"ready", "deepseek", "grok"}:
@@ -1401,8 +1568,14 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
     return snap
 
 
+def comment_record(c):
+    """A kept comment. author and assoc let decide trust CI-failure markers and CI-cap resets (#412)."""
+    return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or "",
+            "author": (c.get("user") or {}).get("login", ""), "assoc": c.get("author_association", "")}
+
+
 def candidate_history(gh, it):
-    comments = [{"id": c["id"], "url": c["html_url"], "created_at": c["created_at"], "body": c.get("body") or ""}
+    comments = [comment_record(c)
                 for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
                 if classify_comment(c.get("body"))]
     return comments, label_events(gh, it)
