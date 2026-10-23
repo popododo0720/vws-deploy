@@ -198,6 +198,12 @@ class PostMerge(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(s.writes(), [label_call(n) for n in (7, 8, 9, 11)])
 
+    def test_one_issue_in_three_forms_is_read_once(self):
+        s = Stub(self, {I + "7": issue(OPEN_BODY)})
+        s.run("Part of #7\nPart of vws-iam#7\nPart of popododo0720/vws-iam#7\n")
+        self.assertEqual([c for c in s.calls() if c == ["api", I + "7"]], [["api", I + "7"]])
+        self.assertEqual(s.writes(), [label_call(7)])
+
     def test_other_owner_or_repo_with_owner_is_skipped(self):
         s = Stub(self, {})
         r = s.run("Part of popododo0720/vws-proto#5\nPart of someone/vws-iam#6\n")
