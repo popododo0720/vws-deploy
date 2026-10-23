@@ -123,7 +123,10 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
 
 `SUMMARY.md` adds, for the last 7 and 28 days, the verify wakes, DeepSeek and grok dispatches,
 reworks and lead wakes, and tokens per merged PR (the sum of `tokens.total` over the days with token
-input, divided by the PRs merged on those days). A total over no day with input is `-`.
+input, divided by the PRs merged on those days). A total over no day with input is `-`, never 0;
+this holds for every 7/28-day total, including a window with no daily file. When only some days in
+the window have a `wakes` block (days written before vws-deploy#400 have none), the verify-wake,
+grok-dispatch and rework totals are followed by `(N days with data)`.
 
 **Delivery.** No webhook, no secret, no extra channel: in apply mode, after the day is on the branch,
 the script posts one comment on the status thread (`ORCHESTRATE_STATUS_PR`, draft PR vws-deploy#339)
