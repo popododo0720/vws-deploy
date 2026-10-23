@@ -1,7 +1,8 @@
 # Copy unchanged to every vws-* repo with repo-guard.yml (see docs/factory-orchestrator.md, vws-deploy#397).
 # Keeps the needs-verify label on a PR exactly while it waits for vws-verify: open, not a draft, base main,
-# no verify-approved, and every check on its head green except verify-gate and vws-verify (which wait for
-# the verdict by design). The orchestrator's verify wake (Rule A) counts only labeled PRs.
+# no verify-approved, no vws-verify FAIL verdict on its head (vws-deploy#440), and every check on its head
+# green except verify-gate and vws-verify (which wait for the verdict by design). The orchestrator's verify
+# wake (Rule A) counts only labeled PRs, so a head verify already failed must not wake it again.
 # It reads the PR, its check runs and commit statuses through the API and writes only labels: it checks
 # out nothing and runs no PR code. Label writes made with this token start no new workflow runs.
 name: verify-queue
@@ -17,6 +18,9 @@ on:
     types: [completed]
   pull_request:
     types: [ready_for_review, synchronize]
+  # A vws-verify verdict review takes the label off at once when it fails the head (vws-deploy#440).
+  pull_request_review:
+    types: [submitted]
 
 permissions: {}
 
@@ -55,6 +59,29 @@ jobs:
               return 1
             fi
           }
+          # vws-deploy#440: a FAIL verdict on this exact head keeps the PR out of the queue until a new push.
+          # The newest verdict on the head counts: a vws-verify[bot] review (CHANGES_REQUESTED = FAIL,
+          # APPROVED = PASS) or a "# <repo>#N @ <sha>\nResult: FAIL|PASS" comment by vws-verify[bot] or a
+          # repo member (the bots share one account). A vws-verify check run that failed on the head also counts.
+          # Prints the FAIL source, or nothing. Reads only; a failed read fails the job (fail closed).
+          head_fail() {
+            local n=$1 sha=$2 target="${REPO#*/}#$1" verdicts
+            verdicts=$( {
+              gh api --paginate "repos/${REPO}/pulls/${n}/reviews?per_page=100" | jq -rs --arg sha "$sha" '
+                (add // [])[] | select(.user.login == "vws-verify[bot]" and .commit_id == $sha and .submitted_at != null
+                  and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))
+                | [.submitted_at, (if .state == "CHANGES_REQUESTED" then "FAIL" else "PASS" end), "review \(.id)"] | @tsv' || exit 1
+              gh api --paginate "repos/${REPO}/issues/${n}/comments?per_page=100" | jq -rs --arg sha "$sha" --arg target "$target" '
+                (add // [])[] | select(.user.login == "vws-verify[bot]" or (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
+                | ((.body // "") | gsub("\r\n"; "\n") | sub("\\A\\s+"; "")) as $b
+                | ($b | capture("\\A#\\s+(?<t>[A-Za-z0-9._-]+#[0-9]+)\\s+@\\s+(?<s>[0-9a-f]{40})\\s*\n+Result:\\s*(?<r>PASS|FAIL)\\b")? ) as $m
+                | select($m != null and $m.t == $target and $m.s == $sha)
+                | [.created_at, $m.r, "comment \(.id)"] | @tsv' || exit 1
+            } | sort | tail -n 1) || return 1
+            if [[ $verdicts == *$'\tFAIL\t'* ]]; then echo "verdict ${verdicts##*$'\t'}"; return; fi
+            awk -F'\t' '$1 == "vws-verify" && $2 + 0 > id { id = $2 + 0; r = $3 "/" $4 }
+              END { if (r == "completed/failure") print "vws-verify check failure" }' "$tmp/checks"
+          }
           if [[ $EVENT == pull_request && $ACTION == synchronize ]]; then
             unlabel "$PRS" "new push"
             exit 0
@@ -91,7 +118,11 @@ jobs:
             echo "#$n@${sha:0:7}: CI $verdict"
             case "$verdict" in
               green)
-                if [[ ",$labels," != *",needs-verify,"* ]]; then
+                fail=$(head_fail "$n" "$sha")
+                if [[ -n $fail ]]; then
+                  echo "#$n@${sha:0:7}: FAIL on this head ($fail); a new push re-enters the queue"
+                  if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "verify FAIL on this head"; fi
+                elif [[ ",$labels," != *",needs-verify,"* ]]; then
                   gh api -X POST "repos/${REPO}/issues/${n}/labels" -f "labels[]=needs-verify" >/dev/null
                   echo "#$n: needs-verify added"
                 fi ;;

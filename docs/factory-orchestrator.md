@@ -78,6 +78,12 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
   the newest run of every check on its head (and every commit status) is green, except `verify-gate`
   and `vws-verify`, which wait for the verdict by design. Pending checks, or no checks yet, leave the
   PR unlabeled; the run for the last workflow to finish adds the label.
+- It skips a PR whose current head already has a vws-verify FAIL (vws-deploy#440), and removes
+  `needs-verify` if it is on: the newest verdict on that exact head is a `vws-verify[bot]`
+  `CHANGES_REQUESTED` review, or a `# <repo>#N @ <sha>` / `Result: FAIL` comment by `vws-verify[bot]` or
+  a repo member, or the newest `vws-verify` check run on the head failed. A later PASS on the same head
+  supersedes it. A new push (a new head) re-enters the queue. `pull_request_review` `submitted` also
+  runs the queue, so a FAIL review takes the label off at once and Rule A stops waking verify for it.
 - It removes the label on a red check, on a new push (`synchronize`), and when the PR stops waiting
   (draft, other base, closed or approved). A run for an old head writes nothing.
 - Permissions: none at workflow level; the `needs-verify` job has `issues: write` and
