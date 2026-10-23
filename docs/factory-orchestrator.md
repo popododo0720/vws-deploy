@@ -239,6 +239,10 @@ board is overwritten on the next sync. Design: vws-deploy#347.
 - **Modes.** Dry-run by default: planned mutations are logged as `board_plan` and nothing is written.
   Writes need `ORCHESTRATE_MODE=apply` and `ORCHESTRATE_BOARD=apply`. Errors are logged as
   `board_sync_error`, counted in `board.json`, and never fail the tick.
+- **Token.** Board GraphQL calls (and only those) run with `GH_TOKEN` set to a classic PAT with only
+  the `project` scope, read each sync from `ORCHESTRATE_BOARD_TOKEN_FILE`; every REST call keeps the
+  box's gh login. A missing, empty or unreadable file skips the sync for that tick with one
+  `board_sync_skipped` (`reason: token_missing`) log line, not an error. The token is never logged.
 
 ## Safety limits
 
@@ -350,6 +354,7 @@ Config keys and defaults:
 - `ORCHESTRATE_BOARD_PROJECT=PVT_kwHOBK54jM4BoB_Z` (the ProjectV2 node id of the board)
 - `ORCHESTRATE_BOARD_EVERY=6` (sync at most every N ticks, plus the tick after a managed label change)
 - `ORCHESTRATE_BOARD_WRITES=50` (board mutations per sync, separate from `ORCHESTRATE_MAX_WRITES`)
+- `ORCHESTRATE_BOARD_TOKEN_FILE=/root/.config/vws/board-sync-token` (absolute path to the project-scope classic PAT used only for board_sync GraphQL calls)
 
 ## Install (after this PR merges; from merged main)
 
