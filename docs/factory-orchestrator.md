@@ -1,6 +1,6 @@
 # Factory orchestrator (vws-deploy#333)
 
-A deterministic script that runs four routine factory steps on GitHub state. It never calls an LLM.
+A deterministic script that runs five routine factory steps on GitHub state. It never calls an LLM.
 
 | rule | what it does |
 |---|---|
@@ -8,6 +8,7 @@ A deterministic script that runs four routine factory steps on GitHub state. It 
 | B, DeepSeek queue | While fewer than `ORCHESTRATE_DEEPSEEK_CAP` (2) `@deepseek-dev` dispatches are in flight across all repos, it comments `@deepseek-dev please take this issue ...` on the next open issues or PRs, one per free slot and at most one per repo, that have `ready` and `deepseek`, have no `grok` or `blocked` label, are not drafts, and have every `Depends on` met. Order: `priority/blocker` first, then the oldest `ready` label, then repo and number. |
 | B2, verify rework (vws-deploy#373) | A DeepSeek PR (an open PR labeled `ready`+`deepseek`, or the open PR a `ready`+`deepseek` issue's Done report named) whose newest vws-verify verdict on its current head is a FAIL (a `CHANGES_REQUESTED` review by `vws-verify[bot]`, or a `# repo#N @ <head>` / `Result: FAIL` comment) gets `@deepseek-dev please rework this PR ...` on the PR, with the verdict quoted, through the same queue, cap and `ORCHESTRATE_DISPATCH` switch, ahead of new tasks. A `<!-- orchestrate:rework head=<sha> ... -->` marker, or any dispatch after the verdict, means that head is done: one rework per head. Conflict-only verdicts are skipped for an eggbot rebuild (note `rework_skipped`). Each rework, and a pending FAIL, counts as one failure toward the grok swap below. |
 | C, grok fallback | Each dispatch fails once on any of: a `[deepseek-dev] Failed for <dispatch url>` report, no report within 3h, or a Done PR closed without merge. At 2 counted failures it removes `deepseek`, adds `grok` and posts one notice. A Failed report that shows a provider error is an infra failure instead: never counted, re-mentioned after 5 minutes, at most 3 times. See "Infra retries" below. |
+| G, Grok wake (vws-deploy#378) | **Only issues listed in `ORCHESTRATE_GROK_ALLOWLIST` are ever assigned**; the default is empty, so nothing is assigned until someone lists an issue (all other work stays parked). While fewer than `ORCHESTRATE_GROK_CAP` (1) Grok tasks are in flight, it posts one comment on the status thread #339 whose first line is `<!-- vws-orchestrate:grok-wake -->`, naming the next allowlisted open issue or non-draft PR that has `ready` and `grok`, has no `deepseek` or `blocked` label and has every `Depends on` met; at most one per repo. The owning Grok dev bot's GitHub-trigger routine on #339 matches that marker. Order: `priority/blocker`, then security (a `security` label or the word in the title), then the oldest `ready` label. The idempotency key is sha256 of the issue and its last failure reset, so an issue is woken once; while it stays open with `grok` it holds the slot (note `grok_in_flight`), and `/orchestrate reset-failures` on it re-arms one new wake. After a rule C swap the issue is picked up on a later tick if it is allowlisted. `ORCHESTRATE_DISPATCH=off` pauses these wakes too. Bad allowlist entries are ignored and logged (note `grok_allowlist_invalid`). Posted wakes are logged as `grok_wake_posted`. |
 | D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and posts one failure comment on #339. See "Rule D" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
@@ -232,6 +233,8 @@ board is overwritten on the next sync. Design: vws-deploy#347.
   - An interrupted grok swap (`grok` added, `deepseek` still there) is finished on the next tick.
   - Ownership of `blocked` and `in-review` is journaled in `state.json` before the write, and pruned
     when the label is not on the item.
+- **Re-check before a Grok wake:** it is skipped if #339 already has its key, or the issue closed, lost
+  `ready` or `grok`, or got `blocked` or `deepseek` since collect.
 - **Re-check before posting:** a dispatch is skipped if the target got a new dispatch, lost its
   labels, or got `blocked` or `grok` since collect. A wake, a merge failure comment or an
   infra-retries-exhausted comment is skipped if #339 already has a comment with its key.
@@ -289,6 +292,8 @@ Config keys and defaults:
 - `DEEPSEEK_TIMEOUT_HOURS=3`
 - `DEEPSEEK_MAX_FAILURES=2`
 - `ORCHESTRATE_DEEPSEEK_CAP=2` (DeepSeek dispatches in flight at once; a positive integer)
+- `ORCHESTRATE_GROK_CAP=1` (rule G: Grok tasks in flight at once; a positive integer)
+- `ORCHESTRATE_GROK_ALLOWLIST=` (rule G: `repo#N` entries such as `vws-deploy#378,vws-iam#12`, split on commas or whitespace; empty assigns nothing; anything else is ignored with a `grok_allowlist_invalid` note)
 - `ORCHESTRATE_INFRA_RETRY_DELAY_MIN=5` (minutes after a provider-error report before the retry; a positive integer; with the 600 s tick the effective delay is 5 to 10 minutes)
 - `VERIFY_WAKE_THRESHOLD=5`
 - `VERIFY_WAKE_EDGE_MIN_HOURS=1`
