@@ -285,19 +285,22 @@ def run(gh, event_name, event, repository, now):
                f"Remove the `{NEEDS_HUMAN}` label to allow {CAP} more.")
     gh.post(f"{a}/issues/{pr}/comments", {"body": format_comment(rec, fetch_tails(gh, a, new_jobs), esc)})
     if escalate:
-        gh.post(f"{a}/issues/{pr}/labels", {"labels": [NEEDS_HUMAN]})
+        # Adding a label that is already there is a no-op, so this write can retry safely.
+        gh.post(f"{a}/issues/{pr}/labels", {"labels": [NEEDS_HUMAN]}, retry=True)
     return {"action": "post", "pr": pr, "n": count, "wake": wake, "owner": owner, "agent": agent}
 
 
 class Gh:
-    """`gh api` with a timeout; reads retry with backoff, writes are one try."""
+    """`gh api` with a timeout. Reads and idempotent writes (retry=True) retry with a bounded
+    backoff, then fail closed; a comment write is one try, so a lost response never posts twice."""
 
     def __init__(self, timeout=60, tries=3, pages=10):
         self.timeout, self.tries, self.pages = timeout, tries, pages
 
-    def _call(self, args, data=None, write=False):
+    def _call(self, args, data=None, write=False, retry=None):
+        retry = not write if retry is None else retry
         err = ""
-        for i in range(1 if write else self.tries):
+        for i in range(self.tries if retry else 1):
             try:
                 r = subprocess.run(["gh", "api", *args], input=data, capture_output=True, text=True, timeout=self.timeout)
                 if r.returncode == 0:
@@ -305,7 +308,7 @@ class Gh:
                 err = r.stderr
             except subprocess.TimeoutExpired:
                 err = "timeout"
-            if not write and i < self.tries - 1:
+            if retry and i < self.tries - 1:
                 time.sleep(2 ** (i + 1))
         raise RuntimeError(f"gh api {args[-1] if not write else args[2]} failed: {mask(err)[:300]}")
 
@@ -326,8 +329,8 @@ class Gh:
                 return out
         raise RuntimeError(f"gh api {path} has more than {self.pages} pages; refusing a partial list")
 
-    def post(self, path, payload):
-        return self._call(["-X", "POST", path, "--input", "-"], json.dumps(payload), write=True)
+    def post(self, path, payload, retry=False):
+        return self._call(["-X", "POST", path, "--input", "-"], json.dumps(payload), write=True, retry=retry)
 
     def patch(self, path, payload):
         return self._call(["-X", "PATCH", path, "--input", "-"], json.dumps(payload), write=True)
