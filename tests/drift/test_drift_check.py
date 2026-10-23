@@ -20,6 +20,10 @@ GOOD = """linters:
 formatters:
   enable: [gofumpt, goimports]
 """
+WANT = ["what-happened", "impact", "detection", "root-cause", "catching-check", "follow-ups"]
+GOOD_INCIDENT = "name: incident\nlabels: [incident]\nbody:\n" + "".join(
+    f"  - type: textarea\n    id: {i}\n" for i in WANT
+)
 
 
 class LintDrift(unittest.TestCase):
@@ -72,6 +76,88 @@ class LoadCommon(unittest.TestCase):
 
     def test_repo_baseline(self):
         dc.load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
+
+
+class IncidentDrift(unittest.TestCase):
+    def drift(self, tpl=GOOD_INCIDENT, legacy=None):
+        tpl = tpl.encode() if isinstance(tpl, str) else tpl
+        return dc.incident_drift(tpl, legacy, WANT)
+
+    def test_good_form(self):
+        self.assertEqual(self.drift(), [])
+
+    def test_no_form(self):
+        self.assertEqual(self.drift(None), ["no .github/ISSUE_TEMPLATE/incident.yml"])
+
+    def test_no_form_still_reports_legacy(self):
+        self.assertEqual(self.drift(None, b"name: incident\n"),
+                         ["no .github/ISSUE_TEMPLATE/incident.yml", "incident.md still exists"])
+
+    def test_legacy_form(self):
+        self.assertEqual(self.drift(legacy=b"name: incident\n"), ["incident.md still exists"])
+
+    def test_labels_as_a_string(self):
+        self.assertEqual(self.drift(GOOD_INCIDENT.replace("labels: [incident]", 'labels: "bug, incident"')), [])
+
+    def test_missing_label(self):
+        self.assertEqual(self.drift(GOOD_INCIDENT.replace("labels: [incident]", "labels: [bug]")),
+                         ["does not apply the incident label"])
+
+    def test_missing_field(self):
+        self.assertEqual(self.drift(GOOD_INCIDENT.replace("    id: impact\n", "")),
+                         ["missing fields: impact"])
+
+    def test_malformed_yaml(self):
+        out = self.drift("body: [unclosed\n")
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("incident.yml does not parse:"))
+
+    def test_not_a_mapping(self):
+        for tpl in ("", "- a\n- b\n"):
+            self.assertEqual(self.drift(tpl), ["incident.yml is not a YAML mapping"])
+
+    def test_extra_field(self):
+        self.assertEqual(self.drift(GOOD_INCIDENT + "  - type: textarea\n    id: extra\n"), [])
+
+    def test_non_dict_body_item(self):
+        out = self.drift("name: incident\nlabels: [incident]\nbody:\n  - just-a-string\n")
+        self.assertEqual(out, ["missing fields: " + ",".join(WANT)])
+
+    def test_bad_yaml_still_reports_legacy(self):
+        out = self.drift("body: [unclosed\n", b"name: incident\n")
+        self.assertTrue(out[0].startswith("incident.yml does not parse:"))
+        self.assertEqual(out[1], "incident.md still exists")
+
+    def test_non_mapping_still_reports_legacy(self):
+        self.assertEqual(self.drift("- a\n", b"name: incident\n"),
+                         ["incident.yml is not a YAML mapping", "incident.md still exists"])
+
+
+class LoadIncident(unittest.TestCase):
+    def load(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+            f.write(text)
+        self.addCleanup(os.unlink, f.name)
+        return dc.load_incident(f.name)
+
+    def test_valid(self):
+        self.assertEqual(self.load(GOOD_INCIDENT), WANT)
+
+    def test_bad(self):
+        for text in ("", "- a\n", "just a string\n", "body:\n  - type: textarea\n", "body: []\n"):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(err):
+                self.load(text)
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("drift-check:", err.getvalue())
+
+    def test_missing_file(self):
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+            dc.load_incident("/nonexistent/incident.yml")
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_repo_baseline(self):
+        self.assertEqual(dc.load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml")), WANT)
 
 
 class GuardVariants(unittest.TestCase):
