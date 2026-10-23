@@ -7,8 +7,10 @@ Checks per repo, on its default branch:
   workflows   repo-guard.yml and direct-push-watch.yml exist
   caller      repo-guard.yml is the short caller of the vws-deploy repo-guard-<job>.yml files (caller_pin.py): a 40-hex
               pin, the same pin in every repo, and that pin is on vws-deploy main (vws-deploy#402). A repo
-              that caller-pending.tsv lists still carries the old full copy and is reported, not drift.
-              The caller is also checked at the head of every open PR and at each --head REPO=SHA
+              that caller-pending.tsv lists is exempt only while its repo-guard.yml is byte for byte the full
+              copy whose sha256 that row pins; any other content is checked as a caller. No other workflow
+              file may call a repo-guard-*.yml file or report the bare pr-hygiene or verify-gate check name.
+              All of this is also checked at the head of every open PR and at each --head REPO=SHA
               (the workflow passes the PR head from its event), against the pin of the default branches
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
@@ -134,7 +136,7 @@ def load_variants(path):
 
 
 def load_pending(path):
-    """Repos that still carry the old full repo-guard.yml: {repo: reason}. A bad row exits 2."""
+    """Repos that still carry the old full repo-guard.yml: {repo: sha256 of that full copy}. A bad row exits 2."""
     if not os.path.exists(path):
         return {}
     out = {}
@@ -143,8 +145,10 @@ def load_pending(path):
             if not line.strip() or line.startswith("#"):
                 continue
             f = line.split("\t")
-            if len(f) != 2 or not f[0] or not f[1].strip():
-                _bad_baseline(f"drift-check: {path}:{n} needs repo<TAB>reason")
+            if len(f) != 3 or not f[0] or not f[2].strip():
+                _bad_baseline(f"drift-check: {path}:{n} needs repo<TAB>sha256<TAB>reason")
+            if not re.fullmatch(r"[0-9a-f]{64}", f[1]):
+                _bad_baseline(f"drift-check: {path}:{n} sha256 must be 64 lowercase hex characters")
             if f[0] in out:
                 _bad_baseline(f"drift-check: {path}:{n} repeats {f[0]}")
             out[f[0]] = f[1]
@@ -188,32 +192,123 @@ def open_pr_heads(owner, repo, api=None):
     return None
 
 
-def content_at(owner, repo, path, ref):
-    d = gh(f"repos/{owner}/{repo}/contents/{path}?ref={ref}")
-    if not d or "content" not in d:
+WF_DIR = ".github/workflows"
+CALLED = re.compile(r"(^|/)repo-guard-[^/@]*\.ya?ml(@|$)", re.I)
+EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
+
+
+def workflow_files(owner, repo, ref=None, api=None):
+    """{path: bytes or None (unreadable)} of every .yml/.yaml file in .github/workflows at ref (None = default
+    branch), or None when the directory cannot be listed. GitHub runs only the files at the top of that folder."""
+    api = api or gh
+    q = f"?ref={ref}" if ref else ""
+    d = api(f"repos/{owner}/{repo}/contents/{WF_DIR}{q}")
+    if not isinstance(d, list):
         return None
-    return base64.b64decode(d["content"]).decode("utf-8", "replace")
+    out = {}
+    for e in d:
+        e = _map(e)
+        path = e.get("path")
+        if not isinstance(path, str) or not re.search(r"\.ya?ml$", path, re.I):
+            continue
+        if e.get("type") != "file":
+            out[path] = None  # a symlink or submodule named like a workflow is not checked, so it is flagged
+            continue
+        f = api(f"repos/{owner}/{repo}/contents/{path}{q}")
+        try:
+            out[path] = base64.b64decode(f["content"]) if isinstance(f, dict) and f.get("content") else None
+        except (ValueError, TypeError):
+            out[path] = None
+    return out
+
+
+def _call_only(on):
+    """True when the workflow runs only when called; its jobs then report as "caller / job", never a bare name."""
+    if on == "workflow_call" or on == ["workflow_call"]:
+        return True
+    return isinstance(on, dict) and list(on) == ["workflow_call"]
+
+
+def _may_report(name):
+    """The bare repo-guard check name a job name can produce, or None. ${{ }} may expand to anything."""
+    pattern = ".*".join(re.escape(part) for part in EXPR.split(name.strip()))
+    return next((n for n in caller_pin.SHIMS if re.fullmatch(pattern, n, re.I | re.S)), None)
+
+
+def other_workflow_issues(files):
+    """Issues for every workflow file but repo-guard.yml: none may call a repo-guard-*.yml file (a second or
+    renamed caller) or report the bare pr-hygiene or verify-gate check name (a spoof of a required check)."""
+    out = []
+    for path, raw in sorted(files.items()):
+        if path == WORKFLOWS[0]:
+            continue
+        name = path.rsplit("/", 1)[1]
+        if raw is None:
+            out.append(f"cannot read {path}")
+            continue
+        try:
+            wf = yaml.load(raw.decode("utf-8"), Loader=caller_pin._Strict)  # noqa: S506 (SafeLoader subclass)
+        except (UnicodeDecodeError, yaml.YAMLError) as e:
+            out.append(f"{name} does not parse: {str(e).splitlines()[0]}")
+            continue
+        if not isinstance(wf, dict):
+            out.append(f"{name} is empty or not a YAML mapping")
+            continue
+        jobs = _map(wf.get("jobs"))
+        for jid, job in jobs.items():
+            uses = _map(job).get("uses")
+            if isinstance(uses, str) and CALLED.search(uses):
+                out.append(f"{name}: job {jid} calls {uses}; only repo-guard.yml may call the repo-guard jobs")
+        if _call_only(wf.get("on", wf.get(True))):
+            continue
+        for jid, job in jobs.items():
+            label = _map(job).get("name", jid)
+            hit = _may_report(str(label))
+            if hit:
+                out.append(f"{name}: job {jid} can report the required check name {hit}; only repo-guard.yml may")
+    return out
+
+
+def ref_issues(files, home, full_copy):
+    """([issues], pin) for the workflows at one ref. pin is the caller's 40-hex SHA, "local" (vws-deploy),
+    "pending" (the exact full copy that caller-pending.tsv pins, full_copy is its sha256), or None."""
+    if files is None:
+        return [f"cannot list {WF_DIR}"], None
+    others = other_workflow_issues(files)
+    rg = WORKFLOWS[0]
+    if rg not in files:
+        return [f"no {rg}"] + others, None
+    if files[rg] is None:
+        return [f"cannot read {rg}"] + others, None
+    if full_copy and hashlib.sha256(files[rg]).hexdigest() == full_copy:
+        return others, ("pending" if not others else None)
+    try:
+        text = files[rg].decode("utf-8")
+    except UnicodeDecodeError:
+        return [f"{rg} is not UTF-8"] + others, None
+    errs, pin = caller_pin.check(text, home=home)
+    if errs and full_copy:
+        got = hashlib.sha256(files[rg]).hexdigest()
+        errs = [f"not the full copy that caller-pending.tsv pins ({full_copy[:12]}, got {got[:12]}) and not a "
+                f"valid caller: {errs[0]}"] + errs[1:]
+    return errs + others, (pin if not errs and not others else None)
 
 
 def head_issues(repo, heads, home, pending, common, on_main):
-    """Issues for the caller at each PR head: [(label, sha, text or None)] -> ["label sha: reason"].
+    """Issues for the workflows at each PR head: [(label, sha, files)] -> ["label sha: reason"].
 
-    A head is held to the same caller shape as the default branch and must pin the common pin of the
-    default branches (or, with no common pin, a SHA on vws-deploy main). A pending repo's head that is still
-    the full copy is not drift; one that is already a caller is checked like any other.
+    files is workflow_files() at that head. A head is held to the same rules as the default branch: a pending
+    repo is exempt only for the exact full copy it pins, and a caller must pin the common pin of the default
+    branches (or, with no common pin, a SHA on vws-deploy main).
     """
     out = []
-    for label, sha, text in heads:
+    for label, sha, files in heads:
         where = f"{label} {sha[:12]}"
-        if text is None:
-            out.append(f"{where}: no {WORKFLOWS[0]} at the PR head")
+        issues, pin = ref_issues(files, home, pending.get(repo))
+        if issues:
+            out.append(f"{where}: " + "; ".join(issues[:3]) + (f" (+{len(issues) - 3} more)" if len(issues) > 3 else ""))
             continue
-        errs, pin = caller_pin.check(text, home=home)
-        if errs:
-            if repo not in pending:
-                out.append(f"{where}: {errs[0]}")
-            continue
-        if pin == "local":
+        if pin in ("local", "pending"):
             continue
         if common and pin != common:
             out.append(f"{where}: pin {pin[:12]} is not the common pin {common[:12]}")
@@ -270,9 +365,9 @@ def main():
     ap.add_argument("--guard-variants", default=os.path.join(HERE, "guard-variants.tsv"),
                     help="accepted guard-agents.sh variants: repo<TAB>sha256<TAB>reason")
     ap.add_argument("--caller-pending", default=os.path.join(HERE, "caller-pending.tsv"),
-                    help="repos not yet moved to the repo-guard caller: repo<TAB>reason")
+                    help="repos not yet moved to the repo-guard caller: repo<TAB>sha256 of the full copy<TAB>reason")
     ap.add_argument("--head", action="append", default=[], metavar="REPO=SHA",
-                    help="also check repo-guard.yml at this PR head (repeatable; the workflow passes its event's head)")
+                    help="also check the workflows at this PR head (repeatable; the workflow passes its event's head)")
     ap.add_argument("--no-open-prs", action="store_true", help="skip the open PR heads (only --head ones)")
     a = ap.parse_args()
 
@@ -315,20 +410,19 @@ def main():
         miss = [c for c in want if c not in p["checks"]]
         if miss:
             issues["checks"] = ["missing " + ",".join(miss)]
-        wf = [w.rsplit("/", 1)[1] for w in WORKFLOWS if content(a.owner, repo, w) is None]
+        files = workflow_files(a.owner, repo)
+        wf = [w.rsplit("/", 1)[1] for w in WORKFLOWS if files is not None and w not in files]
         if wf:
             issues["workflows"] = ["missing " + ",".join(wf)]
-        rg = content(a.owner, repo, WORKFLOWS[0])
         caller_ok = "ok"
-        if repo in pending:
+        errs, pin = ref_issues(files, repo == "vws-deploy", pending.get(repo))
+        if errs:
+            issues["caller"] = errs[:3] + ([f"(+{len(errs) - 3} more)"] if len(errs) > 3 else [])
+        elif pin == "pending":
             caller_ok = "pending (full copy)"
-        elif rg is not None:
-            errs, pin = caller_pin.check(rg.decode("utf-8", "replace"), home=(repo == "vws-deploy"))
-            if errs:
-                issues["caller"] = errs[:2] + ([f"(+{len(errs) - 2} more)"] if len(errs) > 2 else [])
-            elif pin != "local":
-                pins[repo] = pin
-                caller_ok = f"ok ({pin[:12]})"
+        elif pin != "local":
+            pins[repo] = pin
+            caller_ok = f"ok ({pin[:12]})" + ("; drop its caller-pending.tsv row" if repo in pending else "")
         g = content(a.owner, repo, "scripts/guard-agents.sh")
         guard_ok = "ok"
         if g is None:
@@ -388,7 +482,7 @@ def main():
         for label, sha in heads:
             if sha not in seen:
                 seen.add(sha)
-                todo.append((label, sha, content_at(a.owner, repo, WORKFLOWS[0], sha)))
+                todo.append((label, sha, workflow_files(a.owner, repo, ref=sha)))
         bad = head_issues(repo, todo, repo == "vws-deploy", pending, common, lambda s: on_main(a.owner, s))
         head_rows += [[repo, why] for why in bad]
         drift += len(bad)
