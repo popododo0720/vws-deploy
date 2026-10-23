@@ -62,8 +62,16 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
 `.github/workflows/verify-queue.yml` ships unchanged to every vws-* repo with `repo-guard.yml`. It keeps
 the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
 
-- It runs when a PR workflow (`ci`, `CI`, `english` or `repo-guard`) completes on a PR head (`workflow_run`, from the
-  default branch) and on `pull_request` `ready_for_review` and `synchronize`.
+- It runs when a PR workflow completes on a PR head (`workflow_run`, from the default branch) and on
+  `pull_request` `ready_for_review` and `synchronize`. The `workflow_run` list must name every workflow
+  that runs on `pull_request`, because any of them can finish last: vws-deploy's `ci`, `drift-check`,
+  `installer-image`, `post-merge` (closed PRs; it only clears a stale label) and `repo-guard`, plus
+  `CI` (vws-console) and `english` (vws-conformance). `tests/workflows/test_verify_queue.py` fails when
+  a `pull_request` workflow in this repo is missing; a repo that adds a PR workflow under a new name
+  must add it to the list. `check_suite` is not used because GitHub starts no workflow for check suites
+  created by GitHub Actions.
+- Once `gate / verify-gate` (vws-deploy#413) is on `main`, it joins the skip list next to `verify-gate`
+  and `vws-verify`; whichever of #413 and #397 merges second adds it.
 - It adds `needs-verify` when the PR is open, not a draft, on base `main`, has no `verify-approved`, and
   the newest run of every check on its head (and every commit status) is green, except `verify-gate`
   and `vws-verify`, which wait for the verdict by design. Pending checks, or no checks yet, leave the
