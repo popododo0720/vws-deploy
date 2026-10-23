@@ -31,16 +31,17 @@ def read(path):
 NOWISO = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def pr_issue(repo, n):
+def pr_issue(repo, n, labels=()):
     return {"number": n, "html_url": f"https://github.com/popododo0720/{repo}/pull/{n}", "state": "open",
-            "created_at": "2026-10-01T00:00:00Z", "labels": [], "body": "", "pull_request": {}}
+            "created_at": "2026-10-01T00:00:00Z", "labels": [{"name": x} for x in labels], "body": "", "pull_request": {}}
 
 
 def routes():
     pulls = [{"number": n, "draft": False, "base": {"ref": "main"}, "head": {"sha": f"{n:040x}"}} for n in range(400, 405)]
     # The status thread is a never-merged draft PR; a draft never counts as pending.
     pulls.append({"number": 339, "draft": True, "base": {"ref": "main"}, "head": {"sha": f"{339:040x}"}})
-    issues = [pr_issue("vws-deploy", n) for n in range(400, 405)] + [pr_issue("vws-deploy", 339)]
+    # verify-queue.yml labeled the five green PRs needs-verify (vws-deploy#397).
+    issues = [pr_issue("vws-deploy", n, ("needs-verify",)) for n in range(400, 405)] + [pr_issue("vws-deploy", 339)]
     labels = [{"name": n} for n in ("ready", "deepseek", "grok", "blocked", "in-review", "verify-approved")]
     r = {
         "rate_limit": {"body": {"resources": {"core": {"remaining": 4000}}}},
@@ -198,6 +199,26 @@ class TickEndBreakdown(Env):
         self.assertTrue({"issues", "pulls", "labels", "comments"} <= set(by), by)
         self.assertGreater(by["labels"].get("304", 0), 0, "second tick answers labels from the ETag cache")
         self.assertEqual(sum(n for c in by.values() for n in c.values()), end["gh"]["get"])
+
+    def test_needs_verify_prs_read_their_label_events(self):
+        r = routes()
+        r[f"{O}/vws-deploy/issues/400/events"] = {"body": [
+            {"event": "labeled", "label": {"name": "needs-verify"}, "created_at": "2026-10-21T11:00:00Z"},
+            {"event": "commented", "created_at": "2026-10-21T11:01:00Z"}]}
+        self.set_routes(r)
+        self.tick()
+        got = sorted(c["path"].split("?")[0] for c in self.calls() if c["path"].endswith("/events?per_page=100"))
+        self.assertEqual(got, [f"{O}/vws-deploy/issues/{n}/events" for n in range(400, 405)],
+                         "only needs-verify PRs pay for an events read")
+
+    def test_unlabeled_green_prs_do_not_wake(self):
+        r = routes()
+        r[f"{O}/vws-deploy/issues"]["body"] = [pr_issue("vws-deploy", n) for n in range(400, 405)] + [pr_issue("vws-deploy", 339)]
+        self.set_routes(r)
+        self.tick()
+        planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
+        self.assertEqual(planned, [("dispatch", "vws-iam#1")])
+        self.assertEqual(load(self.paths.health)["pending"], 0)
 
     def test_get_class(self):
         for path, want in [(f"{O}/vws-iam/issues?state=open&per_page=100", "issues"),
