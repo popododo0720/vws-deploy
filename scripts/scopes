@@ -2,7 +2,7 @@
 # This is the only list of commit scopes.
 cli scripts/vws scripts/vws.d/ tests/ examples/ bootstrap/
 chart charts/ scripts/check_render.py profiles/
-ci .github/ Makefile .githooks/ AGENTS.md scripts/guard.sh scripts/guard-agents.sh scripts/guard-agents.sh.sha256 scripts/install-tools.sh scripts/crd-check.sh scripts/platform.sh scripts/bootstrap.sh scripts/lab/ scripts/scopes scripts/versions.env
+ci .github/ Makefile .githooks/ AGENTS.md scripts/guard.sh scripts/guard-agents.sh scripts/guard-agents.sh.sha256 scripts/install-tools.sh scripts/crd-check.sh scripts/platform.sh scripts/bootstrap.sh scripts/lab/ scripts/scopes scripts/versions.env scripts/codex-round-count.sh
 docs README.md QUALITY.md docs/
 repo .gitignore LICENSE
 platform platform/
