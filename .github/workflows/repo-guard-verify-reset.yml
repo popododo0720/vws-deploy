@@ -1,0 +1,43 @@
+# verify-reset: a new push drops the verify-approved label (the only job that writes).
+# One of the four shared repo-guard jobs (vws-deploy#402), one job per file: GitHub validates the permissions
+# of every job in a called file before any if:, so a file holds only jobs its caller job may grant.
+# Every vws-* repo calls it from a short .github/workflows/repo-guard.yml pinned by full commit SHA;
+# vws-deploy calls it from the same commit. docs/design/repo-guard-reusable.md has the trust model.
+# The github, vars and token contexts are the caller's, with at most the caller job's permissions, and
+# no secrets are passed.
+name: repo-guard-verify-reset
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # A new push drops the approval label as well; verify-gate already fails on a new head without it.
+  # Only this job may write, and only labels (issues: write). It checks out nothing and runs no PR code.
+  verify-reset:
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove verify-approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
+            # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
+            if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+              echo "verify-approved removed: a new head needs a new verification"
+            elif [[ $out == *"HTTP 404"* ]]; then
+              echo "verify-approved was already removed"
+            else
+              echo "$out" >&2
+              exit 1
+            fi
+          fi

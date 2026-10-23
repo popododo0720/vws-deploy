@@ -7,7 +7,7 @@ Checks per repo, on its default branch:
               only with an admin token, so without one the cell says "unverified", never ok
   checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
   workflows   repo-guard.yml and direct-push-watch.yml exist
-  caller      repo-guard.yml is the short caller of vws-deploy repo-guard-reusable.yml (caller_pin.py): a 40-hex
+  caller      repo-guard.yml is the short caller of the vws-deploy repo-guard-<job>.yml files (caller_pin.py): a 40-hex
               pin, the same pin in every repo, and that pin is on vws-deploy main (vws-deploy#402). A repo
               that caller-pending.tsv lists still carries the old full copy and is reported, not drift
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
