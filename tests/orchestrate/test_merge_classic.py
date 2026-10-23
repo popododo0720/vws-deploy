@@ -7,7 +7,6 @@ import shutil
 import unittest
 
 import test_runtime as rt
-from orch_testlib import orch
 from test_merge import MAIN, O, branch, routes
 
 HEAD = "1" * 40
