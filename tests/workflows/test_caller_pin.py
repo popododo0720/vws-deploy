@@ -30,7 +30,7 @@ jobs:
   hygiene:
     if: github.event_name == 'pull_request'
     uses: PFXrepo-guard-pr-hygiene.ymlAT
-    permissions: {contents: read, pull-requests: read}
+    permissions: {contents: read, pull-requests: read, issues: read}
   gate:
     if: github.event_name == 'pull_request'
     uses: PFXrepo-guard-verify-gate.ymlAT
@@ -186,7 +186,7 @@ class CallerPin(unittest.TestCase):
             "null uses": good.replace("uses: %srepo-guard-pr-hygiene.yml@%s" % (PFX, SHA), "uses: null"),
             "empty if": good.replace("    if: github.event_name == 'pull_request'\n    uses: %srepo-guard-verify-gate"
                                      % PFX, "    if: ''\n    uses: %srepo-guard-verify-gate" % PFX),
-            "null permissions": good.replace("permissions: {contents: read, pull-requests: read}\n",
+            "null permissions": good.replace("permissions: {contents: read, pull-requests: read, issues: read}\n",
                                              "permissions: null\n", 1),
             "null top permissions": good.replace("permissions: {}\n", "permissions: null\n", 1),
             "null on": good.replace("on:\n  pull_request:\n    types: [opened, edited, reopened, synchronize, "
