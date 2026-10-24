@@ -12,7 +12,7 @@
 
   | caller job | calls | `if` | permissions |
   | --- | --- | --- | --- |
-  | `hygiene` | `pr-hygiene` | `pull_request` | contents read, pull-requests read |
+  | `hygiene` | `pr-hygiene` | `pull_request` | contents read, pull-requests read, issues read (the acceptance-criteria lint reads the linked issue, #430) |
   | `gate` | `verify-gate` | `pull_request` | contents read, pull-requests read, issues read |
   | `reset` | `verify-reset` | `pull_request` synchronize | issues write, pull-requests write |
   | `rerun` | `verify-rerun` | `issue_comment` on a PR | actions write, pull-requests read |
