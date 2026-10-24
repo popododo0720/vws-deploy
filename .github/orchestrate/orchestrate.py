@@ -1715,7 +1715,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
     key_times = snapshot.get("status", {}).get("key_times", {})
     allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
     notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
-    held, queue, woken = grok_held(items), [], set()
+    held, queue, woken, freed = grok_held(items), [], set(), []
     for k in sorted(items):
         it = items[k]
         labels = set(it["labels"])
@@ -1729,6 +1729,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             if kind:  # done or never claimed: the slot is free, and the same key is never posted again
                 held.discard(unit)
                 held.discard(k)
+                freed.append(k)
                 if released is not None:
                     released[k] = key
                 if (released_before or {}).get(k) != key:
@@ -1774,7 +1775,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
         # cannot rebuild their reset time from the bare issues list).
         actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key,
-                        "woken": sorted(woken), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
+                        "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
                         "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"])})
     return actions
 
@@ -2622,7 +2623,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason="a comment with this key already exists")
                 continue
             why = recheck_grok(gh, a["item"], grok_repos, int(num(cfg, "ORCHESTRATE_GROK_CAP")),
-                               a.get("woken", ()), grok_posted)
+                               a.get("woken", ()), grok_posted, a.get("released", ()))
             if why:
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
@@ -2857,7 +2858,7 @@ def publish_status(gh, cfg, snapshot, body, log):
     return 0
 
 
-def recheck_grok(gh, k, repos, cap, woken=(), posted=()):
+def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=()):
     """Rule G, right before a wake is posted. Returns '' when it may go ahead, else why not.
     The issue must still be open, ready+grok, unassigned, without `deepseek` or an opt-out label.
     Then occupancy is rebuilt from a fresh read of the open grok items of every scoped repo: Grok work
@@ -2881,7 +2882,7 @@ def recheck_grok(gh, k, repos, cap, woken=(), posted=()):
                     "assignees": sorted(a["login"] for a in i.get("assignees") or [])}
     except (GhError, PermissionError, KeyError, TypeError) as e:
         return f"re-read failed: {scrub(e)}"
-    held = grok_held(fresh)
+    held = grok_held(fresh) - set(released)  # done or expired at decide time (#411), even if still assigned
     held |= {grok_link(fresh[w]) or w for w in woken if w in fresh and "grok" in fresh[w]["labels"]}
     held |= set(posted)
     unit = (grok_link(fresh[k]) if k in fresh else "") or k
