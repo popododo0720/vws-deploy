@@ -340,17 +340,23 @@ class MainRulesetCell(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
             f.write("r\tproto\t-\t\n")
         self.addCleanup(os.unlink, f.name)
-        saved = (dc.gh, dc.content, dc.protection, dc.sys.argv)
+        # The caller cell (#402) is not under test: r is a pending repo on the pinned full copy.
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as pend:
+            pend.write("r\t%s\tfull copy\n" % FULL_SHA)
+        self.addCleanup(os.unlink, pend.name)
+        saved = (dc.gh, dc.content, dc.protection, dc.workflow_files, dc.sys.argv)
         dc.gh, dc.content = gh, content
+        dc.workflow_files = lambda o, r, ref=None, api=None: tree()
         dc.protection = lambda o, r: {"protected": True, "admins": True, "force": False, "delete": False,
                                       "checks": []}
-        dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name]
+        dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name, "--caller-pending", pend.name,
+                       "--no-open-prs"]
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
                 rc = dc.main()
         finally:
-            dc.gh, dc.content, dc.protection, dc.sys.argv = saved
+            dc.gh, dc.content, dc.protection, dc.workflow_files, dc.sys.argv = saved
         row = [line for line in out.getvalue().splitlines() if line.startswith("| r |")][0]
         return rc, row.split(" | ")[2], out.getvalue(), row.split(" | ")
 
@@ -941,6 +947,18 @@ class MainWithFakeGh(unittest.TestCase):
                 return prs[repo] if q.endswith("&page=1") else []
             if rest.startswith("compare/"):
                 return {"status": "identical"}
+            # The ruleset and incident cells (#395, #454) are not under test: both are clean.
+            if rest == "rulesets":
+                return [{"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}]
+            if rest == "rulesets/1":
+                return {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+            if rest == "rules/branches/main":
+                return MainRules.GOOD
+            if rest.startswith("labels/"):
+                return {"name": rest.rsplit("/", 1)[1]}
+            if rest == "contents/.github/ISSUE_TEMPLATE/incident.yml":
+                with open(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"), "rb") as g:
+                    return _b64(g.read())
             ref = q[4:] if q.startswith("ref=") else None
             if rest.startswith("contents/.github/workflows"):
                 t = trees.get((repo, ref))
