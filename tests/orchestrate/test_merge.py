@@ -74,11 +74,12 @@ class Eligibility(unittest.TestCase):
         self.assertEqual(a["agent"], "vws-platform")
         self.assertEqual(reasons(r, "vws-deploy#500"), [])
 
-    def test_owner_repo_part_of_is_eligible(self):
-        # vws-deploy#477: Rule D reads the owner/repo form the repo guard accepts.
+    def test_owner_repo_part_of_is_named_in_the_reason(self):
+        # vws-deploy#477: pr-hygiene rejects the owner/repo form (vws-deploy#482); Rule D says so
+        # instead of the generic no_part_of.
         r = run(snap(candidate(body="Part of popododo0720/vws-deploy#412")))
-        self.assertEqual(reasons(r, "vws-deploy#500"), [])
-        self.assertEqual(merges(r), ["vws-deploy#500"])
+        self.assertEqual(reasons(r, "vws-deploy#500"), ["part_of_owner_repo"])
+        self.assertEqual(merges(r), [])
 
     def test_every_condition(self):
         sha = candidate()["head_sha"]

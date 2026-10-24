@@ -21,11 +21,12 @@ class DependsOn(unittest.TestCase):
 
 
 class PartOf(unittest.TestCase):
-    def test_owner_repo_form_is_mapped(self):
-        # vws-deploy#477: the repo guard accepts `Part of popododo0720/vws-x#N`; the parser maps it.
+    def test_owner_repo_form_is_not_a_reference(self):
+        # vws-deploy#477: pr-hygiene rejects `Part of popododo0720/vws-x#N` (vws-deploy#482), so
+        # Rule D accepts the same set and only #N and vws-x#N map to an issue.
         cases = [("Part of #12", "vws-deploy#12"),
                  ("Part of vws-iam#12", "vws-iam#12"),
-                 ("Part of popododo0720/vws-iam#12", "vws-iam#12"),
+                 ("Part of popododo0720/vws-iam#12", ""),
                  ("Part of acme/vws-iam#12", ""),
                  ("Part of popododo0720/#12", "")]
         for body, want in cases:
