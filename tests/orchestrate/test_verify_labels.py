@@ -48,9 +48,11 @@ class Table(unittest.TestCase):
         self.assertEqual(plan(pr(1, labels=(VA,)))[0], [add(1, NV), rm(1, VA)])
         self.assertEqual(plan(pr(1, labels=(NV,)))[0], [], "already right: no write (idempotent)")
 
-    def test_pass_on_head_is_approved(self):
-        self.assertEqual(plan(pr(1, verdict="pass"))[0], [add(1, VA)])
-        self.assertEqual(plan(pr(1, labels=(NV,), verdict="pass"))[0], [rm(1, NV), add(1, VA)])
+    def test_pass_on_head_keeps_but_never_adds_approved(self):
+        # verify-gate rejects a verify-approved label added by the PR author or pusher, and the orchestrator
+        # writes as popododo0720 (vws-verify FAIL on #488 head 7ded926). vws-verify adds the label itself.
+        self.assertEqual(plan(pr(1, verdict="pass"))[0], [])
+        self.assertEqual(plan(pr(1, labels=(NV,), verdict="pass"))[0], [rm(1, NV)])
         self.assertEqual(plan(pr(1, labels=(VA,), verdict="pass"))[0], [])
 
     def test_both_labels_reduce_to_approved(self):
@@ -62,9 +64,9 @@ class Table(unittest.TestCase):
         self.assertEqual(plan(pr(1, labels=(NV, VA), verdict="fail"))[0], [rm(1, NV), rm(1, VA)])
         self.assertEqual(plan(pr(1, verdict="fail"))[0], [])
         # A newer PASS on the same head wins over an older FAIL, and the other way round.
-        it = pr(1, verdict="pass")
+        it = pr(1, labels=(VA,), verdict="pass")
         it["reviews"].insert(0, review(it, "fail", hours_ago=3, rid=3))
-        self.assertEqual(plan(it)[0], [add(1, VA)])
+        self.assertEqual(plan(it)[0], [])
         it = pr(1, labels=(VA,), verdict="fail")
         it["reviews"].insert(0, review(it, "pass", hours_ago=3, rid=3))
         self.assertEqual(plan(it)[0], [rm(1, VA)])
@@ -73,6 +75,18 @@ class Table(unittest.TestCase):
         it = pr(1, labels=(NV,))
         it["verify_check_failed"] = True
         self.assertEqual(plan(it)[0], [rm(1, NV)])
+
+    def test_failed_vws_verify_check_beats_an_earlier_pass(self):
+        it = pr(1, labels=(VA,), verdict="pass")
+        it["verify_check_failed"] = True
+        self.assertEqual(plan(it)[0], [rm(1, VA)])
+
+    def test_rule_never_adds_verify_approved(self):
+        for ci in ("green", "pending", "red", "ineligible"):
+            for verdict in (None, "pass", "fail"):
+                for labels in ((), (NV,), ("blocked",)):
+                    with self.subTest(ci=ci, verdict=verdict, labels=labels):
+                        self.assertNotIn(add(1, VA), plan(pr(1, labels=labels, ci=ci, verdict=verdict))[0])
 
     def test_red_or_pending_has_neither(self):
         for ci in ("red", "pending"):
