@@ -1,0 +1,24 @@
+# CI-failure marker caller for vws-deploy itself (vws-deploy#412, docs/ci-fail.md). ci-fail.yml in this
+# repo is the reusable workflow; this file is the thin caller every vws-* repo has. When one of the CI
+# workflows below fails on a pull request head, the reusable workflow posts or updates one marker
+# comment per head SHA. It and its script are pinned to one vws-deploy main commit; bump the SHA to
+# update. workflow_run always runs this file from the default branch, so a PR cannot change it.
+# repo-guard is not listed: its verify-gate job is red on every head until vws-verify approves.
+# post-merge (closed PRs only) and verify-queue (labels only) are not CI and are not listed. tests/workflows/test_ci_fail_caller.py fails
+# when a pull_request workflow is missing here.
+name: ci-fail-caller
+
+on:
+  workflow_run:
+    workflows: [ci, drift-check, installer-image]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  marker:
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@36c48e34311d023f149bec19b05fc66945be6000 # vws-deploy#444
