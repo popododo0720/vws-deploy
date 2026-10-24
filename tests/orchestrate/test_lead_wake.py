@@ -61,13 +61,24 @@ class LeadWake(unittest.TestCase):
         self.assertNotEqual(lead(run(moved, keys=[key]))[0]["key"], key)
 
     def test_fail_on_grok_or_ownerless_pr_wakes_the_lead(self):
-        for labels, why in ((("grok",), "Grok"), ((), "no DeepSeek owner")):
+        paused = dict(CFG, ORCHESTRATE_DISPATCH="off")  # rule B4 posts no Grok rework wake
+        for labels, cfg, why in ((("grok",), paused, "Grok"), ((), CFG, "no DeepSeek owner")):
             pr = failed(labels=labels)
-            a = lead(run(pr))
+            a = lead(run(pr, cfg=cfg))
             self.assertEqual(len(a), 1, labels)
             self.assertIn("vws-iam#501", a[0]["body"])
             self.assertIn(pr["head_sha"], a[0]["body"])
             self.assertIn(why, a[0]["body"])
+
+    def test_fail_the_grok_rework_wake_covers_is_quiet(self):
+        r = run(failed(labels=("grok",)))
+        self.assertEqual(lead(r), [])
+        self.assertEqual([a["item"] for a in r["actions"] if a["type"] == "grok_rework"], ["vws-iam#501"])
+
+    def test_conflict_only_fail_on_grok_pr_still_wakes_the_lead(self):
+        a = lead(run(failed(labels=("grok",), body=CONFLICT_BODY)))
+        self.assertEqual(len(a), 1)
+        self.assertIn("conflict-only", a[0]["body"])
 
     def test_conflict_only_fail_on_deepseek_pr_wakes_the_lead(self):
         a = lead(run(failed(deepseek=True, body=CONFLICT_BODY)))
