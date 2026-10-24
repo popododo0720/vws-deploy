@@ -489,5 +489,28 @@ class BypassAudit(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("r: archived (skipped)", text)
 
+class BypassAuditWrapper(unittest.TestCase):
+    """.github/drift/audit-bypass-actors.sh with a stub gh: prints the account, never the token (#458)."""
+
+    def test_wrapper_prints_account_not_token(self):
+        import subprocess
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        stub = os.path.join(d, "gh")
+        with open(stub, "w") as f:
+            f.write('#!/bin/sh\ncase "$2" in\n user) echo stub-admin ;;\n repos/o/r) echo \'{"archived": true}\' ;;\n'
+                    ' *) exit 1 ;;\nesac\n')
+        os.chmod(stub, 0o755)
+        repos = os.path.join(d, "repos.tsv")
+        with open(repos, "w") as f:
+            f.write("r\tgo\t-\t\n")
+        env = {**os.environ, "PATH": d + os.pathsep + os.environ["PATH"], "GH_TOKEN": "secret-token-458"}
+        r = subprocess.run([os.path.join(ROOT, ".github", "drift", "audit-bypass-actors.sh"), "--owner", "o",
+                            "--repos", repos], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("as gh account stub-admin", r.stdout)
+        self.assertIn("r: archived (skipped)", r.stdout)
+        self.assertNotIn("secret-token-458", r.stdout + r.stderr)
+
 if __name__ == "__main__":
     unittest.main()
