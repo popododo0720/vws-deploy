@@ -32,6 +32,12 @@ WAKEABLE = {"deepseek", "grok"}
 JOB_LAG = {"failure", "timed_out"}
 JOBS_TRIES = 3
 JOBS_BACKOFF = 5
+# A run's jobs are read 100 per page, at most this many pages (#432); more fails closed (no comment).
+JOBS_PAGES = 10
+# repo-guard's verify-gate is red on every head until vws-verify approves (#249). Alone it is not a CI
+# failure, so a run whose only failed job is verify-gate posts nothing (#432). A reusable workflow job is
+# named "<caller job> / verify-gate".
+VERIFY_GATE_RE = re.compile(r"(.+ / )?verify-gate")
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPO_RE = re.compile(r"vws-[a-z0-9-]+")
@@ -224,6 +230,20 @@ def fetch_tails(gh, a, jobs):
     return tails
 
 
+def list_jobs(gh, path):
+    """Every job of a run attempt, page by page. Fails closed past JOBS_PAGES full pages: a partial
+    list could miss the failed job (#432)."""
+    jobs = []
+    for page in range(1, JOBS_PAGES + 1):
+        got = gh.get(f"{path}&page={page}")
+        batch = got.get("jobs") or []
+        jobs += batch
+        total = got.get("total_count")
+        if len(batch) < 100 or (isinstance(total, int) and len(jobs) >= total):
+            return jobs
+    raise RuntimeError(f"gh api {path} has more than {JOBS_PAGES} pages of jobs; refusing a partial list")
+
+
 def skip(reason):
     return {"action": "skip", "reason": reason}
 
@@ -256,14 +276,15 @@ def run(gh, event_name, event, repository, now):
                  "conclusion": wr["conclusion"], "url": wr.get("html_url") or ""}
     jobs_path = f"{a}/actions/runs/{run_entry['run_id']}/attempts/{run_entry['run_attempt']}/jobs?per_page=100"
     for i in range(JOBS_TRIES):
-        jobs = gh.get(jobs_path)
         new_jobs = [{"workflow": wf, "job": str(j.get("name") or ""), "job_id": int(j["id"]),
                      "conclusion": j["conclusion"], "url": j.get("html_url") or "", "tail_lines": 0,
                      "tail_truncated": False}
-                    for j in jobs.get("jobs", []) if j.get("conclusion") in FAILED]
+                    for j in list_jobs(gh, jobs_path) if j.get("conclusion") in FAILED]
         if new_jobs or wr["conclusion"] not in JOB_LAG or i == JOBS_TRIES - 1:
             break
         time.sleep(JOBS_BACKOFF * 2 ** i)
+    if new_jobs and all(VERIFY_GATE_RE.fullmatch(j["job"]) for j in new_jobs):
+        return skip("only verify-gate failed")
 
     comments = gh.get_all(f"{a}/issues/{pr}/comments?per_page=100")
     for c, rec in bot_records(comments, repo, pr):

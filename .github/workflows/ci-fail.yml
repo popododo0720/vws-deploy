@@ -25,6 +25,22 @@ jobs:
       group: vws-ci-fail-${{ github.repository }}-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
     steps:
+      # Fail closed when the pinned workflow commit is unknown (#432): an empty ref would make checkout
+      # take the default branch. No token in this step.
+      - name: Pinned workflow commit is known
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ${WORKFLOW_REPOSITORY:-} != popododo0720/vws-deploy ]]; then
+            echo "ci-fail: job.workflow_repository is '${WORKFLOW_REPOSITORY:-}', not popododo0720/vws-deploy" >&2
+            exit 1
+          fi
+          if ! [[ ${WORKFLOW_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ci-fail: job.workflow_sha is '${WORKFLOW_SHA:-}', not a full commit SHA" >&2
+            exit 1
+          fi
       # The script runs from the same commit as this workflow file (the caller's @sha pin), never
       # from a branch (#402). tests/workflows/test_ci_fail_pin.py fails on any other ref.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

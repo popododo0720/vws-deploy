@@ -15,6 +15,9 @@
 - name: in-review
   color: "fbca04"
   description: "An agent's PR for this task is waiting for vws-verify"
+- name: needs-human
+  color: "b60205"
+  description: "CI failed on a 4th head in this PR chain; auto-rework stopped until a human removes it (vws-deploy#412)"
 - name: blocked
   color: "d93f0b"
   description: "Waiting on a dependency or a human decision"
