@@ -1253,10 +1253,11 @@ def pr_owner(pr, items):
     return "", ""
 
 
-def verify_fail_unrouted(items, prev, notes):
+def verify_fail_unrouted(items, prev, notes, routed=()):
     """vws-deploy#457: open non-draft PRs into main whose head has a vws-verify FAIL that no rule picks up
-    (rule B2 reworks only PRs a ready+deepseek item owns; a conflict-only FAIL is Rule R's). Adds one
-    verify_fail_unrouted note per PR head not in prev ({repo#N: head}); returns the new {repo#N: head}."""
+    (rule B2 reworks only PRs a ready+deepseek item owns; a conflict-only FAIL is Rule R's; routed are
+    the PRs the grok rework wake, vws-deploy#398, covers this tick). Adds one verify_fail_unrouted note
+    per PR head not in prev ({repo#N: head}); returns the new {repo#N: head}."""
     reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
     seen = {}
     for k in sorted(items):
@@ -1264,7 +1265,7 @@ def verify_fail_unrouted(items, prev, notes):
         if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
             continue
         v = head_verdict(it)
-        if not v or v["result"] != "fail" or conflict_only(v["body"]) or k in reworked:
+        if not v or v["result"] != "fail" or conflict_only(v["body"]) or k in reworked or k in routed:
             continue
         owner, _ = pr_owner(it, items)
         reason = ("no_owner" if not owner else "owner_grok" if owner == "grok"
@@ -1274,6 +1275,67 @@ def verify_fail_unrouted(items, prev, notes):
             notes.append({"kind": "verify_fail_unrouted", "target": k, "head": it["head_sha"], "verdict": v["url"],
                           "owner": owner, "reason": reason})
     return seen
+
+
+def grok_rework_key(k, head_sha):
+    """One grok rework wake per PR head: a new push re-arms it."""
+    return "sha256:" + hashlib.sha256(f"grok-rework\n{k}\n{head_sha}".encode()).hexdigest()
+
+
+def grok_rework_waiting(items):
+    """vws-deploy#398(a): open non-draft PRs into main whose head has a vws-verify FAIL that is not
+    conflict-only, that rule B2 does not rework, that are not parked (OPT_OUT_LABELS), and whose owner
+    (pr_owner) resolves to someone other than deepseek. Sorted by key."""
+    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
+    out = []
+    for k in sorted(items):
+        it = items[k]
+        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
+            continue
+        if k in reworked or set(it["labels"]) & set(OPT_OUT_LABELS):
+            continue
+        v = head_verdict(it)
+        if not v or v["result"] != "fail" or conflict_only(v["body"]):
+            continue
+        owner, via = pr_owner(it, items)
+        if owner and owner != "deepseek":
+            out.append({"target": k, "url": it["url"], "head_sha": it["head_sha"], "owner": owner, "via": via,
+                        "verdict": v})
+    return out
+
+
+def grok_rework_body(p, key, run_id):
+    v = p["verdict"]
+    return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok rework {p['target']} {p['url']}", "",
+                      f"Head `{p['head_sha']}` has a vws-verify FAIL: {v['url']}", "",
+                      quote(scrub(v["body"] or "")).replace("<!--", "&lt;!--"), "",
+                      f"Owner `{p['owner']}` ({p['via']}): please fix the findings on the same branch with a new "
+                      "commit (no force-push, no update-branch, no merge commits), then let verify run on the new head.",
+                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`",
+                      f"{REWORK_MARKER}{p['head_sha']} verdict={v['id']} item={p['target']} -->"])
+
+
+def decide_grok_rework(snapshot, cfg, posted, notes):
+    """Rule B4 (vws-deploy#398(a)). Returns (grok_rework actions, the PRs the wake covers). Pure."""
+    waiting = grok_rework_waiting(snapshot["items"])
+    if not waiting:
+        return [], set()
+    if not wake_target(cfg):
+        notes.append({"kind": "grok_rework_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": len(waiting)})
+        return [], set()
+    if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
+        notes.append({"kind": "grok_rework_paused", "reason": "ORCHESTRATE_DISPATCH=off", "waiting": len(waiting)})
+        return [], set()
+    actions = []
+    for p in waiting:
+        key = grok_rework_key(p["target"], p["head_sha"])
+        if key in posted:
+            continue
+        actions.append({"type": "grok_rework", "target": wake_target(cfg), "item": p["target"], "head": p["head_sha"],
+                        "owner": p["owner"], "key": key,
+                        "reason": f"{p['target']}: verify FAIL on head {p['head_sha'][:7]}, owner {p['owner']}",
+                        "body": grok_rework_body(p, key, snapshot["run_id"])})
+    return actions, {p["target"] for p in waiting}
 
 
 def ci_fails(pr):
@@ -1391,9 +1453,11 @@ def ci_fail_text(body):
     return scrub("\n".join(lines[:end]).strip()).replace("<!--", "&lt;!--")
 
 
+def quote(text):
+    return "\n".join("> " + ln for ln in text[:3000].splitlines())
+
+
 def rework_body(pr, v, cf=None):
-    def quote(text):
-        return "\n".join("> " + ln for ln in text[:3000].splitlines())
     parts, keys = [REWORK_TEXT], ""
     if v:
         parts.append(f"Verify verdict: {v['url']} (head `{pr['head_sha'][:7]}`)\n\n{quote(scrub(v['body']))}")
@@ -1726,7 +1790,8 @@ def decide(snapshot, state, now, cfg, exclusions):
         if eligible:
             prio = 0 if "priority/blocker" in labels else 2
             queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry, k))
-    new_state["verify_fail_unrouted"] = verify_fail_unrouted(items, state.get("verify_fail_unrouted", {}), notes)
+    grok_rework_actions, routed = decide_grok_rework(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
+    new_state["verify_fail_unrouted"] = verify_fail_unrouted(items, state.get("verify_fail_unrouted", {}), notes, routed)
     scope = cfg.get("ORCHESTRATE_SCOPE", "")
     if scope:
         queue = [q for q in queue if q[4] == scope]
@@ -1771,6 +1836,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes)
     rebuild_actions, rebuild = decide_rebuild(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
     actions += rebuild_actions
+    actions += grok_rework_actions
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
@@ -2138,7 +2204,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
-        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake", "rebuild_wake") and scope:
+        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake", "rebuild_wake", "grok_rework") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
@@ -2152,7 +2218,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         repo, number = a["target"].split("#")
         base = f"repos/{OWNER}/{repo}/issues/{number}"
         calls = []
-        if a["type"] in ("dispatch", "wake_verify", "grok_wake", "rebuild_wake"):
+        if a["type"] in ("dispatch", "wake_verify", "grok_wake", "rebuild_wake", "grok_rework"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "swap_label":
             if a.get("comment"):
@@ -2191,13 +2257,13 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
             grok_posted.append(a["item"])  # before the POST: a failed POST may still have landed
-        if a["type"] == "rebuild_wake":
+        if a["type"] in ("rebuild_wake", "grok_rework"):
             if not recheck_key(gh, repo, number, a["key"]):
-                log("skipped", action="rebuild_wake", target=a["target"], item=a["item"],
+                log("skipped", action=a["type"], target=a["target"], item=a["item"],
                     reason="a comment with this key already exists")
                 continue
             if not recheck_rebuild(gh, a["item"], a["head"]):
-                log("skipped", action="rebuild_wake", target=a["target"], item=a["item"], reason="PR changed since collect")
+                log("skipped", action=a["type"], target=a["target"], item=a["item"], reason="PR changed since collect")
                 continue
         if a["type"] == "merge":
             why = recheck_merge(gh, repo, number, a["head"], new_state, snapshot.get("merge", {}).get(repo, {}))
@@ -2252,6 +2318,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("wake_posted", target=a["target"], key=a["key"])
         if a["type"] == "rebuild_wake":
             log("rebuild_wake_posted", target=a["target"], item=a["item"], key=a["key"])
+        if a["type"] == "grok_rework":
+            log("grok_rework_posted", target=a["target"], item=a["item"], key=a["key"])
         if a["type"] == "grok_wake":
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
