@@ -219,6 +219,21 @@ class Skip(Fixture):
         self.assertEqual(self.calls(), [])
 
 
+class Auth(unittest.TestCase):
+    def test_git_and_gh_use_the_stored_gh_login(self):
+        sys.path.insert(0, os.path.dirname(JOB))
+        import rebuild_job
+        old = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(old)))
+        os.environ.update(GH_TOKEN="x", GITHUB_TOKEN="y", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.pager")
+        e = rebuild_job.env()
+        self.assertNotIn("GH_TOKEN", e)
+        self.assertNotIn("GITHUB_TOKEN", e)
+        self.assertEqual([(e[f"GIT_CONFIG_KEY_{i}"], e[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(e["GIT_CONFIG_COUNT"]))],
+                         [("credential.helper", ""), ("credential.helper", "!gh auth git-credential")])
+        self.assertEqual(e["GIT_TERMINAL_PROMPT"], "0")
+
+
 class NoForce(unittest.TestCase):
     def test_the_job_and_script_never_force(self):
         for path in (JOB, REBUILD):
