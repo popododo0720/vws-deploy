@@ -1,6 +1,6 @@
 # Copy unchanged to every vws-* repo with repo-guard.yml (see docs/factory-orchestrator.md, vws-deploy#397).
 # Keeps the needs-verify label on a PR exactly while it waits for vws-verify: open, not a draft, base main,
-# no verify-approved, no vws-verify FAIL verdict on its head (vws-deploy#440), and every check on its head
+# no verify-approved, not blocked, held or do-not-merge (vws-deploy#487), no vws-verify FAIL verdict on its head (vws-deploy#440), and every check on its head
 # green except verify-gate and vws-verify (which wait for the verdict by design). The orchestrator's verify
 # wake (Rule A) counts only labeled PRs, so a head verify already failed must not wake it again.
 # It reads the PR, its check runs and commit statuses through the API and writes only labels: it checks
@@ -100,6 +100,11 @@ jobs:
             fi
             if [[ $state != open || $draft == true || $base != main || ",$labels," == *",verify-approved,"* ]]; then
               if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "not waiting for verify"; fi
+              continue
+            fi
+            # vws-deploy#487 AC7: a parked PR (blocked, hold, do-not-merge) only loses the label (PR #483).
+            if [[ ",$labels," == *",blocked,"* || ",$labels," == *",hold,"* || ",$labels," == *",do-not-merge,"* ]]; then
+              if [[ ",$labels," == *",needs-verify,"* ]]; then unlabel "$n" "parked"; else echo "#$n: parked; no label"; fi
               continue
             fi
             gh api --paginate "repos/${REPO}/commits/${sha}/check-runs?per_page=100" \

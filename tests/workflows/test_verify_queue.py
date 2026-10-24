@@ -291,6 +291,17 @@ class Label(unittest.TestCase):
                 writes, _ = self.go(PR_TSV=tsv)
                 self.assertEqual(writes, [])
 
+    def test_blocked_pr_never_gets_the_label(self):
+        # vws-deploy#487 AC7, recorded on PR #483: the lead removed needs-verify at 12:23:05Z after labeling it
+        # blocked, and this job added it back at 12:23:26Z on a green head. A parked PR only loses the label.
+        for lab in ("blocked", "hold", "do-not-merge"):
+            with self.subTest(lab):
+                writes, out = self.go(PR_TSV=pr(lab))
+                self.assertEqual(writes, [], out)
+                writes, out = self.go(PR_TSV=pr(f"{lab},needs-verify"))
+                self.assertEqual(writes, [self.DEL], out)
+                self.assertIn("parked", out)
+
     def test_no_pr_for_the_run_is_a_no_op(self):
         writes, out = self.go(prs="")
         self.assertEqual(writes, [])

@@ -26,6 +26,7 @@ A deterministic script that runs five routine factory steps on GitHub state. It 
 | G, Grok wake (vws-deploy#378) | **Only issues listed in `ORCHESTRATE_GROK_ALLOWLIST` are ever assigned**; the default is empty, so nothing is assigned until someone lists an issue (all other work stays parked). While fewer than `ORCHESTRATE_GROK_CAP` (1) Grok tasks are in flight, it posts one comment on the verify-wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no Grok wake and the note `grok_wake_off`; never the status issue) whose first line is `<!-- vws-orchestrate:grok-wake -->`, naming the next allowlisted open issue or non-draft PR that has `ready` and `grok`, has no `deepseek` label and no opt-out label (`blocked`, `hold`, `do-not-merge`), has no assignee and has every `Depends on` met; at most one per repo. The owning Grok dev bot's GitHub-trigger routine on that thread matches that marker. Order: `priority/blocker`, then security (a `security` label or the word in the title), then the oldest `ready` label. The idempotency key is sha256 of the issue and its last failure reset, so an issue is woken once; while it stays open with `grok` it holds the slot (note `grok_in_flight`). Grok work started without a wake holds a slot too: an open `grok` issue or PR with an assignee, and the issue an open `grok` PR (draft too) names with `Part of #N` or `Part of repo#N`; a PR and its issue count as one task. A repo is busy while it holds a task or an open `grok` PR that names an issue in any repo. **A human assignee holds the slot too:** any assignee on an open `grok` issue, a person included, holds a Grok slot until they are unassigned (or `grok` is removed, or the issue closes); with the default cap of 1 that pauses all Grok wakes, and the note `grok_in_flight` lists the issue. The repos have no in-progress label, so assignment and the linked PR are the in-flight signals; and `/orchestrate reset-failures` on it re-arms one new wake. After a rule C swap the issue is picked up on a later tick if it is allowlisted. `ORCHESTRATE_DISPATCH=off` pauses these wakes too. Bad allowlist entries are ignored and logged (note `grok_allowlist_invalid`). Posted wakes are logged as `grok_wake_posted`, and the comment's last line `<!-- orchestrate:grok-wake item=<repo#N> -->` lets metrics count it. |
 | D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and adds one entry to the status issue body. See "Rule D" below. |
 | R, rebuild wake (vws-deploy#460) | An open non-draft PR into `main` that is labeled `needs-rebuild`, or whose `mergeable_state` is `dirty` (it conflicts with main), gets **one** comment on the verify-wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no wake and the note `rebuild_wake_off`) whose first line is `<!-- vws-orchestrate:rebuild-wake -->`. It names the PR, its head SHA, why it waits, and the owner from the PR body's `Agent:` line (no `Agent:` line: the lead). The owner rebuilds it on current main with `vws-rebuild-pr` as a new `-vN` branch and PR. The idempotency key is sha256 of the PR and its head SHA, so repeated ticks post nothing new and only a new head gets a new wake. `collect` reads `mergeable_state` with one ETag-cached `GET pulls/N` per open non-draft PR into main; GitHub computes it lazily, so `unknown` (or a read error) is not a conflict and the next tick decides. `apply` re-checks the key on the thread and the PR's state and head before posting, and logs `rebuild_wake_posted`. `ORCHESTRATE_DISPATCH=off` does not pause it: it only notifies. The status issue body lists every PR waiting for a rebuild. |
+| V, verify labels (vws-deploy#487) | `needs-verify` and `verify-approved` follow each open PR's current head in every vws-* repo, with or without `verify-queue.yml`. See "The verify labels rule" below. Runs after every other rule, so it takes the writes left under `ORCHESTRATE_MAX_WRITES`; `ORCHESTRATE_VERIFY_LABELS=off` stops it. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
@@ -141,6 +142,42 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
 
 The vws-pr-pipeline "Open" step 4 (the dev agent waking vws-verify) and vws-verify-verdict step 8 are
 replaced by this label and Rule A.
+
+## The verify labels rule (vws-deploy#487)
+
+The orchestrator owns `needs-verify` and `verify-approved` (rule V, `decide_verify_labels`). `collect`
+reads, for every open non-draft PR into `main`, the head's check runs and commit status and the
+vws-verify reviews (all ETag-cached). It then sets both labels from this table:
+
+| The PR's current head | `needs-verify` | `verify-approved` |
+|---|---|---|
+| Every check green except `verify-gate`, `gate / verify-gate`, `vws-verify` (and verify-queue's `needs-verify` job), and no vws-verify verdict on the head | add | remove |
+| The newest verdict on the head is PASS (an `APPROVED` review by the verify login on the head sha) and the newest `vws-verify` check run on the head did not fail | remove | keep (never added, see below) |
+| The newest verdict on the head is FAIL (a `CHANGES_REQUESTED` review, a `# repo#N @ <sha>` / `Result: FAIL` comment), or the newest `vws-verify` check run on the head failed (even after a PASS review) | remove | remove |
+| A check red or pending, or no checks yet (or more than one page); or a draft, another base, or closed | remove | remove |
+
+- The rule never adds `verify-approved`; it only removes it. `verify-gate` (`scripts/guard-agents.sh
+  verify-gate`) rejects a `verify-approved` label added by the PR author or pusher, and the orchestrator
+  writes as the repo owner, who authors most PRs (vws-verify FAIL on vws-deploy#488 head 7ded926).
+  vws-verify adds the label with its own identity when it posts a PASS.
+- A PASS on an older head does not count: after a push both labels come off until the new head is green
+  (then `needs-verify`) or has a verdict.
+- A PR labeled `blocked`, `hold` or `do-not-merge` gets removals only: `needs-verify` comes off and no
+  label is added (note `verify_label_parked` when the table wanted one). `verify-queue.yml` skips such a
+  PR the same way while it still runs (PR #483 got `needs-verify` back after the lead removed it).
+  Rule A also skips a parked PR that still carries `needs-verify` (note `needs_verify_parked`), so it
+  never wakes vws-verify for it.
+- A label someone added by hand that contradicts the table is removed on the next tick. A PR already
+  matching writes nothing, so ticks are idempotent.
+- Longest-waiting PRs (oldest `created_at`) come first. Each label write counts toward
+  `ORCHESTRATE_MAX_WRITES`; what the cap stops is written on a later tick. `ORCHESTRATE_SCOPE` limits it
+  to one PR like every other write. A repo without the label skips the write (logged).
+- A read error on a read Rule A already made before #487 (checks of a PR without `verify-approved`,
+  reviews of a `needs-verify` PR) still fails the tick. Any other read error skips only that PR in this
+  rule for the tick; Rule D reads a `verify-approved` PR again and fails closed itself.
+
+Retiring `verify-queue.yml` (deleting it from vws-deploy and vws-console-api, closing the copy PRs, and
+dropping it from the drift `WORKFLOWS` list) is a follow-up of vws-deploy#487 once this rule runs live.
 
 ## Rule D: serialized merges (vws-deploy#346)
 
@@ -439,6 +476,7 @@ Config keys and defaults:
 - `ORCHESTRATE_INFRA_RETRY_DELAY_MIN=5` (minutes after a provider-error report before the retry; a positive integer; with the 600 s tick the effective delay is 5 to 10 minutes)
 - `VERIFY_WAKE_THRESHOLD=3` (needs-verify PRs waiting that wake vws-verify at once)
 - `VERIFY_WAKE_MAX_WAIT_MIN=30` (minutes the oldest needs-verify PR may wait before a wake; `VERIFY_WAKE_EDGE_MIN_HOURS` and `VERIFY_WAKE_COOLDOWN_HOURS` are gone and ignored)
+- `ORCHESTRATE_VERIFY_LABELS=on` (`on` or `off`; `off` stops rule V's `needs-verify` and `verify-approved` writes, vws-deploy#487)
 - `ORCHESTRATE_DISPATCH=on` (`on` or `off`; `off` pauses new DeepSeek dispatches, including infra retries, while in-flight tracking, verify-wake and merges continue)
 - `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`

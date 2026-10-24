@@ -64,7 +64,9 @@ def routes():
         f"{O}/vws-deploy/issues/415": {"body": {"number": 415, "state": "open", "body": STATUS_SEED}},
     }
     for n in range(400, 405):
-        r[f"{O}/vws-deploy/commits/{n:040x}/check-runs"] = {"body": {"check_runs": []}}
+        # One green check: a head with no checks at all is pending, and loses needs-verify (vws-deploy#487).
+        r[f"{O}/vws-deploy/commits/{n:040x}/check-runs"] = {"body": {"total_count": 1, "check_runs": [
+            {"id": 1, "name": "test", "status": "completed", "conclusion": "success"}]}}
         r[f"{O}/vws-deploy/commits/{n:040x}/status"] = {"body": {"state": "success", "statuses": []}}
     return r
 
@@ -232,7 +234,8 @@ class TickEndBreakdown(Env):
         self.set_routes(r)
         self.tick()
         planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
-        self.assertEqual(planned, [("dispatch", "vws-iam#1")])
+        # No wake this tick; the label rule (vws-deploy#487) labels them, and a later tick wakes verify.
+        self.assertEqual(planned, [("dispatch", "vws-iam#1")] + [("add_label", f"vws-deploy#{n}") for n in range(400, 405)])
         self.assertEqual(load(self.paths.health)["pending"], 0)
 
     def test_get_class(self):

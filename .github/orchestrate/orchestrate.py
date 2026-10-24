@@ -178,6 +178,8 @@ DEFAULTS = {
     "ORCHESTRATE_LOG_MAX_BYTES": str(5 * 1024 * 1024),
     "ORCHESTRATE_LOG_KEEP": "5",
     "ORCHESTRATE_DISPATCH": "on",
+    # vws-deploy#487: needs-verify and verify-approved follow each PR head (decide_verify_labels). off = no label writes.
+    "ORCHESTRATE_VERIFY_LABELS": "on",
     "ORCHESTRATE_MERGE": "dry-run",
     "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
     "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
@@ -269,6 +271,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
     if cfg["ORCHESTRATE_DISPATCH"] not in ("on", "off"):
         raise ValueError("ORCHESTRATE_DISPATCH must be on or off")
+    if cfg["ORCHESTRATE_VERIFY_LABELS"] not in ("on", "off"):
+        raise ValueError("ORCHESTRATE_VERIFY_LABELS must be on or off")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     if cfg["ORCHESTRATE_BOARD"] not in ("off", "dry-run", "apply"):
@@ -283,7 +287,7 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
                  "ORCHESTRATE_WAKE_THREAD",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_BOARD_TOKEN_FILE",
                  "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN", "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
@@ -386,7 +390,7 @@ ALLOWED = {
         re.compile(r"^rate_limit$"),
     ],
     "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
-    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek)$")],
+    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved)$")],
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
     # The status issue body only (vws-deploy#416); Gh.write also pins the number and the payload.
@@ -1224,6 +1228,56 @@ def head_verdict(pr):
     return max(vs, key=lambda v: (v["at"], v["id"]), default=None)
 
 
+def verify_labels_wanted(it):
+    """(needs-verify, verify-approved, why) for one PR collect read (vws-deploy#487 table). Pure.
+    verify-approved True means "may stay"; decide_verify_labels never adds it (see there)."""
+    if it["verify_ci"] == "ineligible":
+        return False, False, "draft or not into main"
+    if it.get("verify_check_failed"):
+        # The newest vws-verify check on this head failed: it beats an earlier PASS review on the same head.
+        return False, False, f"vws-verify check failed on head {it['head_sha'][:7]}"
+    v = head_verdict(it)
+    if v and v["result"] == "pass":
+        return False, True, f"PASS on head {it['head_sha'][:7]} {v['url']}"
+    if v:
+        return False, False, f"FAIL on head {it['head_sha'][:7]} {v['url']}"
+    if it["verify_ci"] == "green":
+        return True, False, f"checks green on head {it['head_sha'][:7]}, no verdict yet"
+    return False, False, f"checks {it['verify_ci']} on head {it['head_sha'][:7]}"
+
+
+def decide_verify_labels(items, cfg, notes):
+    """vws-deploy#487: needs-verify and verify-approved as one rule over every vws-* repo (verify-queue.yml
+    is retired). Only PRs collect read (verify_ci set) are touched; an unreadable state writes nothing. A
+    blocked, held or do-not-merge PR gets removals only. verify-approved is only ever removed: verify-gate
+    rejects one added by the PR author or pusher, and this rule writes as the repo owner (vws-verify adds it,
+    review on vws-deploy#488). Longest-waiting PRs first, so a write cap that
+    stops this tick short serves them first; the rest converge on later ticks. Pure."""
+    if cfg.get("ORCHESTRATE_VERIFY_LABELS", "on") != "on":
+        return []
+    out = []
+    for k, it in sorted(items.items(), key=lambda kv: (kv[1].get("created_at") or "", kv[0])):
+        if not it.get("is_pr") or it.get("verify_ci") not in ("green", "pending", "red", "ineligible"):
+            continue
+        labels = set(it["labels"])
+        want_nv, want_va, why = verify_labels_wanted(it)
+        parked = sorted(labels & set(OPT_OUT_LABELS))
+        if parked:
+            want_nv = False  # a parked PR does not wait for verify (AC7)
+        for label, want in ((NEEDS_VERIFY, want_nv), ("verify-approved", want_va)):
+            if want and label not in labels:
+                if label == "verify-approved":
+                    continue  # vws-verify adds it; an orchestrator-added one would fail verify-gate
+                if parked:
+                    notes.append({"kind": "verify_label_parked", "target": k, "label": label, "parked": parked})
+                    continue
+                out.append({"type": "add_label", "target": k, "label": label, "reason": f"verify labels: {why}"})
+            elif not want and label in labels:
+                extra = f" ({', '.join(parked)})" if parked and label == NEEDS_VERIFY else ""
+                out.append({"type": "remove_label", "target": k, "label": label, "reason": f"verify labels: {why}{extra}"})
+    return out
+
+
 def rework_prs(k, it, items):
     """Open PRs a ready+deepseek item owns: the item itself when it is a PR, else the open vws PRs its
     DeepSeek reports named, then (vws-deploy#457) open PRs whose `Part of` names it and whose owner
@@ -1601,6 +1655,11 @@ def decide(snapshot, state, now, cfg, exclusions):
             if v and v["result"] == "fail":
                 notes.append({"kind": "needs_verify_failed_head", "target": key, "verdict": v["url"]})
                 continue
+            parked = sorted(set(it["labels"]) & set(OPT_OUT_LABELS))
+            if parked:
+                # vws-deploy#487 AC7: a parked PR never wakes verify; rule V removes its label this tick.
+                notes.append({"kind": "needs_verify_parked", "target": key, "labels": parked})
+                continue
             # Waited since the latest needs-verify label (a push removes it); unknown counts as just labeled.
             since = max((utc(e["created_at"]) for e in it.get("events", [])
                          if e["event"] == "labeled" and e["label"]["name"] == NEEDS_VERIFY), default=now)
@@ -1780,6 +1839,8 @@ def decide(snapshot, state, now, cfg, exclusions):
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
+    # Last: label repairs take the writes left under the cap, and a PR missed this tick converges on the next.
+    actions += decide_verify_labels(items, cfg, notes)
     return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending), "rebuild": rebuild}
 
 
@@ -1801,10 +1862,38 @@ def ci_verdict(runs, status):
     return "ok"
 
 
-def ci_state(gh, repo, sha):
+def ci_reads(gh, repo, sha):
     runs, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/check-runs?per_page=100")
     status, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/status")
-    return ci_verdict(runs, status)
+    return runs, status
+
+
+# Checks that wait for the verdict, as verify-queue.yml skips them: the gate, its called form (#402), the
+# verifier's own check and verify-queue's job.
+WAIT_CHECKS = VERIFY_CHECKS | {"gate / verify-gate", "needs-verify"}
+
+
+def pr_ci(runs, status):
+    """(green | pending | red, vws-verify check failed) for one PR head, as verify-queue.yml decides it: the
+    newest run per check name, verify checks excluded; skipped and neutral count as green; no checks at all,
+    or a truncated page, is pending (never green). Pure."""
+    runs = runs if isinstance(runs, dict) else {}
+    latest = {}
+    for r in runs.get("check_runs", []):
+        if r.get("name") not in latest or r.get("id", 0) > latest[r["name"]].get("id", 0):
+            latest[r["name"]] = r
+    v = latest.get(VERIFY_CHECK)
+    verify_failed = bool(v and v.get("status") == "completed" and v.get("conclusion") == "failure")
+    states = {run_state(r) for name, r in latest.items() if name not in WAIT_CHECKS}
+    for st in (status if isinstance(status, dict) else {}).get("statuses", []):
+        if st.get("context") in WAIT_CHECKS:
+            continue
+        states.add("failed" if st.get("state") in ("failure", "error") else "ok" if st.get("state") == "success" else "pending")
+    if "failed" in states:
+        return "red", verify_failed
+    if "pending" in states or not states or runs.get("total_count", 0) > len(runs.get("check_runs", [])):
+        return "pending", verify_failed
+    return "green", verify_failed
 
 
 # Candidate history (comments and label events) is re-read only when the issue's updated_at moved
@@ -1926,13 +2015,33 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
             except (GhError, PermissionError):
                 pull = None
             it["mergeable_state"] = (pull.get("mergeable_state") or "") if isinstance(pull, dict) else ""
-        if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
-                and "verify-approved" not in labels):
-            it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
-            if NEEDS_VERIFY in labels and not it["events"]:
-                it["events"] = label_events(gh, it)  # Rule A's wait time; ETag-cached
-            if NEEDS_VERIFY in labels and "reviews" not in it:
-                it["reviews"] = verify_reviews(gh, it, cfg)  # Rule A skips a failed head; ETag-cached
+        if it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main":
+            # Every open PR into main: the verify labels follow its head (vws-deploy#487). ETag-cached reads.
+            # Reads Rule A needed before #487 still fail the tick on an error; the new ones only skip the
+            # PR in the label rule (verify_ci "unknown"), and Rule D re-reads a verify-approved PR itself.
+            waiting = "verify-approved" not in labels
+            try:
+                runs, status = ci_reads(gh, it["repo"], it["head_sha"])
+            except (GhError, PermissionError):
+                if waiting:
+                    raise
+                runs = status = None
+            if waiting:
+                it["ci"] = ci_verdict(runs, status)
+                if NEEDS_VERIFY in labels and not it["events"]:
+                    it["events"] = label_events(gh, it)  # Rule A's wait time; ETag-cached
+            try:
+                if "reviews" not in it:
+                    it["reviews"] = verify_reviews(gh, it, cfg)  # the head's verdict; Rule A skips a failed head
+            except (GhError, PermissionError):
+                if waiting and NEEDS_VERIFY in labels:
+                    raise
+            if runs is None or "reviews" not in it:
+                it["verify_ci"] = "unknown"
+            else:
+                it["verify_ci"], it["verify_check_failed"] = pr_ci(runs, status)
+        elif it["is_pr"]:
+            it["verify_ci"] = "ineligible"  # a draft or another base waits for nothing: both labels come off
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:
