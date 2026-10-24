@@ -477,6 +477,8 @@ cmd_agents() {
   scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
   grep -q 'guard-agents.sh pr-base' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the base"
   grep -q 'guard-agents.sh pr-body' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check Part of #N"
+  grep -q 'guard-agents.sh pr-checklist' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the Quality checklist"
+  grep -q '.github/ac/ac-lint.sh' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not lint the linked issue's acceptance criteria"
   (cd scripts && sha256sum --quiet -c guard-agents.sh.sha256) || die "R13: scripts/guard-agents.sh.sha256 does not match scripts/guard-agents.sh; this repo holds the canonical copy, so update the sum in the same commit (cd scripts && sha256sum guard-agents.sh > guard-agents.sh.sha256)"
   grep -q 'guard-agents.sh identity' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check the guard-agents.sh identity"
   grep -q 'guard-agents.sh pr-commits' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml does not check that no commit closes an issue"

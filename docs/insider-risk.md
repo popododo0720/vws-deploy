@@ -6,7 +6,7 @@ The design is https://github.com/popododo0720/vws-deploy/issues/33. This repo is
 
 | File | What it does |
 | --- | --- |
-| `.github/workflows/repo-guard.yml` | Runs on PRs only: the base is the default branch, the body has `Part of #N` (N of 1 or more, outside HTML comments `<!-- -->` and code fences), neither the PR body nor the commits have a closing keyword (`Closes/Fixes/Resolves` followed by `#N`, `owner/repo#N` or a full issue or PR URL), and AGENTS.md has the guard section |
+| `.github/workflows/repo-guard.yml` | Runs on PRs only: the base is the default branch; the body has `Part of #N` (N of 1 or more, outside HTML comments `<!-- -->` and code fences) and the 9-item Quality checklist, all ticked with evidence or `N/A: <reason>`; every PR commit has a `<type>: summary` subject and `Part of #N`; neither the PR body nor the commits have a closing keyword (`Closes/Fixes/Resolves` followed by `#N`, `owner/repo#N` or a full issue or PR URL); AGENTS.md has the guard section. The linked issue's acceptance criteria are printed to the job summary (read-only, never failing) |
 | `.github/workflows/direct-push-watch.yml` | Runs only on `push` to main: every new first-parent commit has a linked PR, and main's history was not rewritten. It is a separate file so a PR run has no skipped check |
 | `scripts/guard-agents.sh` | The actual code of the checks above. It uses no repo paths. `selftest` feeds bad and good inputs directly and checks that every bad one fails |
 
@@ -18,7 +18,7 @@ The design is https://github.com/popododo0720/vws-deploy/issues/33. This repo is
 4. Even if the repo already has CI, keep these workflows as separate files. Do not run the same job in two places.
 5. Local check: `scripts/guard-agents.sh selftest`, `scripts/guard-agents.sh agents`. If the repo has its own guard (such as `guard.sh`), call `agents` and `selftest` from there. In this repo `scripts/guard.sh agents` does it.
 
-Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `GUARD_ITEMS` (default 7), `GUARD_RETRY_SECONDS` (retry interval for push-watch's PR lookup, default 5).
+Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `GUARD_ITEMS` (default 7), `GUARD_QUALITY_ITEMS` (default 9, the checklist items), `GUARD_RETRY_SECONDS` (retry interval for push-watch's PR lookup, default 5).
 
 ## Limits
 
@@ -36,5 +36,8 @@ Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `G
 - `rules [FILE] [HEADING]` (alias `judgment`) checks that every row of the rule table has an enforcer and prints the number of Judgment rows. The heading comes from the argument, then `GUARD_RULES_HEADING`, then whichever of `## Rules` and the legacy Korean heading the file has.
 - `archtest [FILE] [HEADING]` is the single command that runs the architecture tests. It first prints the Judgment row count line from `rules` (`rules: 50 rows, 2 Judgment`), then runs `go test -v -count=1 ${GUARD_ARCHTEST_PKG:-./internal/archtest/...}`. The row count stays in the CI log even when the tests fail. A repo without the directory prints that and passes. Each repo's CI calls `scripts/guard-agents.sh archtest` instead of `go test ./internal/archtest/...` (vws-network#99).
 - `english [ALLOWLIST]` fails on a tracked file with Hangul unless a `<glob> <reason>` line in ALLOWLIST (default `.github/english-allowlist`) covers it. `pr-body` and `commit-msg` reject Hangul with no exception. A repo with Korean docs must translate them (or allowlist test data and UI strings) before it takes this copy.
+- `pr-checklist [FILE]` checks the pull request text (FILE or `$PR_BODY`): exactly one `## Quality checklist (required)` section in the visible text (HTML comments, also across lines, and code fences removed) with each of the 9 template item titles (`QUALITY_TITLES`) exactly once; a ticked item has evidence after `Evidence:` or `N/A: <reason>`, an unticked item passes only with `N/A: <reason>`. The untouched template line, an `N/A:` with no reason, an unknown or repeated title, and evidence hidden in an HTML comment all fail, and the error names each bad, missing or duplicated item.
+- `pr-issue [FILE]` prints the `Part of #N` reference (`#N`, or `owner/repo#N`). The repo-guard step uses it to pick the issue for `.github/ac/ac-lint.sh`.
+- `.github/ac/ac-lint.sh --file BODY` (or `--repo OWNER/REPO --issue N`) lists each acceptance-criteria box as OPEN, OK or NO-EVIDENCE (#399). `pr-hygiene` sends its output to the job summary and continues even when the script finds a ticked box without evidence.
 
 - `verify-gate HEAD LABELS [FILE]`: the verdict is read only from `@@comment-by:` comments (never the PR body). Comments and labels by `GUARD_VERIFY_EXCLUDE` (the PR author and the account that pushed the head) do not count; the only exception is `GUARD_VERIFY_IDENTITY` (the vws-verify login). Known gap: when all bots use one account, the author cannot be told apart from vws-verify. The workflow lands separately, after this script is on main (#261).
