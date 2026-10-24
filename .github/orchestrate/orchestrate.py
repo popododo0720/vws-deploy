@@ -1782,10 +1782,11 @@ def lead_wake_body(it, k, reason, key, run_id):
                       f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
 
 
-def decide_lead(snapshot, cfg, notes):
+def decide_lead(snapshot, cfg, notes, routed=()):
     """Lead wake (vws-deploy#397). Returns lead_wake actions: one per PR head that is verify-approved but
-    conflicts with main, or has a vws-verify FAIL that no DeepSeek rework picks up (a Grok PR, a PR with no
-    DeepSeek owner, or a conflict-only verdict). Pure."""
+    conflicts with main, or has a vws-verify FAIL that no rework picks up (a Grok PR, a PR with no
+    DeepSeek owner, or a conflict-only verdict). routed are the PRs the grok rework wake (rule B4,
+    vws-deploy#398) covers this tick: their owner is woken, so they get no lead wake. Pure."""
     items = snapshot["items"]
     posted = set(snapshot.get("status", {}).get("keys", []))
     reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
@@ -1803,12 +1804,12 @@ def decide_lead(snapshot, cfg, notes):
             reason = "verify-approved but conflicts with main"
         else:
             v = head_verdict(it)
-            if v and v["result"] == "fail":
+            if v and v["result"] == "fail" and (k not in routed or conflict_only(v["body"])):
                 owner = items.get(grok_link(it), {})
                 if conflict_only(v["body"]):
                     reason = f"verify FAIL is conflict-only ({v['url']})"
                 elif "grok" in it["labels"] or "grok" in owner.get("labels", []):
-                    reason = f"verify FAIL on a Grok PR; Grok rework is not automatic ({v['url']})"
+                    reason = f"verify FAIL on a Grok PR and no Grok rework wake covers it ({v['url']})"
                 elif k not in reworked:
                     reason = f"verify FAIL on a PR with no DeepSeek owner ({v['url']})"
         if reason:
@@ -2046,7 +2047,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     rebuild_actions, rebuild = decide_rebuild(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
     actions += rebuild_actions
     actions += grok_rework_actions
-    actions += decide_lead(snapshot, cfg, notes)
+    actions += decide_lead(snapshot, cfg, notes, routed)
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
