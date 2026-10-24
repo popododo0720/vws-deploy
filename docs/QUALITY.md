@@ -68,5 +68,27 @@ The gate records that a verdict was posted. It cannot prove who judged it.
   checkout ref or the step). The `vws-main` ruleset requires a pull request and the
   `verify-gate` check, with no bypass actors, but it cannot judge a workflow the PR changes.
   The remaining control is a person reviewing the `.github/` and `scripts/` diff.
+- **Bypass actors are visible only to an admin.** The scheduled drift check runs with
+  `github.token`, so it reports the `vws-main` bypass list as unverified. The admin audit run
+  checks it instead (#458); see "Bypass actor audit" below.
 - **Evidence is checked for form, not truth.** The gate checks that each item has a URL,
   path or `N/A: reason`. It does not open them.
+
+### Bypass actor audit (#458)
+
+GitHub shows a ruleset's `bypass_actors` only to a caller with admin read, so this check runs
+by hand on the VM with the dsh fine-grained PAT (Administration: Read-only), never in Actions.
+
+1. On the VM, use the gh auth of the dsh PAT. Do not print the token.
+2. From a vws-deploy checkout of main, run `.github/drift/audit-bypass-actors.sh`.
+3. Post the output and the exit status on #415.
+
+The script prints the gh account name (never the token). It reads every vws-* repo in
+`.github/drift/repos.tsv`, skips archived repos, and lists each active branch ruleset's bypass
+actors (`actor_type`, `actor_id`, `bypass_mode`). It exits 3 when any repo has a bypass actor,
+has no active `vws-main` ruleset, or returns no readable bypass list. A token without admin
+read therefore fails the audit and never passes it. The calls are read-only.
+
+Never copy the credential into Actions secrets, into the repo or into a log. An unexpected
+bypass actor is a lead decision: list it on the issue and do not change the ruleset without
+the owner's approval.
