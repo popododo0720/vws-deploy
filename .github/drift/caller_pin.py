@@ -25,7 +25,8 @@ COMMENT_TYPES = ["created", "edited", "deleted"]
 Call = collections.namedtuple("Call", "path cond permissions")
 # caller job -> (called file, if, permissions). Each file holds only the one job of the same name.
 CALLS = {
-    "hygiene": Call(".github/workflows/repo-guard-pr-hygiene.yml", PR, {"contents": "read", "pull-requests": "read"}),
+    "hygiene": Call(".github/workflows/repo-guard-pr-hygiene.yml", PR,
+                    {"contents": "read", "pull-requests": "read", "issues": "read"}),
     "gate": Call(".github/workflows/repo-guard-verify-gate.yml", PR,
                  {"contents": "read", "pull-requests": "read", "issues": "read"}),
     "reset": Call(".github/workflows/repo-guard-verify-reset.yml", PR + " && github.event.action == 'synchronize'",
