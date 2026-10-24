@@ -8,7 +8,7 @@
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
 #   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N", no closing keyword and no Hangul
-#   guard-agents.sh pr-checklist [FILE]     every one of the QUALITY_ITEMS checklist items in the pull request text
+#   guard-agents.sh pr-checklist [FILE]     each QUALITY_TITLES checklist item exactly once in the pull request text
 #                                           (FILE or $PR_BODY) is ticked and has evidence or "N/A: <reason>"
 #   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or owner/repo#N)
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
@@ -287,15 +287,21 @@ cmd_pr_body() {
   ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
 }
 
-# The 9-item Quality checklist in the PR template (docs/QUALITY.md). One section, one ticked line per
-# item, and each line carries "Evidence: <URL, path, test or output>" or "N/A: <reason>". An unticked
-# box, the template's untouched "Evidence:" line, and an "N/A:" with no reason all fail.
+# The 9-item Quality checklist in the PR template (docs/QUALITY.md), by the bold item titles of
+# .github/pull_request_template.md. Only the visible text counts (visible_text: HTML comments, also across
+# lines, and code fences are removed). One section; each of the QUALITY_TITLES exactly once; each item
+# carries "Evidence: <URL, path, test or output>" or "N/A: <reason>". A ticked box needs either one; an
+# unticked box passes only with "N/A: <reason>" (the template: "An unchecked box without a reason means
+# the PR is not done"). The untouched template line and an "N/A:" with no reason fail.
+QUALITY_TITLES=("Error handling" "Retries and timeouts" "Security" "Unit tests" "Integration tests"
+  "vws-test live evidence (required)" "Observability" "Idempotency" "AWS compatibility (where applicable)")
 cmd_pr_checklist() {
-  local body=${PR_BODY:-} heading="## Quality checklist (required)" section count n line title ev
+  local body=${PR_BODY:-} heading="## Quality checklist (required)" section count n line title ev na t c
   if [[ -n ${1:-} ]]; then
     [[ -f $1 ]] || die "pr-checklist: ${1} does not exist"
     body=$(cat "$1")
   fi
+  body=$(visible_text <<<"$body")
   count=$(grep -c -E '^## Quality checklist \(required\)[[:space:]]*$' <<<"$body" || true)
   [[ $count -gt 0 ]] || die "pr-checklist: the pull request text needs a '${heading}' section"
   [[ $count -eq 1 ]] || die "pr-checklist: the pull request text has ${count} '${heading}' sections; keep one"
@@ -304,31 +310,38 @@ cmd_pr_checklist() {
     on && /^## / { exit }
     on { print }' <<<"$body")
   local -a items=() bad=()
+  local -A seen=()
   mapfile -t items < <(grep -E '^[[:space:]]*-[[:space:]]+\[[ xX]\][[:space:]]' <<<"$section" || true)
-  [[ ${#items[@]} -eq $QUALITY_ITEMS ]] ||
-    die "pr-checklist: found ${#items[@]} checklist items, need ${QUALITY_ITEMS} (one per docs/QUALITY.md item)"
   for ((n = 0; n < ${#items[@]}; n++)); do
-    line=$(sed -E 's/<!--.*-->//g' <<<"${items[$n]}")
+    line=${items[$n]}
     title=$(grep -o -E '\*\*[^*]+\*\*' <<<"$line" | head -n 1 || true)
     title=${title//\*\*/}
     [[ -n $title ]] || title=${line#*- \[[ xX]\] }
-    # A ticked box is the author's statement that the item is done; a stated N/A is still ticked.
-    if [[ ! $line =~ ^[[:space:]]*-[[:space:]]+\[[xX]\] ]]; then
-      bad+=("$((n + 1)) (${title}): box is not checked")
+    c=0
+    for t in "${QUALITY_TITLES[@]}"; do [[ $title == "$t" ]] && c=1; done
+    if [[ $c -eq 0 ]]; then
+      bad+=("$((n + 1)) (${title}): not a docs/QUALITY.md item")
       continue
     fi
+    seen[$title]=$((${seen[$title]:-0} + 1))
     ev=""
     if [[ $line == *Evidence:* ]]; then ev=${line##*Evidence:}; fi
     ev=$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$ev")
+    na=$(grep -o -i -E 'N/A:.*' <<<"$line" | head -n 1 || true)
     # A line may carry "N/A: reason" in place of the Evidence field.
-    if [[ -z $ev ]] && grep -q -i -E 'N/A:' <<<"$line"; then
-      ev=$(grep -o -i -E 'N/A:.*' <<<"$line" | head -n 1)
-    fi
-    if [[ -z $ev ]]; then
-      bad+=("$((n + 1)) (${title}): no evidence or 'N/A: reason'")
-    elif grep -q -i -E '^N/A' <<<"$ev" && ! grep -q -i -E '^N/A:[[:space:]]*[^[:space:]]' <<<"$ev"; then
+    [[ -n $ev ]] || ev=$na
+    if [[ -n $ev ]] && grep -q -i -E '^N/A' <<<"$ev" && ! grep -q -i -E '^N/A:[[:space:]]*[^[:space:]]' <<<"$ev"; then
       bad+=("$((n + 1)) (${title}): 'N/A' needs a reason")
+    elif [[ ! $line =~ ^[[:space:]]*-[[:space:]]+\[[xX]\] ]]; then
+      grep -q -i -E 'N/A:[[:space:]]*[^[:space:]]' <<<"$na" ||
+        bad+=("$((n + 1)) (${title}): box is not checked and has no 'N/A: reason'")
+    elif [[ -z $ev ]]; then
+      bad+=("$((n + 1)) (${title}): no evidence or 'N/A: reason'")
     fi
+  done
+  for t in "${QUALITY_TITLES[@]}"; do
+    c=${seen[$t]:-0}
+    if [[ $c -eq 0 ]]; then bad+=("missing item (${t})"); elif [[ $c -gt 1 ]]; then bad+=("item (${t}) appears ${c} times"); fi
   done
   [[ ${#bad[@]} -eq 0 ]] || die "pr-checklist: ${bad[*]}"
 }
@@ -622,8 +635,8 @@ Part of #0" bash "$0" pr-body
     echo
     echo "## Quality checklist (required)"
     echo
-    for i in 1 2 3 4 5 6 7 8 9; do
-      echo "- [x] **Item ${i}**: description. Evidence: tests/case-${i}.sh"
+    for ((i = 1; i <= ${#QUALITY_TITLES[@]}; i++)); do
+      echo "- [x] **${QUALITY_TITLES[$((i - 1))]}**: description. Evidence: tests/case-${i}.sh"
     done
   } >"$cl"
   expect_pass "a complete checklist" bash "$0" pr-checklist "$cl"
@@ -631,21 +644,39 @@ Part of #0" bash "$0" pr-body
   expect_fail "a checklist item with no evidence" bash "$0" pr-checklist "$tmp/cl-empty.md"
   local msg
   msg=$( (bash "$0" pr-checklist "$tmp/cl-empty.md") 2>&1 >/dev/null || true)
-  [[ $msg == *"3 (Item 3)"* ]] || die "selftest: an empty checklist item was not named: ${msg}"
+  [[ $msg == *"3 (Security)"* ]] || die "selftest: an empty checklist item was not named: ${msg}"
   echo "ok: an empty checklist item is named"
   sed 's#Evidence: tests/case-7.sh#Evidence: N/A:#' "$cl" >"$tmp/cl-na.md"
   expect_fail "N/A with no reason" bash "$0" pr-checklist "$tmp/cl-na.md"
   sed 's#Evidence: tests/case-7.sh#Evidence: N/A: no telemetry in this script#' "$cl" >"$tmp/cl-nareason.md"
   expect_pass "N/A with a reason" bash "$0" pr-checklist "$tmp/cl-nareason.md"
-  sed -E 's#^- \[x\] (\*\*Item 7\*\*.*)$#- [ ] \1#' "$tmp/cl-nareason.md" >"$tmp/cl-unticked.md"
-  expect_fail "a stated N/A in an unticked box" bash "$0" pr-checklist "$tmp/cl-unticked.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*.*)$#- [ ] \1#' "$tmp/cl-nareason.md" >"$tmp/cl-unticked.md"
+  expect_pass "an unticked box with N/A and a reason" bash "$0" pr-checklist "$tmp/cl-unticked.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*.*)$#- [ ] \1#' "$cl" >"$tmp/cl-unticked-ev.md"
+  expect_fail "an unticked box with evidence but no N/A" bash "$0" pr-checklist "$tmp/cl-unticked-ev.md"
+  sed -E 's#^- \[x\] (\*\*Observability\*\*: description\.) Evidence: tests/case-7\.sh$#- [ ] \1 Evidence: N/A:#' "$cl" >"$tmp/cl-unticked-na.md"
+  expect_fail "an unticked box with N/A and no reason" bash "$0" pr-checklist "$tmp/cl-unticked-na.md"
+  { echo "Part of #394"; echo; echo "## Quality checklist (required)"; echo
+    for i in 1 2 3 4 5 6 7 8 9; do echo "- [x] **Security**: done. Evidence: tests/security.sh"; done; } >"$tmp/cl-nine.md"
+  expect_fail "nine copies of one item" bash "$0" pr-checklist "$tmp/cl-nine.md"
+  msg=$( (bash "$0" pr-checklist "$tmp/cl-nine.md") 2>&1 >/dev/null || true)
+  [[ $msg == *"missing item (Error handling)"* && $msg == *"item (Security) appears 9 times"* ]] ||
+    die "selftest: missing and duplicated items were not named: ${msg}"
+  echo "ok: missing and duplicated checklist items are named"
+  { echo "Part of #394"; echo; echo "<!--"; sed -n '3,$p' "$cl"; echo "-->"; } >"$tmp/cl-mlcomment.md"
+  expect_fail "a checklist inside a multi-line HTML comment" bash "$0" pr-checklist "$tmp/cl-mlcomment.md"
+  awk '/case-5.sh/ { sub(/Evidence: tests\/case-5.sh/, "Evidence: <!--"); print; print "tests/case-5.sh -->"; next } { print }' \
+    "$cl" >"$tmp/cl-mlev.md"
+  expect_fail "evidence in an HTML comment closed on the next line" bash "$0" pr-checklist "$tmp/cl-mlev.md"
+  sed 's#\*\*Idempotency\*\*#**Idempotent**#' "$cl" >"$tmp/cl-unknown.md"
+  expect_fail "an item title that is not a QUALITY.md item" bash "$0" pr-checklist "$tmp/cl-unknown.md"
   sed 's#Evidence: tests/case-5.sh#Evidence: <!-- fill this in -->#' "$cl" >"$tmp/cl-comment.md"
   expect_fail "evidence only in an HTML comment" bash "$0" pr-checklist "$tmp/cl-comment.md"
-  { cat "$cl"; echo; echo "## Quality checklist (required)"; echo; echo "- [x] **Item 1**: again. Evidence: x"; } >"$tmp/cl-dup.md"
+  { cat "$cl"; echo; echo "## Quality checklist (required)"; echo; echo "- [x] **Error handling**: again. Evidence: x"; } >"$tmp/cl-dup.md"
   expect_fail "a duplicated checklist section" bash "$0" pr-checklist "$tmp/cl-dup.md"
-  sed -E 's#^- \[x\] (\*\*Item [0-9]+\*\*: description\.) Evidence: tests/case-[0-9]+\.sh$#- [ ] \1 Evidence:#' "$cl" >"$tmp/cl-template.md"
+  sed -E 's#^- \[x\] (\*\*[^*]+\*\*: description\.) Evidence: tests/case-[0-9]+\.sh$#- [ ] \1 Evidence:#' "$cl" >"$tmp/cl-template.md"
   expect_fail "the template placeholder left in" bash "$0" pr-checklist "$tmp/cl-template.md"
-  grep -v 'Item 9' "$cl" >"$tmp/cl-short.md"
+  grep -v 'AWS compatibility' "$cl" >"$tmp/cl-short.md"
   expect_fail "a checklist with eight items" bash "$0" pr-checklist "$tmp/cl-short.md"
   expect_fail "no checklist section" env PR_BODY="Part of #394" bash "$0" pr-checklist
 
