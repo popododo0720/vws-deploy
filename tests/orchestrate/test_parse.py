@@ -90,6 +90,14 @@ class Files(unittest.TestCase):
         self.assertEqual(orch.ci_verdict(runs, {}), "failing")
         self.assertEqual(orch.ci_verdict({}, {"statuses": [{"context": "ci", "state": "error"}]}), "failing")
 
+    def test_ci_verdict_ignores_the_called_verify_gate(self):
+        # vws-deploy#402: the gate runs as "gate / verify-gate" next to its bare verify-gate shim.
+        runs = {"check_runs": [{"id": 1, "name": "gate / verify-gate", "conclusion": "failure"},
+                               {"id": 2, "name": "verify-gate", "conclusion": "failure"}]}
+        self.assertEqual(orch.ci_verdict(runs, {}), "ok")
+        runs["check_runs"].append({"id": 3, "name": "hygiene / pr-hygiene", "conclusion": "failure"})
+        self.assertEqual(orch.ci_verdict(runs, {}), "failing")
+
 
 if __name__ == "__main__":
     unittest.main()
