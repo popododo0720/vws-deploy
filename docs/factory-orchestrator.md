@@ -37,8 +37,8 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   `vws-conformance`). Archived repos (today `vws-hypervisor`) are skipped.
 - **`Part of` references:** a PR body line that starts with `Part of #N` or `Part of vws-x#N`
   (leading whitespace is allowed). The owner/repo form `Part of popododo0720/vws-x#N` is not
-  accepted: Rule D reports `part_of_owner_repo` and pr-hygiene rejects it (vws-deploy#482), so both
-  sides accept the same set.
+  accepted, and Rule D reports `part_of_owner_repo` instead of the generic `no_part_of`
+  (vws-deploy#477).
 - **Dependencies:** a body line `Depends on #N` or `Depends on vws-<repo>#N`, comma separated.
   - A dependency is met when the issue closed as completed or the PR merged.
   - An open, unreadable, outside, archived or cyclic reference blocks the task. The orchestrator adds
