@@ -26,6 +26,7 @@ A deterministic script that runs five routine factory steps on GitHub state. It 
 | G, Grok wake (vws-deploy#378) | **Only issues listed in `ORCHESTRATE_GROK_ALLOWLIST` are ever assigned**; the default is empty, so nothing is assigned until someone lists an issue (all other work stays parked). While fewer than `ORCHESTRATE_GROK_CAP` (1) Grok tasks are in flight, it posts one comment on the verify-wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no Grok wake and the note `grok_wake_off`; never the status issue) whose first line is `<!-- vws-orchestrate:grok-wake -->`, naming the next allowlisted open issue or non-draft PR that has `ready` and `grok`, has no `deepseek` label and no opt-out label (`blocked`, `hold`, `do-not-merge`), has no assignee and has every `Depends on` met; at most one per repo. The owning Grok dev bot's GitHub-trigger routine on that thread matches that marker. Order: `priority/blocker`, then security (a `security` label or the word in the title), then the oldest `ready` label. The idempotency key is sha256 of the issue and its last failure reset, so an issue is woken once; while it stays open with `grok` it holds the slot (note `grok_in_flight`). Grok work started without a wake holds a slot too: an open `grok` issue or PR with an assignee, and the issue an open `grok` PR (draft too) names with `Part of #N` or `Part of repo#N`; a PR and its issue count as one task. A repo is busy while it holds a task or an open `grok` PR that names an issue in any repo. **A human assignee holds the slot too:** any assignee on an open `grok` issue, a person included, holds a Grok slot until they are unassigned (or `grok` is removed, or the issue closes); with the default cap of 1 that pauses all Grok wakes, and the note `grok_in_flight` lists the issue. The repos have no in-progress label, so assignment and the linked PR are the in-flight signals; and `/orchestrate reset-failures` on it re-arms one new wake. After a rule C swap the issue is picked up on a later tick if it is allowlisted. `ORCHESTRATE_DISPATCH=off` pauses these wakes too. Bad allowlist entries are ignored and logged (note `grok_allowlist_invalid`). Posted wakes are logged as `grok_wake_posted`, and the comment's last line `<!-- orchestrate:grok-wake item=<repo#N> -->` lets metrics count it. |
 | D, serialized merge (vws-deploy#346) | Squash-merges a PR that passed vws-verify, **at most one per repo per tick**, and only while the push CI on `main` is green for the current main head. After a merge the repo is locked until the push CI of the new squash commit is green. Red stops merges in that repo and adds one entry to the status issue body. See "Rule D" below. |
 | R, rebuild wake (vws-deploy#460) | An open non-draft PR into `main` that is labeled `needs-rebuild`, or whose `mergeable_state` is `dirty` (it conflicts with main), gets **one** comment on the verify-wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no wake and the note `rebuild_wake_off`) whose first line is `<!-- vws-orchestrate:rebuild-wake -->`. It names the PR, its head SHA, why it waits, and the owner from the PR body's `Agent:` line (no `Agent:` line: the lead). The owner rebuilds it on current main with `vws-rebuild-pr` as a new `-vN` branch and PR. The idempotency key is sha256 of the PR and its head SHA, so repeated ticks post nothing new and only a new head gets a new wake. `collect` reads `mergeable_state` with one ETag-cached `GET pulls/N` per open non-draft PR into main; GitHub computes it lazily, so `unknown` (or a read error) is not a conflict and the next tick decides. `apply` re-checks the key on the thread and the PR's state and head before posting, and logs `rebuild_wake_posted`. `ORCHESTRATE_DISPATCH=off` does not pause it: it only notifies. The status issue body lists every PR waiting for a rebuild. |
+| T, AC tick (vws-deploy#486) | A PR merged into `main` after the rule started, with a `Part of` issue and `AC: <n>` lines, gets box n of that issue ticked with `(evidence: <PR URL> merged <sha>)`. One comment carries the marker. The issue gets `ac-partial` while boxes stay open and is closed as completed when none are left. `ORCHESTRATE_AC_TICK` (`dry-run` by default) switches it. See "The AC tick rule" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
@@ -228,6 +229,47 @@ push Actions runs for one main commit, `rules/branches/main` (never the branch-p
 combined status. A lock also reads `compare/<old>...<main>`. A read error in one repo means no merge
 there this tick (`merge_repo_unreadable`), not a failed tick.
 
+## The AC tick rule (vws-deploy#486)
+
+A PR body names the acceptance criteria boxes it covers with one `AC: <n>` line per box (n counts the
+`- [ ]` / `- [x]` lines under the `Part of` issue's `## Acceptance criteria` heading, from 1, up to the
+next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requires one of the two
+(vws-deploy#492). Rule T acts on them after the merge:
+
+- `collect` reads each watched repo's newest 100 closed PRs (one ETag-cached `GET pulls?state=closed`).
+  It keeps a PR that was merged into `main` after `ac_tick_since`, within `ORCHESTRATE_COMMENT_WINDOW_DAYS`,
+  and that is not yet in `ac_ticked` (both in `state.json`). For one with a `Part of` issue (the first
+  `Part of #N` or `Part of vws-<repo>#N` line, as rule D reads it) and `AC: <n>` lines, it reads that issue
+  and its comments. A PR merged in another vws-* repo with `Part of vws-deploy#N` ticks the vws-deploy
+  issue. A read error skips that PR for this tick (note `ac_read_error`); the tick does not fail.
+- The first tick with the rule on only sets `ac_tick_since` to now (note `ac_tick_start`), so PRs merged
+  before it are never ticked.
+- `decide` (oldest merge first) plans one `ac_tick` per PR. It plans nothing and notes `ac_none`,
+  `ac_unparsed`, `ac_no_part_of`, `ac_issue_closed`, `ac_no_section` (no box under the heading),
+  `ac_index_invalid` (an `n` beyond the box count: no box is ticked) or `ac_tick_done` (the issue already
+  has the PR's marker). These PRs go into `ac_ticked` and are not read again.
+- `apply` (only with `ORCHESTRATE_AC_TICK=apply` and `ORCHESTRATE_MODE=apply`) reads the issue's comments
+  and body again. If the marker `<!-- vws-orchestrate:ac-tick pr=<repo>#<pr> -->` is there, it writes
+  nothing. Otherwise it computes the edit from the fresh body, so an edit made since `collect` is kept,
+  and writes in this order:
+  1. the body, with each listed unticked box ticked and the evidence suffix appended;
+  2. `ac-partial` added while a box stays open (if the repo has the label; else note `ac_label_missing`);
+  3. `ac-pending` removed, and `ac-partial` too when no box is left;
+  4. the issue closed as completed when no box is left;
+  5. one comment with the PR link, the merge sha, the boxes, the boxes still open (index and text) and
+     the marker.
+  The marker goes last, so a crash part way is finished by the next tick: a box already ticked is left
+  alone. The PR then goes into `ac_ticked`.
+- Every write counts toward `ORCHESTRATE_MAX_WRITES`. A tick that cannot fit all of one PR's writes skips
+  that PR (`write cap N reached`), and a later tick does it. `ORCHESTRATE_SCOPE` limits the rule to one issue.
+- The gh wrapper refuses any other issue body edit: a body `PATCH` must differ from the body just read
+  only in unticked boxes under the heading, turned `[x]` with the evidence suffix
+  (`ac_tick_only`). The only other issue edit allowed besides the status issue's body is
+  `{"state": "closed", "state_reason": "completed"}`, never on the status issue.
+- The rule does not judge evidence (vws-verify does that on the PR). It ticks no box for an `AC: none`
+  PR or for a box no PR names; the lead ticks those by hand. Retiring `post-merge.yml`'s `ac-pending`
+  job and creating `ac-partial` in every repo are separate steps (#486 AC8).
+
 ## Infra retries (provider errors)
 
 DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at 07:12Z and a 503 at
@@ -305,7 +347,8 @@ board is overwritten on the next sync. Design: vws-deploy#347.
     check runs, combined status, `rate_limit`; for rule D also `branches/main`,
     `rules/branches/main`, push Actions runs for one main commit, and `compare/<sha>...<sha>`;
   - POST: issue comments and issue labels;
-  - DELETE: only the labels `blocked`, `in-review`, `deepseek`;
+  - DELETE: only the labels `blocked`, `in-review`, `deepseek`, and for rule T `ac-partial`, `ac-pending`;
+  - PATCH: the status issue body; for rule T an issue body that only ticks criteria boxes, and a completed close;
   - PUT: only `pulls/N/merge` with `merge_method` squash and a 40-hex `sha` (rule D).
 - **Conditional reads:** reads send `If-None-Match`. A 304 is served from
   `~/.local/state/vws-orchestrate/etag-cache.json` and does not use the primary rate limit. The
@@ -372,8 +415,8 @@ seeding the issue (or after an edit removed a marker), the body must contain, ea
 <!-- /vws-orchestrate:status -->
 ```
 
-The gh wrapper allows only this edit: `PATCH` of the configured status issue, with `body` as the only
-field and exactly one status block in it. The orchestrator posts no comments on the status issue
+The gh wrapper allows only this edit of the status issue: `PATCH` with `body` as the only
+field and exactly one status block in it (rule T's edits never target it). The orchestrator posts no comments on the status issue
 and no status comments anywhere; comments there are metrics alerts only (see
 [factory-metrics.md](factory-metrics.md#alerts)). verify-wake never posts there:
 `ORCHESTRATE_WAKE_THREAD` equal to `ORCHESTRATE_STATUS_ISSUE` is refused.
@@ -443,6 +486,7 @@ Config keys and defaults:
 - `ORCHESTRATE_MERGE=dry-run` (rule D: `off`, `dry-run` or `apply`; merges need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`
 - `ORCHESTRATE_MERGE_MAX_ATTEMPTS=2`
+- `ORCHESTRATE_AC_TICK=dry-run` (rule T: `off` reads nothing, `dry-run` plans and logs, `apply` writes; writes need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_BOARD=dry-run` (board_sync: `off`, `dry-run` or `apply`; writes need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_BOARD_PROJECT=PVT_kwHOBK54jM4BoB_Z` (the ProjectV2 node id of the board)
 - `ORCHESTRATE_BOARD_EVERY=6` (sync at most every N ticks, plus the tick after a managed label change)
