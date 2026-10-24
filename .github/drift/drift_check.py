@@ -16,8 +16,8 @@ Checks per repo, on its default branch:
               sets lll to 120 and enables gofumpt and goimports
 An archived repo is reported and skipped; it is not drift.
 
---bypass-audit (vws-deploy#458) checks only the ruleset bypass actors, for the admin audit run from the
-box (.github/drift/audit-bypass-actors.sh). It lists every actor and exits 3 on any actor, and also on a
+--bypass-audit (vws-deploy#458) checks only the ruleset bypass actors, for the admin audit run on the
+VM (.github/drift/audit-bypass-actors.sh). It lists every actor and exits 3 on any actor, and also on a
 ruleset that is unreadable or whose bypass list is not visible, so a non-admin token can never pass it.
 
 Needs an authenticated gh. With admin access (an audit) the full protection settings are read;
