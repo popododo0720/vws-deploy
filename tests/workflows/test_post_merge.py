@@ -221,10 +221,11 @@ class PostMerge(unittest.TestCase):
 
     # vws-verify FAIL r1 on PR #429 (/workspace/handoff/verdicts/d429): guard-agents.sh pr-body sees
     # "Part of #7" in each of these bodies, so post-merge must read #7 too.
+    # Each body ends with an AC: line, which pr-body also needs (vws-deploy#486).
     GUARD_REGRESSIONS = [
-        ("fence line inside an HTML comment", "<!--\n```\n-->\nPart of #7\n"),
-        ("backtick fence inside a tilde fence", "~~~\n```\n~~~\nPart of #7\n"),
-        ("shorter fence inside a longer one", "````\n```\n````\nPart of #7\n"),
+        ("fence line inside an HTML comment", "<!--\n```\n-->\nPart of #7\nAC: 1\n"),
+        ("backtick fence inside a tilde fence", "~~~\n```\n~~~\nPart of #7\nAC: 1\n"),
+        ("shorter fence inside a longer one", "````\n```\n````\nPart of #7\nAC: 1\n"),
     ]
 
     def test_guard_agents_regression_bodies(self):
