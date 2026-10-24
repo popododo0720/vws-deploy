@@ -148,10 +148,14 @@ vws-verify reviews (all ETag-cached). It then sets both labels from this table:
 | The PR's current head | `needs-verify` | `verify-approved` |
 |---|---|---|
 | Every check green except `verify-gate`, `gate / verify-gate`, `vws-verify` (and verify-queue's `needs-verify` job), and no vws-verify verdict on the head | add | remove |
-| The newest verdict on the head is PASS (an `APPROVED` review by the verify login on the head sha) | remove | add |
-| The newest verdict on the head is FAIL (a `CHANGES_REQUESTED` review, a `# repo#N @ <sha>` / `Result: FAIL` comment, or a failed `vws-verify` check run) | remove | remove |
+| The newest verdict on the head is PASS (an `APPROVED` review by the verify login on the head sha) and the newest `vws-verify` check run on the head did not fail | remove | keep (never added, see below) |
+| The newest verdict on the head is FAIL (a `CHANGES_REQUESTED` review, a `# repo#N @ <sha>` / `Result: FAIL` comment), or the newest `vws-verify` check run on the head failed (even after a PASS review) | remove | remove |
 | A check red or pending, or no checks yet (or more than one page); or a draft, another base, or closed | remove | remove |
 
+- The rule never adds `verify-approved`; it only removes it. `verify-gate` (`scripts/guard-agents.sh
+  verify-gate`) rejects a `verify-approved` label added by the PR author or pusher, and the orchestrator
+  writes as the repo owner, who authors most PRs (vws-verify FAIL on vws-deploy#488 head 7ded926).
+  vws-verify adds the label with its own identity when it posts a PASS.
 - A PASS on an older head does not count: after a push both labels come off until the new head is green
   (then `needs-verify`) or has a verdict.
 - A PR labeled `blocked`, `hold` or `do-not-merge` gets removals only: `needs-verify` comes off and no
