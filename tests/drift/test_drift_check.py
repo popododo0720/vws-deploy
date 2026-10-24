@@ -431,5 +431,63 @@ class ExitStatus(unittest.TestCase):
         self.assertEqual(dc.DRIFT_EXIT, 3)
 
 
+class BypassAudit(unittest.TestCase):
+    """--bypass-audit (vws-deploy#458): fails on any bypass actor and never passes a hidden bypass list."""
+
+    ACTIVE = {"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}
+
+    def run_audit(self, detail, archived=False, rulesets=None):
+        def gh(path):
+            if path == "repos/o/r":
+                return {"archived": archived}
+            if path.endswith("/rulesets/1"):
+                return detail
+            if path.endswith("/rulesets"):
+                return [self.ACTIVE] if rulesets is None else rulesets
+            return None
+
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            f.write("# header\nr\tgo\t.golangci.yml\tlint\n")
+        self.addCleanup(os.unlink, f.name)
+        saved = (dc.gh, dc.sys.argv)
+        dc.gh = gh
+        dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name, "--bypass-audit"]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = dc.main()
+        finally:
+            dc.gh, dc.sys.argv = saved
+        return rc, out.getvalue()
+
+    def test_no_actor_passes(self):
+        rc, text = self.run_audit({"bypass_actors": []})
+        self.assertEqual(rc, 0)
+        self.assertIn("r: ok", text)
+        self.assertIn("ruleset vws-main (id 1): 0 bypass actor(s)", text)
+
+    def test_any_actor_fails_and_is_listed(self):
+        actor = {"actor_type": "Integration", "actor_id": 15368, "bypass_mode": "always"}
+        rc, text = self.run_audit({"bypass_actors": [actor]})
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+        self.assertIn("r: FAIL ruleset vws-main has 1 bypass actor(s)", text)
+        self.assertIn("actor_type=Integration actor_id=15368 bypass_mode=always", text)
+
+    def test_hidden_bypass_list_fails(self):
+        for detail in ({"name": "vws-main"}, {"bypass_actors": None}, {"bypass_actors": "x"}, None):
+            rc, text = self.run_audit(detail)
+            self.assertEqual(rc, dc.DRIFT_EXIT, detail)
+            self.assertIn("r: FAIL", text)
+
+    def test_missing_vws_main_fails(self):
+        rc, text = self.run_audit({"bypass_actors": []}, rulesets=[])
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+        self.assertIn("no active vws-main ruleset", text)
+
+    def test_archived_repo_is_skipped(self):
+        rc, text = self.run_audit(None, archived=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("r: archived (skipped)", text)
+
 if __name__ == "__main__":
     unittest.main()
