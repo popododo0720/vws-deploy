@@ -96,6 +96,28 @@ class Unclaimed(unittest.TestCase):
         self.assertEqual(woke(run(s)), [])
 
 
+class FakeGh:
+    """vws-iam#1 is assigned (a done task keeps its assignee); vws-proto#4 is the next task."""
+    def get(self, path):
+        return {"state": "open", "labels": [{"name": "ready"}, {"name": "grok"}], "assignees": []}, None
+
+    def get_all(self, path):
+        if "/vws-iam/" in path:
+            return [{"number": 1, "labels": [{"name": "grok"}, {"name": "ready"}], "assignees": [{"login": "grok-dev"}]}]
+        return []
+
+
+class ApplyRecheck(unittest.TestCase):
+    def test_released_tasks_do_not_count_at_apply_time(self):
+        it = woken(activity={"comments": [], "assigned": [], "prs": [{"key": "vws-iam#9", "merged_at": ts(1)}]})
+        it["assignees"] = ["grok-dev"]
+        a = next(a for a in run(snap(it, wake_hours_ago=2))["actions"] if a["type"] == "grok_wake")
+        self.assertEqual((a["item"], a["released"]), ("vws-proto#4", ["vws-iam#1"]))
+        repos = ["vws-iam", "vws-proto"]
+        self.assertIn("cap 1 reached", orch.recheck_grok(FakeGh(), "vws-proto#4", repos, 1))
+        self.assertEqual(orch.recheck_grok(FakeGh(), "vws-proto#4", repos, 1, released=a["released"]), "")
+
+
 class Claimed(unittest.TestCase):
     def test_claims_keep_the_slot_past_the_timeout(self):
         pr = item("vws-iam", 9, is_pr=True, body="Part of #1")
