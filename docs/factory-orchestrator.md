@@ -102,9 +102,11 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
   `pull_request` `ready_for_review` and `synchronize`. The `workflow_run` list must name every workflow
   that runs on `pull_request`, because any of them can finish last: vws-deploy's `ci`, `drift-check`,
   `installer-image`, `post-merge` (closed PRs; it only clears a stale label) and `repo-guard`, plus
-  `CI` (vws-console) and `english` (vws-conformance). `tests/workflows/test_verify_queue.py` fails when
-  a `pull_request` workflow in this repo is missing; a repo that adds a PR workflow under a new name
-  must add it to the list. `check_suite` is not used because GitHub starts no workflow for check suites
+  `CI` (vws-console), `english` (most repos), `buf` (vws-proto), `conformance` (vws-conformance) and
+  `tla` (vws-console-api). `tests/workflows/test_verify_queue.py` fails when a `pull_request` workflow
+  in this repo, or one of those names, is missing; a repo that adds a PR workflow under a new name must
+  add it to the list here and copy the file again. The drift check (`.github/drift/drift-check.sh`)
+  reports a repo without `verify-queue.yml` as drift (vws-deploy#460). `check_suite` is not used because GitHub starts no workflow for check suites
   created by GitHub Actions.
 - Once `gate / verify-gate` (vws-deploy#413) is on `main`, it joins the skip list next to `verify-gate`
   and `vws-verify`; whichever of #413 and #397 merges second adds it.
