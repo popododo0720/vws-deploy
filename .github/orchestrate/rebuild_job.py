@@ -39,9 +39,12 @@ class JobError(Exception):
 
 
 def env():
-    e = dict(os.environ)
-    e.pop("GH_TOKEN", None)
-    e.pop("GITHUB_TOKEN", None)
+    """No GH_TOKEN; every git call (including rebuild-pr.sh's fetch) authenticates through gh's stored login."""
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("GH_TOKEN", "GITHUB_TOKEN") and not k.startswith("GIT_CONFIG_")}
+    e.update(GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
+             GIT_CONFIG_KEY_1="credential.helper", GIT_CONFIG_VALUE_1="!gh auth git-credential",
+             GIT_TERMINAL_PROMPT="0")
     return e
 
 
@@ -113,8 +116,7 @@ def run(a):
             return EXIT_CONFLICT, dict(out, result="conflict", branch=new, base=base)
         if a.dry_run:
             return EXIT_OK, dict(out, result="would_rebuild", branch=new, base=base)
-        git(wt, "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
-            "push", "-q", "origin", f"refs/heads/{new}:refs/heads/{new}")
+        git(wt, "push", "-q", "origin", f"refs/heads/{new}:refs/heads/{new}")  # a new ref; no "+", no force
         pushed = True
         body = (pr.get("body") or "").rstrip() + (
             f"\n\nSupersedes #{a.pr}: the same commits cherry-picked onto main {base[:7]} by the orchestrator's "
