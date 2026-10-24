@@ -31,6 +31,9 @@ with open(os.path.join(d, "calls.jsonl"), "a") as f:
     f.write(json.dumps({"argv": a, "method": m, "path": p, "body": json.loads(body) if body else None,
                         "gh_token_set": "GH_TOKEN" in os.environ}) + "\n")
 r = json.load(open(os.path.join(d, "routes.json"))).get(f"{m} {p}")
+if r is not None and "seq" in r:
+    seen = sum(1 for x in open(os.path.join(d, "calls.jsonl")) if json.loads(x)["method"] == m and json.loads(x)["path"] == p)
+    r = r["seq"][min(seen, len(r["seq"])) - 1]
 if r is None:
     r = {"status": 404, "body": {"message": "Not Found"}} if m == "GET" else {"status": 200, "body": {}}
 if r.get("status", 200) >= 400:
@@ -90,13 +93,13 @@ class Fixture(unittest.TestCase):
         pr.update(kw)
         return pr
 
-    def run_job(self, *extra, job="job-1"):
+    def run_job(self, *extra, job="job-1", clone=None, cwd=None):
         with open(os.path.join(self.tmp, "routes.json"), "w") as f:
             json.dump(self.routes, f)
         env = dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"], STUB_DIR=self.tmp, GH_TOKEN="x",
                    **IDENT)
-        return subprocess.run([sys.executable, JOB, "--repo", REPO, "--pr", "7", "--clone", self.clone,
-                               "--job-id", job, *extra], capture_output=True, text=True, env=env)
+        return subprocess.run([sys.executable, JOB, "--repo", REPO, "--pr", "7", "--clone", clone or self.clone,
+                               "--job-id", job, *extra], capture_output=True, text=True, env=env, cwd=cwd)
 
     def calls(self):
         p = os.path.join(self.tmp, "calls.jsonl")
@@ -186,6 +189,63 @@ class Conflict(Fixture):
         self.assertEqual(self.writes(), [("POST", f"repos/{REPO}/issues/7/labels")])
         self.assertEqual([c["body"] for c in self.calls() if c["method"] == "POST"], [{"labels": ["needs-rebuild"]}])
         self.assertEqual(self.origin_refs(), ["ci/feat", "main"], "no push on a conflict")
+        self.assert_clean_clone()
+
+
+class OnlyItsOwn(Fixture):
+    """verify FAIL on #483: the job removes only the worktree and branch it created (#398)."""
+
+    def test_existing_worktree_is_refused_and_kept(self):
+        wt = os.path.join(self.clone, ".worktrees", "job-1")
+        os.makedirs(wt)
+        with open(os.path.join(wt, "precious.txt"), "w") as f:
+            f.write("someone's conflict resolution\n")
+        self.advance_main()
+        for extra in ((), ("--dry-run",)):
+            r = self.run_job(*extra)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("already exists", r.stderr)
+            self.assertTrue(os.path.exists(os.path.join(wt, "precious.txt")), extra)
+            self.assertEqual(self.writes(), [])
+            self.assertEqual(self.origin_refs(), ["ci/feat", "main"])
+
+    def test_existing_local_branch_is_refused_and_kept(self):
+        git(self.clone, "branch", "ci/feat-v2", "origin/ci/feat")
+        tip = git(self.clone, "rev-parse", "ci/feat-v2")
+        self.advance_main()
+        for extra in ((), ("--dry-run",)):
+            r = self.run_job(*extra)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("already exists", r.stderr)
+            self.assertEqual(git(self.clone, "rev-parse", "ci/feat-v2"), tip, extra)
+            self.assertFalse(os.path.exists(os.path.join(self.clone, ".worktrees", "job-1")))
+            self.assertEqual(self.writes(), [])
+
+    def test_a_rerun_after_a_clean_run_rebuilds_again(self):
+        self.advance_main()
+        self.assertEqual(self.run_job("--dry-run").returncode, 0)
+        r = self.run_job()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_clean_clone()
+
+    def test_relative_clone_path(self):
+        self.advance_main()
+        r = self.run_job(clone="clone", cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.origin_refs(), ["ci/feat", "ci/feat-v2", "main"])
+        self.assert_clean_clone()
+
+
+class HeadMovedDuringPick(Fixture):
+    def test_nothing_is_pushed_or_closed(self):
+        self.advance_main()
+        moved = self.pr(head={"ref": "ci/feat", "sha": "f" * 40, "repo": {"full_name": REPO}})
+        self.routes[f"GET repos/{REPO}/pulls/7"] = {"seq": [{"body": self.pr()}, {"body": moved}]}
+        r = self.run_job()
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["reason"], "head moved during the rebuild")
+        self.assertEqual(self.origin_refs(), ["ci/feat", "main"])
+        self.assertEqual(self.writes(), [])
         self.assert_clean_clone()
 
 
