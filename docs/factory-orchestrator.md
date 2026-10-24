@@ -118,6 +118,10 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
   a repo member, or the newest `vws-verify` check run on the head failed. A later PASS on the same head
   supersedes it. A new push (a new head) re-enters the queue. `pull_request_review` `submitted` also
   runs the queue, so a FAIL review takes the label off at once and Rule A stops waking verify for it.
+  A `pull_request_review` run uses the workflow file of the PR's merge ref, so a PR branched before
+  that trigger existed keeps a stale label after a FAIL review. Rule A therefore also skips a labeled PR
+  whose newest vws-verify verdict on its head is FAIL (note `needs_verify_failed_head`); seen on
+  vws-deploy#430 and vws-console-api#362.
 - It removes the label on a red check, on a new push (`synchronize`), and when the PR stops waiting
   (draft, other base, closed or approved). A run for an old head writes nothing.
 - Permissions: none at workflow level; the `needs-verify` job has `issues: write` and
