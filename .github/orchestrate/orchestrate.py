@@ -94,6 +94,10 @@ FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
 GROK_WAKE_MARKER = "<!-- vws-orchestrate:grok-wake -->"
 # The last line, so classify_comment() (and metrics, vws-deploy#400) sees a "grok-wake" marker comment.
 GROK_ASSIGN_MARKER = "<!-- orchestrate:grok-wake item="
+# vws-deploy#460: a PR to rebuild (labeled needs-rebuild, or conflicting with main) wakes its owner on the
+# verify-wake thread, once per PR head.
+REBUILD_WAKE_MARKER = "<!-- vws-orchestrate:rebuild-wake -->"
+NEEDS_REBUILD = "needs-rebuild"
 GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
 # The status issue (vws-deploy#416): the orchestrator owns only the block from STATUS_MARKER to
 # STATUS_END_MARKER in its body and rewrites that block in place; text outside it is kept byte for byte,
@@ -1000,7 +1004,8 @@ def main_ci_verdict(runs):
 
 
 def agent_of(body):
-    """The PR body's 'Agent:' value, for the merge log only; no rule depends on it."""
+    """The PR body's 'Agent:' value: logged on merge, and the owner a rebuild wake names (Rule R).
+    No eligibility rule depends on it."""
     m = AGENT_RE.search(body or "")
     return m.group(1)[:64] if m else ""
 
@@ -1458,6 +1463,54 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
     return actions
 
 
+def rebuild_key(k, head_sha):
+    """One rebuild wake per PR head: a push (the rebuild itself, or any new head) re-arms it."""
+    return "sha256:" + hashlib.sha256(f"rebuild-wake\n{k}\n{head_sha}".encode()).hexdigest()
+
+
+def rebuild_waiting(items):
+    """Open non-draft PRs into main labeled needs-rebuild or with mergeable_state dirty, sorted by key.
+    mergeable_state comes from GET pulls/N; GitHub computes it lazily, so "unknown" is not a conflict."""
+    out = []
+    for k in sorted(items):
+        it = items[k]
+        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
+            continue
+        why = ("labeled needs-rebuild" if NEEDS_REBUILD in it["labels"]
+               else "conflicts with main" if it.get("mergeable_state") == "dirty" else "")
+        if why:
+            out.append({"target": k, "url": it["url"], "head_sha": it["head_sha"], "owner": agent_of(it.get("body")),
+                        "why": why})
+    return out
+
+
+def rebuild_wake_body(p, key, run_id):
+    who = (f"Owner `{p['owner']}` (the PR's `Agent:` line)" if p["owner"]
+           else "The PR has no `Agent:` line, so the lead (dr eggbot)")
+    return "\n".join([REBUILD_WAKE_MARKER, f"vws-orchestrate: rebuild {p['target']} {p['url']}", "",
+                      f"Head `{p['head_sha']}` {p['why']}.",
+                      f"{who}: please rebuild it on current main with `vws-rebuild-pr` as a new `-vN` branch and PR "
+                      "(no force-push, no update-branch, no merge commits).",
+                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
+
+
+def decide_rebuild(snapshot, cfg, posted, notes):
+    """Rule R (vws-deploy#460). Returns (rebuild_wake actions, the PRs waiting for a rebuild). Pure."""
+    waiting = rebuild_waiting(snapshot["items"])
+    if waiting and not wake_target(cfg):
+        notes.append({"kind": "rebuild_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": len(waiting)})
+        return [], waiting
+    actions = []
+    for p in waiting:
+        key = rebuild_key(p["target"], p["head_sha"])
+        if key in posted:
+            continue
+        actions.append({"type": "rebuild_wake", "target": wake_target(cfg), "item": p["target"], "head": p["head_sha"],
+                        "owner": p["owner"], "key": key, "reason": f"{p['target']} {p['why']}",
+                        "body": rebuild_wake_body(p, key, snapshot["run_id"])})
+    return actions, waiting
+
+
 def status_keys(snapshot, state):
     """Keys of merge and infra entries already reported: in the status issue body, in state, or (before
     vws-deploy#416) as comments on the verify-wake thread."""
@@ -1668,10 +1721,12 @@ def decide(snapshot, state, now, cfg, exclusions):
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
     actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes)
+    rebuild_actions, rebuild = decide_rebuild(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
+    actions += rebuild_actions
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
-    return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending)}
+    return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending), "rebuild": rebuild}
 
 
 # ---------------------------------------------------------------- collect
@@ -1809,6 +1864,14 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                         it["report_prs"][kind[1]["pr"]] = {"state": pr["state"], "merged": bool(pr.get("merged_at"))}
                     except (GhError, PermissionError):
                         pass  # unreadable: the attempt stays in review until the PR can be read
+        if it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main":
+            # Rule R (vws-deploy#460): the issues and pulls lists carry no mergeable_state. ETag-cached.
+            # A read error is "unknown" (no wake this tick), never a failed tick: Rule R only notifies.
+            try:
+                pull, _ = gh.get(f"repos/{OWNER}/{it['repo']}/pulls/{it['number']}")
+            except (GhError, PermissionError):
+                pull = None
+            it["mergeable_state"] = (pull.get("mergeable_state") or "") if isinstance(pull, dict) else ""
         if (it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main"
                 and "verify-approved" not in labels):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
@@ -2019,7 +2082,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
-        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake") and scope:
+        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake", "rebuild_wake") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
@@ -2033,7 +2096,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         repo, number = a["target"].split("#")
         base = f"repos/{OWNER}/{repo}/issues/{number}"
         calls = []
-        if a["type"] in ("dispatch", "wake_verify", "grok_wake"):
+        if a["type"] in ("dispatch", "wake_verify", "grok_wake", "rebuild_wake"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "swap_label":
             if a.get("comment"):
@@ -2072,6 +2135,14 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
             grok_posted.append(a["item"])  # before the POST: a failed POST may still have landed
+        if a["type"] == "rebuild_wake":
+            if not recheck_key(gh, repo, number, a["key"]):
+                log("skipped", action="rebuild_wake", target=a["target"], item=a["item"],
+                    reason="a comment with this key already exists")
+                continue
+            if not recheck_rebuild(gh, a["item"], a["head"]):
+                log("skipped", action="rebuild_wake", target=a["target"], item=a["item"], reason="PR changed since collect")
+                continue
         if a["type"] == "merge":
             why = recheck_merge(gh, repo, number, a["head"], new_state, snapshot.get("merge", {}).get(repo, {}))
             if why:
@@ -2123,6 +2194,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 continue
         if a["type"] == "wake_verify":
             log("wake_posted", target=a["target"], key=a["key"])
+        if a["type"] == "rebuild_wake":
+            log("rebuild_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         if a["type"] == "grok_wake":
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
@@ -2132,6 +2205,16 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
 def recheck_key(gh, repo, number, key):
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     return not any(f"Idempotency key: `{key}`" in (c.get("body") or "") for c in comments)
+
+
+def recheck_rebuild(gh, k, head):
+    """True while the PR is still open at the head the wake names (a new head gets its own wake)."""
+    repo, number = k.split("#")
+    try:
+        pr, _ = gh.get(f"repos/{OWNER}/{repo}/pulls/{number}")
+    except (GhError, PermissionError):
+        return False
+    return isinstance(pr, dict) and pr.get("state") == "open" and (pr.get("head") or {}).get("sha") == head
 
 
 def recheck_wake(gh, repo, number, key):
@@ -2167,6 +2250,9 @@ def status_body(snapshot, result, cfg, state, mode, now, failure=""):
              + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),
              f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
              + (": " + ", ".join(in_flight) if in_flight else "")]
+    rebuild = result.get("rebuild", [])
+    lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
+        f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
     locks = state.get("merge_locks", {})
     lines.append("- Merge locks: " + ("; ".join(
         f"{repo} {lk.get('status', '?')} ({lk.get('pr', '?')}"
