@@ -32,7 +32,7 @@ def candidate(repo="vws-deploy", number=500, labels=("verify-approved",), body="
     it = item(repo, number, labels=labels, is_pr=True, body=body, **kw)
     sha = it["head_sha"]
     mi = {"head_sha": sha, "state": "open", "merged": False, "draft": it["draft"], "base": it["base"], "mergeable": True,
-          "mergeable_state": "clean", "title": f"ci: change {number}", "checks": green_checks(sha), "statuses": [],
+          "mergeable_state": "clean", "title": f"ci: change {number}", "checks": green_checks(sha), "statuses": [], "files": [],
           "checks_truncated": False}
     mi.update(info or {})
     it["merge_info"] = mi
