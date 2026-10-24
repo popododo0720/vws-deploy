@@ -346,7 +346,9 @@ class MainRulesetCell(unittest.TestCase):
         self.addCleanup(os.unlink, pend.name)
         saved = (dc.gh, dc.content, dc.protection, dc.workflow_files, dc.sys.argv)
         dc.gh, dc.content = gh, content
-        dc.workflow_files = lambda o, r, ref=None, api=None: tree()
+        # The workflows cell reads the listing (#402); a None in extra_files removes the file from it too.
+        dc.workflow_files = lambda o, r, ref=None, api=None: {
+            k: v for k, v in tree().items() if (extra_files or {}).get(k, b"") is not None}
         dc.protection = lambda o, r: {"protected": True, "admins": True, "force": False, "delete": False,
                                       "checks": []}
         dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name, "--caller-pending", pend.name,
@@ -660,6 +662,7 @@ class OpenPrHeads(unittest.TestCase):
 
 RG = ".github/workflows/repo-guard.yml"
 DPW = ".github/workflows/direct-push-watch.yml"
+VQ = ".github/workflows/verify-queue.yml"  # required since #476 (vws-deploy#460)
 # A stand-in for the full repo-guard.yml a pending repo still carries; only its bytes matter.
 FULL = b"""name: repo-guard
 on:
@@ -676,13 +679,15 @@ jobs:
 FULL_SHA = hashlib.sha256(FULL).hexdigest()
 PENDING = {"vws-lib": FULL_SHA}
 DPW_TEXT = b"name: direct-push-watch\non: push\njobs:\n  direct-push-watch: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
+VQ_TEXT = b"name: verify-queue\non: pull_request\njobs:\n  label: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
 BYPASS_SHELL = pinned().replace("permissions: {}\n", "permissions: {}\ndefaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n", 1)
 AT_MAIN = pinned().replace("@" + SHA, "@main")
 
 
 def tree(rg=FULL, **more):
-    """{path: bytes} of .github/workflows at one ref: repo-guard.yml (None = absent), direct-push-watch.yml, more."""
-    out = {DPW: DPW_TEXT}
+    """{path: bytes} of .github/workflows at one ref: repo-guard.yml (None = absent), direct-push-watch.yml,
+    verify-queue.yml, more."""
+    out = {DPW: DPW_TEXT, VQ: VQ_TEXT}
     if rg is not None:
         out[RG] = rg if isinstance(rg, bytes) else rg.encode()
     for name, text in more.items():
