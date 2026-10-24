@@ -64,17 +64,16 @@ class SerialMerge(unittest.TestCase):
 
 
 class Collect(unittest.TestCase):
-    def test_merge_info_lists_the_pr_files(self):
+    def test_pr_files_lists_the_changed_paths(self):
         class Gh:
-            def get(self, path):
-                if path.endswith("/pulls/5"):
-                    return {"head": {"sha": "f" * 40}, "base": {"ref": "main"}, "state": "open"}, None
-                return {}, None
-
             def get_all(self, path, limit=20):
-                return [{"filename": "AGENTS.md"}, {"filename": "x.go"}] if "/pulls/5/files" in path else []
+                self.path, self.limit = path, limit
+                return [{"filename": "AGENTS.md"}, {"filename": "x.go"}]
 
-        self.assertEqual(orch.merge_info(Gh(), "vws-deploy", 5)["files"], ["AGENTS.md", "x.go"])
+        gh = Gh()
+        self.assertEqual(orch.pr_files(gh, "vws-deploy", 5), ["AGENTS.md", "x.go"])
+        self.assertEqual(gh.path, "repos/popododo0720/vws-deploy/pulls/5/files?per_page=100")
+        self.assertTrue(orch.allowed("GET", gh.path))
 
 
 if __name__ == "__main__":
