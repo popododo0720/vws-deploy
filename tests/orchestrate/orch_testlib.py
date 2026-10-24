@@ -14,6 +14,7 @@ spec.loader.exec_module(orch)
 
 NOW = orch.utc("2026-10-21T12:00:00Z")
 CFG = dict(orch.DEFAULTS)
+CFG["ORCHESTRATE_WAKE_THREAD"] = "339"  # the verify-wake thread (the old status draft PR); not the status issue
 REPOS = ["vws-deploy", "vws-iam", "vws-proto", "vws-hypervisor"]
 U = "https://github.com/popododo0720"
 

@@ -24,7 +24,7 @@ def run(s, cfg=ON, state=None):
 
 
 def posted(s, r):
-    """Record the wake comments of tick r on the status thread, as the next collect would see them."""
+    """Record the wake comments of tick r on the verify-wake thread, as the next collect would see them."""
     s["status"]["keys"] = sorted(set(s["status"].get("keys", [])) | {a["key"] for a in wakes(r)})
     return s
 
@@ -41,6 +41,13 @@ class Allowlist(unittest.TestCase):
             with self.subTest(allowlist=cfg.get("ORCHESTRATE_GROK_ALLOWLIST")):
                 self.assertEqual(wakes(run(s, cfg)), [])
 
+    def test_no_wake_thread_no_grok_wake(self):
+        # vws-deploy#416: wakes go to ORCHESTRATE_WAKE_THREAD only; unset means no wake, never the status issue.
+        r = run(snapshot(grok_task("vws-iam", 1)), dict(ON, ORCHESTRATE_WAKE_THREAD=""))
+        self.assertEqual(wakes(r), [])
+        self.assertIn({"kind": "grok_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "queued": 1},
+                      r["notes"])
+
     def test_non_allowlisted_never_assigned(self):
         s = snapshot(grok_task("vws-iam", 9, ready_hours_ago=500, extra=("priority/blocker",)), grok_task("vws-iam", 1))
         w = wakes(run(s))
@@ -53,7 +60,8 @@ class Allowlist(unittest.TestCase):
         w = wakes(run(s))
         self.assertEqual(len(w), 1)
         a = w[0]
-        self.assertEqual((a["target"], a["item"]), (orch.status_target(ON), "vws-iam#1"))
+        self.assertEqual((a["target"], a["item"]), (orch.wake_target(ON), "vws-iam#1"))
+        self.assertNotEqual(a["target"], orch.status_target(ON), "a Grok wake never posts on the status issue")
         self.assertTrue(a["body"].startswith(orch.GROK_WAKE_MARKER + "\n"))
         self.assertIn("https://github.com/popododo0720/vws-iam/issues/1", a["body"])
         self.assertIn(f"Idempotency key: `{a['key']}`", a["body"])
@@ -310,7 +318,7 @@ class Apply(unittest.TestCase):
                    lambda ev, **kw: events.append(dict(kw, event=ev)), {}, NOW)
         return r, events
 
-    def test_posts_on_status_thread(self):
+    def test_posts_on_the_wake_thread(self):
         gh = FakeGh()
         r, events = self.apply(gh)
         self.assertEqual(gh.writes, [("POST", "repos/popododo0720/vws-deploy/issues/339/comments",

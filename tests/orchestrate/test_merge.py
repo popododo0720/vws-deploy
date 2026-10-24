@@ -85,7 +85,8 @@ class Eligibility(unittest.TestCase):
             ("opt-out label hold", dict(labels=("verify-approved", "hold")), "opted_out"),
             ("opt-out label blocked", dict(labels=("verify-approved", "blocked")), "opted_out"),
             ("opt-out marker", dict(body="Part of #1\n<!-- vws-orchestrate:no-merge -->"), "opted_out"),
-            ("status thread", dict(number=339), "opted_out"),
+            ("verify-wake thread", dict(number=339), "opted_out"),
+            ("status issue", dict(number=415), "opted_out"),
             ("vws-verify missing", dict(info={"checks": bad_verify}), "verify_check_missing"),
             ("vws-verify failure", dict(info={"checks": bad_verify + [check(9, "vws-verify", sha, "failure", 5313004)]}),
              "verify_check_failure"),
@@ -294,7 +295,7 @@ class Serialization(unittest.TestCase):
         r = run(snap(candidate(), merge={"vws-deploy": ctx(main_ci="red")}))
         posts = [a for a in r["actions"] if a["type"] == "merge_status"]
         self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0]["target"], "vws-deploy#339")
+        self.assertEqual(posts[0]["target"], "vws-deploy#415", "an entry in the status issue body")
         lines = posts[0]["body"].split("\n")
         self.assertEqual(lines[0], "<!-- vws-orchestrate:failure -->", "routines match the exact first line")
         self.assertIn("Kind: merge-main-CI-red", lines)
@@ -578,8 +579,12 @@ class ApplyMerges(rt.Env):
         r[f"{O}/vws-deploy/actions/runs"]["body"]["workflow_runs"][0]["conclusion"] = "failure"
         self.set_routes(r)
         self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_MERGE="apply", ORCHESTRATE_MAX_WRITES="5")
-        posts = [json.loads(c["stdin"])["body"] for c in self.writes() if c["path"].endswith("/339/comments")]
-        self.assertEqual(sum(p.startswith("<!-- vws-orchestrate:failure -->") for p in posts), 1)
+        self.assertFalse([c for c in self.writes() if c["path"].endswith("/comments") and "failure" in c["stdin"]],
+                         "no failure comment anywhere (vws-deploy#416)")
+        events = rt.load(self.paths.state_file)["status_events"]
+        self.assertEqual([e["kind"] for e in events], ["merge"])
+        self.assertIn(f"(key `{events[0]['key']}`)", self.status_edits()[-1])
+        self.assertIn("merge: main CI red in vws-deploy", self.status_edits()[-1])
         self.assertEqual(self.merge_writes(), [])
 
     def test_scope_skips_status_comment(self):
