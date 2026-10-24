@@ -433,6 +433,11 @@ def routes(labels=("verify-approved",), head="1" * 40):
              "conclusion": c["conclusion"], "head_sha": c["head_sha"]} for c in green_checks(head)]
     r[f"{O}/vws-deploy/commits/{head}/check-runs"] = {"body": {"total_count": len(runs), "check_runs": runs}}
     r[f"{O}/vws-deploy/commits/{head}/status"] = {"body": {"statuses": []}}
+    # vws-verify's PASS on the head, behind verify-approved (vws-deploy#487 keeps the label only with it).
+    if "verify-approved" in labels:
+        r[f"{O}/vws-deploy/pulls/500/reviews"] = {"body": [
+            {"id": 1, "user": {"login": orch.VERIFY_LOGIN, "id": 1}, "state": "APPROVED", "commit_id": head,
+             "submitted_at": "2026-10-01T01:00:00Z", "html_url": "https://github.com/popododo0720/vws-deploy/pull/500"}]}
     r[f"{O}/vws-deploy/branches/main"] = {"body": branch(MAIN)}
     r[f"{O}/vws-deploy/actions/runs"] = {"body": {"total_count": 1, "workflow_runs": [
         {"id": 1, "workflow_id": 7, "name": "ci", "status": "completed", "conclusion": "success"}]}}
