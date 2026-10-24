@@ -15,10 +15,18 @@ tests are `tests/ci_fail/` (fake gh, no network).
   `startup_failure` or `action_required` (not `cancelled`), the head branch is in the same repo and
   is not `main`/`master`, and exactly one open PR has that head SHA. Push runs on main never post.
 - A green run does nothing. There is no passed state; consumers compare `sha` with the PR head.
+- A run whose only failed job is `verify-gate` (or `<job> / verify-gate` from a reusable workflow)
+  posts nothing: verify-gate is red on every head until vws-verify approves, so alone it is not a CI
+  failure (#432). With another failed job, both are listed. Callers can therefore list `repo-guard`.
 - Permissions: `actions: read` (jobs and logs), `contents: read`, `pull-requests: write` (comment
   and label). The PR's code is never checked out. The script is checked out from
   `job.workflow_repository` at `job.workflow_sha`, the vws-deploy commit the caller pinned, so a
   push to vws-deploy main changes nothing until the caller bumps its pin.
+- The first step fails the job when `job.workflow_repository` is not `popododo0720/vws-deploy` or
+  `job.workflow_sha` is not a full 40-hex SHA, empty included (an empty ref would check out the default
+  branch). No step may `git clone`/`fetch`, `gh repo clone`, `curl` or `wget` vws-deploy:
+  `tests/workflows/test_ci_fail_contract.py` (`PinnedSource`) fails on such a `run:` line in
+  `ci-fail.yml`, `ci-fail-caller.yml` or the sample caller below (#432).
 
 ## Comment format (v=1)
 
@@ -40,7 +48,8 @@ a comment counts only when line 1 matches the record exactly (`parse_comment`). 
 A `failure` or `timed_out` run always has a failed job, but right after the run the jobs API can
 list none yet (#443). The script then reads the job list up to 3 times, 5 s and 10 s apart. If it is
 still empty, `failed_jobs` is `[]` and the comment says `Failed jobs: unavailable (...)` with the run
-URL. `Failed jobs: none reported` is kept for runs that failed before any job ran, such as
+URL. The job list is read 100 per page until `total_count` or a short page; more than 10 pages fails
+the job without a comment rather than miss a failed job (#432). `Failed jobs: none reported` is kept for runs that failed before any job ran, such as
 `startup_failure`. The needs-human label POST is idempotent and retries like a read; comment writes
 are never retried.
 
@@ -51,6 +60,19 @@ are never retried.
   own `runs` and `failed_jobs` entries are replaced, other workflows' entries are kept, `n` and
   `wake` never change. A per-repo-and-SHA concurrency group serializes the runs.
 - A new push is a new SHA: a new comment with `n + 1`.
+
+## Concurrency limits
+
+- One concurrency group per repo and head SHA (`vws-ci-fail-<repo>-<sha>`), `cancel-in-progress: false`,
+  so two workflows failing on the same SHA never post two markers: the second waits and edits.
+- GitHub keeps at most one running and one pending run per group. When three or more workflows fail on
+  one SHA at about the same time, a newer pending run replaces the older pending one, which GitHub then
+  cancels; that workflow's failure is missing from the marker. The marker still exists and `n` is right,
+  because `n` only counts SHAs. Re-running the missing workflow adds it.
+- Different SHAs of one chain are not serialized. Two heads failing within seconds can both count the
+  same earlier markers and post the same `n`, so the cap can let one extra rework through.
+- `timeout-minutes: 5`; the jobs re-read waits at most 15 s, and every `gh api` call has a 60 s timeout
+  with bounded retries for reads.
 
 ## Owner
 
