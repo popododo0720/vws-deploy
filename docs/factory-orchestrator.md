@@ -220,6 +220,32 @@ push Actions runs for one main commit, `rules/branches/main` (never the branch-p
 combined status. A lock also reads `compare/<old>...<main>`. A read error in one repo means no merge
 there this tick (`merge_repo_unreadable`), not a failed tick.
 
+## Rule E: the rebuild job (vws-deploy#398)
+
+`.github/orchestrate/rebuild_job.py` rebuilds one PR that conflicts with `main` as a new `-vN` PR. It never rewrites pushed history. This PR adds the job only. Running it from `decide` for each open PR whose `mergeable_state` is `dirty` is a follow-up, built on rule R's `mergeable_state` read (vws-deploy#479). That follow-up also removes the conflict-only path in rule B2.
+
+```
+rebuild_job.py --repo OWNER/REPO --pr N --clone DIR --job-id ID [--dry-run]
+```
+
+1. It reads the PR. It skips the PR (exit 4) when any of these is true:
+   - the PR is not open, or is a draft;
+   - its base is not `main`;
+   - its head is in another repository;
+   - it is labeled `blocked` or `needs-rebuild`;
+   - its head on origin differs from the head it read.
+2. It picks the next unused `<stem>-vN` branch on origin. A `-vK` head counts from K.
+3. The vendored `.github/orchestrate/box/rebuild-pr.sh` cherry-picks the PR's commits onto `origin/main` in `DIR/.worktrees/ID`. The job removes that worktree and the local branch in `finally`, whatever the result.
+4. A clean pick (exit 0):
+   - pushes the new ref (no `+`, no force);
+   - opens a PR with the old title and body plus `Supersedes #N`;
+   - comments `Superseded by #M` on the old PR, then closes it.
+
+   The verify queue then picks up the new head when its CI is green.
+5. A conflict (exit 3) adds the `needs-rebuild` label and pushes nothing. Rule R then wakes the owner once per head.
+
+The only API writes it may make are `POST pulls`, `POST issues/N/comments`, `PATCH pulls/N` and `POST issues/N/labels` (`WRITES`). Each write is checked against that list before it runs. git and gh use the box's stored gh login (the VM's popododo0720 PAT), never `GH_TOKEN`. `--dry-run` does only the local pick. If opening the PR fails after the push, the job exits 1, leaves the old PR open, and names the pushed branch on stderr for a person to clean up.
+
 ## Infra retries (provider errors)
 
 DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at 07:12Z and a 503 at
