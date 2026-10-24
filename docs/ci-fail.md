@@ -133,5 +133,9 @@ jobs:
     uses: popododo0720/vws-deploy/.github/workflows/ci-fail.yml@0123456789abcdef0123456789abcdef01234567
 ```
 
+vws-deploy's own caller is `.github/workflows/ci-fail-caller.yml` (`ci-fail.yml` here is the reusable
+workflow). It lists `ci`, `drift-check` and `installer-image`; `tests/workflows/test_ci_fail_caller.py`
+fails when a pull_request CI workflow is missing from it.
+
 `workflow_run` runs the caller from the default branch, so a PR cannot change it. `check_suite` is
 not used: suites created by GitHub Actions do not trigger workflows.
