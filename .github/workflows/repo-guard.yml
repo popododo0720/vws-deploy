@@ -10,7 +10,7 @@ jobs:
   hygiene:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/repo-guard-pr-hygiene.yml
-    permissions: {contents: read, pull-requests: read}
+    permissions: {contents: read, pull-requests: read, issues: read}
   gate:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/repo-guard-verify-gate.yml
