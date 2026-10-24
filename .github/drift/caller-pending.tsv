@@ -1,0 +1,17 @@
+# Repos whose .github/workflows/repo-guard.yml is still the full copy, not the caller of the
+# vws-deploy repo-guard-<job>.yml files (vws-deploy#402). repo<TAB>sha256 of that full copy<TAB>reason.
+# drift-check exempts a repo only while its repo-guard.yml (default branch or PR head) has exactly this
+# sha256; any other content is checked as a caller. Changing a full copy needs a vws-deploy PR that
+# updates its hash here first. Each rollout ends with a vws-deploy PR that deletes the repo's row.
+# c97a7ec6... is the full copy on vws-deploy main before #402 (814c1a5); vws-conformance carries its
+# own variant (pull_request_target, see docs/design/repo-guard-reusable.md).
+vws-lib	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-proto	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-iam	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-network	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-storage	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-compute	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-console-api	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-console	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
+vws-hypervisor	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	no repo-guard.yml yet; it gets the caller, the hash is the full copy (vws-deploy#402)
+vws-conformance	4f126f428b2da8ac59adecfd68d11653c62b1363e5f8486053c39c0285f4b4dc	its own full copy until #338 decides its verify-gate trigger (vws-deploy#402)

@@ -1,0 +1,88 @@
+# pr-hygiene: the PR targets main, its body says Part of #N and has the Quality checklist, commit subjects have a
+# type prefix and nothing closes an issue, the guard-agents.sh copy is canonical and AGENTS.md has the guardrails.
+# The linked issue's acceptance criteria go to the job summary (read-only, never failing).
+# One of the four shared repo-guard jobs (vws-deploy#402), one job per file: GitHub validates the permissions
+# of every job in a called file before any if:, so a file holds only jobs its caller job may grant.
+# Every vws-* repo calls it from a short .github/workflows/repo-guard.yml pinned by full commit SHA;
+# vws-deploy calls it from the same commit. docs/design/repo-guard-reusable.md has the trust model.
+# The github, vars and token contexts are the caller's, with at most the caller job's permissions, and
+# no secrets are passed. The repo is on a free plan, so these checks stand in for branch protection; the push
+# check lives in direct-push-watch.yml so that a pull request run has no skipped check.
+name: repo-guard-pr-hygiene
+
+on:
+  workflow_call:
+    outputs:
+      passed:
+        # The caller's shim passes only when this names the job: the job ran to its last step.
+        description: "pr-hygiene when the job ran to its last step"
+        value: ${{ jobs.pr-hygiene.outputs.passed }}
+
+permissions: {}
+
+jobs:
+  pr-hygiene:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Base is the main branch
+        env:
+          GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_REF: ${{ github.base_ref }}
+        run: scripts/guard-agents.sh pr-base "$BASE_REF"
+      - name: "Body says Part of #N and closes no issue"
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/guard-agents.sh pr-body
+      - name: Body has the 9-item Quality checklist, all ticked with evidence
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/guard-agents.sh pr-checklist
+      - name: "Commit subjects have a type prefix and Part of #N"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/guard-agents.sh pr-commits "$BASE_SHA" "$HEAD_SHA"
+      - name: Acceptance criteria of the linked issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+          summary=${GITHUB_STEP_SUMMARY:-/dev/stdout}
+          echo "## Acceptance criteria lint" >>"$summary"
+          ref=$(scripts/guard-agents.sh pr-issue 2>/dev/null) || {
+            echo "no 'Part of #N' issue to lint" >>"$summary"
+            exit 0
+          }
+          case $ref in
+            \#*) ;;
+            *) echo "linked issue ${ref} is in another repository; not linted" >>"$summary"; exit 0 ;;
+          esac
+          n=${ref#\#}
+          body=$(mktemp)
+          if gh api "repos/${REPO}/issues/${n}" --jq .body >"$body" 2>/dev/null; then
+            .github/ac/ac-lint.sh --file "$body" >>"$summary" 2>&1 || true
+          else
+            echo "issue #${n} could not be read; not linted" >>"$summary"
+          fi
+          rm -f "$body"
+          exit 0
+      - name: guard-agents.sh is the canonical vws-deploy copy
+        run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
+      - name: AGENTS.md has the guardrails
+        run: scripts/guard-agents.sh agents
+      - id: passed
+        run: |
+          echo "passed=pr-hygiene" >>"$GITHUB_OUTPUT"
