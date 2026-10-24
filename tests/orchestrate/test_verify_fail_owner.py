@@ -42,6 +42,8 @@ class Owner(unittest.TestCase):
         cases = [
             (failed_pr(labels=("grok",), body="Part of #395\n\nAgent: vws-platform"), ("vws-platform", "agent")),
             (failed_pr(labels=("deepseek",)), ("deepseek", "label")),
+            # grok wins over deepseek, as in rework_prs: a deepseek item that also has grok is not reworked
+            (failed_pr(labels=("deepseek", "grok")), ("grok", "label")),
             (failed_pr(), ("grok", "part_of:vws-deploy#395")),
             (failed_pr(body="Part of vws-iam#7"), ("", "")),  # the named item is not in the snapshot
             (failed_pr(body="no link"), ("", "")),
@@ -129,7 +131,8 @@ class CollectTick(test_runtime.Env):
             "submitted_at": "2026-10-01T00:00:00Z", "html_url": "https://github.com/popododo0720/vws-deploy/pull/400#r9",
             "body": "Result: FAIL"}]}
         self.set_routes(r)
-        self.assertEqual(self.tick(), 0)
+        for _ in range(2):  # apply mode saves the noted head, so the second tick does not repeat it
+            self.assertEqual(self.tick(ORCHESTRATE_MODE="apply"), 0)
         notes = [e for e in self.log() if e["event"] == "note" and e.get("kind") == "verify_fail_unrouted"]
         self.assertEqual([(n["target"], n["reason"]) for n in notes], [("vws-deploy#400", "no_owner")])
 
