@@ -92,6 +92,10 @@ NEEDS_VERIFY = "needs-verify"  # set by verify-queue.yml while every non-verify 
 FAILURE_MARKER = "<!-- vws-orchestrate:failure -->"
 # Rule G (vws-deploy#378): the Grok dev bot's GitHub-trigger routine on the verify-wake thread matches this.
 GROK_WAKE_MARKER = "<!-- vws-orchestrate:grok-wake -->"
+# Lead wake (vws-deploy#397): dr eggbot's GitHub-trigger routine on the wake thread matches this first line.
+LEAD_WAKE_MARKER = "<!-- vws-orchestrate:lead-wake -->"
+# Rule D serial set (vws-deploy#397): PRs touching these merge one at a time across all repos, oldest approval first.
+SERIAL_MERGE_RE = re.compile(r"^(?:\.github/orchestrate/orchestrate\.py|\.github/workflows/repo-guard[^/]*\.ya?ml|AGENTS\.md)$")
 # The last line, so classify_comment() (and metrics, vws-deploy#400) sees a "grok-wake" marker comment.
 GROK_ASSIGN_MARKER = "<!-- orchestrate:grok-wake item="
 GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
@@ -367,6 +371,7 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/(issues|pulls|labels|issues/comments)(\?.*)?$"),
         re.compile(rf"^{_REPO}/(issues|pulls)/[0-9]+(\?.*)?$"),
         re.compile(rf"^{_REPO}/pulls/[0-9]+/reviews(\?.*)?$"),
+        re.compile(rf"^{_REPO}/pulls/[0-9]+/files(\?.*)?$"),  # Rule D serial set (vws-deploy#397)
         re.compile(rf"^{_REPO}/issues/[0-9]+/(events|comments)(\?.*)?$"),
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
         re.compile(rf"^{_REPO}/branches/main$"),
@@ -1079,6 +1084,19 @@ def status_key(kind, repo, sha):
     return "sha256:" + hashlib.sha256(f"merge-{kind}:{repo}:{sha}".encode()).hexdigest()
 
 
+def serial_merge_pr(info):
+    """True when the PR touches a serial-merge path (SERIAL_MERGE_RE). Unread files count as serial."""
+    files = (info or {}).get("files")
+    return files is None or any(SERIAL_MERGE_RE.match(f or "") for f in files)
+
+
+def verify_approved_at(info):
+    """When vws-verify approved the PR head: the newest successful vws-verify check run on it ('' = unknown)."""
+    runs = [r for r in (info or {}).get("checks", []) if r.get("name") == VERIFY_CHECK and r.get("app_id") == VERIFY_APP_ID
+            and r.get("head_sha") == (info or {}).get("head_sha") and r.get("conclusion") == "success"]
+    return max((r.get("completed_at") or r.get("started_at") or "" for r in runs), default="")
+
+
 def decide_merges(snapshot, new_state, now, cfg, repos):
     """Rule D. Updates new_state["merge_locks"] / ["merge_attempts"]; returns (actions, notes). Pure."""
     actions, notes = [], []
@@ -1094,6 +1112,7 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
         if a not in open_heads:
             del attempts[a]  # the PR merged, closed or moved: its attempts no longer matter
     timeout = num(cfg, "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS") * 3600
+    rows = []  # (repo, PR item, reasons, main) for every PR in a readable repo; chosen after the loop
 
     def comment(kind, repo, sha, detail):
         key = status_key(kind, repo, sha)
@@ -1169,28 +1188,35 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
             gate.append(f"main_ci_{main_ci}")
             if main_ci == "red":
                 comment("main CI red", repo, main_sha, "the push CI run for the current main head failed")
-        chosen = None
         for it in prs:
-            k = f"{repo}#{it['number']}"
             reasons = merge_reasons(it, ctx, snapshot, repos, cfg, attempts)
-            if not reasons and gate:
-                reasons = list(gate)
-            if not reasons and chosen:
-                reasons = [f"one_merge_per_repo:{chosen}"]
-            eligible = not reasons
-            if eligible:
-                chosen = k
-                head = it["head_sha"]
-                actions.append({"type": "merge", "target": k, "repo": repo, "head": head, "reason": "verify PASS for the head, checks green, main green",
-                                "agent": agent_of(it.get("body")),
-                                "payload": {"merge_method": "squash", "sha": head,
-                                            "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
-            note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
-                    "head": (it.get("head_sha") or "")[:7], "main": f"{main_sha[:7]} {main_ci}"}
-            unmapped = (it.get("merge_info") or {}).get("unmapped")
-            if unmapped:
-                note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
-            notes.append(note)
+            rows.append((repo, it, reasons or list(gate), f"{main_sha[:7]} {main_ci}"))
+    # The serial set (vws-deploy#397): at most one merge per tick among PRs that touch orchestrate.py,
+    # repo-guard*.yml or AGENTS.md, in any repo; the oldest verify approval goes first.
+    serial = sorted((verify_approved_at(it.get("merge_info")) or "~", repo, it["number"])
+                    for repo, it, reasons, _ in rows if not reasons and serial_merge_pr(it.get("merge_info")))
+    first = f"{serial[0][1]}#{serial[0][2]}" if serial else ""
+    chosen = {}
+    for repo, it, reasons, main in sorted(rows, key=lambda r: (r[0], f"{r[0]}#{r[1]['number']}" != first, r[1]["number"])):
+        k = f"{repo}#{it['number']}"
+        if not reasons and k != first and serial_merge_pr(it.get("merge_info")):
+            reasons = [f"serial_after:{first}"]
+        if not reasons and repo in chosen:
+            reasons = [f"one_merge_per_repo:{chosen[repo]}"]
+        eligible = not reasons
+        if eligible:
+            chosen[repo] = k
+            head = it["head_sha"]
+            actions.append({"type": "merge", "target": k, "repo": repo, "head": head, "reason": "verify PASS for the head, checks green, main green",
+                            "agent": agent_of(it.get("body")),
+                            "payload": {"merge_method": "squash", "sha": head,
+                                        "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
+        note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
+                "head": (it.get("head_sha") or "")[:7], "main": main}
+        unmapped = (it.get("merge_info") or {}).get("unmapped")
+        if unmapped:
+            note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
+        notes.append(note)
     return actions, notes
 
 
@@ -1458,6 +1484,63 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
     return actions
 
 
+def lead_key(k, sha):
+    """One lead wake per PR head (vws-deploy#397)."""
+    return "sha256:" + hashlib.sha256(f"lead-wake\n{k}@{sha}".encode()).hexdigest()
+
+
+def lead_wake_body(it, k, reason, key, run_id):
+    return "\n".join([LEAD_WAKE_MARKER, f"vws-orchestrate: lead wake for {k} at `{it['head_sha']}` {it['url']}", "",
+                      f"Reason: {reason}.",
+                      "No rule moves this PR head on its own: dr eggbot rebuilds it onto main as a new -vN PR "
+                      "(no force-push) or routes the FAIL to its owner.", "",
+                      f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
+
+
+def decide_lead(snapshot, cfg, notes):
+    """Lead wake (vws-deploy#397). Returns lead_wake actions: one per PR head that is verify-approved but
+    conflicts with main, or has a vws-verify FAIL that no DeepSeek rework picks up (a Grok PR, a PR with no
+    DeepSeek owner, or a conflict-only verdict). Pure."""
+    items = snapshot["items"]
+    posted = set(snapshot.get("status", {}).get("keys", []))
+    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
+    due = []
+    for k in sorted(items):
+        it = items[k]
+        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
+            continue
+        if k in (status_target(cfg), wake_target(cfg)):
+            continue
+        info = it.get("merge_info") or {}
+        reason = ""
+        if ("verify-approved" in it["labels"] and info.get("head_sha") == it["head_sha"]
+                and info.get("mergeable") is False):
+            reason = "verify-approved but conflicts with main"
+        else:
+            v = head_verdict(it)
+            if v and v["result"] == "fail":
+                owner = items.get(grok_link(it), {})
+                if conflict_only(v["body"]):
+                    reason = f"verify FAIL is conflict-only ({v['url']})"
+                elif "grok" in it["labels"] or "grok" in owner.get("labels", []):
+                    reason = f"verify FAIL on a Grok PR; Grok rework is not automatic ({v['url']})"
+                elif k not in reworked:
+                    reason = f"verify FAIL on a PR with no DeepSeek owner ({v['url']})"
+        if reason:
+            due.append((k, it, reason))
+    if due and not wake_target(cfg):
+        notes.append({"kind": "lead_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "due": len(due)})
+        return []
+    actions = []
+    for k, it, reason in due:
+        key = lead_key(k, it["head_sha"])
+        if key in posted:
+            continue
+        actions.append({"type": "lead_wake", "target": wake_target(cfg), "item": k, "key": key,
+                        "reason": f"{k}: {reason}", "body": lead_wake_body(it, k, reason, key, snapshot["run_id"])})
+    return actions
+
+
 def status_keys(snapshot, state):
     """Keys of merge and infra entries already reported: in the status issue body, in state, or (before
     vws-deploy#416) as comments on the verify-wake thread."""
@@ -1668,6 +1751,7 @@ def decide(snapshot, state, now, cfg, exclusions):
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
     actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes)
+    actions += decide_lead(snapshot, cfg, notes)
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
@@ -1814,8 +1898,9 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
             if NEEDS_VERIFY in labels and not it["events"]:
                 it["events"] = label_events(gh, it)  # Rule A's wait time; ETag-cached
-            if NEEDS_VERIFY in labels and "reviews" not in it:
-                it["reviews"] = verify_reviews(gh, it, cfg)  # Rule A skips a failed head; ETag-cached
+            if "reviews" not in it and (NEEDS_VERIFY in labels or it["ci"] != "failing"):
+                # Rule A skips a failed head; the lead wake needs a FAIL after the label is gone. ETag-cached.
+                it["reviews"] = verify_reviews(gh, it, cfg)
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:
@@ -1941,7 +2026,7 @@ def merge_info(gh, repo, number):
                 for w in (wruns or {}).get("workflow_runs", []) if w.get("check_suite_id")}
     checks = [{"id": r.get("id", 0), "name": r.get("name"), "app_id": (r.get("app") or {}).get("id"),
                "status": r.get("status"), "conclusion": r.get("conclusion"), "head_sha": r.get("head_sha"),
-               "started_at": r.get("started_at"), "suite_id": (r.get("check_suite") or {}).get("id"),
+               "started_at": r.get("started_at"), "completed_at": r.get("completed_at"), "suite_id": (r.get("check_suite") or {}).get("id"),
                "workflow": workflow.get((r.get("check_suite") or {}).get("id"))}
               for r in (runs or {}).get("check_runs", [])]
     unmapped = sorted({c["name"] for c in checks if c["app_id"] == ACTIONS_APP_ID and not c["workflow"]})
@@ -1953,6 +2038,11 @@ def merge_info(gh, repo, number):
             # The combined status lists only its first page; more contexts than shown fail closed.
             "statuses_truncated": (status or {}).get("total_count", 0) > len((status or {}).get("statuses", [])),
             "status_state": (status or {}).get("state")}
+
+
+def pr_files(gh, repo, number):
+    """The paths a PR changes, for Rule D's serial set (GitHub lists at most 3000; 30 pages of 100)."""
+    return [f.get("filename") for f in gh.get_all(f"repos/{OWNER}/{repo}/pulls/{number}/files?per_page=100", limit=30)]
 
 
 def collect_merge(gh, snap, repo_names, state):
@@ -1987,6 +2077,7 @@ def collect_merge(gh, snap, repo_names, state):
                 ctx["required"] = required_checks(gh, name, branch)
             for it in cands:
                 it["merge_info"] = merge_info(gh, name, it["number"])
+                it["merge_info"]["files"] = pr_files(gh, name, it["number"])
                 for dep in parse_deps(it["body"], name)[0]:
                     drepo, dnum = dep.split("#")
                     if dep in snap["items"] or dep in snap["deps"] or drepo not in repo_names:
@@ -2019,7 +2110,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
-        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake") and scope:
+        if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake", "lead_wake") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
         if scope and a["target"] != scope:
@@ -2033,7 +2124,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         repo, number = a["target"].split("#")
         base = f"repos/{OWNER}/{repo}/issues/{number}"
         calls = []
-        if a["type"] in ("dispatch", "wake_verify", "grok_wake"):
+        if a["type"] in ("dispatch", "wake_verify", "grok_wake", "lead_wake"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
         elif a["type"] == "swap_label":
             if a.get("comment"):
@@ -2060,6 +2151,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "dispatch" and not recheck_dispatch(gh, repo, number, snapshot["items"][a["target"]],
                                                             a.get("owner"), a.get("head")):
             log("skipped", action="dispatch", target=a["target"], reason="target changed since collect")
+            continue
+        if a["type"] == "lead_wake" and not recheck_key(gh, repo, number, a["key"]):
+            log("skipped", action="lead_wake", target=a["target"], item=a["item"],
+                reason="a comment with this key already exists")
             continue
         if a["type"] == "grok_wake":
             if not recheck_key(gh, repo, number, a["key"]):
@@ -2123,6 +2218,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                 continue
         if a["type"] == "wake_verify":
             log("wake_posted", target=a["target"], key=a["key"])
+        if a["type"] == "lead_wake":
+            log("lead_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         if a["type"] == "grok_wake":
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
