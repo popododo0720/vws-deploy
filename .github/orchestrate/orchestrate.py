@@ -118,7 +118,10 @@ OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
 # GitHub's own verdict (REST mergeable_state = GraphQL mergeStateStatus) must be clean: it already counts
 # main's protection and rulesets, which the PAT cannot read (vws-deploy#408). Anything else never merges.
 MERGEABLE_OK = {"clean"}
-PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
+# Rule D reads `Part of #N`, `Part of vws-x#N` and `Part of popododo0720/vws-x#N` (the owner form the
+# repo guard also accepts; it maps to vws-x#N). Another owner never matches (vws-deploy#477).
+PART_OF_RE = re.compile(
+    rf"(?im)^\s*Part of\s+(?:{OWNER}/(?=vws-)|(?=vws-|#))((?:vws-[a-z0-9-]+)?#[0-9]+)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 # The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
 AGENT_RE = re.compile(r"^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$", re.M)
