@@ -1489,6 +1489,12 @@ def decide(snapshot, state, now, cfg, exclusions):
         it = items[key]
         if (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"
                 and NEEDS_VERIFY in it["labels"] and "verify-approved" not in it["labels"] and it.get("ci") != "failing"):
+            # A stale label on a head vws-verify already failed is not a wait: verify will not run it again
+            # until a push, so it must not wake verify or hold the pending set (vws-deploy#430, console-api#362).
+            v = head_verdict(it)
+            if v and v["result"] == "fail":
+                notes.append({"kind": "needs_verify_failed_head", "target": key, "verdict": v["url"]})
+                continue
             # Waited since the latest needs-verify label (a push removes it); unknown counts as just labeled.
             since = max((utc(e["created_at"]) for e in it.get("events", [])
                          if e["event"] == "labeled" and e["label"]["name"] == NEEDS_VERIFY), default=now)
@@ -1808,6 +1814,8 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
             it["ci"] = ci_state(gh, it["repo"], it["head_sha"])
             if NEEDS_VERIFY in labels and not it["events"]:
                 it["events"] = label_events(gh, it)  # Rule A's wait time; ETag-cached
+            if NEEDS_VERIFY in labels and "reviews" not in it:
+                it["reviews"] = verify_reviews(gh, it, cfg)  # Rule A skips a failed head; ETag-cached
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:

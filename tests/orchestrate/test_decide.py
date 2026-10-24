@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from orch_testlib import CFG, NOW, dispatch, event, item, orch, ready_task, report, snapshot
+from orch_testlib import CFG, NOW, dispatch, event, item, orch, ready_task, report, snapshot, ts
 
 EXCL = {"https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481"}
 
@@ -90,6 +90,23 @@ class RuleA(unittest.TestCase):
         r = run(snapshot(*queued(2, 1), *extra))
         self.assertEqual(r["pending_count"], 2)
         self.assertEqual(self.wake(r), [])
+
+    def test_failed_head_is_not_counted(self):
+        # vws-deploy#430 / console-api#362: needs-verify stayed on a head vws-verify had failed, so the
+        # stale pair held the pending set and verify was never woken for anything else.
+        def verdict(it, result, sha=None):
+            return {"id": 1, "url": it["url"] + "#review", "at": ts(1), "sha": sha or it["head_sha"],
+                    "result": result, "body": ""}
+        failed, passed_old, fresh = queued(3, 120)
+        failed["reviews"] = [verdict(failed, "fail")]
+        passed_old["reviews"] = [verdict(passed_old, "fail", sha="0" * 40)]  # FAIL on an older head
+        r = run(snapshot(failed, passed_old, fresh))
+        self.assertEqual(r["pending_count"], 2)
+        a = self.wake(r)[0]
+        self.assertNotIn(failed["url"], a["body"])
+        self.assertIn(passed_old["url"], a["body"])
+        self.assertIn({"kind": "needs_verify_failed_head", "target": f"vws-deploy#{failed['number']}",
+                       "verdict": failed["url"] + "#review"}, r["notes"])
 
     def test_comment_body_and_state(self):
         r = run(snapshot(*queued(3, 1)), {"prev_pending_count": 0})
