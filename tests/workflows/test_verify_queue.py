@@ -165,6 +165,14 @@ class Label(unittest.TestCase):
         writes, _ = self.go()
         self.assertEqual(writes, [self.ADD])
 
+    def test_called_verify_gate_waits_for_the_verdict_too(self):
+        # vws-deploy#402: repo-guard.yml calls the gate as "gate / verify-gate", next to its bare shim.
+        checks = GREEN + [run_(9, "gate / verify-gate", conclusion="failure"), run_(10, "hygiene / pr-hygiene")]
+        writes, out = self.go(CHECKS_TSV="\n".join(checks))
+        self.assertEqual(writes, [self.ADD], out)
+        writes, out = self.go(CHECKS_TSV="\n".join(checks + [run_(11, "hygiene / pr-hygiene", conclusion="failure")]))
+        self.assertEqual(writes, [], out)
+
     def test_ready_for_review_with_green_checks_adds_the_label(self):
         writes, _ = self.go(event="pull_request", action="ready_for_review")
         self.assertEqual(writes, [self.ADD])
