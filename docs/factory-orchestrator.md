@@ -235,14 +235,16 @@ rebuild_job.py --repo OWNER/REPO --pr N --clone DIR --job-id ID [--dry-run]
    - it is labeled `blocked` or `needs-rebuild`;
    - its head on origin differs from the head it read.
 2. It picks the next unused `<stem>-vN` branch on origin. A `-vK` head counts from K.
-3. The vendored `.github/orchestrate/box/rebuild-pr.sh` cherry-picks the PR's commits onto `origin/main` in `DIR/.worktrees/ID`. The job removes that worktree and the local branch in `finally`, whatever the result.
-4. A clean pick (exit 0):
+3. If `DIR/.worktrees/ID` or the local `<stem>-vN` branch already exists, it stops with exit 1 and leaves both as they are. Nothing it did not create is ever removed (`--dry-run` included).
+4. The vendored `.github/orchestrate/box/rebuild-pr.sh` cherry-picks the PR's commits onto `origin/main` in `DIR/.worktrees/ID`. The job removes that worktree and the local branch in `finally`, whatever the result. `DIR` may be relative; it is made absolute first.
+5. After a clean pick it reads the PR again. If the head moved during the pick, it skips (exit 4, `head moved during the rebuild`) and pushes nothing.
+6. A clean pick (exit 0):
    - pushes the new ref (no `+`, no force);
    - opens a PR with the old title and body plus `Supersedes #N`;
    - comments `Superseded by #M` on the old PR, then closes it.
 
    The verify queue then picks up the new head when its CI is green.
-5. A conflict (exit 3) adds the `needs-rebuild` label and pushes nothing. Rule R then wakes the owner once per head.
+7. A conflict (exit 3) adds the `needs-rebuild` label and pushes nothing. Rule R then wakes the owner once per head.
 
 The only API writes it may make are `POST pulls`, `POST issues/N/comments`, `PATCH pulls/N` and `POST issues/N/labels` (`WRITES`). Each write is checked against that list before it runs. git and gh use the box's stored gh login (the VM's popododo0720 PAT), never `GH_TOKEN`. `--dry-run` does only the local pick. If opening the PR fails after the push, the job exits 1, leaves the old PR open, and names the pushed branch on stderr for a person to clean up.
 
