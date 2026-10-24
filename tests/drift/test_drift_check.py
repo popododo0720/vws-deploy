@@ -431,5 +431,86 @@ class ExitStatus(unittest.TestCase):
         self.assertEqual(dc.DRIFT_EXIT, 3)
 
 
+class BypassAudit(unittest.TestCase):
+    """--bypass-audit (vws-deploy#458): fails on any bypass actor and never passes a hidden bypass list."""
+
+    ACTIVE = {"id": 1, "name": "vws-main", "target": "branch", "enforcement": "active"}
+
+    def run_audit(self, detail, archived=False, rulesets=None):
+        def gh(path):
+            if path == "repos/o/r":
+                return {"archived": archived}
+            if path.endswith("/rulesets/1"):
+                return detail
+            if path.endswith("/rulesets"):
+                return [self.ACTIVE] if rulesets is None else rulesets
+            return None
+
+        with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
+            f.write("# header\nr\tgo\t.golangci.yml\tlint\n")
+        self.addCleanup(os.unlink, f.name)
+        saved = (dc.gh, dc.sys.argv)
+        dc.gh = gh
+        dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name, "--bypass-audit"]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = dc.main()
+        finally:
+            dc.gh, dc.sys.argv = saved
+        return rc, out.getvalue()
+
+    def test_no_actor_passes(self):
+        rc, text = self.run_audit({"bypass_actors": []})
+        self.assertEqual(rc, 0)
+        self.assertIn("r: ok", text)
+        self.assertIn("ruleset vws-main (id 1): 0 bypass actor(s)", text)
+
+    def test_any_actor_fails_and_is_listed(self):
+        actor = {"actor_type": "Integration", "actor_id": 15368, "bypass_mode": "always"}
+        rc, text = self.run_audit({"bypass_actors": [actor]})
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+        self.assertIn("r: FAIL ruleset vws-main has 1 bypass actor(s)", text)
+        self.assertIn("actor_type=Integration actor_id=15368 bypass_mode=always", text)
+
+    def test_hidden_bypass_list_fails(self):
+        for detail in ({"name": "vws-main"}, {"bypass_actors": None}, {"bypass_actors": "x"}, None):
+            rc, text = self.run_audit(detail)
+            self.assertEqual(rc, dc.DRIFT_EXIT, detail)
+            self.assertIn("r: FAIL", text)
+
+    def test_missing_vws_main_fails(self):
+        rc, text = self.run_audit({"bypass_actors": []}, rulesets=[])
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+        self.assertIn("no active vws-main ruleset", text)
+
+    def test_archived_repo_is_skipped(self):
+        rc, text = self.run_audit(None, archived=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("r: archived (skipped)", text)
+
+class BypassAuditWrapper(unittest.TestCase):
+    """.github/drift/audit-bypass-actors.sh with a stub gh: prints the account, never the token (#458)."""
+
+    def test_wrapper_prints_account_not_token(self):
+        import subprocess
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        stub = os.path.join(d, "gh")
+        with open(stub, "w") as f:
+            f.write('#!/bin/sh\ncase "$2" in\n user) echo stub-admin ;;\n repos/o/r) echo \'{"archived": true}\' ;;\n'
+                    ' *) exit 1 ;;\nesac\n')
+        os.chmod(stub, 0o755)
+        repos = os.path.join(d, "repos.tsv")
+        with open(repos, "w") as f:
+            f.write("r\tgo\t-\t\n")
+        env = {**os.environ, "PATH": d + os.pathsep + os.environ["PATH"], "GH_TOKEN": "secret-token-458"}
+        r = subprocess.run([os.path.join(ROOT, ".github", "drift", "audit-bypass-actors.sh"), "--owner", "o",
+                            "--repos", repos], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("as gh account stub-admin", r.stdout)
+        self.assertIn("r: archived (skipped)", r.stdout)
+        self.assertNotIn("secret-token-458", r.stdout + r.stderr)
+
 if __name__ == "__main__":
     unittest.main()
