@@ -35,6 +35,9 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   (writes). Writes happen only with `ORCHESTRATE_MODE=apply`.
 - **Repos:** the entries of `.github/drift/repos.tsv` plus `ORCHESTRATE_EXTRA_REPOS` (default
   `vws-conformance`). Archived repos (today `vws-hypervisor`) are skipped.
+- **`Part of` references:** a PR body line `Part of #N`, `Part of vws-x#N` or
+  `Part of popododo0720/vws-x#N`. The owner/repo form is the one the repo guard accepts; the
+  orchestrator maps it to `vws-x#N`. Another owner is not accepted.
 - **Dependencies:** a body line `Depends on #N` or `Depends on vws-<repo>#N`, comma separated.
   - A dependency is met when the issue closed as completed or the PR merged.
   - An open, unreadable, outside, archived or cyclic reference blocks the task. The orchestrator adds
