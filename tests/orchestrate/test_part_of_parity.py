@@ -55,6 +55,9 @@ def rule_d(body):
 
 
 def guard(cmd, body):
+    # pr-body also needs an AC: line (vws-deploy#486, test_ac_parity.py); a valid one is added at the end.
+    if cmd == "pr-body":
+        body += "\nAC: none - Part of vector"
     return subprocess.run(["bash", GUARD, cmd], env=dict(os.environ, PR_BODY=body), capture_output=True, text=True)
 
 

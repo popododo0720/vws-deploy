@@ -1,5 +1,8 @@
 Part of #
 
+AC: 
+<!-- One "AC: <n>" line per acceptance-criteria box of the Part of issue this PR covers (n from 1), or "AC: none - <reason>". -->
+
 ## What changed
 
 ## How it was verified (only what was actually run)

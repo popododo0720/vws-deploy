@@ -7,7 +7,8 @@
 #   guard-agents.sh archtest [FILE] [HEADING] prints the rules line, then runs go test -v on GUARD_ARCHTEST_PKG
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
-#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has a "Part of #N" line Rule D reads, no closing keyword and no Hangul
+#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has a "Part of #N" line Rule D reads, valid "AC:" lines,
+#                                           no closing keyword and no Hangul
 #   guard-agents.sh pr-checklist [FILE]     each QUALITY_TITLES checklist item exactly once in the pull request text
 #                                           (FILE or $PR_BODY) is ticked and has evidence or "N/A: <reason>"
 #   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or vws-<repo>#N)
@@ -208,6 +209,13 @@ PART_OF_ZERO_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#0'
 # PR_PART_OF_ANY_RE is Rule D's own pattern (#0 too), for the first match in the raw text.
 PR_PART_OF_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[1-9][0-9]*'
 PR_PART_OF_ANY_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[0-9]+'
+# vws-deploy#486: a pull request body lists the acceptance-criteria boxes of its Part of issue it covers, one
+# "AC: <n>" line per box (n from 1), or one "AC: none - <reason>". Only visible lines that start with "AC:"
+# count. parse_ac in .github/orchestrate/orchestrate.py reads the same syntax; tests/orchestrate/test_ac_parity.py
+# runs one set of vectors through both.
+AC_LINE_RE='^[[:blank:]]*AC:'
+AC_BOX_RE='^[[:blank:]]*AC:[[:blank:]]*[1-9][0-9]*[[:blank:]]*$'
+AC_NONE_RE='^[[:blank:]]*AC:[[:blank:]]*none[[:blank:]]+-[[:blank:]]+[^[:space:]]'
 # A commit subject starts with a lowercase type, an optional (scope) and a colon: "ci: x", "docs(x): y".
 SUBJECT_TYPE_RE='^[a-z][a-z0-9-]*(\([a-z0-9._-]+\))?!?:[[:space:]]+[^[:space:]]'
 
@@ -291,6 +299,32 @@ cmd_pr_body() {
     die "pr-body: 'Part of #0' names no issue; issue numbers start at 1"
   pr_part_of_ref "$body" "pr-body" >/dev/null || exit 1
   ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
+  pr_ac_lines "$(visible_text <<<"${body//$'\r'/}")" || exit 1
+}
+
+# Fails with the cause unless the visible text has valid AC: lines (AC_BOX_RE, or one AC_NONE_RE alone).
+pr_ac_lines() {
+  local lines line boxes=0 nones=0
+  lines=$(LC_ALL=C grep -E "$AC_LINE_RE" <<<"$1") || true
+  if [[ -z $lines ]]; then
+    echo "pr-body: list the acceptance criteria of the Part of issue this pull request covers, one 'AC: <n>'" \
+      "line per box (n from 1), or 'AC: none - <reason>' (vws-deploy#486)" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    if LC_ALL=C grep -q -E "$AC_BOX_RE" <<<"$line"; then
+      boxes=1
+    elif LC_ALL=C grep -q -E "$AC_NONE_RE" <<<"$line"; then
+      nones=1
+    else
+      echo "pr-body: '${line}' is not 'AC: <n>' (n from 1) or 'AC: none - <reason>' (vws-deploy#486)" >&2
+      return 1
+    fi
+  done <<<"$lines"
+  if ((boxes && nones)); then
+    echo "pr-body: 'AC: none - <reason>' cannot be combined with 'AC: <n>' lines (vws-deploy#486)" >&2
+    return 1
+  fi
 }
 
 # The 9-item Quality checklist in the PR template (docs/QUALITY.md), by the bold item titles of
@@ -572,80 +606,138 @@ cmd_selftest() {
   expect_fail "base is a stack branch" cmd_pr_base "feature-stack-base"
   expect_fail "empty base" cmd_pr_base ""
 
-  expect_pass "Part of #N" env PR_BODY="Part of #12" bash "$0" pr-body
-  expect_pass "part of vws-repo#N" env PR_BODY="intro
+  # vws-deploy#486: AC: lines (tests/orchestrate/test_ac_parity.py has the shared vectors).
+  expect_pass "AC: <n>" env PR_BODY="Part of #12
+AC: 2" bash "$0" pr-body
+  expect_pass "several AC: lines" env PR_BODY="Part of #12
+AC: 1
+AC: 3" bash "$0" pr-body
+  expect_pass "AC: none with a reason" env PR_BODY="Part of #12
+AC: none - docs only" bash "$0" pr-body
+  expect_fail "no AC: line" env PR_BODY="Part of #12" bash "$0" pr-body
+  expect_fail "AC: none without a reason" env PR_BODY="Part of #12
+AC: none" bash "$0" pr-body
+  expect_fail "AC: none with an empty reason" env PR_BODY="Part of #12
+AC: none - " bash "$0" pr-body
+  expect_fail "AC: 0" env PR_BODY="Part of #12
+AC: 0" bash "$0" pr-body
+  expect_fail "AC: x" env PR_BODY="Part of #12
+AC: x" bash "$0" pr-body
+  expect_fail "AC: none with a box" env PR_BODY="Part of #12
+AC: 1
+AC: none - docs only" bash "$0" pr-body
+  expect_fail "AC: only in an HTML comment" env PR_BODY="Part of #12
+<!-- AC: 1 -->" bash "$0" pr-body
+
+  expect_pass "Part of #N" env PR_BODY="AC: 1
+Part of #12" bash "$0" pr-body
+  expect_pass "part of vws-repo#N" env PR_BODY="AC: 1
+intro
 part of vws-lib#7" bash "$0" pr-body
-  expect_fail "Part of owner/repo#N (Rule D skips it, vws-deploy#477)" env PR_BODY="Part of acme/repo#7" bash "$0" pr-body
-  expect_fail "Part of popododo0720/vws-deploy#N (Rule D skips it, vws-deploy#477)" env PR_BODY="Part of popododo0720/vws-deploy#7" bash "$0" pr-body
-  expect_fail "Part of in a list item" env PR_BODY="- Part of #12" bash "$0" pr-body
-  expect_fail "Part of mid-sentence" env PR_BODY="This is Part of #12" bash "$0" pr-body
-  expect_pass "indented Part of" env PR_BODY="  Part of #12" bash "$0" pr-body
-  expect_fail "a hidden Part of line before the visible one" env PR_BODY="<!--
+  expect_fail "Part of owner/repo#N (Rule D skips it, vws-deploy#477)" env PR_BODY="AC: 1
+Part of acme/repo#7" bash "$0" pr-body
+  expect_fail "Part of popododo0720/vws-deploy#N (Rule D skips it, vws-deploy#477)" env PR_BODY="AC: 1
+Part of popododo0720/vws-deploy#7" bash "$0" pr-body
+  expect_fail "Part of in a list item" env PR_BODY="AC: 1
+- Part of #12" bash "$0" pr-body
+  expect_fail "Part of mid-sentence" env PR_BODY="AC: 1
+This is Part of #12" bash "$0" pr-body
+  expect_pass "indented Part of" env PR_BODY="AC: 1
+  Part of #12" bash "$0" pr-body
+  expect_fail "a hidden Part of line before the visible one" env PR_BODY="AC: 1
+<!--
 Part of #5
 -->
 Part of #12" bash "$0" pr-body
-  expect_fail "Closes #N" env PR_BODY="Part of #3
+  expect_fail "Closes #N" env PR_BODY="AC: 1
+Part of #3
 Closes #12" bash "$0" pr-body
-  expect_fail "fixes owner/repo#N" env PR_BODY="Part of #3
+  expect_fail "fixes owner/repo#N" env PR_BODY="AC: 1
+Part of #3
 fixes acme/repo#7" bash "$0" pr-body
-  expect_fail "Resolves: #N" env PR_BODY="Part of #3 Resolves: #7" bash "$0" pr-body
-  expect_fail "no Part of" env PR_BODY="mentions #12 only" bash "$0" pr-body
-  expect_fail "empty body" env PR_BODY="" bash "$0" pr-body
-  expect_fail "Part of without number" env PR_BODY="Part of the gap" bash "$0" pr-body
-  expect_fail "Part of #TBD in a pull request" env PR_BODY="Part of #TBD" bash "$0" pr-body
+  expect_fail "Resolves: #N" env PR_BODY="AC: 1
+Part of #3 Resolves: #7" bash "$0" pr-body
+  expect_fail "no Part of" env PR_BODY="AC: 1
+mentions #12 only" bash "$0" pr-body
+  expect_fail "empty body" env PR_BODY="AC: 1
+" bash "$0" pr-body
+  expect_fail "Part of without number" env PR_BODY="AC: 1
+Part of the gap" bash "$0" pr-body
+  expect_fail "Part of #TBD in a pull request" env PR_BODY="AC: 1
+Part of #TBD" bash "$0" pr-body
 
-  expect_fail "Part of only in an HTML comment" env PR_BODY="<!-- Part of #12 -->" bash "$0" pr-body
-  expect_fail "Part of only in a multi-line HTML comment" env PR_BODY="intro
+  expect_fail "Part of only in an HTML comment" env PR_BODY="AC: 1
+<!-- Part of #12 -->" bash "$0" pr-body
+  expect_fail "Part of only in a multi-line HTML comment" env PR_BODY="AC: 1
+intro
 <!--
 Part of #12
 -->
 outro" bash "$0" pr-body
-  expect_fail "Part of only in a backtick fence" env PR_BODY="intro
+  expect_fail "Part of only in a backtick fence" env PR_BODY="AC: 1
+intro
 \`\`\`
 Part of #12
 \`\`\`" bash "$0" pr-body
-  expect_fail "Part of only in a tilde fence" env PR_BODY="~~~text
+  expect_fail "Part of only in a tilde fence" env PR_BODY="AC: 1
+~~~text
 Part of #12
 ~~~" bash "$0" pr-body
-  expect_fail "Part of only in an unclosed fence" env PR_BODY="\`\`\`
+  expect_fail "Part of only in an unclosed fence" env PR_BODY="AC: 1
+\`\`\`
 Part of #12" bash "$0" pr-body
-  expect_fail "Part of after a closed comment on the same line (Rule D reads the raw line)" env PR_BODY="<!-- note --> Part of #12" bash "$0" pr-body
-  expect_pass "Part of after a fence" env PR_BODY="\`\`\`
+  expect_fail "Part of after a closed comment on the same line (Rule D reads the raw line)" env PR_BODY="AC: 1
+<!-- note --> Part of #12" bash "$0" pr-body
+  expect_pass "Part of after a fence" env PR_BODY="AC: 1
+\`\`\`
 code
 \`\`\`
 Part of #12" bash "$0" pr-body
-  expect_fail "Closes hidden in an HTML comment" env PR_BODY="Part of #3 <!-- Closes #12 -->" bash "$0" pr-body
-  expect_fail "Closes hidden in a fence" env PR_BODY="Part of #3
+  expect_fail "Closes hidden in an HTML comment" env PR_BODY="AC: 1
+Part of #3 <!-- Closes #12 -->" bash "$0" pr-body
+  expect_fail "Closes hidden in a fence" env PR_BODY="AC: 1
+Part of #3
 \`\`\`
 Closes #12
 \`\`\`" bash "$0" pr-body
-  expect_fail "Closes split around a comment" env PR_BODY="Part of #3 Closes<!-- x --> #12" bash "$0" pr-body
+  expect_fail "Closes split around a comment" env PR_BODY="AC: 1
+Part of #3 Closes<!-- x --> #12" bash "$0" pr-body
   printf 'ci: x\n\nPart of #3 Fixes<!-- --> #12\n' >"$tmp/msg-hidden"
   expect_fail "commit-msg Fixes split around a comment" cmd_commit_msg "$tmp/msg-hidden"
-  expect_fail "Part of #0" env PR_BODY="Part of #0" bash "$0" pr-body
-  expect_fail "Part of owner/repo#0" env PR_BODY="Part of acme/repo#0" bash "$0" pr-body
-  expect_fail "Part of #00" env PR_BODY="Part of #00" bash "$0" pr-body
-  expect_fail "Part of #012" env PR_BODY="Part of #012" bash "$0" pr-body
+  expect_fail "Part of #0" env PR_BODY="AC: 1
+Part of #0" bash "$0" pr-body
+  expect_fail "Part of owner/repo#0" env PR_BODY="AC: 1
+Part of acme/repo#0" bash "$0" pr-body
+  expect_fail "Part of #00" env PR_BODY="AC: 1
+Part of #00" bash "$0" pr-body
+  expect_fail "Part of #012" env PR_BODY="AC: 1
+Part of #012" bash "$0" pr-body
   # A fence closes only on the same character, at least as long (vws-deploy guard P2).
-  expect_fail "Part of behind a shorter inner fence" env PR_BODY="~~~~
+  expect_fail "Part of behind a shorter inner fence" env PR_BODY="AC: 1
+~~~~
 \`\`\`
 Part of #12
 ~~~~" bash "$0" pr-body
-  expect_fail "Part of behind a three-tilde line in a four-tilde fence" env PR_BODY="~~~~
+  expect_fail "Part of behind a three-tilde line in a four-tilde fence" env PR_BODY="AC: 1
+~~~~
 ~~~
 Part of #12
 ~~~~" bash "$0" pr-body
-  expect_fail "Part of behind a fence line with text after it" env PR_BODY="\`\`\`
+  expect_fail "Part of behind a fence line with text after it" env PR_BODY="AC: 1
+\`\`\`
 \`\`\`go
 Part of #12
 \`\`\`" bash "$0" pr-body
-  expect_pass "Part of after a properly closed long fence" env PR_BODY="~~~~
+  expect_pass "Part of after a properly closed long fence" env PR_BODY="AC: 1
+~~~~
 x
 ~~~~~
 Part of #12" bash "$0" pr-body
-  expect_fail "Part of #0 next to a valid Part of" env PR_BODY="Part of #3
+  expect_fail "Part of #0 next to a valid Part of" env PR_BODY="AC: 1
+Part of #3
 Part of #0" bash "$0" pr-body
-  expect_pass "Part of #10" env PR_BODY="Part of #10" bash "$0" pr-body
+  expect_pass "Part of #10" env PR_BODY="AC: 1
+Part of #10" bash "$0" pr-body
   printf 'ci: x\n\nPart of #0\n' >"$tmp/msg-zero"
   expect_fail "commit with Part of #0" cmd_commit_msg "$tmp/msg-zero"
   printf 'ci: x\n\nPart of acme/repo#0\n' >"$tmp/msg-zero2"
@@ -659,9 +751,12 @@ Part of #0" bash "$0" pr-body
   expect_fail "commit with Hangul in the body" cmd_commit_msg "$tmp/msg-ko2"
   printf '# \352\267\234\354\271\231\nci: x\n\nPart of #12\n' >"$tmp/msg-ko3"
   expect_pass "Hangul only in a git comment line" cmd_commit_msg "$tmp/msg-ko3"
-  expect_fail "pr-body with Hangul" env PR_BODY="Part of #12 $(printf '\352\267\234')" bash "$0" pr-body
-  expect_fail "pr-body with Hangul in an HTML comment" env PR_BODY="Part of #12 <!-- $(printf '\352\267\234') -->" bash "$0" pr-body
-  expect_pass "pr-body with other non-ASCII text" env PR_BODY="Part of #12 caf$(printf '\303\251') $(printf '\342\200\224') ok" bash "$0" pr-body
+  expect_fail "pr-body with Hangul" env PR_BODY="AC: 1
+Part of #12 $(printf '\352\267\234')" bash "$0" pr-body
+  expect_fail "pr-body with Hangul in an HTML comment" env PR_BODY="AC: 1
+Part of #12 <!-- $(printf '\352\267\234') -->" bash "$0" pr-body
+  expect_pass "pr-body with other non-ASCII text" env PR_BODY="AC: 1
+Part of #12 caf$(printf '\303\251') $(printf '\342\200\224') ok" bash "$0" pr-body
 
   # The 9-item Quality checklist (vws-deploy#394): evidence or "N/A: reason" on every item.
   local cl="$tmp/checklist.md" i
@@ -742,14 +837,18 @@ Part of #0" bash "$0" pr-body
   expect_fail "subject with fixes owner/repo#N" cmd_commit_msg "$tmp/msg-fixes"
   local kw
   for kw in Closes closes CLOSED close Fix fixes FIXED fixed Resolve resolves RESOLVED resolved; do
-    expect_fail "pr-body ${kw} with a full issue URL" env PR_BODY="Part of #3
+    expect_fail "pr-body ${kw} with a full issue URL" env PR_BODY="AC: 1
+Part of #3
 ${kw} https://github.com/acme/repo/issues/7" bash "$0" pr-body
     printf 'ci: x\n\n%s https://github.com/acme/repo/issues/7\n\nPart of #3\n' "$kw" >"$tmp/msg-url"
     expect_fail "commit-msg ${kw} with a full issue URL" cmd_commit_msg "$tmp/msg-url"
   done
-  expect_fail "Closes: with a pull request URL" env PR_BODY="Part of #3 Closes: https://github.com/acme/repo/pull/7" bash "$0" pr-body
-  expect_fail "fixes with a URL without the scheme" env PR_BODY="Part of #3 fixes github.com/acme/repo/issues/7" bash "$0" pr-body
-  expect_pass "an issue URL without a closing keyword" env PR_BODY="Part of #3, see https://github.com/acme/repo/issues/7" bash "$0" pr-body
+  expect_fail "Closes: with a pull request URL" env PR_BODY="AC: 1
+Part of #3 Closes: https://github.com/acme/repo/pull/7" bash "$0" pr-body
+  expect_fail "fixes with a URL without the scheme" env PR_BODY="AC: 1
+Part of #3 fixes github.com/acme/repo/issues/7" bash "$0" pr-body
+  expect_pass "an issue URL without a closing keyword" env PR_BODY="AC: 1
+Part of #3, see https://github.com/acme/repo/issues/7" bash "$0" pr-body
   printf 'ci: x\n# Closes #12 in a git comment line\n' >"$tmp/msg-comment"
   expect_pass "Closes in a git comment line" cmd_commit_msg "$tmp/msg-comment"
 

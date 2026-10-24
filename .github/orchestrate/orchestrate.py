@@ -1012,6 +1012,67 @@ def main_ci_verdict(runs):
     return "pending" if "pending" in states else "green"
 
 
+# vws-deploy#486: the acceptance-criteria boxes a PR covers, one `AC: <n>` line per box of its `Part of`
+# issue (n from 1), or one `AC: none - <reason>`. Same syntax as pr-body in scripts/guard-agents.sh;
+# tests/orchestrate/test_ac_parity.py runs one set of vectors through both.
+AC_LINE_RE = re.compile(r"^[ \t]*AC:(.*)$", re.M)
+AC_BOX_RE = re.compile(r"[ \t]*([1-9][0-9]*)[ \t]*")
+AC_NONE_RE = re.compile(r"[ \t]*none[ \t]+-[ \t]+([^ \t\n\r\f\v].*?)[ \t]*")
+
+
+def visible_text(text):
+    """The text a reader sees, as guard-agents.sh visible_text: HTML comments (also across lines) and fenced
+    code blocks (``` or ~~~; closed only by a run of the same character at least as long) are removed."""
+    out, incom, fence, fch, flen = [], False, False, "", 0
+    for line in (text or "").split("\n"):
+        if not incom and not fence:
+            m = re.match(r"[ \t]*(`{3,}|~{3,})", line)
+            if m:
+                fence, fch, flen = True, m.group(1)[0], len(m.group(1))
+                continue
+        if fence:
+            m = re.fullmatch(r"[ \t]*(`{3,}|~{3,})[ \t]*", line)
+            if m and m.group(1)[0] == fch and len(m.group(1)) >= flen:
+                fence = False
+            continue
+        seen = ""
+        while True:
+            if incom:
+                i = line.find("-->")
+                if i < 0:
+                    break
+                line, incom = line[i + 3:], False
+            else:
+                i = line.find("<!--")
+                if i < 0:
+                    seen += line
+                    break
+                seen, line, incom = seen + line[:i], line[i + 4:], True
+        out.append(seen)
+    return "\n".join(out)
+
+
+def parse_ac(body):
+    """The `AC:` lines of a PR body's visible text: {"boxes": sorted box numbers, "none": the reason of
+    `AC: none - <reason>`, "error": why the lines are invalid, "" when valid}."""
+    boxes, none = set(), ""
+    lines = [m.group(0).strip() for m in AC_LINE_RE.finditer(visible_text((body or "").replace("\r", "")))]
+    if not lines:
+        return {"boxes": [], "none": "", "error": "no 'AC: <n>' or 'AC: none - <reason>' line"}
+    for line in lines:
+        rest = line[3:]
+        b, n = AC_BOX_RE.fullmatch(rest), AC_NONE_RE.fullmatch(rest)
+        if b:
+            boxes.add(int(b.group(1)))
+        elif n:
+            none = n.group(1)
+        else:
+            return {"boxes": [], "none": "", "error": f"'{line}' is not 'AC: <n>' (n from 1) or 'AC: none - <reason>'"}
+    if boxes and none:
+        return {"boxes": [], "none": "", "error": "'AC: none - <reason>' cannot be combined with 'AC: <n>' lines"}
+    return {"boxes": sorted(boxes), "none": none, "error": ""}
+
+
 def agent_of(body):
     """The PR body's 'Agent:' value: logged on merge, and the owner a rebuild wake names (Rule R).
     No eligibility rule depends on it."""
