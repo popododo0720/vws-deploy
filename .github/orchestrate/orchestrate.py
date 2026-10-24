@@ -1666,7 +1666,7 @@ def grok_busy(items, held):
         if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)}
 
 
-AC_BOX_RE = re.compile(r"^[ \t]*[-*] \[([ xX])\]", re.M)
+AC_CHECKBOX_RE = re.compile(r"^[ \t]*[-*] \[([ xX])\]", re.M)
 GROK_REARM_LABELS = ("ready", "grok")
 
 
@@ -1696,7 +1696,7 @@ def grok_release(k, it, items, woken_at, now, timeout_min):
     merged = [p for p in act.get("prs", []) if p.get("merged_at") and utc(p["merged_at"]) > t0]
     if merged:
         return "grok_task_done", {"reason": "pr_merged", "pr": merged[0]["key"]}
-    boxes = AC_BOX_RE.findall(it.get("body") or "")
+    boxes = AC_CHECKBOX_RE.findall(it.get("body") or "")
     if boxes and " " not in boxes:
         return "grok_task_done", {"reason": "ac_done"}
     claimed = (it.get("assignees") or act.get("prs")
