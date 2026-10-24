@@ -1215,13 +1215,60 @@ def head_verdict(pr):
 
 def rework_prs(k, it, items):
     """Open PRs a ready+deepseek item owns: the item itself when it is a PR, else the open vws PRs its
-    DeepSeek reports named."""
+    DeepSeek reports named, then (vws-deploy#457) open PRs whose `Part of` names it and whose owner
+    resolves to deepseek. A PR that is itself a ready+deepseek item is reworked on its own."""
     if not {"ready", "deepseek"} <= set(it["labels"]) or "grok" in it["labels"]:
         return []
     if it["is_pr"]:
         return [k]
     keys = [vws_pr_key(u) for u, p in sorted(it.get("report_prs", {}).items()) if p.get("state") == "open"]
-    return [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
+    out = [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
+    for pk in sorted(items):
+        p = items[pk]
+        if (pk not in out and p["is_pr"] and p["state"] == "open" and grok_link(p) == k
+                and not {"ready", "deepseek"} <= set(p["labels"]) and pr_owner(p, items)[0] == "deepseek"):
+            out.append(pk)
+    return out
+
+
+def pr_owner(pr, items):
+    """vws-deploy#457: who owns a PR, as (owner, via). In order: the PR body `Agent:` line (via "agent"),
+    the PR's deepseek or grok label ("label"), then the deepseek or grok label of the item its `Part of`
+    names ("part_of:<repo#N>"). ("", "") when none resolves."""
+    agent = agent_of(pr.get("body"))
+    if agent:
+        return agent, "agent"
+    for name in ("deepseek", "grok"):
+        if name in pr["labels"]:
+            return name, "label"
+    link = grok_link(pr)
+    for name in ("deepseek", "grok"):
+        if link and name in items.get(link, {}).get("labels", []):
+            return name, f"part_of:{link}"
+    return "", ""
+
+
+def verify_fail_unrouted(items, prev, notes):
+    """vws-deploy#457: open non-draft PRs into main whose head has a vws-verify FAIL that no rule picks up
+    (rule B2 reworks only PRs a ready+deepseek item owns; a conflict-only FAIL is Rule R's). Adds one
+    verify_fail_unrouted note per PR head not in prev ({repo#N: head}); returns the new {repo#N: head}."""
+    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
+    seen = {}
+    for k in sorted(items):
+        it = items[k]
+        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
+            continue
+        v = head_verdict(it)
+        if not v or v["result"] != "fail" or conflict_only(v["body"]) or k in reworked:
+            continue
+        owner, _ = pr_owner(it, items)
+        reason = ("no_owner" if not owner else "owner_grok" if owner == "grok"
+                  else "owner_deepseek_not_ready" if owner == "deepseek" else "owner_agent")
+        seen[k] = it["head_sha"]
+        if prev.get(k) != it["head_sha"]:
+            notes.append({"kind": "verify_fail_unrouted", "target": k, "head": it["head_sha"], "verdict": v["url"],
+                          "owner": owner, "reason": reason})
+    return seen
 
 
 def ci_fails(pr):
@@ -1626,6 +1673,7 @@ def decide(snapshot, state, now, cfg, exclusions):
         if eligible:
             prio = 0 if "priority/blocker" in labels else 2
             queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry, k))
+    new_state["verify_fail_unrouted"] = verify_fail_unrouted(items, state.get("verify_fail_unrouted", {}), notes)
     scope = cfg.get("ORCHESTRATE_SCOPE", "")
     if scope:
         queue = [q for q in queue if q[4] == scope]
@@ -1820,6 +1868,14 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         for pk in rework_prs(k, it, snap["items"]):
             if "reviews" not in snap["items"][pk]:
                 snap["items"][pk]["reviews"] = verify_reviews(gh, snap["items"][pk], cfg)
+    for k, it in sorted(snap["items"].items()):
+        # vws-deploy#457: a FAIL on any open PR's head is routed or logged, so every such PR needs its reviews.
+        # ETag-cached; a read error leaves the PR's verdict comments only, never a failed tick.
+        if it["is_pr"] and it["state"] == "open" and not it["draft"] and it["base"] == "main" and "reviews" not in it:
+            try:
+                it["reviews"] = verify_reviews(gh, it, cfg)
+            except (GhError, PermissionError):
+                it["reviews"] = []
     if history is not None:
         live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}}
         for k in list(hist_items):
