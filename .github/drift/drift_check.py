@@ -16,6 +16,10 @@ Checks per repo, on its default branch:
               sets lll to 120 and enables gofumpt and goimports
 An archived repo is reported and skipped; it is not drift.
 
+--bypass-audit (vws-deploy#458) checks only the ruleset bypass actors, for the admin audit run from the
+box (.github/drift/audit-bypass-actors.sh). It lists every actor and exits 3 on any actor, and also on a
+ruleset that is unreadable or whose bypass list is not visible, so a non-admin token can never pass it.
+
 Needs an authenticated gh. With admin access (an audit) the full protection settings are read;
 with a read-only token (CI) the branch summary is used and force-push and deletion show as "?".
 Exit status: 0 when nothing drifts, 3 when something does, 2 on a usage error or a bad baseline.
@@ -246,6 +250,63 @@ def main_rules_drift(rulesets, rules):
     return out
 
 
+def bypass_audit(owner, repo):
+    """(lines, failures) for one repo's active branch rulesets, for --bypass-audit (vws-deploy#458).
+
+    Every bypass actor is listed as actor_type/actor_id/bypass_mode. Any actor fails, and so does a
+    bypass list that is missing (a non-admin token) or malformed: the audit never reports unverified as ok.
+    """
+    rulesets = gh(f"repos/{owner}/{repo}/rulesets")
+    if not isinstance(rulesets, list):
+        return [], ["rulesets unreadable"]
+    active = [r for r in rulesets if isinstance(r, dict) and r.get("target") == "branch"
+              and r.get("enforcement") == "active"]
+    lines, fails = [], []
+    if not any(r.get("name") == "vws-main" for r in active):
+        fails.append("no active vws-main ruleset")
+    for r in active:
+        detail = gh(f"repos/{owner}/{repo}/rulesets/{r.get('id')}")
+        name = r.get("name")
+        actors = detail.get("bypass_actors") if isinstance(detail, dict) else None
+        if not isinstance(detail, dict):
+            fails.append(f"ruleset {name} unreadable")
+        elif not isinstance(actors, list):
+            fails.append(f"ruleset {name} {UNVERIFIED_BYPASS}")
+        else:
+            lines.append(f"ruleset {name} (id {r.get('id')}): {len(actors)} bypass actor(s)")
+            for a in actors:
+                a = _map(a)
+                lines.append(f"  actor_type={a.get('actor_type')} actor_id={a.get('actor_id')} "
+                             f"bypass_mode={a.get('bypass_mode')}")
+            if actors:
+                fails.append(f"ruleset {name} has {len(actors)} bypass actor(s)")
+    return lines, fails
+
+
+def run_bypass_audit(owner, repos_file):
+    """Print the per-repo audit and return 0 when no repo has a bypass actor, else DRIFT_EXIT."""
+    failed = 0
+    for line in open(repos_file):
+        if not line.strip() or line.startswith("#"):
+            continue
+        repo = line.split("\t", 1)[0].strip()
+        info = gh(f"repos/{owner}/{repo}")
+        if not isinstance(info, dict):
+            print(f"{repo}: FAIL repo unreadable")
+            failed += 1
+            continue
+        if info.get("archived"):
+            print(f"{repo}: archived (skipped)")
+            continue
+        lines, fails = bypass_audit(owner, repo)
+        print(f"{repo}: {'FAIL ' + '; '.join(fails) if fails else 'ok'}")
+        for detail in lines:
+            print(f"  {detail}")
+        failed += bool(fails)
+    print(f"\nbypass audit: {failed} repo(s) failed")
+    return DRIFT_EXIT if failed else 0
+
+
 def stale_phrases(text):
     """The stale protection facts from #395 that must not come back into an AGENTS.md."""
     return [f"stale phrase: {phrase}" for phrase in STALE_PHRASES if phrase in text]
@@ -321,7 +382,11 @@ def main():
     ap.add_argument("--markdown", help="also write the table to this file")
     ap.add_argument("--guard-variants", default=os.path.join(HERE, "guard-variants.tsv"),
                     help="accepted guard-agents.sh variants: repo<TAB>sha256<TAB>reason")
+    ap.add_argument("--bypass-audit", action="store_true",
+                    help="admin audit run: check only ruleset bypass actors and fail on any (#458)")
     a = ap.parse_args()
+    if a.bypass_audit:
+        return run_bypass_audit(a.owner, a.repos)
 
     common = load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))
     want_sha = open(os.path.join(ROOT, "scripts", "guard-agents.sh.sha256")).read().split()[0]
