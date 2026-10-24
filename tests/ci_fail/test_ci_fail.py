@@ -43,6 +43,8 @@ class FakeGh:
         self.writes = []
         self.retried = []                   # paths of writes made with retry=True
         self.job_reads = 0
+        self.job_pages = []                 # page numbers of every jobs read
+        self.endless_jobs = False
         self.next_id = 1000
 
     def _pr(self, n):
@@ -64,13 +66,18 @@ class FakeGh:
         raise AssertionError(f"unexpected GET {path}")
 
     def get(self, path):
-        m = re.fullmatch(rf"{A}/actions/runs/(\d+)/attempts/(\d+)/jobs\?per_page=100", path)
+        m = re.fullmatch(rf"{A}/actions/runs/(\d+)/attempts/(\d+)/jobs\?per_page=100(&page=(\d+))?", path)
         if m:
-            self.job_reads += 1
+            page = int(m.group(4) or 1)
+            if page == 1:
+                self.job_reads += 1
+            self.job_pages.append(page)
             got = self.jobs.get((int(m.group(1)), int(m.group(2))), [])
             if callable(got):                 # a lagging jobs API: the answer depends on the read count
                 got = got(self.job_reads)
-            return {"jobs": got}
+            if self.endless_jobs:             # a jobs API that never ends: full pages forever
+                return {"total_count": 10 ** 6, "jobs": [job(100000 + page * 100 + i, conclusion="success") for i in range(100)]}
+            return {"total_count": len(got), "jobs": got[(page - 1) * 100:page * 100]}
         raise AssertionError(f"unexpected GET {path}")
 
     def text(self, path):
@@ -548,6 +555,54 @@ class GhRetry(unittest.TestCase):
         with self.assertRaises(RuntimeError) as cm:
             cf.Gh().get("repos/x")
         self.assertNotIn("ghp_abcdefghijklmnop1234", str(cm.exception))
+
+
+class JobsPagination(unittest.TestCase):
+    """vws-deploy#432: a run with more than 100 jobs is read page by page, fail-closed."""
+
+    def test_a_failed_job_past_the_first_100_is_reported(self):
+        gh = storage_gh()
+        gh.jobs[(500, 1)] = [job(i, f"matrix-{i}", conclusion="success") for i in range(1, 141)] + [job(141, "late")]
+        out = cf.run(gh, "workflow_run", event(), FULL, NOW)
+        self.assertEqual(out["action"], "post")
+        rec = cf.parse_comment(posts(gh)[0][2]["body"])
+        self.assertEqual([j["job_id"] for j in rec["failed_jobs"]], [141])
+        self.assertEqual(gh.job_pages, [1, 2])
+
+    def test_an_endless_job_list_fails_closed_without_a_comment(self):
+        gh = storage_gh()
+        gh.endless_jobs = True
+        with self.assertRaises(RuntimeError):
+            cf.run(gh, "workflow_run", event(), FULL, NOW)
+        self.assertEqual(gh.writes, [])
+        self.assertEqual(len(gh.job_pages), cf.JOBS_PAGES)
+
+
+class VerifyGateOnly(unittest.TestCase):
+    """vws-deploy#432: verify-gate is red on every head until vws-verify approves; alone it is not a CI failure."""
+
+    def gh(self, *jobs):
+        gh = storage_gh()
+        gh.jobs[(700, 1)] = list(jobs)
+        return gh
+
+    def test_only_verify_gate_failed_is_skipped(self):
+        for name in ("verify-gate", "guard / verify-gate"):
+            gh = self.gh(job(9, name, workflow="repo-guard"), job(8, "pr-hygiene", workflow="repo-guard", conclusion="success"))
+            out = cf.run(gh, "workflow_run", event(run_id=700, workflow="repo-guard"), FULL, NOW)
+            self.assertEqual(out, {"action": "skip", "reason": "only verify-gate failed"}, name)
+            self.assertEqual(gh.writes, [])
+
+    def test_verify_gate_with_another_failed_job_still_posts(self):
+        gh = self.gh(job(9, "verify-gate", workflow="repo-guard"), job(8, "pr-hygiene", workflow="repo-guard"))
+        out = cf.run(gh, "workflow_run", event(run_id=700, workflow="repo-guard"), FULL, NOW)
+        self.assertEqual(out["action"], "post")
+        rec = cf.parse_comment(posts(gh)[0][2]["body"])
+        self.assertEqual(sorted(j["job"] for j in rec["failed_jobs"]), ["pr-hygiene", "verify-gate"])
+
+    def test_a_job_merely_named_like_verify_gate_is_not_ignored(self):
+        gh = self.gh(job(9, "verify-gate-lint", workflow="repo-guard"))
+        self.assertEqual(cf.run(gh, "workflow_run", event(run_id=700, workflow="repo-guard"), FULL, NOW)["action"], "post")
 
 
 if __name__ == "__main__":
