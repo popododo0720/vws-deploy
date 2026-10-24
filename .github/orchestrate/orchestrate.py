@@ -1233,16 +1233,16 @@ def rework_prs(k, it, items):
 
 def pr_owner(pr, items):
     """vws-deploy#457: who owns a PR, as (owner, via). In order: the PR body `Agent:` line (via "agent"),
-    the PR's deepseek or grok label ("label"), then the deepseek or grok label of the item its `Part of`
-    names ("part_of:<repo#N>"). ("", "") when none resolves."""
+    the PR's grok or deepseek label ("label"), then the grok or deepseek label of the item its `Part of`
+    names ("part_of:<repo#N>"). grok wins over deepseek, as in rework_prs. ("", "") when none resolves."""
     agent = agent_of(pr.get("body"))
     if agent:
         return agent, "agent"
-    for name in ("deepseek", "grok"):
+    for name in ("grok", "deepseek"):
         if name in pr["labels"]:
             return name, "label"
     link = grok_link(pr)
-    for name in ("deepseek", "grok"):
+    for name in ("grok", "deepseek"):
         if link and name in items.get(link, {}).get("labels", []):
             return name, f"part_of:{link}"
     return "", ""
