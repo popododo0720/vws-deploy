@@ -418,6 +418,44 @@ and no status comments anywhere; comments there are metrics alerts only (see
 [factory-metrics.md](factory-metrics.md#alerts)). verify-wake never posts there:
 `ORCHESTRATE_WAKE_THREAD` equal to `ORCHESTRATE_STATUS_ISSUE` is refused.
 
+## Auto-update (vws-deploy#490)
+
+The service directory (`/home/box/.local/opt/vws-orchestrate/current`) is a git clone of vws-deploy.
+At the start of every tick, before `orchestrate.py`, `orchestrate-loop.sh` runs
+`.github/orchestrate/box/orchestrate-update.py`. It never stops the tick: the tick always runs on the sha
+the checkout has afterwards.
+
+- **Update:** `git fetch origin main` (timeout `ORCHESTRATE_UPDATE_TIMEOUT`, 60 s; no terminal prompt),
+  then `git merge --ff-only origin/main`. There is no reset, rebase or merge commit.
+- **Refuse rules:** the checkout stays on its current sha, and one alert is raised, when:
+  - it has local changes, tracked or untracked (the state dir is excluded if it lies inside the checkout);
+  - it has diverged from `origin/main` (a local commit);
+  - the candidate fails a syntax check (`bash -n` on the loop and ensure scripts, `compile()` on
+    `orchestrate.py`, `orchestrate-update.py` and `metrics.py`).
+
+  A fetch or fast-forward failure also raises an alert. Local changes are never touched.
+- **Re-exec:** when the fast-forward changed `.github/orchestrate/box/`, the loop re-execs the new
+  `orchestrate-loop.sh` (same pid, still holding `loop.lock`) before the tick. `orchestrate.py` and
+  `metrics.py` run in a new process every tick, so they pick up changes without a restart.
+- **Running sha:** each tick writes one JSON line (`"event": "deploy"`, with `running`, `main`,
+  `result`, `previous`, `reexec`, `alerts`) to `log/loop.log`, and `deploy.json` in the state dir. The
+  status block shows it as `- Running: `<sha7>` (main `<sha7>`, last update: <result>)`. The result is
+  one of `updated`, `current`, `disabled`, `refused`, `fetch_failed`, `ff_failed`, `no_checkout` (not a git clone; one alert) or `error`.
+- **Drift alert:** when the running sha is behind the newest commit on `origin/main` that touches
+  `.github/orchestrate/`, `.github/metrics/` or `.github/drift/repos.tsv` for two ticks in a row, one
+  alert is raised for that commit's sha.
+- **Alerts** are entries in the status block's "Recent entries" list (`deploy: ...`), at most one per
+  key: a refusal or failure is keyed by its kind, the running sha and the reason, a drift by the main
+  sha. A standing condition therefore edits the body once, and no comment is posted. Git's stderr is
+  never logged, because a remote URL may carry a credential; failures are logged by exit code.
+
+**Pin a sha on purpose** (for example to roll back): put `ORCHESTRATE_AUTO_UPDATE=0` in the env file
+(re-read every tick; it wins over the environment), then `git -C <service dir> checkout <sha>`. With
+`ORCHESTRATE_AUTO_UPDATE=0` nothing is fetched or moved; the result is `disabled`, and drift is checked
+against the last fetched `origin/main`. Remove the line (or set `ORCHESTRATE_AUTO_UPDATE=1`) and
+`git -C <service dir> checkout main` to resume; a detached or diverged checkout is refused, not moved.
+Automatic rollback after a bad merge is out of scope: a broken tick shows up as a failure streak.
+
 ## Failure handling and the failure section
 
 `orchestrate-loop.sh` runs every tick as a new process, so a crash ends one tick, not the loop.
@@ -451,10 +489,10 @@ never counts as a failed tick. On an abnormal day that script posts its own aler
 | path | content |
 |---|---|
 | `/home/box/.local/opt/vws-orchestrate/releases/<sha7>/` | `.github/orchestrate/`, `.github/metrics/` and `.github/drift/repos.tsv` from merged `main` |
-| `/home/box/.local/opt/vws-orchestrate/current` | symlink to the active release |
+| `/home/box/.local/opt/vws-orchestrate/current` | symlink to the active release; a git clone for auto-update (see [Auto-update](#auto-update-vws-deploy490)) |
 | `/home/box/.config/vws-orchestrate/env` | `KEY=VALUE` config, re-read every tick (no shell evaluation) |
 | `/home/box/.config/vws-orchestrate/STOP` | if present, ticks are skipped |
-| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `status-body.md`, `etag-cache.json`, `history-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
+| `/home/box/.local/state/vws-orchestrate/` | `state.json`, `health.json`, `failure.json`, `deploy.json`, `status-body.md`, `etag-cache.json`, `history-cache.json`, `run.lock`, `loop.lock`, `loop.pid`, all 0600 |
 | `/home/box/.local/state/vws-orchestrate/log/orchestrate.jsonl` | one JSON object per event; rotated at 5 MiB, keeps 5 |
 | `/home/box/.local/state/vws-orchestrate/log/loop.log` | loop output; rotated at 1 MiB, keeps 1 |
 
@@ -467,6 +505,8 @@ Config keys and defaults:
 - `ORCHESTRATE_STATUS_ISSUE=415` (the status issue in vws-deploy whose body the orchestrator edits; a positive integer)
 - `ORCHESTRATE_WAKE_THREAD=` (the vws-deploy issue or PR that gets verify-wake and Grok wake comments; empty turns the wake off; never the status issue). `ORCHESTRATE_STATUS_PR` from before vws-deploy#416 is ignored
 - `ORCHESTRATE_FAILURE_ALERT=apply`
+- `ORCHESTRATE_AUTO_UPDATE=1` (`0` pins the current sha: no fetch, no fast-forward; read by `orchestrate-loop.sh`)
+- `ORCHESTRATE_UPDATE_TIMEOUT=60` (seconds for `git fetch` and the fast-forward; environment only)
 - `ORCHESTRATE_FAILURE_THRESHOLD=3`
 - `DEEPSEEK_TIMEOUT_HOURS=3`
 - `DEEPSEEK_MAX_FAILURES=2`
@@ -535,6 +575,17 @@ dr eggbot runs this when it wakes for VWS work. Any agent may run it; it is idem
 
 It prints `started (pid N)`, `running (pid N)`, or an error with the loop log path.
 
+### Switch an archive install to auto-update
+
+Auto-update needs `current` to be a git clone of vws-deploy on `main`; an archive install (above) logs
+`no_checkout` each tick and raises one alert. To switch, with the loop stopped:
+
+```bash
+git clone --quiet --branch main https://github.com/popododo0720/vws-deploy.git /home/box/.local/opt/vws-orchestrate/checkout
+ln -sfn checkout /home/box/.local/opt/vws-orchestrate/current
+/home/box/.local/opt/vws-orchestrate/current/.github/orchestrate/box/orchestrate-ensure.sh
+```
+
 ### Verify
 
 ```bash
@@ -557,7 +608,7 @@ Switch to apply only with dr eggbot's approval, first scoped to one throwaway is
 |---|---|
 | pause | `touch /home/box/.config/vws-orchestrate/STOP` |
 | read-only | `ORCHESTRATE_MODE=dry-run` in the env file (next tick) |
-| previous release | `ln -sfn releases/<old sha7> /home/box/.local/opt/vws-orchestrate/current` |
+| previous release | `ORCHESTRATE_AUTO_UPDATE=0` in the env file, then `git -C /home/box/.local/opt/vws-orchestrate/current checkout <old sha>` (or `ln -sfn releases/<old sha7> ...` for an archive install) |
 | stop | `kill "$(cat /home/box/.local/state/vws-orchestrate/loop.pid)"` |
 | uninstall | stop, then `rm -rf /home/box/.local/opt/vws-orchestrate /home/box/.local/state/vws-orchestrate /home/box/.config/vws-orchestrate` |
 

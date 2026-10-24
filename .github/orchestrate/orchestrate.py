@@ -236,6 +236,7 @@ class Paths:
         self.health = os.path.join(self.state, "health.json")
         self.cache = os.path.join(self.state, "etag-cache.json")
         self.board_file = os.path.join(self.state, "board.json")
+        self.deploy_file = os.path.join(self.state, "deploy.json")  # box/orchestrate-update.py (vws-deploy#490)
         self.lock = os.path.join(self.state, "run.lock")
         self.log_dir = os.path.join(self.state, "log")
         self.log = os.path.join(self.log_dir, "orchestrate.jsonl")
@@ -2628,9 +2629,52 @@ def add_status_event(state, a, now):
     state["status_events"] = events[-STATUS_EVENTS_KEEP:]
 
 
+# ---------------------------------------------------------------- auto-update (vws-deploy#490)
+# box/orchestrate-update.py writes deploy.json before each tick: the sha this tick runs, origin/main as
+# last fetched, the update result, and alerts (refused, fetch_failed, ff_failed, drift), each with a
+# sha256 key that is stable for the same condition. Its values reach a public issue body, so every field
+# is validated here; a bad file renders as unknown.
+DEPLOY_RESULTS = ("updated", "current", "disabled", "refused", "fetch_failed", "ff_failed", "no_checkout", "error")
+DEPLOY_ALERT_KINDS = ("refused", "fetch_failed", "ff_failed", "no_checkout", "drift")
+SHA40_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def running_line(deploy):
+    """The '- Running:' line of the status block: the running sha, origin/main and the last update result."""
+    d = deploy if isinstance(deploy, dict) else {}
+    running, main, result = d.get("running"), d.get("main"), d.get("result")
+    if result not in DEPLOY_RESULTS:
+        return "- Running: unknown (auto-update has not run)"
+    if not (isinstance(running, str) and SHA40_RE.fullmatch(running)):
+        return f"- Running: unknown (last update: {result})"
+    shown = f"`{main[:7]}`" if isinstance(main, str) and SHA40_RE.fullmatch(main) else "unknown"
+    return f"- Running: `{running[:7]}` (main {shown}, last update: {result})"
+
+
+def add_deploy_alerts(state, deploy, now):
+    """Journal each deploy alert as a status entry once per key (a key already listed is not touched, so
+    a standing condition edits nothing). Returns the number added."""
+    alerts = deploy.get("alerts") if isinstance(deploy, dict) else None
+    events = list(state.get("status_events", []))
+    known = {e["key"] for e in events}
+    added = 0
+    for a in alerts if isinstance(alerts, list) else []:
+        if not (isinstance(a, dict) and a.get("kind") in DEPLOY_ALERT_KINDS and isinstance(a.get("text"), str)
+                and isinstance(a.get("key"), str) and STATUS_EVENT_KEY_RE.fullmatch(f"key `{a['key']}`")):
+            continue
+        if a["key"] in known:
+            continue
+        known.add(a["key"])
+        events.append({"key": a["key"], "at": now, "kind": "deploy", "text": scrub(a["text"].replace("\n", " "))[:300]})
+        added += 1
+    if added:
+        state["status_events"] = events[-STATUS_EVENTS_KEEP:]
+    return added
+
+
 # ---------------------------------------------------------------- the status issue body (vws-deploy#416)
 
-def status_body(snapshot, result, cfg, state, mode, now, failure=""):
+def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None):
     """Pure: the status issue body. Only the last line (_Updated ..._) changes from tick to tick without a
     real change, and status_same ignores it, so a quiet tick edits nothing."""
     notes = result.get("notes", [])
@@ -2641,7 +2685,7 @@ def status_body(snapshot, result, cfg, state, mode, now, failure=""):
              "text outside it is yours and is kept. It does not post status comments.",
              "",
              f"Comments here are metrics alerts only (marker `{METRICS_ALERT_MARKER}`). verify-wake does not post here.",
-             "", "## Now", "",
+             "", "## Now", "", running_line(deploy),
              f"- Mode: {mode}; dispatch {cfg['ORCHESTRATE_DISPATCH']}, merge {cfg['ORCHESTRATE_MERGE']}, "
              f"board {cfg['ORCHESTRATE_BOARD']}",
              f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
@@ -3182,13 +3226,19 @@ def tick(paths, cfg, args, gh=None, now=None):
         if args.print_plan:
             print(json.dumps({"run_id": run_id, "mode": mode, "pending_count": result["pending_count"],
                               "actions": result["actions"], "notes": result["notes"]}, indent=1, sort_keys=True))
+        deploy = read_json(paths.deploy_file, {})
         if mode == "apply":
             new_state, errors = apply(result, snapshot, gh, cfg, paths, log, state, now)
+            if add_deploy_alerts(new_state, deploy, now):
+                log("deploy_alert", running=running_line(deploy))
             write_json(paths.state_file, new_state)
+        else:
+            add_deploy_alerts(result["state"], deploy, now)
         # The status issue body: written in apply mode when its content changed, else only kept locally.
         # A streak's failure section (written by --notify-failure) stays while this tick fails too.
         failure = read_json(paths.failure_file, {}).get("section", "") if mode == "apply" and errors else ""
-        body = status_body(snapshot, result, cfg, new_state if mode == "apply" else result["state"], mode, now, failure)
+        body = status_body(snapshot, result, cfg, new_state if mode == "apply" else result["state"], mode, now, failure,
+                           deploy)
         with open(os.path.join(paths.state, "status-body.md"), "w", encoding="utf-8") as f:
             f.write(body)
         scope = cfg["ORCHESTRATE_SCOPE"]
