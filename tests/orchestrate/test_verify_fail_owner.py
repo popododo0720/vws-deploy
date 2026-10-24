@@ -7,7 +7,9 @@ import test_runtime
 from orch_testlib import CFG, NOW, item, orch, ready_task, snapshot
 from test_rework import CONFLICT_BODY, review
 
-CAP1 = dict(CFG, ORCHESTRATE_DEEPSEEK_CAP="1")
+# No wake thread: the grok rework wake (vws-deploy#398) is off, so a FAIL that rule B2 does not
+# rework stays unrouted here. test_grok_rework covers the wake.
+CAP1 = dict(CFG, ORCHESTRATE_DEEPSEEK_CAP="1", ORCHESTRATE_WAKE_THREAD="")
 
 
 def failed_pr(number=441, repo="vws-deploy", labels=(), body="Part of #395", fail=True, **kw):
