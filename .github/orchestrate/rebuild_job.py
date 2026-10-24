@@ -4,14 +4,16 @@
     rebuild_job.py --repo OWNER/REPO --pr N --clone DIR --job-id ID [--dry-run]
 
 Reads the PR, then cherry-picks its commits onto origin/main with box/rebuild-pr.sh in a per-job worktree
-DIR/.worktrees/ID, which is removed in every case. A clean pick pushes a new -vN branch (a new ref only,
+DIR/.worktrees/ID. The job refuses to start when that path or the local -vN branch already exists, so in
+every case it removes only the worktree and branch it created itself. A clean pick pushes a new -vN branch (a new ref only,
 never a force-push), opens a PR with the old title and body plus "Supersedes #N", and closes the old PR
 with a "Superseded by #M" comment. A conflicting pick adds the `needs-rebuild` label and pushes nothing;
 Rule R (vws-deploy#460) then wakes the owner once per head. A PR that is closed, draft, not into main,
-from a fork, labeled `blocked` or `needs-rebuild`, or whose head moved since the read is skipped.
+from a fork, labeled `blocked` or `needs-rebuild`, or whose head moved since the read is skipped; the
+head is read again after the pick, and a move then pushes and closes nothing.
 
 gh and git run with the box's stored gh login (the VM's popododo0720 PAT); GH_TOKEN is dropped. The only
-writes are the push of the new ref and the four API calls in WRITES. --dry-run does the local pick only.
+writes are the push of the new ref and the four API calls in WRITES. --dry-run does the local pick only and writes nothing.
 
 Prints one JSON line. Exit 0 rebuilt (or would_rebuild), 3 conflict, 4 skipped, 2 usage, 1 error.
 """
@@ -94,6 +96,7 @@ def next_branch(clone, head_ref):
 
 def run(a):
     out = {"repo": a.repo, "pr": a.pr}
+    a.clone = os.path.abspath(a.clone)
     pr = gh("GET", f"repos/{a.repo}/pulls/{a.pr}")
     git(a.clone, "fetch", "-q", "--prune", "origin")
     head_ref = pr["head"]["ref"]
@@ -104,6 +107,11 @@ def run(a):
     new = next_branch(a.clone, head_ref)
     base = git(a.clone, "rev-parse", "origin/main").stdout.strip()
     wt = os.path.join(a.clone, ".worktrees", a.job_id)
+    # Refuse before touching anything: the finally below removes this path and branch, so they must be ours.
+    if os.path.lexists(wt):
+        raise JobError(f"worktree path {wt} already exists; left as is")
+    if git(a.clone, "rev-parse", "-q", "--verify", f"refs/heads/{new}", check=False).returncode == 0:
+        raise JobError(f"local branch {new} already exists; left as is")
     pushed = False
     try:
         p = subprocess.run(["bash", REBUILD, "--repo-dir", a.clone, "--old", head_ref, "--new", new,
@@ -116,6 +124,8 @@ def run(a):
             return EXIT_CONFLICT, dict(out, result="conflict", branch=new, base=base)
         if a.dry_run:
             return EXIT_OK, dict(out, result="would_rebuild", branch=new, base=base)
+        if gh("GET", f"repos/{a.repo}/pulls/{a.pr}")["head"]["sha"] != pr["head"]["sha"]:
+            return EXIT_SKIP, dict(out, result="skipped", reason="head moved during the rebuild")
         git(wt, "push", "-q", "origin", f"refs/heads/{new}:refs/heads/{new}")  # a new ref; no "+", no force
         pushed = True
         body = (pr.get("body") or "").rstrip() + (
