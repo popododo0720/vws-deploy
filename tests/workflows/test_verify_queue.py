@@ -57,7 +57,8 @@ class Shape(unittest.TestCase):
         # Every PR workflow in the vws-* repos: vws-deploy's own (checked by EveryPrWorkflow below),
         # vws-console's CI named "CI" and vws-conformance's english.
         self.assertEqual(on["workflow_run"], {
-            "workflows": ["ci", "CI", "drift-check", "english", "installer-image", "post-merge", "repo-guard"],
+            "workflows": ["buf", "ci", "CI", "conformance", "drift-check", "english", "installer-image", "post-merge",
+                      "repo-guard", "tla"],
             "types": ["completed"]})
         self.assertEqual(sorted(on["pull_request"]["types"]), ["ready_for_review", "synchronize"])
         # vws-deploy#440: a verdict review re-runs the queue so a FAIL takes the label off at once.
@@ -138,6 +139,19 @@ class EveryPrWorkflow(unittest.TestCase):
         listed = set(load().get("on", load().get(True))["workflow_run"]["workflows"])
         missing = {f: n for f, n in self.pr_workflows().items() if n not in listed}
         self.assertEqual(missing, {}, "PR workflows missing from verify-queue workflow_run.workflows")
+
+    def test_lists_every_vws_repo_pull_request_workflow(self):
+        """vws-deploy#460: verify-queue.yml is copied unchanged to every vws-* repo, so its list must name each
+        repo's pull_request workflows, not only vws-deploy's. Names from each repo's main on 2026-10-24
+        (vws-proto buf, vws-conformance conformance and english, vws-console-api tla, vws-console CI)."""
+        listed = set(load().get("on", load().get(True))["workflow_run"]["workflows"])
+        every_repo = {"ci", "CI", "buf", "conformance", "drift-check", "english", "installer-image", "post-merge",
+                      "repo-guard", "tla"}
+        self.assertEqual(every_repo - listed, set())
+
+    def test_header_says_copy_unchanged(self):
+        with open(PATH, encoding="utf-8") as f:
+            self.assertTrue(f.readline().startswith("# Copy unchanged to every vws-* repo"))
 
     def test_triggers_parser_forms(self):
         self.assertEqual(triggers({"on": "pull_request"}), {"pull_request"})

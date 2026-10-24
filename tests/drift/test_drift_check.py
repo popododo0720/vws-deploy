@@ -303,9 +303,12 @@ class RulesetDrift(unittest.TestCase):
 class MainRulesetCell(unittest.TestCase):
     """main() end to end with a stubbed gh: the non-admin ruleset detail must never print ruleset ok."""
 
-    def run_main(self, detail, rules=None):
+    def run_main(self, detail, rules=None, extra_files=None):
         files = {".github/workflows/repo-guard.yml": b"x", ".github/workflows/direct-push-watch.yml": b"x",
+                 ".github/workflows/verify-queue.yml": b"x",
                  "AGENTS.md": b"main is protected by the active vws-main ruleset", "QUALITY.md": b"q"}
+        files.update(extra_files or {})
+        files = {k: v for k, v in files.items() if v is not None}
 
         def gh(path):
             if path.endswith("/rulesets/1"):
@@ -346,30 +349,46 @@ class MainRulesetCell(unittest.TestCase):
         finally:
             dc.gh, dc.content, dc.protection, dc.sys.argv = saved
         row = [line for line in out.getvalue().splitlines() if line.startswith("| r |")][0]
-        return rc, row.split(" | ")[2], out.getvalue()
+        return rc, row.split(" | ")[2], out.getvalue(), row.split(" | ")
 
     def test_non_admin_detail_is_reported_unverified(self):
-        rc, cell, text = self.run_main(RulesetDrift.NON_ADMIN)
+        rc, cell, text, _ = self.run_main(RulesetDrift.NON_ADMIN)
         self.assertEqual(rc, 0)
         self.assertEqual(cell, "ruleset vws-main bypass actors unverified (needs admin token)")
         self.assertIn("unverified: 1 repo(s)", text)
 
     def test_admin_detail_with_actor_is_drift(self):
-        rc, cell, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": [{"actor_id": 5}]})
+        rc, cell, _, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": [{"actor_id": 5}]})
         self.assertEqual(cell, "ruleset vws-main has 1 bypass actor(s)")
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
     def test_admin_detail_without_actor_is_ok(self):
-        _, cell, text = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
+        _, cell, text, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
         self.assertEqual(cell, "ok")
         self.assertNotIn("unverified:", text)
 
 
     def test_missing_main_rule_is_drift(self):
         rules = [r for r in MainRules.GOOD if r["type"] != "non_fast_forward"]
-        rc, cell, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []}, rules)
+        rc, cell, _, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []}, rules)
         self.assertEqual(cell, "vws-main has no non_fast_forward rule")
         self.assertEqual(rc, dc.DRIFT_EXIT)
+
+
+    def test_missing_verify_queue_is_drift(self):
+        # vws-deploy#460: a repo without verify-queue.yml never gets needs-verify, so Rule A never wakes vws-verify.
+        rc, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []},
+                                        extra_files={".github/workflows/verify-queue.yml": None})
+        self.assertEqual(cells[4], "missing verify-queue.yml")
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_every_workflow_present_is_ok(self):
+        rc, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
+        self.assertEqual(cells[4], "ok")
+        self.assertEqual(rc, 0)
+
+    def test_workflows_list_names_verify_queue(self):
+        self.assertIn(".github/workflows/verify-queue.yml", dc.WORKFLOWS)
 
 
 class MainRules(unittest.TestCase):

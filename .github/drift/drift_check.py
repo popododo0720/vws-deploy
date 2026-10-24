@@ -6,7 +6,7 @@ Checks per repo, on its default branch:
   ruleset     an active vws-main branch ruleset, with no bypass actors; the bypass list is readable
               only with an admin token, so without one the cell says "unverified", never ok
   checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
-  workflows   repo-guard.yml and direct-push-watch.yml exist
+  workflows   repo-guard.yml, direct-push-watch.yml and verify-queue.yml exist (verify-queue: #460)
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist, and AGENTS.md has no stale fact (#395)
@@ -36,7 +36,9 @@ import sys
 import yaml
 
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
-WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml"]
+# verify-queue.yml (#460): without it a repo's PRs never get needs-verify and Rule A never wakes vws-verify.
+WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml",
+             ".github/workflows/verify-queue.yml"]
 STALE_PHRASES = (
     "private, free plan",
     "no server-side protection",
