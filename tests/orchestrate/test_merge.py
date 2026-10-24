@@ -74,6 +74,12 @@ class Eligibility(unittest.TestCase):
         self.assertEqual(a["agent"], "vws-platform")
         self.assertEqual(reasons(r, "vws-deploy#500"), [])
 
+    def test_owner_repo_part_of_is_eligible(self):
+        # vws-deploy#477: Rule D reads the owner/repo form the repo guard accepts.
+        r = run(snap(candidate(body="Part of popododo0720/vws-deploy#412")))
+        self.assertEqual(reasons(r, "vws-deploy#500"), [])
+        self.assertEqual(merges(r), ["vws-deploy#500"])
+
     def test_every_condition(self):
         sha = candidate()["head_sha"]
         bad_verify = [c for c in green_checks(sha) if c["name"] != "vws-verify"]
@@ -119,6 +125,7 @@ class Eligibility(unittest.TestCase):
             ("head moved during collect", dict(info={"head_sha": "e" * 40}), "head_moved_during_collect"),
             ("closed meanwhile", dict(info={"state": "closed"}), "not_open"),
             ("no Part of", dict(body="Agent: x"), "no_part_of"),
+            ("another owner's Part of", dict(body="Part of acme/vws-deploy#412"), "no_part_of"),
             ("closing keyword in title", dict(info={"title": "fix: thing, fixes #12"}), "closing_keyword_in_title"),
             ("dependency open", dict(body="Part of #1\nDepends on vws-iam#7"), "dep_unmet:vws-iam#7"),
         ]

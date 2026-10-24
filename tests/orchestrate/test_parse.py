@@ -20,6 +20,19 @@ class DependsOn(unittest.TestCase):
                 self.assertEqual(orch.parse_deps(body, "vws-iam"), (deps, bad))
 
 
+class PartOf(unittest.TestCase):
+    def test_owner_repo_form_is_mapped(self):
+        # vws-deploy#477: the repo guard accepts `Part of popododo0720/vws-x#N`; the parser maps it.
+        cases = [("Part of #12", "vws-deploy#12"),
+                 ("Part of vws-iam#12", "vws-iam#12"),
+                 ("Part of popododo0720/vws-iam#12", "vws-iam#12"),
+                 ("Part of acme/vws-iam#12", ""),
+                 ("Part of popododo0720/#12", "")]
+        for body, want in cases:
+            with self.subTest(body=body):
+                self.assertEqual(orch.grok_link({"repo": "vws-deploy", "is_pr": True, "body": body}), want)
+
+
 class Comments(unittest.TestCase):
     def test_table(self):
         u = "https://github.com/popododo0720/vws-iam/issues/123#issuecomment-1"
