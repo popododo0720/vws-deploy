@@ -7,10 +7,10 @@
 #   guard-agents.sh archtest [FILE] [HEADING] prints the rules line, then runs go test -v on GUARD_ARCHTEST_PKG
 #   guard-agents.sh identity [SUMFILE]      this file's sha256 equals SUMFILE (default scripts/guard-agents.sh.sha256)
 #   guard-agents.sh pr-base BASE_REF        a pull request must target the main branch
-#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has "Part of #N", no closing keyword and no Hangul
+#   guard-agents.sh pr-body [FILE]          the pull request text (FILE or $PR_BODY) has a "Part of #N" line Rule D reads, no closing keyword and no Hangul
 #   guard-agents.sh pr-checklist [FILE]     each QUALITY_TITLES checklist item exactly once in the pull request text
 #                                           (FILE or $PR_BODY) is ticked and has evidence or "N/A: <reason>"
-#   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or owner/repo#N)
+#   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or vws-<repo>#N)
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
@@ -201,6 +201,13 @@ CLOSING_RE='(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[
 # Issue numbers start at 1: #0, #00 and #012 name no issue and are rejected wherever they appear.
 PART_OF_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#[1-9][0-9]*'
 PART_OF_ZERO_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#0'
+# The pull request body needs the form the orchestrator's Rule D merges (PART_OF_RE in
+# .github/orchestrate/orchestrate.py): a line that starts with "Part of" and names #N or vws-<repo>#N.
+# owner/repo#N, a list item or a mid-sentence "Part of" pass PART_OF_RE but Rule D skips the PR with
+# no_part_of. tests/orchestrate/test_part_of_parity.py runs one set of vectors through both (vws-deploy#397).
+# PR_PART_OF_ANY_RE is Rule D's own pattern (#0 too), for the first match in the raw text.
+PR_PART_OF_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[1-9][0-9]*'
+PR_PART_OF_ANY_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[0-9]+'
 # A commit subject starts with a lowercase type, an optional (scope) and a colon: "ci: x", "docs(x): y".
 SUBJECT_TYPE_RE='^[a-z][a-z0-9-]*(\([a-z0-9._-]+\))?!?:[[:space:]]+[^[:space:]]'
 
@@ -282,8 +289,7 @@ cmd_pr_body() {
   fi
   ! grep -q -i -E "$PART_OF_ZERO_RE" <<<"$body" ||
     die "pr-body: 'Part of #0' names no issue; issue numbers start at 1"
-  grep -q -i -E "$PART_OF_RE" <<<"$seen" ||
-    die "pr-body: the pull request text needs 'Part of #N' outside HTML comments and code fences"
+  pr_part_of_ref "$body" "pr-body" >/dev/null || exit 1
   ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
 }
 
@@ -346,20 +352,40 @@ cmd_pr_checklist() {
   [[ ${#bad[@]} -eq 0 ]] || die "pr-checklist: ${bad[*]}"
 }
 
-# The issue a PR belongs to, from the Part of reference. #N stays local; owner/repo#N is printed as written
-# so the caller can skip an issue in another repository instead of reading the wrong number here.
+# The issue a PR belongs to, from the Part of reference Rule D reads. #N stays local; vws-<repo>#N is printed
+# as written so the caller can skip an issue in another repository instead of reading the wrong number here.
 cmd_pr_issue() {
-  local body=${PR_BODY:-} seen
+  local body=${PR_BODY:-}
   if [[ -n ${1:-} ]]; then
     [[ -f $1 ]] || die "pr-issue: ${1} does not exist"
     body=$(cat "$1")
   fi
-  seen=$(visible_text <<<"$body")
-  if [[ $seen =~ (^|[^[:alnum:]])([Pp]art\ of[[:space:]]+)(([A-Za-z0-9._/-]+)?#[1-9][0-9]*) ]]; then
-    printf '%s\n' "${BASH_REMATCH[3]}"
-  else
-    die "pr-issue: the pull request text needs 'Part of #N' outside HTML comments and code fences"
+  pr_part_of_ref "$body" "pr-issue" || exit 1
+}
+
+# The first "Part of" reference in a line of its own, as written ("" when none): the one Rule D links.
+part_of_line_ref() {
+  LC_ALL=C grep -m1 -o -i -E "$1" | LC_ALL=C sed -E 's/^[[:space:]]*[Pp][Aa][Rr][Tt] [Oo][Ff][[:space:]]+//'
+}
+
+# Prints the issue reference of a pull request body, the same one Rule D reads, or fails with the cause.
+# The first Rule D match in the raw text must be visible (not in an HTML comment or fence) and valid.
+pr_part_of_ref() {
+  local body=$1 who=$2 raw seen
+  raw=$(part_of_line_ref "$PR_PART_OF_ANY_RE" <<<"$body")
+  seen=$(visible_text <<<"$body" | part_of_line_ref "$PR_PART_OF_RE")
+  if [[ -z $seen ]]; then
+    echo "${who}: the pull request text needs a line that starts with 'Part of #N' or 'Part of vws-<repo>#N'," \
+      "outside HTML comments and code fences (owner/repo#N, a list item or mid-sentence text is not read by" \
+      "the orchestrator; vws-deploy#477)" >&2
+    return 1
   fi
+  if [[ ${raw,,} != "${seen,,}" ]]; then
+    echo "${who}: the first 'Part of' line is '${raw}' (hidden or invalid) but the visible one is '${seen}';" \
+      "the orchestrator reads the first one, so remove the hidden line" >&2
+    return 1
+  fi
+  printf '%s\n' "$seen"
 }
 
 cmd_commit_msg() {
@@ -547,8 +573,17 @@ cmd_selftest() {
   expect_fail "empty base" cmd_pr_base ""
 
   expect_pass "Part of #N" env PR_BODY="Part of #12" bash "$0" pr-body
-  expect_pass "part of owner/repo#N" env PR_BODY="intro
-part of acme/repo#7" bash "$0" pr-body
+  expect_pass "part of vws-repo#N" env PR_BODY="intro
+part of vws-lib#7" bash "$0" pr-body
+  expect_fail "Part of owner/repo#N (Rule D skips it, vws-deploy#477)" env PR_BODY="Part of acme/repo#7" bash "$0" pr-body
+  expect_fail "Part of popododo0720/vws-deploy#N (Rule D skips it, vws-deploy#477)" env PR_BODY="Part of popododo0720/vws-deploy#7" bash "$0" pr-body
+  expect_fail "Part of in a list item" env PR_BODY="- Part of #12" bash "$0" pr-body
+  expect_fail "Part of mid-sentence" env PR_BODY="This is Part of #12" bash "$0" pr-body
+  expect_pass "indented Part of" env PR_BODY="  Part of #12" bash "$0" pr-body
+  expect_fail "a hidden Part of line before the visible one" env PR_BODY="<!--
+Part of #5
+-->
+Part of #12" bash "$0" pr-body
   expect_fail "Closes #N" env PR_BODY="Part of #3
 Closes #12" bash "$0" pr-body
   expect_fail "fixes owner/repo#N" env PR_BODY="Part of #3
@@ -574,7 +609,7 @@ Part of #12
 ~~~" bash "$0" pr-body
   expect_fail "Part of only in an unclosed fence" env PR_BODY="\`\`\`
 Part of #12" bash "$0" pr-body
-  expect_pass "Part of after a closed comment on the same line" env PR_BODY="<!-- note --> Part of #12" bash "$0" pr-body
+  expect_fail "Part of after a closed comment on the same line (Rule D reads the raw line)" env PR_BODY="<!-- note --> Part of #12" bash "$0" pr-body
   expect_pass "Part of after a fence" env PR_BODY="\`\`\`
 code
 \`\`\`
@@ -682,7 +717,8 @@ Part of #0" bash "$0" pr-body
 
   # pr-issue names the issue for the AC lint.
   [[ $(PR_BODY="Part of #394" bash "$0" pr-issue) == "#394" ]] || die "selftest: pr-issue did not read '#394'"
-  [[ $(PR_BODY="Part of acme/repo#7" bash "$0" pr-issue) == "acme/repo#7" ]] || die "selftest: pr-issue did not keep owner/repo"
+  [[ $(PR_BODY="Part of vws-lib#7" bash "$0" pr-issue) == "vws-lib#7" ]] || die "selftest: pr-issue did not keep vws-repo#N"
+  expect_fail "pr-issue with owner/repo#N" env PR_BODY="Part of acme/repo#7" bash "$0" pr-issue
   expect_fail "pr-issue without Part of" env PR_BODY="mentions #394" bash "$0" pr-issue
 
   # english: tracked files with Hangul fail unless an allowlist glob with a reason covers them.
