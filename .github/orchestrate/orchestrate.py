@@ -83,7 +83,8 @@ VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s
 CONFLICT_RE = re.compile(r"(?i)conflicts? with main|merge conflict|needs? (?:a )?rebase|rebase onto main")
 MANAGED_LABELS = ("blocked", "in-review")
 # These checks fail by design until vws-verify approves, so they never make a PR "CI failing".
-VERIFY_CHECKS = {"verify-gate", "vws-verify"}
+# "gate / verify-gate": repo-guard.yml calls the gate next to its bare shim (vws-deploy#402).
+VERIFY_CHECKS = {"verify-gate", "gate / verify-gate", "vws-verify"}
 CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 # The first line of a status comment is exactly one of these; vws-verify and vws-platform routines
 # match on it.
