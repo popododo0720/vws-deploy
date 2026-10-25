@@ -50,6 +50,14 @@ class Config(unittest.TestCase):
         self.assertEqual(orch.load_config(paths, dict(env, ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN="30"))
                          ["ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN"], "30")
 
+    def test_grok_logins_default_and_validation(self):
+        self.assertEqual(orch.DEFAULTS["ORCHESTRATE_GROK_LOGINS"], "popododo0720")
+        env = {"ORCHESTRATE_CONFIG_DIR": "/nonexistent/vws-orchestrate-test"}
+        paths = orch.Paths(env)
+        for bad in ("", "a b", "bad/login", "a,,b"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                orch.load_config(paths, dict(env, ORCHESTRATE_GROK_LOGINS=bad))
+
 
 class Unclaimed(unittest.TestCase):
     def test_expired_wake_frees_the_slot_and_is_not_rewoken(self):
@@ -191,9 +199,45 @@ class CollectTick(test_runtime.Env):
 
     def test_comment_after_the_wake_claims_it(self):
         later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
-        self.setup({"body": [{"event": "commented", "created_at": later, "body": "taking this"}]})
+        self.setup({"body": [{"event": "commented", "created_at": later, "body": "taking this",
+                              "actor": {"login": "popododo0720"}}]})
         self.assertEqual(self.tick(ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1"), 0)
         self.assertEqual(self.notes("grok_wake_expired"), [])
+
+    def test_a_comment_from_another_user_is_not_a_claim(self):
+        """AC1: only the woken bot's login (ORCHESTRATE_GROK_LOGINS) or a current assignee claims by comment."""
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        self.setup({"body": [{"event": "commented", "created_at": later, "body": "+1", "actor": {"login": "someone-else"}},
+                             {"event": "commented", "created_at": later, "body": "no author"}]})
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1"), 0)
+        self.assertEqual([n["item"] for n in self.notes("grok_wake_expired")], ["vws-iam#1"])
+
+    def test_a_comment_from_a_configured_grok_login_claims_it(self):
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        self.setup({"body": [{"event": "commented", "created_at": later, "body": "on it",
+                              "actor": {"login": "grok-dev"}}]})
+        self.assertEqual(self.tick(ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1", ORCHESTRATE_GROK_LOGINS="a, grok-dev"), 0)
+        self.assertEqual(self.notes("grok_wake_expired"), [])
+
+    def cross_ref(self, owner, merged_at):
+        return {"event": "cross-referenced", "created_at": merged_at,
+                "source": {"issue": {"number": 9, "body": "Part of #1",
+                                     "pull_request": {"merged_at": merged_at},
+                                     "repository": {"name": "vws-iam", "owner": {"login": owner}}}}}
+
+    def test_a_foreign_owner_cross_reference_is_ignored(self):
+        """Security: a merged PR in someone else's repo named vws-iam neither frees nor claims the slot."""
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        self.setup({"body": [self.cross_ref("attacker", later)]})
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1"), 0)
+        self.assertEqual(self.notes("grok_task_done"), [])
+        self.assertEqual([n["item"] for n in self.notes("grok_wake_expired")], ["vws-iam#1"])
+
+    def test_an_owner_cross_reference_that_merged_frees_the_slot(self):
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        self.setup({"body": [self.cross_ref("popododo0720", later)]})
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1"), 0)
+        self.assertEqual([n["item"] for n in self.notes("grok_task_done")], ["vws-iam#1"])
 
     def test_marker_comments_are_not_claims(self):
         later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
