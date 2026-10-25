@@ -1,0 +1,10 @@
+# A push's committer is whatever the pusher typed into git config; it names nobody.
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - if: github.event.head_commit.committer.name == 'vws-verify'
+        run: echo trusted
+      - if: github.event['head_commit']['committer']['email'] != ''
+        run: echo trusted

@@ -1,0 +1,15 @@
+{
+  "source": "vws-deploy#499: FAIL review 5640903019 on head f879cd7 (collect_ac read Part of and the AC lines from the live PR body). Real values of the merged PR: head 251ca78, approvals 5641397478 and 5641405189, body lastEditedAt and mergedAt from GraphQL, read 2026-10-25.",
+  "pr": "vws-deploy#499",
+  "url": "https://github.com/popododo0720/vws-deploy/pull/499",
+  "head": "251ca78425816cda30b7087d3f1103448ded66cc",
+  "approvals": ["2026-10-25T03:51:31Z", "2026-10-25T03:54:58Z"],
+  "merged_at": "2026-10-25T04:04:43Z",
+  "body_edited_at": "2026-10-25T03:34:52Z",
+  "body": "Part of #486\n\nAgent: vws-platform\n\nAC: 3\nAC: 4\nAC: 5\nAC: 6\nAC: 7\n",
+  "attack": {
+    "why": "the finding's attack: after the verdict, the body is edited to point Part of at another watched issue and list all of its boxes",
+    "body_edited_at": "2026-10-25T04:10:00Z",
+    "body": "Part of #439\n\nAgent: vws-platform\n\nAC: 1\nAC: 2\nAC: 3\nAC: 4\nAC: 5\n"
+  }
+}

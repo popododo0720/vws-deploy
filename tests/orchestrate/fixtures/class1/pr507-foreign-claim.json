@@ -1,0 +1,13 @@
+{
+  "source": "vws-deploy#507: FAIL review 5641696302 on head 1ed1425 (grok_activity counted any non-marker comment after the wake as a claim, whoever wrote it). The woken issue is vws-deploy#411; the comment shapes are GET issues/N/timeline events.",
+  "issue": "vws-deploy#411",
+  "woken_at": "2026-10-25T05:11:41Z",
+  "claimers": ["popododo0720"],
+  "foreign": {"event": "commented", "created_at": "2026-10-25T05:20:00Z", "actor": {"login": "drive-by-user"},
+              "user": {"login": "drive-by-user"}, "author_association": "NONE", "body": "+1, any update on this?"},
+  "grok": {"event": "commented", "created_at": "2026-10-25T05:25:00Z", "actor": {"login": "popododo0720"},
+           "user": {"login": "popododo0720"}, "author_association": "OWNER", "body": "Claimed: working on this in a PR."},
+  "grok_marker": {"event": "commented", "created_at": "2026-10-25T05:26:00Z", "actor": {"login": "popododo0720"},
+                  "user": {"login": "popododo0720"}, "author_association": "OWNER",
+                  "body": "<!-- vws-orchestrate:grok-wake -->\nvws-orchestrate: Grok task vws-deploy#411"}
+}
