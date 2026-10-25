@@ -347,8 +347,10 @@ class MainRulesetCell(unittest.TestCase):
         saved = (dc.gh, dc.content, dc.protection, dc.workflow_files, dc.sys.argv)
         dc.gh, dc.content = gh, content
         # The workflows cell reads the listing (#402); a None in extra_files removes the file from it too.
+        # Bytes in extra_files under .github/workflows/ replace or add a listed file (#439 class 4).
+        listing = {**tree(), **{k: v for k, v in (extra_files or {}).items() if k.startswith(".github/workflows/")}}
         dc.workflow_files = lambda o, r, ref=None, api=None: {
-            k: v for k, v in tree().items() if (extra_files or {}).get(k, b"") is not None}
+            k: v for k, v in listing.items() if (extra_files or {}).get(k, b"") is not None}
         dc.protection = lambda o, r: {"protected": True, "admins": True, "force": False, "delete": False,
                                       "checks": []}
         dc.sys.argv = ["drift_check.py", "--owner", "o", "--repos", f.name, "--caller-pending", pend.name,
@@ -400,6 +402,35 @@ class MainRulesetCell(unittest.TestCase):
 
     def test_workflows_list_names_verify_queue(self):
         self.assertIn(".github/workflows/verify-queue.yml", dc.WORKFLOWS)
+
+    OK_DETAIL = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+
+    def test_vendored_and_bootstrap_cells_ok(self):
+        rc, _, text, cells = self.run_main(self.OK_DETAIL)
+        self.assertIn("| vendored copies | bootstrap |", text)
+        self.assertEqual([cells[10], cells[11].rstrip(" |")], ["ok", "ok"])
+        self.assertEqual(rc, 0)
+
+    def test_storage_140_verify_queue_copy_is_drift(self):
+        # vws-deploy#439 class 4: the vws-storage#140 "copy unchanged" that was not.
+        with open(os.path.join(ROOT, "tests", "drift", "fixtures", "class4",
+                               "vws-storage-140-919f516-verify-queue.yml"), "rb") as f:
+            raw = f.read()
+        rc, _, _, cells = self.run_main(self.OK_DETAIL, extra_files={VQ: raw})
+        self.assertIn("verify-queue.yml differs from the vws-deploy pin", cells[10])
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_check_english_copy_drift(self):
+        rc, _, _, cells = self.run_main(self.OK_DETAIL, extra_files={"scripts/check-english.sh": b"#!/bin/sh\n"})
+        self.assertIn("check-english.sh differs from the vws-deploy pin", cells[10])
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_call_to_a_subcommand_the_script_lacks_is_drift(self):
+        wf = b"on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: scripts/guard-agents.sh no-such-cmd\n"
+        rc, _, _, cells = self.run_main(self.OK_DETAIL, extra_files={".github/workflows/x.yml": wf})
+        self.assertEqual(cells[11].rstrip(" |"), "x.yml calls guard-agents.sh no-such-cmd, which the base-branch "
+                         "script does not have; land the script first")
+        self.assertEqual(rc, dc.DRIFT_EXIT)
 
 
 class MainRules(unittest.TestCase):
@@ -679,7 +710,8 @@ jobs:
 FULL_SHA = hashlib.sha256(FULL).hexdigest()
 PENDING = {"vws-lib": FULL_SHA}
 DPW_TEXT = b"name: direct-push-watch\non: push\njobs:\n  direct-push-watch: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
-VQ_TEXT = b"name: verify-queue\non: pull_request\njobs:\n  label: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
+# The real file: vendored.tsv pins its sha256, so a stand-in would be copy drift (#439 class 4).
+VQ_TEXT = open(os.path.join(ROOT, ".github", "workflows", "verify-queue.yml"), "rb").read()
 BYPASS_SHELL = pinned().replace("permissions: {}\n", "permissions: {}\ndefaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n", 1)
 AT_MAIN = pinned().replace("@" + SHA, "@main")
 
