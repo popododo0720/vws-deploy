@@ -1,0 +1,125 @@
+{
+ "_doc": "One corpus for every reader of PR, comment and commit text (vws-deploy#439 AC2 class 2). Each case: the raw text and the visible text a reader must see (trailing newlines ignored). guard-agents.sh visible_text and orchestrate.py visible_text must both return 'visible'.",
+ "cases": [
+  {
+   "name": "plain text is unchanged",
+   "text": "Part of #12\n\nAgent: vws-platform",
+   "visible": "Part of #12\n\nAgent: vws-platform",
+   "source": "pass"
+  },
+  {
+   "name": "a lone carriage return inside a line is content",
+   "text": "a\rb",
+   "visible": "a\rb",
+   "source": "pass: only a CRLF line end is a line end; Rule D's ^ does not start a line after a lone CR"
+  },
+  {
+   "name": "multi-line HTML comment hides every line inside it",
+   "text": "a\n<!--\nPart of #1\n-->\nb",
+   "visible": "a\n\n\n\nb",
+   "source": "vws-deploy#430 review 5629555715: comments were removed only within one line"
+  },
+  {
+   "name": "HTML comment closed on the next line hides the evidence",
+   "text": "- [x] **Security**: x. Evidence: <!--\ntests/x.sh -->\nnext",
+   "visible": "- [x] **Security**: x. Evidence: \n\nnext",
+   "source": "vws-deploy#430"
+  },
+  {
+   "name": "two comments on one line",
+   "text": "a <!-- x --> b <!-- y --> c",
+   "visible": "a  b  c",
+   "source": "pass"
+  },
+  {
+   "name": "an unclosed comment runs to the end",
+   "text": "a\n<!-- x\nPart of #1",
+   "visible": "a\n\n",
+   "source": "fail closed"
+  },
+  {
+   "name": "a comment opener inside a fence is code",
+   "text": "```\n<!--\n```\nPart of #1",
+   "visible": "Part of #1",
+   "source": "pass"
+  },
+  {
+   "name": "a fence inside a comment is hidden",
+   "text": "<!--\n```\n-->\nPart of #1",
+   "visible": "\n\n\nPart of #1",
+   "source": "pass"
+  },
+  {
+   "name": "a shorter fence does not close a longer one",
+   "text": "````\n```\nPart of #1\n````\nafter",
+   "visible": "after",
+   "source": "guard P2 (Match closing fences to the opening delimiter, 6 repo copies)"
+  },
+  {
+   "name": "a tilde line does not close a backtick fence",
+   "text": "```\n~~~\nPart of #1\n```\nafter",
+   "visible": "after",
+   "source": "guard P2 (Match closing fences to the opening delimiter)"
+  },
+  {
+   "name": "a fence line with text after it does not close",
+   "text": "```\n``` x\nPart of #1\n```\nafter",
+   "visible": "after",
+   "source": "CommonMark: a closing fence has no info string"
+  },
+  {
+   "name": "an unclosed fence runs to the end",
+   "text": "a\n```\nPart of #1",
+   "visible": "a",
+   "source": "fail closed"
+  },
+  {
+   "name": "a longer run closes the fence",
+   "text": "```\nx\n`````\nafter",
+   "visible": "after",
+   "source": "pass"
+  },
+  {
+   "name": "a fence with an info string",
+   "text": "```bash\nPart of #1\n```\nafter",
+   "visible": "after",
+   "source": "pass"
+  },
+  {
+   "name": "a fence indented with spaces and a tab",
+   "text": " \t```\nx\n  ```\nafter",
+   "visible": "after",
+   "source": "pass"
+  },
+  {
+   "name": "CRLF line ends are read as LF",
+   "text": "```\r\nPart of #1\r\n```\r\nafter\r\n",
+   "visible": "after",
+   "source": "PR bodies saved in a browser use CRLF; the Python reader kept the fence open to the end and the awk reader kept the CR"
+  },
+  {
+   "name": "a form feed is not indentation",
+   "text": "\f```\nPart of #1\n```",
+   "visible": "\f```\nPart of #1",
+   "source": "CommonMark indentation is spaces and tabs; the awk reader opened a fence here and hid the line"
+  },
+  {
+   "name": "a vertical tab before a closing fence does not close it",
+   "text": "```\nx\n\u000b```\nPart of #1",
+   "visible": "",
+   "source": "the awk reader closed the fence on [[:space:]] and showed the line"
+  },
+  {
+   "name": "an Agent line in a fence is an example",
+   "text": "```\nAgent: someone-else\n```\nAgent: vws-platform",
+   "visible": "Agent: vws-platform",
+   "source": "vws-deploy#506 agent_of"
+  },
+  {
+   "name": "an Agent line in a comment is hidden",
+   "text": "<!-- Agent: someone-else -->\nAgent: vws-platform",
+   "visible": "\nAgent: vws-platform",
+   "source": "vws-deploy#506 agent_of"
+  }
+ ]
+}
