@@ -167,6 +167,9 @@ DEFAULTS = {
     "ORCHESTRATE_GROK_CAP": "1",
     "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
     "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
+    # vws-deploy#411: GitHub logins the woken Grok bots comment as; only their comments (or a current
+    # assignee's) claim a woken issue. The Grok bots use the owner's gh login.
+    "ORCHESTRATE_GROK_LOGINS": OWNER,
     # GitHub logins whose [deepseek-dev] Done/Failed comments count: the poller's account (the VM PAT user).
     "ORCHESTRATE_DEEPSEEK_LOGINS": "popododo0720",
     # vws-deploy#433/#434: the login whose verify verdict comments and reviews count (besides an OWNER
@@ -268,6 +271,10 @@ def load_config(paths, environ):
     if not all(LOGIN_RE.fullmatch(x) for x in logins):
         raise ValueError("ORCHESTRATE_DEEPSEEK_LOGINS must be a comma-separated list of GitHub logins, "
                          f"got {cfg['ORCHESTRATE_DEEPSEEK_LOGINS']!r}")
+    grok_logins = [x.strip() for x in cfg["ORCHESTRATE_GROK_LOGINS"].split(",")]
+    if not all(LOGIN_RE.fullmatch(x) for x in grok_logins):
+        raise ValueError("ORCHESTRATE_GROK_LOGINS must be a comma-separated list of GitHub logins, "
+                         f"got {cfg['ORCHESTRATE_GROK_LOGINS']!r}")
     if not LOGIN_RE.fullmatch(cfg["ORCHESTRATE_VERIFY_LOGIN"]):
         raise ValueError(f"ORCHESTRATE_VERIFY_LOGIN must be one GitHub login, got {cfg['ORCHESTRATE_VERIFY_LOGIN']!r}")
     if not re.fullmatch(r"(?:[1-9][0-9]*)?", cfg["ORCHESTRATE_VERIFY_USER_ID"]):
@@ -301,7 +308,8 @@ def load_config(paths, environ):
                  "ORCHESTRATE_WAKE_THREAD",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_BOARD_TOKEN_FILE",
-                 "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN", "ORCHESTRATE_VERIFY_USER_ID")
+                 "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_GROK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN",
+                 "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -2512,7 +2520,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
     allow = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))[0]
     for k, it in sorted(snap["items"].items()):
         if k in allow and it["state"] == "open" and not it["is_pr"] and "grok" in it["labels"]:
-            it["grok_activity"] = grok_activity(gh, k, it)
+            it["grok_activity"] = grok_activity(gh, k, it, cfg)
     return snap
 
 
@@ -2609,10 +2617,13 @@ def key_times(wake_comments):
     return out
 
 
-def grok_activity(gh, k, it):
-    """vws-deploy#411: what the issue's timeline shows of a claim, for grok_release. Comments that start with
-    an HTML-comment marker (the orchestrator's and bots' machine comments) are not claims. Linked PRs are
-    cross-references from PRs whose `Part of` names this issue. None when the timeline cannot be read."""
+def grok_activity(gh, k, it, cfg):
+    """vws-deploy#411: what the issue's timeline shows of a claim, for grok_release. Only comments by a
+    ORCHESTRATE_GROK_LOGINS login or a current assignee count, and not ones that start with an HTML-comment
+    marker (the orchestrator's and bots' machine comments). Linked PRs are cross-references from PRs in an
+    OWNER repo whose `Part of` names this issue. None when the timeline cannot be read."""
+    logins = cfg.get("ORCHESTRATE_GROK_LOGINS", DEFAULTS["ORCHESTRATE_GROK_LOGINS"])
+    claimers = {x.strip().lower() for x in logins.split(",")} | {a.lower() for a in it.get("assignees") or []}
     try:
         timeline = gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/timeline?per_page=100")
     except (GhError, PermissionError):
@@ -2620,14 +2631,18 @@ def grok_activity(gh, k, it):
     act = {"comments": [], "assigned": [], "prs": []}
     for e in timeline if isinstance(timeline, list) else []:
         kind, at = e.get("event"), e.get("created_at") or ""
-        if kind == "commented" and at and not (e.get("body") or "").lstrip().startswith("<!--"):
+        author = ((e.get("actor") or e.get("user") or {}).get("login") or "").lower()
+        if (kind == "commented" and at and author in claimers
+                and not (e.get("body") or "").lstrip().startswith("<!--")):
             act["comments"].append(at)
         elif kind == "assigned" and at:
             act["assigned"].append(at)
         elif kind == "cross-referenced":
             src = (e.get("source") or {}).get("issue") or {}
-            repo = (src.get("repository") or {}).get("name") or ""
-            if "pull_request" in src and repo and grok_link({"is_pr": True, "repo": repo, "body": src.get("body")}) == k:
+            source_repo = src.get("repository") or {}
+            repo = source_repo.get("name") or ""
+            owner = ((source_repo.get("owner") or {}).get("login") or "").lower()
+            if owner == OWNER.lower() and "pull_request" in src and repo and grok_link({"is_pr": True, "repo": repo, "body": src.get("body")}) == k:
                 act["prs"].append({"key": f"{repo}#{src.get('number')}",
                                    "merged_at": (src.get("pull_request") or {}).get("merged_at") or ""})
     return act
