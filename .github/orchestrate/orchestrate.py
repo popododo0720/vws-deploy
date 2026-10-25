@@ -53,7 +53,7 @@ if HERE not in sys.path:
 import trusted_read as tr  # noqa: E402
 from trusted_read import (  # noqa: E402,F401  (re-exported: tests and .github/metrics read them as orch.X)
     CI_FAIL_RE, FAILURE_MARKER, GROK_ASSIGN_MARKER, GROK_WAKE_MARKER, KEY_RE, LEAD_WAKE_MARKER,
-    METRICS_ALERT_MARKER, OWNER, REBUILD_WAKE_MARKER, REWORK_MARKER, STATUS_END_MARKER,
+    METRICS_ALERT_MARKER, OPT_OUT_MARKER, OWNER, REBUILD_WAKE_MARKER, REWORK_MARKER, STATUS_END_MARKER,
     STATUS_MARKER, WAKE_MARKER, ac_tick_marker, is_trusted_reset_author, key_times,
     rework_kind, status_unowned,
 )
