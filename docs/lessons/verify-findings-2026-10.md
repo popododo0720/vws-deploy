@@ -95,6 +95,9 @@ finding and a passing fixture (AC2, AC5):
 3. Class 1: orchestrate trusted-read module and the `vws-drift-check` lint
    for event-snapshot labels, committer identity and stray marker matches.
    Fixture: the #499 edited PR body and the #507 foreign claim comment.
+   Done in the class 1 PR (`ci/verify-findings-class1-439`): `trusted_read.py`
+   and `.github/drift/trusted_read_lint.py`; see "Trusted reads" in
+   `docs/factory-orchestrator.md`.
 4. Class 3: fault-injecting GitHub fake and the restart-test lint for
    orchestrate. Fixture: the #495 close-then-marker failure.
 5. Class 5: `AuthorizedPrincipal` type in vws-console-api, as a console-api PR
