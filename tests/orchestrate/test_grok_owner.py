@@ -65,6 +65,18 @@ class TaskWake(unittest.TestCase):
         self.assertEqual(owners(w["body"]), ["vws-iam"])
 
 
+    def test_agent_lines_in_code_fences_or_html_comments_do_not_count(self):
+        for body in ("```text\nAgent: vws-compute\n```\n", "<!--\nAgent: vws-compute\n-->\n",
+                     "~~~\nAgent: vws-compute\n~~~\n"):
+            with self.subTest(body=body):
+                self.assertEqual(owners(task_wake(grok_task("vws-deploy", 7, body=body))["body"]), ["vws-platform"])
+
+    def test_crlf_agent_line_counts(self):
+        # Bodies edited in the GitHub web UI end lines with CRLF.
+        w = task_wake(grok_task("vws-deploy", 7, body="Scope.\r\n\r\nAgent: vws-compute\r\n"))
+        self.assertEqual(owners(w["body"]), ["vws-compute"])
+
+
 class ReworkWake(unittest.TestCase):
     def test_grok_label_owner_names_the_repo_bot(self):
         w = rework_wake(failed_pr(), grok_issue())
