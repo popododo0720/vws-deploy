@@ -245,6 +245,25 @@ class PrHeads(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertIn("vws-deploy repo-guard-verify-gate.yml calls guard-agents.sh verify-gate", out[0])
 
+    def test_unreadable_callee_fails_closed_and_is_not_cached_as_ok(self):
+        # Codex round 1 [P2]: a failed listing at the pin must not become "no calls" for every repo on that pin.
+        pin = "0123456789abcdef0123456789abcdef01234567"
+        cache = {}
+        for _ in range(2):
+            issues = dc.bootstrap_for("o", {VQ: local(VQ)}, local("scripts/guard-agents.sh"), pin, cache,
+                                      api=lambda path: None)
+            self.assertEqual(issues, [f"cannot list the vws-deploy repo-guard-*.yml files at {pin[:12]}"])
+
+    def test_unreadable_callee_body_fails_closed(self):
+        vg = ".github/workflows/repo-guard-verify-gate.yml"
+        issues = dc.bootstrap_issues({}, local("scripts/guard-agents.sh"), {vg: None})
+        self.assertEqual(issues, ["cannot read vws-deploy repo-guard-verify-gate.yml"])
+
+    def test_non_sha_pin_has_no_callee(self):
+        for pin in (None, "local", "pending"):
+            self.assertEqual(dc.bootstrap_for("o", {}, local("scripts/guard-agents.sh"), pin, {},
+                                              api=lambda path: self.fail(path)), [])
+
     def test_unlistable_head_is_left_to_head_issues(self):
         self.assertEqual(self.run_heads([("#2", "c" * 40, None)], local("scripts/guard-agents.sh")), [])
 
