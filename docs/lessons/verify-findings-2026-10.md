@@ -87,6 +87,8 @@ finding and a passing fixture (AC2, AC5):
 1. Class 4: extend `vws-drift-check` to pin `verify-queue.yml` and
    `check-english.sh` by sha256, and add the base-script subcommand bootstrap
    rule. Fixture: the vws-storage#140 copy.
+   Done in the class 4 PR: `.github/drift/vendored.tsv`, the `vendored copies` and `bootstrap` cells of
+   `vws-drift-check`, and `tests/drift/test_class4.py` with real fixtures in `tests/drift/fixtures/class4/`.
 2. Class 2: shared text normalizer and adversarial fixture corpus in
    `guard-agents.sh`. Fixtures: the multi-line HTML comment (vws-deploy#430),
    hash-prefixed commit lines, a merge commit with a closing keyword.
