@@ -30,7 +30,7 @@ The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in 
 
 ### Trust model (unchanged)
 
-- Event: `pull_request` and `issue_comment` only, never `pull_request_target`. A fork PR gets a read-only token and no secrets, as before. The called workflow runs in the caller's context: `github`, `vars` and `github.token` are the caller repo's, and its token has at most what the caller job grants (GitHub can only lower permissions down the call chain). No secrets are passed (`secrets:` is not allowed in the caller).
+- Event: `pull_request` and `issue_comment` only, never `pull_request_target` (see "One event per required check" below). A fork PR gets a read-only token and no secrets, as before. The called workflow runs in the caller's context: `github`, `vars` and `github.token` are the caller repo's, and its token has at most what the caller job grants (GitHub can only lower permissions down the call chain). No secrets are passed (`secrets:` is not allowed in the caller).
 - Guard script: `verify-gate` checks out the caller's base commit (`github.event.pull_request.base.sha`) and runs that `scripts/guard-agents.sh`, as before; `pr-hygiene` still runs the identity check against `scripts/guard-agents.sh.sha256`. The callee does not fetch the script from vws-deploy: that would need the called workflow's own SHA, which the `github` context does not carry, and it would bypass the per-repo identity and the accepted variant (#338).
 - Who satisfies the gate: unchanged. The `verify-approved` label plus a `Verified-by: vws-verify` comment for the head, with `VWS_VERIFY_ACTORS`, `VWS_VERIFY_IDENTITY` and the author and pusher exclusion read from the caller repo's variables and API.
 - What the pin adds: in a repo other than vws-deploy, a PR can no longer edit the job steps; they are fixed at the pinned vws-deploy commit. A PR can still edit its caller (the pin, the shim or the permissions), because `pull_request` runs the PR's copy of the caller. That is detected, not blocked: `caller_pin.py` and the daily drift-check report any caller that changed shape, pins a branch, tag or short SHA, pins a different SHA from the other repos, or pins a SHA that is not on vws-deploy main. drift-check reads the caller on the default branch and at the head of every open PR, so a PR that changes the pin is flagged while it is open: the daily run fails on it, and `workflow_dispatch` with `repo` and `sha` checks one PR head on demand. On a vws-deploy pull request drift-check also checks that PR's head (`--head vws-deploy=<head sha>` from the event) but, as before, only warns on drift. In vws-deploy a PR can edit both files, as before. This is the same gap as docs/QUALITY.md "Known gaps"; the real control stays branch protection with review by a second account.
@@ -69,3 +69,32 @@ drift-check applies the same rules on the default branch and at every PR head. I
 ## Not verified
 
 The YAML passes actionlint and the stubbed tests in `tests/workflows`, and the permission superset test reads the real files. verify r2 observed these on PR #413's head 390ca0e (run 39906944900): the run starts on the per-job layout, the bare `pr-hygiene` check passes, and the bare `verify-gate` check fails closed without a verdict. Not yet seen: a green `verify-gate`, re-running `gate / verify-gate` together with its shim (only possible after merge, see Rollout notes), the output of a failed call, and drift-check's pending-repo and other-file rules against the real API.
+
+## One event per required check (vws-deploy#505)
+
+`pull_request_target` came in with vws-conformance's full copy, when the repos were private on a free
+plan and had no branch protection: it runs the default branch's workflow, so its `verify-gate` run is
+one a PR cannot edit. The repos are public now and enforce the required checks with the `vws-main`
+ruleset.
+
+A workflow that runs on both `pull_request` and `pull_request_target` gets one run of every job per
+event. A job gated to one event (`if: github.event_name == 'pull_request'`) still reports a check run
+on the other event, concluded `skipped`, under the same name. GitHub counts a skipped required check as
+passing, so the PR shows `clean`. Rule D keys check runs by workflow and event and needs every run of a
+required check to be `success`, so it parked vws-conformance#32 and #33 overnight on
+`required_skipped:pr-hygiene` while both were approved.
+
+Rules:
+
+- A workflow file never runs on both `pull_request` and `pull_request_target`. drift-check flags it in
+  every repo, at every open PR head, a `caller-pending.tsv` full copy included (`dual_event_issues`).
+  The caller shape (`caller_pin.py`) already allows only `pull_request` and `issue_comment`.
+- A trusted default-branch run that must stay on `pull_request_target` goes in its own workflow file,
+  with job names that are not required check names.
+- Rule D passes a `skipped` required run only next to a `success` of the same name and app on the head
+  (docs/factory-orchestrator.md, Rule D). That keeps an existing dual-event head from parking forever; it
+  is not a reason to add a second event.
+
+vws-conformance's `repo-guard.yml` is the only file with both events today. Moving it is tied to its
+locked-file digest list (`scripts/guard-allowed.sha256`) and its `verify-rerun.yml`, so it is a separate
+vws-conformance change; until then drift-check reports it.
