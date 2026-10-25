@@ -57,6 +57,8 @@ class Checkout(unittest.TestCase):
             os.makedirs(os.path.dirname(os.path.join(self.seed, rel)), exist_ok=True)
             shutil.copy2(os.path.join(ROOT, rel), os.path.join(self.seed, rel))
         write(os.path.join(self.seed, PY_REL), STUB.format(v="v1"), 0o755)
+        # orchestrate.py imports it; orchestrate-update.py syntax-checks it (vws-deploy#439 class 1).
+        write(os.path.join(self.seed, ".github/orchestrate/trusted_read.py"), "OWNER = 'popododo0720'\n")
         write(os.path.join(self.seed, "README.md"), "seed\n")
         self.v1 = self.commit("v1")
         self.git(self.tmp, "clone", "-q", self.origin, self.svc)

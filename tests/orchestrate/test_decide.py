@@ -120,13 +120,13 @@ class RuleA(unittest.TestCase):
         self.assertIn("Run id: `20261021T120000Z-abcdef`", lines)
         self.assertIn("Repos scanned: vws-deploy, vws-iam, vws-proto", lines, "archived repos are not listed")
         self.assertNotIn("@deepseek-dev", a["body"])
-        self.assertEqual(orch.status_wakes([{"body": a["body"], "created_at": "2026-10-21T12:00:00Z"}])[0]["key"], a["key"],
+        self.assertEqual(orch.status_wakes([{"user": {"login": "popododo0720"}, "body": a["body"], "created_at": "2026-10-21T12:00:00Z"}])[0]["key"], a["key"],
                          "the key is read back from the posted comment")
         self.assertEqual(r["state"]["prev_pending_count"], 3)
 
     def test_marker_must_be_first_line(self):
         body = "hello\n<!-- vws-orchestrate:verify-wake -->\nIdempotency key: `sha256:" + "a" * 64 + "`"
-        self.assertEqual(orch.status_wakes([{"body": body, "created_at": "2026-10-21T12:00:00Z"}]), [])
+        self.assertEqual(orch.status_wakes([{"user": {"login": "popododo0720"}, "body": body, "created_at": "2026-10-21T12:00:00Z"}]), [])
 
     def test_body_lists_every_waiting_pr(self):
         many = queued(60, 1)

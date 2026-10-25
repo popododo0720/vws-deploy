@@ -281,7 +281,7 @@ class Ticks(Env):
         self.tick(ORCHESTRATE_MODE="apply")
         wake = json.loads(self.writes()[0]["stdin"])["body"]
         r = routes()
-        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 5, "created_at": NOWISO, "body": wake}]}
+        r[f"{O}/vws-deploy/issues/339/comments"] = {"body": [{"id": 5, "user": {"login": "popododo0720"}, "created_at": NOWISO, "body": wake}]}
         disp = [{"id": 6, "user": {"login": "popododo0720"}, "author_association": "OWNER", "issue_url": "x/vws-iam/issues/1", "created_at": NOWISO,
                  "html_url": "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-6", "body": orch.DISPATCH_TEXT}]
         r[f"{O}/vws-iam/issues/comments"] = {"body": disp}
@@ -652,8 +652,9 @@ class FailureComments(Env):
     def test_key_already_in_status_body_is_not_rewritten(self):
         key = "sha256:" + orch.hashlib.sha256(f"failure:{orch.socket.gethostname()}:1000.0".encode()).hexdigest()
         r = routes()
-        r[f"{O}/vws-deploy/issues/415"] = {"body": {"number": 415, "state": "open", "body": STATUS_SEED +
-                                                    f"\n## Failed ticks\n\n<!-- vws-orchestrate:failure -->\nIdempotency key: `{key}`\n"}}
+        r[f"{O}/vws-deploy/issues/415"] = {"body": {"number": 415, "state": "open", "body": STATUS_SEED.replace(
+            orch.STATUS_END_MARKER,
+            f"## Failed ticks\n\n<!-- vws-orchestrate:failure -->\nIdempotency key: `{key}`\n{orch.STATUS_END_MARKER}")}}
         self.set_routes(r)
         self.notify(3, ORCHESTRATE_MODE="apply")
         self.assertEqual(self.writes() + self.status_edits(), [])

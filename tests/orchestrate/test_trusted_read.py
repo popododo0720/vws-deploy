@@ -37,11 +37,11 @@ class Module(unittest.TestCase):
         for name in ("WAKE_MARKER", "REWORK_MARKER", "STATUS_MARKER", "OPT_OUT_MARKER", "KEY_RE"):
             self.assertIs(getattr(orch, name), getattr(orch.tr, name), name)
 
-    def test_own_comment_needs_the_owner_login_and_association(self):
+    def test_own_comment_needs_the_owner_login(self):
         self.assertTrue(tr.own_comment(own("x")))
         self.assertTrue(tr.own_comment({"author": "popododo0720", "assoc": "OWNER"}))  # a comment_record
-        for c in (foreign("x"), foreign("x", login="popododo0720", assoc="NONE"),
-                  foreign("x", login="someone", assoc="OWNER"), {"body": "x"}):
+        for c in (foreign("x"), foreign("x", login="someone", assoc="OWNER"),
+                  foreign("x", login="popododo0720-fork"), {"body": "x"}):
             self.assertFalse(tr.own_comment(c), c)
 
 

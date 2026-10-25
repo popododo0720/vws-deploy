@@ -219,6 +219,8 @@ class Tick(Env):
             r[f"{O}/vws-lib/commits/{n:040x}/check-runs"] = {"body": {"total_count": 1, "check_runs": [
                 {"id": 1, "name": "test", "status": "completed", "conclusion": "success"}]}}
             r[f"{O}/vws-lib/commits/{n:040x}/status"] = {"body": {"state": "success", "statuses": []}}
+            # Read again right before a label write (vws-deploy#439 class 1).
+            r[f"{O}/vws-lib/pulls/{n}"] = {"body": {"number": n, "state": "open", "head": {"sha": f"{n:040x}"}}}
         for n in range(400, 405):
             r[f"{O}/vws-deploy/commits/{n:040x}/check-runs"] = {"body": {"total_count": 1, "check_runs": [
                 {"id": 1, "name": "test", "status": "completed", "conclusion": "success"}]}}
@@ -239,6 +241,18 @@ class Tick(Env):
         self.lib_routes([(7, (), "2026-10-01T00:00:00Z")])
         self.assertEqual(self.tick(ORCHESTRATE_MODE="apply"), 0)
         self.assertEqual(self.label_writes(), [("POST", 7, NV)])
+
+    def test_head_moved_since_collect_writes_nothing(self):
+        """vws-deploy#439 class 1: a label write re-reads the PR at the head the tick decided on."""
+        self.lib_routes([(7, (), "2026-10-01T00:00:00Z")])
+        with open(self.routes_file) as f:
+            r = json.load(f)
+        r[f"{O}/vws-lib/pulls/7"]["body"]["head"]["sha"] = "e" * 40
+        self.set_routes(r)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply"), 0)
+        self.assertEqual(self.label_writes(), [])
+        skips = [e for e in self.log() if e["event"] == "skipped" and e.get("target") == "vws-lib#7"]
+        self.assertEqual([e["reason"] for e in skips], ["PR changed since collect: head moved"])
 
     def test_second_tick_writes_nothing(self):
         self.lib_routes([(7, (NV,), "2026-10-01T00:00:00Z")])
