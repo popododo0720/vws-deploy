@@ -67,9 +67,16 @@ class TaskWake(unittest.TestCase):
 
     def test_agent_lines_in_code_fences_or_html_comments_do_not_count(self):
         for body in ("```text\nAgent: vws-compute\n```\n", "<!--\nAgent: vws-compute\n-->\n",
-                     "~~~\nAgent: vws-compute\n~~~\n"):
+                     "~~~\nAgent: vws-compute\n~~~\n",
+                     # A longer fence is closed only by a fence at least as long, with nothing after it.
+                     "````md\n```\nAgent: vws-compute\n```\n````\n",
+                     "```\n```not-a-close\nAgent: vws-compute\n```\n"):
             with self.subTest(body=body):
                 self.assertEqual(owners(task_wake(grok_task("vws-deploy", 7, body=body))["body"]), ["vws-platform"])
+
+    def test_agent_line_after_a_closed_fence_counts(self):
+        w = task_wake(grok_task("vws-deploy", 7, body="````\nexample\n`````\n\nAgent: vws-compute\n"))
+        self.assertEqual(owners(w["body"]), ["vws-compute"])
 
     def test_crlf_agent_line_counts(self):
         # Bodies edited in the GitHub web UI end lines with CRLF.
