@@ -1,0 +1,21 @@
+{
+ "source": "Codex review of vws-deploy#495 at 04c75179d0ffdc20a2c16d5d809372cf154587a5, finding [P2] 'Recover the final comment after a successful issue close': the close of issue #7 lands, the marker comment fails, and the next tick notes ac_issue_closed and never posts it. Same issue body and PR as the reproduction there.",
+ "issue": {
+  "number": 7,
+  "body": "Context.\n\n## Acceptance criteria\n\n- [ ] AC1: one\n- [ ] AC2: two\n  more of two\n- [ ] AC3: three\n\n## Notes\n\n- [ ] not a criterion\n",
+  "labels": [
+   "ac-partial"
+  ]
+ },
+ "pr": {
+  "number": 500,
+  "body": "Part of #7\n\nAC: 1\nAC: 2\nAC: 3\n"
+ },
+ "expect": {
+  "state": "closed",
+  "state_reason": "completed",
+  "labels": [],
+  "comments": 1,
+  "comment_has": "boxes 1, 2, 3 ticked."
+ }
+}
