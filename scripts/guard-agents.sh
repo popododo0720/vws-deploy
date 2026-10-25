@@ -541,24 +541,26 @@ CORRECT_HEADING_LEGACY="## /correct 교정 루프"
 CORRECT_FIELDS="what-happened impact detection root-cause catching-check follow-ups"
 
 cmd_correct() {
-  local dir=${1:-.} tpl labels id h=$CORRECT_HEADING
+  local dir=${1:-.} tpl labels id text h=$CORRECT_HEADING
   tpl="${dir}/.github/ISSUE_TEMPLATE/incident.yml"
   labels="${dir}/.github/labels.yml"
   [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
-  if ! tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h"; then
-    tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$CORRECT_HEADING_LEGACY" && h=$CORRECT_HEADING_LEGACY
-  fi
-  # CRLF line endings are read as LF, so a heading saved on Windows still matches.
-  tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h" ||
+  # Read once, with CRLF line endings read as LF, so a heading saved on Windows still matches. The readers
+  # below take a here-string, never a pipe from a producer: grep -q and a reader that stops early would close
+  # the pipe, and under pipefail the producer's failure read as a missing heading or an empty section.
+  text=$(tr -d '\r' <"${dir}/AGENTS.md")
+  grep -q -x -F -- "$h" <<<"$text" || { grep -q -x -F -- "$CORRECT_HEADING_LEGACY" <<<"$text" && h=$CORRECT_HEADING_LEGACY; }
+  grep -q -x -F -- "$h" <<<"$text" ||
     die "correct: AGENTS.md has no line that is exactly '${h}' (trailing spaces or a different heading do not match)"
   # Empty: no content before the next # or ## heading. A ### subheading and a line inside a code fence are
   # content; the fence lines themselves, HTML comments and blank lines are not, so an empty fence is an
-  # empty section. visible_text code reads the fences and comments (one parser, vws-deploy#439).
-  tr -d '\r' <"${dir}/AGENTS.md" | visible_text code | awk -v h="$h" '
-    $0 == h { s = 1; next }
-    !s { next }
-    /^##?([[:space:]]|$)/ { exit }
-    /[^[:space:]]/ { f = 1; exit }
+  # empty section. visible_text code reads the fences and comments (one parser, vws-deploy#439). The reader
+  # takes all of its input and never exits early.
+  visible_text code <<<"$text" | awk -v h="$h" '
+    done { next }
+    !s { if ($0 == h) s = 1; next }
+    /^##?([[:space:]]|$)/ { done = 1; next }
+    /[^[:space:]]/ { f = 1; done = 1 }
     END { exit !f }' || die "correct: AGENTS.md '${h}' section is empty (blank lines, HTML comments and empty code fences do not count)"
   [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
   grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
