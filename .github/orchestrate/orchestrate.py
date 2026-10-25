@@ -1266,8 +1266,10 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
 
 
 # vws-deploy#506: body regions whose `Agent:` lines are examples or hidden text, not the owner: code
-# fences (an unclosed fence runs to the end, as in CommonMark) and HTML comments.
-HIDDEN_RE = re.compile(r"^[ \t]*(```|~~~).*?(?:^[ \t]*\1[^\n]*$|\Z)|<!--.*?(?:-->|\Z)", re.M | re.S)
+# fences and HTML comments. As in CommonMark, a fence closes only on a line holding the same character
+# at least as many times and nothing else, and an unclosed fence or comment runs to the end.
+HIDDEN_RE = re.compile(r"^[ \t]*((`{3,})|~{3,})[^\n]*$.*?(?:^[ \t]*\1(?(2)`*|~*)[ \t]*$|\Z)|<!--.*?(?:-->|\Z)",
+                       re.M | re.S)
 
 
 def agent_of(body):
