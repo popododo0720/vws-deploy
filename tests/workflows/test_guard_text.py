@@ -114,11 +114,11 @@ class CallSites(unittest.TestCase):
         body = checklist().replace("## Quality checklist (required)", "<!--\n## Quality checklist (required)") + "-->\n"
         self.assertNotEqual(self.checklist_rc(body), 0)
 
-    def correct_rc(self, section):
+    def correct_rc(self, section, rest=""):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".github", "ISSUE_TEMPLATE"))
             with open(os.path.join(d, "AGENTS.md"), "w") as f:
-                f.write(f"# t\n## /correct loop\n{section}\n## next\ncontent\n")
+                f.write(f"# t\n## /correct loop\n{section}\n## next\ncontent\n{rest}")
             fields = "".join(f"      id: {x}\n" for x in
                              "what-happened impact detection root-cause catching-check follow-ups".split())
             with open(os.path.join(d, ".github", "ISSUE_TEMPLATE", "incident.yml"), "w") as f:
@@ -140,6 +140,14 @@ class CallSites(unittest.TestCase):
     def test_correct_section_with_only_an_empty_long_fence_fails(self):
         # A fence that holds only blank lines is no content, whatever its length.
         self.assertNotEqual(self.correct_rc("````\n\n````"), 0)
+
+    def test_correct_section_followed_by_a_long_file_passes(self):
+        # PR #515 CI at 8afa51d: the reader stopped at the next heading, so the visible_text stage before it
+        # wrote into a closed pipe and pipefail read a filled section as empty. A long file makes that certain.
+        self.assertEqual(self.correct_rc("Run /correct after an incident.", "more text after the section\n" * 20000), 0)
+
+    def test_correct_passes_on_this_repo(self):
+        self.assertEqual(run_guard(["correct", ROOT]).returncode, 0)
 
     def test_guard_agents_has_one_text_parser(self):
         # Outside visible_text and the selftest, no code in guard-agents.sh matches comments or fences itself.
