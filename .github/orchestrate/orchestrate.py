@@ -188,6 +188,8 @@ DEFAULTS = {
     "ORCHESTRATE_MERGE": "dry-run",
     "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
     "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
+    # vws-deploy#486: tick a merged PR's AC: boxes on its Part of issue (off, dry-run = plan only, apply).
+    "ORCHESTRATE_AC_TICK": "dry-run",
     "ORCHESTRATE_BOARD": "dry-run",
     "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
     "ORCHESTRATE_BOARD_EVERY": "6",
@@ -280,6 +282,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_VERIFY_LABELS must be on or off")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
+    if cfg["ORCHESTRATE_AC_TICK"] not in ("off", "dry-run", "apply"):
+        raise ValueError("ORCHESTRATE_AC_TICK must be off, dry-run or apply")
     if cfg["ORCHESTRATE_BOARD"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_BOARD must be off, dry-run or apply")
     if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
@@ -292,7 +296,7 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
                  "ORCHESTRATE_WAKE_THREAD",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_BOARD_TOKEN_FILE",
                  "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN", "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
@@ -396,11 +400,11 @@ ALLOWED = {
         re.compile(r"^rate_limit$"),
     ],
     "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
-    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved)$")],
+    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending)$")],
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
-    # The status issue body only (vws-deploy#416); Gh.write also pins the number and the payload.
-    "PATCH": [re.compile(rf"^repos/{OWNER}/{STATUS_REPO}/issues/[0-9]+$")],
+    # The status issue body (vws-deploy#416), an AC tick or a completed close (#486); Gh.write pins the payload.
+    "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$")],
 }
 
 
@@ -541,7 +545,7 @@ class Gh:
                 raise GhError(0, f"more than {limit} pages at {path}")
             page += 1
 
-    def write(self, method, path, payload=None):
+    def write(self, method, path, payload=None, before=None):
         if not self.allow(method, path):
             raise PermissionError(f"gh call not allowed: {method} {path}")
         if method == "PUT":
@@ -551,11 +555,17 @@ class Gh:
                     or not re.fullmatch(r"[0-9a-f]{40}", str(p.get("sha", "")))):
                 raise PermissionError("merge refused: squash with a 40-hex head sha only")
         if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/issues/[0-9]+", path):
-            # The only issue edit: the status issue's body, with exactly one managed status block.
-            body = payload.get("body") if isinstance(payload, dict) and set(payload) == {"body"} else None
-            if (not self.status_issue or path != f"repos/{OWNER}/{STATUS_REPO}/issues/{self.status_issue}"
-                    or not isinstance(body, str) or status_unowned(body)):
-                raise PermissionError("issue edit refused: only the status issue body, with one status block")
+            # Three issue edits only: the status issue's body with exactly one managed status block; an AC tick
+            # (vws-deploy#486) that changes nothing but unticked criteria boxes of `before`, the body just read;
+            # and a completed close of any other issue.
+            p = payload if isinstance(payload, dict) else {}
+            body = p.get("body") if set(p) == {"body"} else None
+            is_status = bool(self.status_issue) and path == f"repos/{OWNER}/{STATUS_REPO}/issues/{self.status_issue}"
+            status_edit = is_status and isinstance(body, str) and not status_unowned(body)
+            tick = (not is_status and isinstance(body, str) and isinstance(before, str) and ac_tick_only(before, body))
+            close = not is_status and p == {"state": "closed", "state_reason": "completed"}
+            if not (status_edit or tick or close):
+                raise PermissionError("issue edit refused: the status issue body, an AC tick or a completed close only")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -569,11 +579,21 @@ class Gh:
         return json.loads(body) if body.strip() else None
 
     def graphql(self, query, variables, write=False):
-        """Projects v2 (board_sync) only. A write must be a batch of the three item mutations, built from
+        """Projects v2 (board_sync), plus the AC tick's read-only AC_EDIT_QUERY. A write must be a batch of the three item mutations, built from
         the BOARD_* templates with every value in variables; anything else is refused before the call."""
         if write:
             if not board_write_ok(query):
                 raise PermissionError("graphql mutation not allowed")
+        elif query == AC_EDIT_QUERY:
+            # vws-deploy#486: one PR's body edit time, read on the box login like the REST reads.
+            status, _headers, body = self._run(["gh", "api", "-i", "graphql", "--input", "-"],
+                                               json.dumps({"query": query, "variables": variables}))
+            self.stats["get"] += 1
+            self._count_get("graphql", status)
+            out = json.loads(body) if body.strip() else {}
+            if status != 200 or not isinstance(out, dict) or out.get("errors") or "data" not in out:
+                raise GhError(status, scrub(json.dumps(out.get("errors") if isinstance(out, dict) else body[:200])[:300]))
+            return out["data"]
         elif query != BOARD_QUERY:
             raise PermissionError("graphql query not allowed")
         if not self.board_token:
@@ -1077,6 +1097,154 @@ def parse_ac(body):
     if boxes and none:
         return {"boxes": [], "none": "", "error": "'AC: none - <reason>' cannot be combined with 'AC: <n>' lines"}
     return {"boxes": sorted(boxes), "none": none, "error": ""}
+
+
+AC_HEADING_RE = re.compile(r"^#{1,6}[ \t]+Acceptance criteria[ \t]*$", re.I)
+AC_ANY_HEADING_RE = re.compile(r"^#{1,6}[ \t]")
+AC_ISSUE_BOX_RE = re.compile(r"^([ \t]*[-*] \[)([ xX])(\] )(.*)$")  # the box lines .github/ac/ac-lint.sh lists
+AC_EVIDENCE_RE = re.compile(rf" \(evidence: https://github\.com/{OWNER}/vws-[a-z0-9-]+/pull/[0-9]+ merged [0-9a-f]{{40}}\)")
+AC_TICK_LABELS = ("ac-partial", "ac-pending")
+
+
+def ac_tick_marker(pr):
+    return f"<!-- vws-orchestrate:ac-tick pr={pr} -->"
+
+
+def ac_boxes(body):
+    """The boxes under the issue's `## Acceptance criteria` heading, up to the next heading:
+    [{"n": 1-based index, "checked", "text", "line": index into body.split("\n")}]."""
+    out, inside = [], False
+    for i, raw in enumerate((body or "").split("\n")):
+        line = raw[:-1] if raw.endswith("\r") else raw
+        if AC_HEADING_RE.match(line):
+            inside = True
+            continue
+        if inside and AC_ANY_HEADING_RE.match(line):
+            break
+        m = AC_ISSUE_BOX_RE.match(line) if inside else None
+        if m:
+            out.append({"n": len(out) + 1, "checked": m.group(2) != " ", "text": m.group(4), "line": i})
+    return out
+
+
+def ac_tick_body(body, boxes, pr_url, sha):
+    """Pure: tick the listed boxes of an issue body, each with an evidence suffix ac-lint.sh accepts.
+    {"body", "ticked": boxes newly ticked, "open": boxes still open after, "error": "" | ac_no_section |
+    ac_index_invalid}. Any invalid index means no edit at all."""
+    found = ac_boxes(body)
+    if not found:
+        return {"body": body, "ticked": [], "open": [], "error": "ac_no_section"}
+    if any(n > len(found) for n in boxes):
+        return {"body": body, "ticked": [], "open": [], "error": "ac_index_invalid"}
+    lines = (body or "").split("\n")
+    ticked = []
+    for b in found:
+        if b["n"] in boxes and not b["checked"]:
+            raw = lines[b["line"]]
+            cr = "\r" if raw.endswith("\r") else ""
+            m = AC_ISSUE_BOX_RE.match(raw[:-1] if cr else raw)
+            lines[b["line"]] = (f"{m.group(1)}x{m.group(3)}{m.group(4).rstrip()} (evidence: {pr_url} merged {sha}){cr}")
+            b["checked"] = True
+            ticked.append(b["n"])
+    return {"body": "\n".join(lines), "ticked": ticked, "open": [b for b in found if not b["checked"]], "error": ""}
+
+
+def ac_tick_only(old, new):
+    """True when new differs from old only by unticked criteria boxes turned ticked with an evidence suffix
+    (Gh.write refuses any other issue body edit but the status issue's)."""
+    if not isinstance(old, str) or not isinstance(new, str):
+        return False
+    a, b = old.split("\n"), new.split("\n")
+    if len(a) != len(b) or a == b:
+        return False
+    open_lines = {x["line"] for x in ac_boxes(old) if not x["checked"]}
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x == y:
+            continue
+        cr = "\r" if x.endswith("\r") else ""
+        if i not in open_lines or not y.endswith(cr):
+            return False
+        mx, my = AC_ISSUE_BOX_RE.match(x[:len(x) - len(cr)]), AC_ISSUE_BOX_RE.match(y[:len(y) - len(cr)])
+        if not my or my.group(2) != "x" or (mx.group(1), mx.group(3)) != (my.group(1), my.group(3)):
+            return False
+        rest = my.group(4)
+        ev = AC_EVIDENCE_RE.search(rest)
+        if not ev or ev.end() != len(rest) or rest[:ev.start()] != mx.group(4).rstrip():
+            return False
+    return True
+
+
+def ac_tick_comment(a, ticked, still_open, close):
+    lines = [f"AC tick for {a['pr_url']} (merged {a['merge_sha']}): boxes {', '.join(map(str, a['boxes']))} "
+             f"{'ticked' if ticked else 'were already ticked'}."]
+    if close:
+        lines.append("\nEvery acceptance criteria box is ticked, so this issue is closed as completed.")
+    else:
+        lines.append("\nStill open:")
+        lines += [f"- {b['n']}: {b['text']}" for b in still_open]
+    lines.append(f"\n{ac_tick_marker(a['pr'])}")
+    return "\n".join(lines)
+
+
+def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
+    """Pure: one ac_tick action per PR merged since the rule started whose `Part of` issue has the boxes its
+    `AC: <n>` lines name (vws-deploy#486), when vws-verify approved the merged head and the body was not edited
+    since (ac_unverified / ac_body_edited otherwise). Oldest merge first. new_state keeps the start time and the PRs
+    already handled (marker seen or applied), pruned after the comment window."""
+    if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") == "off":
+        return []
+    if "ac_tick_since" not in new_state:
+        new_state["ac_tick_since"] = iso(now)  # no back-fill: only merges after the first tick count
+        notes.append({"kind": "ac_tick_start", "since": new_state["ac_tick_since"]})
+        return []
+    since = utc(new_state["ac_tick_since"])
+    floor = now - int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS")) * 86400
+    done = new_state.setdefault("ac_ticked", {})
+    for k in [k for k, at in done.items() if utc(at) < floor]:
+        del done[k]
+    actions = []
+    for m in sorted(snapshot.get("ac_merged", []), key=lambda m: (m["merged_at"], m["pr"])):
+        at = utc(m["merged_at"])
+        if m["pr"] in done or at < since or at < floor:
+            continue
+        note = {"target": m["issue"] or "", "pr": m["pr"]}
+        if m.get("error"):
+            notes.append(dict(note, kind="ac_read_error", error=m["error"]))
+            continue
+        if not m["issue"]:
+            notes.append(dict(note, kind="ac_no_part_of"))
+            done[m["pr"]] = m["merged_at"]
+            continue
+        ac = parse_ac(m["body"])
+        kind = "ac_unparsed" if ac["error"] else "ac_none" if not ac["boxes"] else ""
+        if not kind and not m.get("verified_at"):
+            kind = "ac_unverified"  # no trusted vws-verify approval of the merged head: no body is trusted
+        if not kind and ac_body_edited(m):
+            kind = "ac_body_edited"  # edited after the verdict (or the merge): may retarget, so tick nothing
+        if not kind and m.get("marker_seen"):
+            kind = "ac_tick_done"
+        if not kind and m["issue_state"] != "open":
+            kind = "ac_issue_closed"
+        p = ac_tick_body(m["issue_body"], ac["boxes"], m["url"], m["merge_sha"]) if not kind else None
+        if p and p["error"]:
+            kind = p["error"]
+        if kind:
+            notes.append(dict(note, kind=kind, **({"reason": ac["error"] or ac["none"]} if kind in ("ac_unparsed", "ac_none") else {})))
+            done[m["pr"]] = m["merged_at"]
+            continue
+        labels, close = set(m["issue_labels"]), not p["open"]
+        repo = m["issue"].split("#")[0]
+        partial_ok = "ac-partial" in snapshot.get("labels", {}).get(repo, [])
+        if not close and not partial_ok:
+            notes.append(dict(note, kind="ac_label_missing", label="ac-partial"))
+        actions.append({"type": "ac_tick", "target": m["issue"], "pr": m["pr"], "pr_url": m["url"],
+                        "merge_sha": m["merge_sha"], "merged_at": m["merged_at"], "boxes": ac["boxes"], "close": close,
+                        "partial_label": partial_ok,
+                        "labels_add": [] if close or "ac-partial" in labels or not partial_ok else ["ac-partial"],
+                        "labels_remove": [x for x in AC_TICK_LABELS if x in labels and (close or x == "ac-pending")],
+                        "reason": f"{m['pr']} merged {m['merge_sha'][:7]}: AC {', '.join(map(str, ac['boxes']))}"
+                                  + (", last open box" if close else f", {len(p['open'])} left")})
+    return actions
 
 
 def agent_of(body):
@@ -2052,6 +2220,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
     actions += merge_actions
     notes += merge_notes
+    actions += decide_ac_ticks(snapshot, new_state, now, cfg, notes)
     # Last: label repairs take the writes left under the cap, and a PR missed this tick converges on the next.
     actions += decide_verify_labels(items, cfg, notes)
     return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending), "rebuild": rebuild}
@@ -2275,7 +2444,92 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         history.update(version=HISTORY_VERSION, last_tick=iso(now))
     if cfg.get("ORCHESTRATE_MERGE", "dry-run") != "off":
         collect_merge(gh, snap, repo_names, state)
+    if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") != "off":
+        collect_ac(gh, snap, repo_names, state, now, cfg)
     return snap
+
+
+def collect_ac(gh, snap, repo_names, state, now, cfg):
+    """Inputs of the AC tick rule (vws-deploy#486): each repo's newest closed PRs (one ETag-cached page), and
+    for a PR merged into main since the rule started, not yet handled, with a `Part of` issue and `AC: <n>`
+    lines, that issue and its comments. A read error marks that PR only, never the tick."""
+    snap["ac_merged"] = []
+    if not (state or {}).get("ac_tick_since"):
+        return  # decide starts the rule on this tick; nothing merged before counts
+    floor = max(utc(state["ac_tick_since"]), now - int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS")) * 86400)
+    done = state.get("ac_ticked", {})
+    live = {r["name"] for r in snap["repos"] if not r.get("archived")}
+    for name in repo_names:
+        if name not in live:
+            continue
+        try:
+            pulls, _ = gh.get(f"repos/{OWNER}/{name}/pulls?state=closed&sort=updated&direction=desc&per_page=100")
+        except (GhError, PermissionError) as e:
+            snap["ac_merged"].append({"pr": f"{name}#pulls", "url": "", "merged_at": iso(now), "merge_sha": "",
+                                      "body": "", "issue": "", "error": scrub(e)})
+            continue
+        for p in pulls or []:
+            k = f"{name}#{p.get('number')}"
+            if (not p.get("merged_at") or (p.get("base") or {}).get("ref") != "main" or k in done
+                    or utc(p["merged_at"]) < floor):
+                continue
+            m = {"pr": k, "url": p.get("html_url") or "", "merged_at": p["merged_at"],
+                 "merge_sha": p.get("merge_commit_sha") or "", "body": p.get("body") or "", "issue": "",
+                 "issue_state": "", "issue_body": "", "issue_labels": [], "marker_seen": False,
+                 "verified_at": "", "body_edited_at": ""}
+            ref = PART_OF_RE.search(m["body"])
+            if ref:
+                irepo, inum = ref.group(1).split("#")
+                m["issue"] = f"{irepo or name}#{inum}"
+            snap["ac_merged"].append(m)
+            if not m["issue"] or not parse_ac(m["body"])["boxes"]:
+                continue  # decide notes it; nothing to read
+            try:
+                if not ac_body_trusted(gh, name, p, m, cfg):
+                    continue  # decide notes ac_unverified / ac_body_edited; the edited body's target is never read
+            except (GhError, PermissionError, KeyError, TypeError, AttributeError, ValueError) as e:
+                m["error"] = scrub(e)
+                continue
+            irepo, inum = m["issue"].split("#")
+            if irepo not in live:
+                m["error"] = f"{irepo} is not a watched vws repo"
+                continue
+            try:
+                issue, _ = gh.get(f"repos/{OWNER}/{irepo}/issues/{inum}")
+                comments = gh.get_all(f"repos/{OWNER}/{irepo}/issues/{inum}/comments?per_page=100")
+                m.update(issue_state=issue.get("state") or "", issue_body=issue.get("body") or "",
+                         issue_labels=sorted(lb["name"] for lb in issue.get("labels") or []),
+                         marker_seen=any(ac_tick_marker(k) in (c.get("body") or "") for c in comments))
+                if "pull_request" in issue:
+                    m["error"] = f"{m['issue']} is a pull request"
+            except (GhError, PermissionError, KeyError, TypeError, AttributeError) as e:
+                m["error"] = scrub(e)
+
+
+def ac_body_trusted(gh, repo, p, m, cfg):
+    """vws-deploy#486, review 5640903019: sets m["verified_at"] (the newest trusted vws-verify approval of the
+    merged head) and m["body_edited_at"] (the body's last edit, GraphQL lastEditedAt). True only when the body
+    was not edited at or after that approval, so `Part of` and the AC lines are the ones vws-verify saw; an
+    edit after the verdict or after the merge cannot retarget the tick. Raises on a read error."""
+    head = (p.get("head") or {}).get("sha") or ""
+    if not head:
+        raise ValueError("merged PR has no head sha")
+    pr = {"repo": repo, "number": p["number"], "url": m["url"]}
+    m["verified_at"] = max((r["at"] for r in verify_reviews(gh, pr, cfg) if r["result"] == "pass" and r["sha"] == head),
+                           default="")
+    if not m["verified_at"]:
+        return False
+    data = gh.graphql(AC_EDIT_QUERY, {"o": OWNER, "r": repo, "n": int(p["number"])})
+    node = data["repository"]["pullRequest"]
+    if node["headRefOid"] != head:
+        raise ValueError(f"GraphQL head {str(node['headRefOid'])[:12]} is not the merged head {head[:12]}")
+    m["body_edited_at"] = node.get("lastEditedAt") or ""
+    return not ac_body_edited(m)
+
+
+def ac_body_edited(m):
+    """True when the PR body changed at or after the trusted verdict (the same second counts as after)."""
+    return bool(m.get("body_edited_at")) and utc(m["body_edited_at"]) >= utc(m["verified_at"])
 
 
 def comment_record(c):
@@ -2478,6 +2732,14 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if scope and a["target"] != scope:
             log("skipped", action=a["type"], target=a["target"], reason="outside ORCHESTRATE_SCOPE")
             continue
+        if a["type"] == "ac_tick":
+            if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") != "apply":
+                log("skipped", action=a["type"], target=a["target"],
+                    reason=f"ORCHESTRATE_AC_TICK={cfg.get('ORCHESTRATE_AC_TICK', 'dry-run')}")
+                continue
+            n, failed = apply_ac_tick(a, gh, writes, max_writes, new_state, log)
+            writes, errors = writes + n, errors + failed
+            continue
         if a["type"] in ("merge_status", "infra_status"):
             # An entry in the status issue body (vws-deploy#416), not a comment: no gh write here.
             add_status_event(new_state, a, now)
@@ -2598,6 +2860,69 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
     return new_state, errors
+
+
+def apply_ac_tick(a, gh, writes, max_writes, new_state, log):
+    """One ac_tick (vws-deploy#486). The marker and the issue are read again, and the edit is computed from
+    the fresh body, so a concurrent edit is kept and a second tick for the same PR writes nothing. The marker
+    comment goes last: a crash before it is finished by the next tick (ticking is idempotent).
+    Returns (writes made, errors)."""
+    repo, number = a["target"].split("#")
+    base = f"repos/{OWNER}/{repo}/issues/{number}"
+    done = new_state.setdefault("ac_ticked", {})
+    try:
+        comments = gh.get_all(f"{base}/comments?per_page=100")
+        if any(ac_tick_marker(a["pr"]) in (c.get("body") or "") for c in comments):
+            done[a["pr"]] = a["merged_at"]
+            log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason="marker already posted")
+            return 0, 0
+        issue, _ = gh.get(base)
+    except (GhError, PermissionError) as e:
+        log("apply_failed", action="ac_tick", target=a["target"], pr=a["pr"], error=str(e))
+        return 0, 1
+    if not isinstance(issue, dict) or issue.get("state") != "open":
+        log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason="issue not open")
+        return 0, 0
+    body = issue.get("body") or ""
+    p = ac_tick_body(body, a["boxes"], a["pr_url"], a["merge_sha"])
+    if p["error"]:
+        log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason=p["error"])
+        return 0, 0
+    labels, close = {lb.get("name") for lb in issue.get("labels") or []}, not p["open"]
+    calls = []
+    if p["body"] != body:
+        calls.append(("PATCH", base, {"body": p["body"]}, body))
+    if not close and a.get("partial_label") and "ac-partial" not in labels:
+        calls.append(("POST", f"{base}/labels", {"labels": ["ac-partial"]}, None))
+    for lb in AC_TICK_LABELS:
+        if lb in labels and (close or lb == "ac-pending"):
+            calls.append(("DELETE", f"{base}/labels/{lb}", None, None))
+    if close:
+        calls.append(("PATCH", base, {"state": "closed", "state_reason": "completed"}, None))
+    calls.append(("POST", f"{base}/comments", {"body": ac_tick_comment(a, p["ticked"], p["open"], close)}, None))
+    if writes + len(calls) > max_writes:
+        log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason=f"write cap {max_writes} reached")
+        return 0, 0
+    n = 0
+    for method, path, payload, before in calls:
+        n += 1  # counted before the call: a failed write may still have landed
+        try:
+            if before is None:
+                gh.write(method, path, payload)
+            else:
+                gh.write(method, path, payload, before=before)
+        except GhError as e:
+            if label_absent(method, path, e):
+                continue
+            log("apply_failed", action="ac_tick", target=a["target"], pr=a["pr"], error=str(e))
+            return n, 1
+        except PermissionError as e:
+            log("apply_failed", action="ac_tick", target=a["target"], pr=a["pr"], error=str(e))
+            return n, 1
+    done[a["pr"]] = a["merged_at"]
+    log("ac_ticked", target=a["target"], pr=a["pr"], ticked=p["ticked"], open=[b["n"] for b in p["open"]], closed=close)
+    log("applied", action="ac_tick", target=a["target"], reason=a["reason"])
+    return n, 0
 
 
 def recheck_key(gh, repo, number, key):
@@ -2861,6 +3186,9 @@ BOARD_FIELDS = ("Status", "Owner", "Priority", "Depends on")
 BOARD_BATCH = 20  # aliased mutations per GraphQL request
 BOARD_PAUSE = 3  # seconds between write requests (secondary rate limit)
 BOARD_LABELS = ("blocked", "in-review", "deepseek")  # a change to these triggers a sync on the next tick
+# vws-deploy#486: when a PR body was last edited, so the AC tick trusts only a body vws-verify saw.
+AC_EDIT_QUERY = ("query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){"
+                 " pullRequest(number:$n){ lastEditedAt headRefOid } } }")
 BOARD_QUERY = (
     "query($p:ID!,$after:String){ rateLimit{ remaining resetAt } node(id:$p){ ... on ProjectV2{"
     " fields(first:50){ nodes{ ... on ProjectV2FieldCommon{ id name }"
