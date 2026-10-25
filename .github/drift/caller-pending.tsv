@@ -4,7 +4,8 @@
 # sha256; any other content is checked as a caller. Changing a full copy needs a vws-deploy PR that
 # updates its hash here first. Each rollout ends with a vws-deploy PR that deletes the repo's row.
 # c97a7ec6... is the full copy on vws-deploy main before #402 (814c1a5); vws-conformance carries its
-# own variant (pull_request_target, see docs/design/repo-guard-reusable.md).
+# own variant (pull_request_target, see docs/design/repo-guard-reusable.md). The exemption never covers a
+# file on both pull_request and pull_request_target (vws-deploy#505): drift-check reports that copy until it moves.
 vws-lib	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
 vws-proto	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)
 vws-iam	c97a7ec6fc048a8e24a3fcfda36961be0b96fa0c862f4ed2b2333808dc6ea16d	full copy until its caller PR lands (vws-deploy#402)

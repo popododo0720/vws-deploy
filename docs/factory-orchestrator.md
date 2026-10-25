@@ -256,7 +256,7 @@ A PR is eligible only when all of these hold:
 | not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status issue or the verify-wake thread | `opted_out` |
 | the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
 | a `verify-gate` check run from GitHub Actions (app id 15368) on the **current head**, and every such run is success, even when `main`'s protection does not require it | `verify_gate_missing`, `verify_gate_pending`, `verify_gate_<conclusion>` |
-| every required check of `main`'s rulesets and classic branch protection (bound to its app id) is success on the head, so a skipped or neutral required check never merges; the classic list comes from the `protection` field of `branches/main`, never the protection API (the PAT gets 403 there, #408) | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
+| every required check of `main`'s rulesets and classic branch protection (bound to its app id) is success on the head, so a skipped or neutral required check never merges. One exception (vws-deploy#505): a `skipped` run passes when another run of the same name and app (another workflow or event key) concluded `success` on the head, because a workflow on both `pull_request` and `pull_request_target` skips its `pull_request`-only job on the other event; a failure, a pending run or a `neutral` still blocks, and `verify-gate` keeps its own stricter rule above. The classic list comes from the `protection` field of `branches/main`, never the protection API (the PAT gets 403 there, #408) | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
 | every other check run on the head is success, skipped or neutral, and every commit status is success (AGENTS.md rule 5) | `check_failed:<name>`, `check_pending:<name>`, `status_<state>:<context>`, `combined_status_<state>`, `checks_truncated`, `statuses_truncated` |
 | `mergeable` is true and `mergeable_state` (GraphQL `mergeStateStatus`) is `clean`, GitHub's own verdict that counts main's protection and rulesets; `blocked`, `behind`, `dirty`, `unknown`, `unstable`, `has_hooks`, `draft` or no value never merge | `mergeable_unknown` (GitHub is still computing; next tick), `conflicts`, `mergeable_state:<state>` |
 | the head did not move during collect, and the PR is still open | `head_moved_during_collect`, `not_open` |
@@ -312,7 +312,7 @@ pre-merge head right after a merge. While a repo is locked, nothing in it merges
 
 **Status entries.** A red main (after our merge, or a red current main head in a repo with a
 candidate) adds **one** entry per repo and commit to "Recent entries" in the status issue body
-(`merge: main CI red in <repo> at <sha7> (key ...)`). A lock still waiting after
+(`merge: main CI red in <repo> at <sha7> (key ...)`). The `## Now` section also lists every `verify-approved` PR that Rule D did not merge this tick, with its head and up to five reasons (`- Verify-approved PRs not merged: N: <repo>#<n> `<sha7>` (`<reason>`, ...)`, at most 10 PRs; vws-deploy#505), so an approved PR that GitHub calls `clean` but Rule D parks is visible without the VM journal. Reasons are inline code with backticks, line breaks and angle brackets replaced (no reason can spell the block's own `<!-- ... -->` markers), since check names come from workflow files a PR can edit. A lock still waiting after
 `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS` (2) adds one `main CI wait timeout` entry and stays locked. The
 key (sha256 of kind, repo and commit) is kept in `state.json` and in the body, so there is no retry
 loop. No comment is posted. Entries are skipped while `ORCHESTRATE_SCOPE` is set.
@@ -501,7 +501,7 @@ The status lives in the **body** of one pinned issue, vws-deploy#415 (`ORCHESTRA
 orchestrator owns only one block in that body, from the line `<!-- vws-orchestrate:status -->` to the
 line `<!-- /vws-orchestrate:status -->`. Text above and below the block belongs to people: every write
 replaces only the block and keeps the rest byte for byte. Each apply tick renders the block (mode and switches,
-PRs waiting for verify and where wakes go, DeepSeek in flight, PRs waiting for a rebuild (rule R), merge locks, the last 20 merge and infra
+PRs waiting for verify and where wakes go, DeepSeek in flight, PRs waiting for a rebuild (rule R), verify-approved PRs Rule D did not merge and why (#505), merge locks, the last 20 merge and infra
 entries, and a "Failed ticks" section during a failure streak) and edits it with one
 `PATCH repos/popododo0720/vws-deploy/issues/415` only when the block's content changed: its
 `_Updated ... by run ..._` line and line endings are ignored when comparing, so a quiet tick writes

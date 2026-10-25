@@ -1028,3 +1028,49 @@ class HeadWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+DUAL = ("name: repo-guard\non:\n  pull_request:\n    types: [opened]\n  pull_request_target:\n    types: [opened]\n"
+        "jobs:\n  pr-hygiene:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n"
+        "    steps: [{run: 'true'}]\n")
+
+
+class DualEventWorkflows(unittest.TestCase):
+    """vws-deploy#505: a workflow on both pull_request and pull_request_target reports each job once per
+    event, so a job gated to one event leaves a skipped check run under the same name on the other.
+    Rule D parked vws-conformance#32/#33 on required_skipped:pr-hygiene that way. Every repo, every file,
+    pending full copies included."""
+
+    def issues(self, files, pending=None):
+        sha = hashlib.sha256(files[RG]).hexdigest() if pending is None else pending
+        return dc.ref_issues(files, home=False, full_copy=sha)
+
+    def test_pending_full_copy_with_both_events_is_flagged(self):
+        issues, pin = self.issues(tree(rg=DUAL))
+        self.assertIsNone(pin, "the full-copy exemption does not cover a dual-event file")
+        self.assertTrue(any("repo-guard.yml runs on both pull_request and pull_request_target" in i for i in issues), issues)
+
+    def test_every_trigger_form_is_flagged(self):
+        for on in ("[pull_request, pull_request_target]", "{pull_request: null, pull_request_target: null}"):
+            text = "on: %s\njobs:\n  test: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n" % on
+            with self.subTest(on=on):
+                out = self.issues(tree(ci_yml=text))[0]
+                self.assertTrue(any("ci.yml runs on both" in i for i in out), out)
+
+    def test_one_event_per_file_passes(self):
+        target = "on: pull_request_target\njobs:\n  label: {runs-on: ubuntu-latest, steps: [{run: 'true'}]}\n"
+        self.assertEqual(self.issues(tree(t_yml=target)), ([], "pending"))
+        self.assertEqual(dc.dual_event_issues(tree()), [])
+
+    def test_conformance_main_shape_is_flagged(self):
+        # The trigger block of vws-conformance's repo-guard.yml on main (744911a), unchanged.
+        text = ("name: repo-guard\n\non:\n  pull_request:\n    branches: [main]\n"
+                "    types: [opened, edited, reopened, synchronize, labeled, unlabeled]\n"
+                "  pull_request_target:\n    branches: [main]\n"
+                "    types: [opened, edited, reopened, synchronize, labeled, unlabeled]\n\n"
+                "jobs:\n  pr-hygiene:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n"
+                "    steps: [{run: 'true'}]\n")
+        self.assertEqual(dc.dual_event_issues(tree(rg=text)),
+                         [".github/workflows/repo-guard.yml runs on both pull_request and pull_request_target: a job "
+                          "gated to one event reports a skipped check under the same name on the other, and Rule D "
+                          "never merges a skipped required check (vws-deploy#505)"])
