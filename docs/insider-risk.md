@@ -27,6 +27,25 @@ Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `G
 - When the author bot, the verifier bot and the merger share one GitHub account, an "author and merger differ" check means nothing, so there is none. Design principles 1 and 5 are process rules.
 - Results on the GitHub side are seen only through the PR's CI. `direct-push-watch.yml` first runs only after it is merged to main.
 
+## PR size limit (#401)
+
+`scripts/guard-agents.sh pr-size BASE HEAD` keeps PRs small enough to review. Under the bootstrap rule (#439 class 4) the script lands first; a later PR adds the repo-guard pr-hygiene step that runs it, and until then nothing calls it.
+
+- It counts added plus deleted lines in `BASE...HEAD` with `git diff --numstat -M`, the same numbers as the PR's "Files changed" view. A pure rename counts as its changed lines only; binary files count 0.
+- The limit is the single `limit=N` line in `.github/pr-size.conf` (800), read from the PR's base commit. A PR that raises the limit therefore only affects later PRs, and a base without the file uses 800. Any other non-comment line, a second `limit=`, or a value that is not a positive integer fails the check.
+- These paths do not count (the check prints how many lines it excluded):
+  - generated: any file named `*.pb.go`
+  - vendored: anything under a `vendor/` or `third_party/` directory, at any depth
+  - lockfiles: any file named `go.sum`, `package-lock.json` or `pnpm-lock.yaml`
+  - testdata: anything under a `testdata/` directory, at any depth
+  Lookalikes such as `vendors/`, `go.sum.bak` or `pnpm-lock.yml` count. Change the list only in `pr_size_excluded` in the canonical script.
+- Override: a PR body line `Size-exception: <reason>` lets an oversized PR pass. The step prints a `::warning::` and adds the count, the limit and the reason to the job summary, so the reviewer sees it.
+  - The line must start the line, be spelled exactly `Size-exception:`, and sit outside HTML comments and code fences.
+  - The reason must have at least 10 characters after trimming, contain a letter, and not be a `<placeholder>`. "big" or "1234567890" are not reasons.
+  - Any other line that looks like an exception (lowercase, indented, `Size exception:`, empty or placeholder reason) fails the check even under the limit, so a typo never silently does nothing.
+- Limits: in vws-deploy a PR can edit the script in the same PR, like every check here. In other repos the identity check stops an edited copy. The body is author-controlled, so an exception is a visible claim for the reviewer, not an approval.
+- Rollout: first this script on main, then the pr-hygiene step in vws-deploy. Other repos sync `guard-agents.sh` and its sha256 (with `pr-size`) before they bump their repo-guard pin to a vws-deploy commit that runs this step; an older copy has no `pr-size` and fails the step with its usage message.
+
 ## The canonical guard-agents.sh and the identity check
 
 - The canonical copy is `scripts/guard-agents.sh` in vws-deploy, and its sha256 is pinned in `scripts/guard-agents.sh.sha256` (sha256sum format). Other repos copy both files byte for byte and do not edit them.
