@@ -97,6 +97,11 @@ finding and a passing fixture (AC2, AC5):
    Fixture: the #499 edited PR body and the #507 foreign claim comment.
 4. Class 3: fault-injecting GitHub fake and the restart-test lint for
    orchestrate. Fixture: the #495 close-then-marker failure.
+   Done in the class 3 PR: `tests/orchestrate/fault_gh.py` (the fake and `restart_check`),
+   `tests/orchestrate/test_restart.py` (restart tests for `apply`, `apply_ac_tick` and `board_write`),
+   the `tests/orchestrate/test_restart_lint.py` lint, and the fixtures in
+   `tests/orchestrate/fixtures/class3/`. `apply_ac_tick` now recovers a close that landed without its
+   marker, and its comment text comes from the issue body.
 5. Class 5: `AuthorizedPrincipal` type in vws-console-api, as a console-api PR
    with the 9-item checklist. AC2 lists `pr-hygiene`, `guard-agents.sh` and
    `vws-drift-check` as the places for checks, so the lead should confirm
