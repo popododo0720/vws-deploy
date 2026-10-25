@@ -31,7 +31,8 @@ import sys
 WATCHED = (".github/orchestrate", ".github/metrics", ".github/drift/repos.tsv")
 LOOP_DIR = ".github/orchestrate/box/"
 BASH_CHECK = (".github/orchestrate/box/orchestrate-loop.sh", ".github/orchestrate/box/orchestrate-ensure.sh")
-PY_CHECK = (".github/orchestrate/orchestrate.py", ".github/orchestrate/box/orchestrate-update.py")
+PY_CHECK = (".github/orchestrate/orchestrate.py", ".github/orchestrate/trusted_read.py",
+            ".github/orchestrate/box/orchestrate-update.py")
 PY_OPTIONAL = (".github/metrics/metrics.py",)
 MAIN_REF = "refs/remotes/origin/main"
 EXIT_REEXEC = 3

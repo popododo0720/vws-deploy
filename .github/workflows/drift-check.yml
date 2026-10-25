@@ -44,6 +44,8 @@ on:
       - tests/metrics/**
       - scripts/codex-round-count.sh
       - tests/codex/**
+      # trusted_read_lint.py reads every workflow (vws-deploy#439 class 1).
+      - .github/workflows/**
 
 permissions:
   contents: read
@@ -59,6 +61,10 @@ jobs:
           python3 -m unittest discover -s tests/drift -v
           python3 -m unittest discover -s tests/workflows -v
           shellcheck .github/ac/*.sh
+      # vws-deploy#439 class 1: no workflow reads event-snapshot labels or head_commit.committer, and
+      # orchestrate.py matches markers only through .github/orchestrate/trusted_read.py.
+      - name: Trusted-read lint
+        run: python3 .github/drift/trusted_read_lint.py
       # The factory orchestrator (vws-deploy#333) reuses repos.tsv; its tests use a stub gh, no network.
       - name: Orchestrator unit tests
         run: |
