@@ -4,6 +4,7 @@ and a workflow that calls a guard-agents.sh subcommand the base-branch script do
 Every failing fixture is a real file from a past finding; every passing fixture is the file that should
 have been there. Run: python3 -m unittest discover -s tests/drift
 """
+import base64
 import contextlib
 import hashlib
 import importlib.util
@@ -194,6 +195,58 @@ class Bootstrap(unittest.TestCase):
                                   "scripts/guard-agents.sh dispatch"])
         issues = dc.bootstrap_issues({RG: fixture("vws-console-api-6e550d3-repo-guard.yml")}, b"echo\n")
         self.assertEqual(len(issues), 1)
+
+
+class PrHeads(unittest.TestCase):
+    """The storage#140 finding was a PR head: class 4 is checked at every open PR head too."""
+
+    def run_heads(self, heads, script, pending=None, api=None, at_head=None):
+        saved = dc.content
+        dc.content = lambda owner, repo, path, ref=None: (at_head or {}).get((path, ref))
+        try:
+            return dc.class4_head_issues("o", "vws-storage", heads, script, repo_pins(), pending or {}, {}, api=api)
+        finally:
+            dc.content = saved
+
+    def test_storage_140_head_is_drift(self):
+        sha = "919f516c9873f24d36d9160a02d759009f840b25"
+        out = self.run_heads([("#140", sha, {VQ: fixture("vws-storage-140-919f516-verify-queue.yml")})],
+                             local("scripts/guard-agents.sh"))
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("#140 919f516c9873: verify-queue.yml differs from the vws-deploy pin"), out)
+
+    def test_clean_head_passes_and_check_english_is_read_at_the_head(self):
+        sha = "a" * 40
+        heads = [("#1", sha, {VQ: local(VQ)})]
+        self.assertEqual(self.run_heads(heads, local("scripts/guard-agents.sh")), [])
+        out = self.run_heads(heads, local("scripts/guard-agents.sh"), at_head={(CE, sha): b"drifted\n"})
+        self.assertEqual(len(out), 1)
+        self.assertIn("check-english.sh differs", out[0])
+
+    def test_head_callee_is_held_to_the_default_branch_script(self):
+        # A caller head pinned to a vws-deploy SHA whose repo-guard-verify-gate.yml calls verify-gate, on a
+        # base script without it: the console-api 15cdb241 situation in the reusable layout.
+        pin = "0123456789abcdef0123456789abcdef01234567"
+        vg = ".github/workflows/repo-guard-verify-gate.yml"
+
+        def api(path):
+            if path == f"repos/o/vws-deploy/contents/.github/workflows?ref={pin}":
+                return [{"path": vg, "type": "file"}]
+            if path == f"repos/o/vws-deploy/contents/{vg}?ref={pin}":
+                return {"content": base64.b64encode(local(vg)).decode()}
+            return None
+        saved = dc.ref_issues
+        dc.ref_issues = lambda files, home, full_copy: ([], pin)
+        try:
+            out = self.run_heads([("#9", "b" * 40, {VQ: local(VQ)})],
+                                 fixture("vws-console-api-15cdb241-guard-agents.sh"), api=api)
+        finally:
+            dc.ref_issues = saved
+        self.assertEqual(len(out), 1)
+        self.assertIn("vws-deploy repo-guard-verify-gate.yml calls guard-agents.sh verify-gate", out[0])
+
+    def test_unlistable_head_is_left_to_head_issues(self):
+        self.assertEqual(self.run_heads([("#2", "c" * 40, None)], local("scripts/guard-agents.sh")), [])
 
 
 if __name__ == "__main__":
