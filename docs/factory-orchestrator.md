@@ -45,7 +45,8 @@ Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
   (leading whitespace is allowed). The owner/repo form `Part of popododo0720/vws-x#N` is not
   accepted, and Rule D reports `part_of_owner_repo` instead of the generic `no_part_of`
   (vws-deploy#477). That `merge_check` note has a `hint` with the PR URL and the allowed forms, and a
-  verify-approved PR skipped for it gets one lead wake per head (vws-deploy#504). pr-hygiene
+  verify-approved PR skipped for it gets one lead wake per head; the status issue lists those PR URLs
+  with the same hint on the line `Merges skipped for part_of_owner_repo` (vws-deploy#504). pr-hygiene
   (`guard-agents.sh pr-body`) fails on any line that starts with `Part of <owner>/<repo>#N` with the same
   allowed forms, and `guard-agents.sh pr-normalize` rewrites this owner's form before a PR opens.
 - **Dependencies:** a body line `Depends on #N` or `Depends on vws-<repo>#N`, comma separated.
