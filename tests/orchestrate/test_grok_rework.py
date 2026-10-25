@@ -62,12 +62,13 @@ class Rule(unittest.TestCase):
         self.assertNotEqual(orch.grok_rework_key("vws-deploy#441", "a" * 40), orch.rebuild_key("vws-deploy#441", "a" * 40))
 
     def test_owners(self):
-        cases = {"grok label on the PR": (failed_pr(labels=("grok",), body="no link"), "grok"),
-                 "Agent: line": (failed_pr(body="Part of #395\n\nAgent: vws-platform"), "vws-platform")}
-        for why, (pr, owner) in cases.items():
+        # The body names the Grok dev bot (vws-deploy#506): a grok label resolves to the repo's bot.
+        cases = {"grok label on the PR": (failed_pr(labels=("grok",), body="no link"), "grok", "vws-platform"),
+                 "Agent: line": (failed_pr(body="Part of #395\n\nAgent: vws-platform"), "vws-platform", "vws-platform")}
+        for why, (pr, owner, bot) in cases.items():
             with self.subTest(why):
                 self.assertEqual([w["owner"] for w in wakes(run(snapshot(pr, grok_issue())))], [owner])
-                self.assertIn(f"`{owner}`", wakes(run(snapshot(pr, grok_issue())))[0]["body"])
+                self.assertIn(f"Owner `{bot}`", wakes(run(snapshot(pr, grok_issue())))[0]["body"])
 
     def test_no_wake(self):
         approved = failed_pr()
