@@ -166,6 +166,10 @@ DEFAULTS = {
     "ORCHESTRATE_DEEPSEEK_CAP": "2",
     "ORCHESTRATE_GROK_CAP": "1",
     "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
+    "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
+    # vws-deploy#411: GitHub logins the woken Grok bots comment as; only their comments (or a current
+    # assignee's) claim a woken issue. The Grok bots use the owner's gh login.
+    "ORCHESTRATE_GROK_LOGINS": OWNER,
     # GitHub logins whose [deepseek-dev] Done/Failed comments count: the poller's account (the VM PAT user).
     "ORCHESTRATE_DEEPSEEK_LOGINS": "popododo0720",
     # vws-deploy#433/#434: the login whose verify verdict comments and reviews count (besides an OWNER
@@ -267,6 +271,10 @@ def load_config(paths, environ):
     if not all(LOGIN_RE.fullmatch(x) for x in logins):
         raise ValueError("ORCHESTRATE_DEEPSEEK_LOGINS must be a comma-separated list of GitHub logins, "
                          f"got {cfg['ORCHESTRATE_DEEPSEEK_LOGINS']!r}")
+    grok_logins = [x.strip() for x in cfg["ORCHESTRATE_GROK_LOGINS"].split(",")]
+    if not all(LOGIN_RE.fullmatch(x) for x in grok_logins):
+        raise ValueError("ORCHESTRATE_GROK_LOGINS must be a comma-separated list of GitHub logins, "
+                         f"got {cfg['ORCHESTRATE_GROK_LOGINS']!r}")
     if not LOGIN_RE.fullmatch(cfg["ORCHESTRATE_VERIFY_LOGIN"]):
         raise ValueError(f"ORCHESTRATE_VERIFY_LOGIN must be one GitHub login, got {cfg['ORCHESTRATE_VERIFY_LOGIN']!r}")
     if not re.fullmatch(r"(?:[1-9][0-9]*)?", cfg["ORCHESTRATE_VERIFY_USER_ID"]):
@@ -289,7 +297,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_BOARD must be off, dry-run or apply")
     if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
         raise ValueError("ORCHESTRATE_BOARD_PROJECT must be a ProjectV2 node id (PVT_...)")
-    for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES", "ORCHESTRATE_GROK_CAP"):
+    for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES", "ORCHESTRATE_GROK_CAP",
+              "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     tf = cfg["ORCHESTRATE_BOARD_TOKEN_FILE"]
@@ -299,7 +308,8 @@ def load_config(paths, environ):
                  "ORCHESTRATE_WAKE_THREAD",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_BOARD_TOKEN_FILE",
-                 "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN", "ORCHESTRATE_VERIFY_USER_ID")
+                 "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_GROK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN",
+                 "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
         if k not in text_keys:
             float(cfg[k])  # raises ValueError on a bad number
@@ -391,7 +401,7 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/(issues|pulls)/[0-9]+(\?.*)?$"),
         re.compile(rf"^{_REPO}/pulls/[0-9]+/reviews(\?.*)?$"),
         re.compile(rf"^{_REPO}/pulls/[0-9]+/files(\?.*)?$"),  # Rule D serial set (vws-deploy#397)
-        re.compile(rf"^{_REPO}/issues/[0-9]+/(events|comments)(\?.*)?$"),
+        re.compile(rf"^{_REPO}/issues/[0-9]+/(events|comments|timeline)(\?.*)?$"),  # timeline: Rule G claims (#411)
         re.compile(rf"^{_REPO}/commits/[0-9a-f]{{40}}/(check-runs|status)(\?.*)?$"),
         re.compile(rf"^{_REPO}/branches/main$"),
         re.compile(rf"^{_REPO}/compare/[0-9a-f]{{40}}\.\.\.[0-9a-f]{{40}}\?per_page=1$"),
@@ -452,7 +462,7 @@ def get_class(path):
         return "other"
     if re.match(r"^/issues/[0-9]+/comments$|^/issues/comments$", rest):
         return "comments"
-    if re.match(r"^/issues/[0-9]+/events$", rest):
+    if re.match(r"^/issues/[0-9]+/(events|timeline)$", rest):
         return "events"
     for name in ("issues", "pulls", "labels"):
         if rest == f"/{name}" or rest.startswith(f"/{name}/"):
@@ -1834,19 +1844,75 @@ def grok_busy(items, held):
         if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)}
 
 
-def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
-    """Rule G (vws-deploy#378). Returns the grok_wake actions. Pure."""
+AC_CHECKBOX_RE = re.compile(r"^[ \t]*[-*] \[([ xX])\]", re.M)
+GROK_REARM_LABELS = ("ready", "grok")
+
+
+def grok_wake_key(k, it, key_times):
+    """The issue's current wake key: grok_key from its reset time, re-armed (vws-deploy#411) by a `ready` or
+    `grok` labeled event after the wake with that key was posted."""
+    key = grok_key(k, reset_time(it))
+    for _ in range(20):
+        at = key_times.get(key)
+        later = [utc(e["created_at"]) for e in it.get("events", []) if at and e.get("event") == "labeled"
+                 and (e.get("label") or {}).get("name") in GROK_REARM_LABELS and utc(e["created_at"]) > utc(at)]
+        if not later:
+            break
+        key = grok_key(k, max(later))
+    return key
+
+
+def grok_release(k, it, items, woken_at, now, timeout_min):
+    """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
+    grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
+    its body is ticked. grok_wake_expired: nothing claimed it (no assignee; no comment, assignment or linked
+    PR after the wake) within timeout_min of the wake. An unread timeline or wake time keeps the slot."""
+    act = it.get("grok_activity")
+    if act is None or not woken_at:
+        return "", {}
+    t0 = utc(woken_at)
+    merged = [p for p in act.get("prs", []) if p.get("merged_at") and utc(p["merged_at"]) > t0]
+    if merged:
+        return "grok_task_done", {"reason": "pr_merged", "pr": merged[0]["key"]}
+    boxes = AC_CHECKBOX_RE.findall(it.get("body") or "")
+    if boxes and " " not in boxes:
+        return "grok_task_done", {"reason": "ac_done"}
+    claimed = (it.get("assignees") or act.get("prs")
+               or any(utc(t) > t0 for t in act.get("comments", []) + act.get("assigned", []))
+               or any(p["is_pr"] and p["state"] == "open" and grok_link(p) == k for p in items.values()))
+    if claimed or now - t0 < timeout_min * 60:
+        return "", {}
+    return "grok_wake_expired", {"woken_at": woken_at, "timeout_min": timeout_min}
+
+
+def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_before=None, released=None):
+    """Rule G (vws-deploy#378). Returns the grok_wake actions. Pure. With now (vws-deploy#411), a woken task
+    that grok_release frees no longer holds a slot; it is recorded in released ({repo#N: key}) and noted
+    once per key (not when released_before already has it)."""
     items = snapshot["items"]
+    key_times = snapshot.get("status", {}).get("key_times", {})
     allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
     notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
-    held, queue, woken = grok_held(items), [], set()
+    held, queue, woken, freed = grok_held(items), [], set(), []
     for k in sorted(items):
         it = items[k]
         labels = set(it["labels"])
         if it["state"] != "open" or "grok" not in labels:
             continue
         unit = grok_link(it) or k  # a PR and the issue it is part of are one Grok task
-        if grok_key(k, reset_time(it)) in posted:
+        key = grok_wake_key(k, it, key_times)
+        if key in posted:
+            kind, details = ("", {}) if now is None else grok_release(
+                k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
+            if kind:  # done or never claimed: the slot is free, and the same key is never posted again
+                held.discard(unit)
+                held.discard(k)
+                freed.append(k)
+                if released is not None:
+                    released[k] = key
+                if (released_before or {}).get(k) != key:
+                    notes.append(dict({"kind": kind, "item": k, "key": key}, **details))
+                continue
             held.add(unit)  # woken and still open with grok: the slot stays taken
             woken.add(k)
             continue
@@ -1881,12 +1947,13 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes):
             notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
             continue
         busy.add(q[2])
-        it, key = items[q[4]], grok_key(q[4], reset_time(items[q[4]]))
+        it = items[q[4]]
+        key = grok_wake_key(q[4], it, key_times)
         slot = len(running) + len(actions) + 1
         # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
         # cannot rebuild their reset time from the bare issues list).
         actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key,
-                        "woken": sorted(woken), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
+                        "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
                         "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"])})
     return actions
 
@@ -2213,7 +2280,9 @@ def decide(snapshot, state, now, cfg, exclusions):
                         "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
-    actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes)
+    new_state["grok_released"] = {}
+    actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes,
+                           now, state.get("grok_released", {}), new_state["grok_released"])
     rebuild_actions, rebuild = decide_rebuild(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
     actions += rebuild_actions
     actions += grok_rework_actions
@@ -2313,6 +2382,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         wake_comments = gh.get_all(f"repos/{OWNER}/{wrepo}/issues/{wnum}/comments?per_page=100")
         snap["status"] = {"wakes": status_wakes(wake_comments),
                           "keys": sorted({m.group(1) for c in wake_comments for m in [KEY_RE.search(c.get("body") or "")] if m})}
+        snap["status"]["key_times"] = key_times(wake_comments)
     # The status issue body (ETag-cached: an unchanged issue costs a 304), compared before any edit.
     srepo, snum = status_target(cfg).split("#")
     issue, _ = gh.get(f"repos/{OWNER}/{srepo}/issues/{snum}")
@@ -2447,6 +2517,10 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         collect_merge(gh, snap, repo_names, state)
     if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") != "off":
         collect_ac(gh, snap, repo_names, state, now, cfg)
+    allow = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))[0]
+    for k, it in sorted(snap["items"].items()):
+        if k in allow and it["state"] == "open" and not it["is_pr"] and "grok" in it["labels"]:
+            it["grok_activity"] = grok_activity(gh, k, it, cfg)
     return snap
 
 
@@ -2531,6 +2605,47 @@ def ac_body_trusted(gh, repo, p, m, cfg):
 def ac_body_edited(m):
     """True when the PR body changed at or after the trusted verdict (the same second counts as after)."""
     return bool(m.get("body_edited_at")) and utc(m["body_edited_at"]) >= utc(m["verified_at"])
+
+
+def key_times(wake_comments):
+    """{idempotency key: created_at of the first wake-thread comment carrying it} (vws-deploy#411)."""
+    out = {}
+    for c in wake_comments:
+        m = KEY_RE.search(c.get("body") or "")
+        if m and c.get("created_at") and (m.group(1) not in out or c["created_at"] < out[m.group(1)]):
+            out[m.group(1)] = c["created_at"]
+    return out
+
+
+def grok_activity(gh, k, it, cfg):
+    """vws-deploy#411: what the issue's timeline shows of a claim, for grok_release. Only comments by a
+    ORCHESTRATE_GROK_LOGINS login or a current assignee count, and not ones that start with an HTML-comment
+    marker (the orchestrator's and bots' machine comments). Linked PRs are cross-references from PRs in an
+    OWNER repo whose `Part of` names this issue. None when the timeline cannot be read."""
+    logins = cfg.get("ORCHESTRATE_GROK_LOGINS", DEFAULTS["ORCHESTRATE_GROK_LOGINS"])
+    claimers = {x.strip().lower() for x in logins.split(",")} | {a.lower() for a in it.get("assignees") or []}
+    try:
+        timeline = gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/timeline?per_page=100")
+    except (GhError, PermissionError):
+        return None
+    act = {"comments": [], "assigned": [], "prs": []}
+    for e in timeline if isinstance(timeline, list) else []:
+        kind, at = e.get("event"), e.get("created_at") or ""
+        author = ((e.get("actor") or e.get("user") or {}).get("login") or "").lower()
+        if (kind == "commented" and at and author in claimers
+                and not (e.get("body") or "").lstrip().startswith("<!--")):
+            act["comments"].append(at)
+        elif kind == "assigned" and at:
+            act["assigned"].append(at)
+        elif kind == "cross-referenced":
+            src = (e.get("source") or {}).get("issue") or {}
+            source_repo = src.get("repository") or {}
+            repo = source_repo.get("name") or ""
+            owner = ((source_repo.get("owner") or {}).get("login") or "").lower()
+            if owner == OWNER.lower() and "pull_request" in src and repo and grok_link({"is_pr": True, "repo": repo, "body": src.get("body")}) == k:
+                act["prs"].append({"key": f"{repo}#{src.get('number')}",
+                                   "merged_at": (src.get("pull_request") or {}).get("merged_at") or ""})
+    return act
 
 
 def comment_record(c):
@@ -2787,7 +2902,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason="a comment with this key already exists")
                 continue
             why = recheck_grok(gh, a["item"], grok_repos, int(num(cfg, "ORCHESTRATE_GROK_CAP")),
-                               a.get("woken", ()), grok_posted)
+                               a.get("woken", ()), grok_posted, a.get("released", ()))
             if why:
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
@@ -3128,7 +3243,7 @@ def publish_status(gh, cfg, snapshot, body, log):
     return 0
 
 
-def recheck_grok(gh, k, repos, cap, woken=(), posted=()):
+def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=()):
     """Rule G, right before a wake is posted. Returns '' when it may go ahead, else why not.
     The issue must still be open, ready+grok, unassigned, without `deepseek` or an opt-out label.
     Then occupancy is rebuilt from a fresh read of the open grok items of every scoped repo: Grok work
@@ -3152,7 +3267,7 @@ def recheck_grok(gh, k, repos, cap, woken=(), posted=()):
                     "assignees": sorted(a["login"] for a in i.get("assignees") or [])}
     except (GhError, PermissionError, KeyError, TypeError) as e:
         return f"re-read failed: {scrub(e)}"
-    held = grok_held(fresh)
+    held = grok_held(fresh) - set(released)  # done or expired at decide time (#411), even if still assigned
     held |= {grok_link(fresh[w]) or w for w in woken if w in fresh and "grok" in fresh[w]["labels"]}
     held |= set(posted)
     unit = (grok_link(fresh[k]) if k in fresh else "") or k
