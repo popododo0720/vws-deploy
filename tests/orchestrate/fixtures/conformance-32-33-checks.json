@@ -1,0 +1,1263 @@
+{
+ "_source": "GitHub REST reads of vws-conformance#32 head f3927fa and #33 head d23ee5d on 2026-10-25 (vws-deploy#505): check-runs, actions/runs?head_sha and the combined status, reduced to the fields orchestrate.merge_info reads. The pull fields are the pre-merge state the issue records (open, mergeable_state clean); required is the vws-main ruleset.",
+ "prs": {
+  "32": {
+   "check_runs": {
+    "check_runs": [
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747189059
+      },
+      "completed_at": "2026-10-24T18:25:56Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951285297,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:25:56Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747189059
+      },
+      "completed_at": "2026-10-24T18:25:56Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951285219,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:25:56Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747189059
+      },
+      "completed_at": "2026-10-24T18:26:04Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951284026,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:25:57Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747187501
+      },
+      "completed_at": "2026-10-24T18:25:55Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951281701,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:25:55Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747187501
+      },
+      "completed_at": "2026-10-24T18:26:06Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951280915,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:25:57Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108747187501
+      },
+      "completed_at": "2026-10-24T18:26:00Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120951280790,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:25:57Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744940173
+      },
+      "completed_at": "2026-10-24T18:15:08Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948934662,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:15:46Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744940173
+      },
+      "completed_at": "2026-10-24T18:15:08Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948934630,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:15:46Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744940173
+      },
+      "completed_at": "2026-10-24T18:15:57Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948933489,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:15:48Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744939023
+      },
+      "completed_at": "2026-10-24T18:15:07Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948779389,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:15:08Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744939023
+      },
+      "completed_at": "2026-10-24T18:15:16Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948777689,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:15:09Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744939023
+      },
+      "completed_at": "2026-10-24T18:15:13Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948777539,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:15:09Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 5313004
+      },
+      "check_suite": {
+       "id": 108252487402
+      },
+      "completed_at": "2026-10-24T18:15:02Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120948754570,
+      "name": "vws-verify",
+      "started_at": "2026-10-24T18:15:02Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741720094
+      },
+      "completed_at": "2026-10-24T17:59:38Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945166203,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T17:59:39Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741720094
+      },
+      "completed_at": "2026-10-24T17:59:38Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945166174,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T17:59:39Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741720094
+      },
+      "completed_at": "2026-10-24T17:59:44Z",
+      "conclusion": "failure",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945164828,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T17:59:40Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741719347
+      },
+      "completed_at": "2026-10-24T17:59:38Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945164222,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T17:59:38Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741719347
+      },
+      "completed_at": "2026-10-24T17:59:46Z",
+      "conclusion": "failure",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945163462,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T17:59:40Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108741719347
+      },
+      "completed_at": "2026-10-24T17:59:44Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120945163314,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T17:59:40Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511849
+      },
+      "completed_at": "2026-10-23T10:32:37Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368299649,
+      "name": "verify-reset",
+      "started_at": "2026-10-23T10:32:37Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511849
+      },
+      "completed_at": "2026-10-23T10:32:37Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368299029,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-23T10:32:37Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511849
+      },
+      "completed_at": "2026-10-23T10:34:08Z",
+      "conclusion": "failure",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368297430,
+      "name": "verify-gate",
+      "started_at": "2026-10-23T10:34:02Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252512389
+      },
+      "completed_at": "2026-10-23T10:34:07Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368295403,
+      "name": "english",
+      "started_at": "2026-10-23T10:34:00Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511419
+      },
+      "completed_at": "2026-10-23T10:35:49Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368294812,
+      "name": "test",
+      "started_at": "2026-10-23T10:33:46Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252510307
+      },
+      "completed_at": "2026-10-23T10:32:36Z",
+      "conclusion": "skipped",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368294762,
+      "name": "verify-reset",
+      "started_at": "2026-10-23T10:32:36Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511550
+      },
+      "completed_at": "2026-10-23T10:35:08Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368294583,
+      "name": "local-fake",
+      "started_at": "2026-10-23T10:32:48Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252511419
+      },
+      "completed_at": "2026-10-23T10:33:37Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368294483,
+      "name": "lint",
+      "started_at": "2026-10-23T10:33:18Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252510307
+      },
+      "completed_at": "2026-10-23T10:33:51Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368293783,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-23T10:33:44Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252510307
+      },
+      "completed_at": "2026-10-23T10:33:34Z",
+      "conclusion": "failure",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368293482,
+      "name": "verify-gate",
+      "started_at": "2026-10-23T10:33:30Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252487215
+      },
+      "completed_at": "2026-10-23T10:34:16Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368266065,
+      "name": "lint",
+      "started_at": "2026-10-23T10:33:57Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108252487215
+      },
+      "completed_at": "2026-10-23T10:35:49Z",
+      "conclusion": "success",
+      "head_sha": "f3927fa171543e857b93f82bb991d5502a505618",
+      "id": 120368265744,
+      "name": "test",
+      "started_at": "2026-10-23T10:33:39Z",
+      "status": "completed"
+     }
+    ],
+    "total_count": 31
+   },
+   "pull": {
+    "base": {
+     "ref": "main"
+    },
+    "draft": false,
+    "head": {
+     "sha": "f3927fa171543e857b93f82bb991d5502a505618"
+    },
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "merged": false,
+    "number": 32,
+    "state": "open",
+    "title": "process: add the incident issue form"
+   },
+   "status": {
+    "state": "pending",
+    "statuses": [],
+    "total_count": 0
+   },
+   "workflow_runs": {
+    "workflow_runs": [
+     {
+      "check_suite_id": 108747189059,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108747187501,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108744939023,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108744940173,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108741720094,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108741719347,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108252511419,
+      "event": "pull_request",
+      "path": ".github/workflows/ci.yml"
+     },
+     {
+      "check_suite_id": 108252512389,
+      "event": "pull_request",
+      "path": ".github/workflows/english.yml"
+     },
+     {
+      "check_suite_id": 108252511849,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108252510307,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108252511550,
+      "event": "pull_request",
+      "path": ".github/workflows/conformance.yml"
+     },
+     {
+      "check_suite_id": 108252487215,
+      "event": "push",
+      "path": ".github/workflows/ci.yml"
+     }
+    ]
+   }
+  },
+  "33": {
+   "check_runs": {
+    "check_runs": [
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744473719
+      },
+      "completed_at": "2026-10-24T18:12:50Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948232217,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:12:50Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744473719
+      },
+      "completed_at": "2026-10-24T18:12:50Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948232050,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:12:50Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744473719
+      },
+      "completed_at": "2026-10-24T18:13:02Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948231024,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:12:52Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744472641
+      },
+      "completed_at": "2026-10-24T18:12:49Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948230020,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T18:12:50Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744472641
+      },
+      "completed_at": "2026-10-24T18:12:58Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948229062,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T18:12:52Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108744472641
+      },
+      "completed_at": "2026-10-24T18:13:00Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120948228882,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T18:12:51Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571875
+      },
+      "completed_at": "2026-10-24T11:28:42Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860727273,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:28:42Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571875
+      },
+      "completed_at": "2026-10-24T11:28:42Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860727128,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:28:42Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571875
+      },
+      "completed_at": "2026-10-24T11:29:03Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860726630,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:28:55Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571209
+      },
+      "completed_at": "2026-10-24T11:28:41Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860726170,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:28:42Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571209
+      },
+      "completed_at": "2026-10-24T11:29:03Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860725150,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:28:55Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571209
+      },
+      "completed_at": "2026-10-24T11:29:01Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860724974,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:28:54Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664571159
+      },
+      "completed_at": "2026-10-24T11:28:53Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860724726,
+      "name": "english",
+      "started_at": "2026-10-24T11:28:47Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 5313004
+      },
+      "check_suite": {
+       "id": 108656115020
+      },
+      "completed_at": "2026-10-24T11:28:22Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860665826,
+      "name": "vws-verify",
+      "started_at": "2026-10-24T11:28:22Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278882
+      },
+      "completed_at": "2026-10-24T11:27:00Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860515946,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:27:36Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278882
+      },
+      "completed_at": "2026-10-24T11:27:00Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860515944,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:27:36Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278882
+      },
+      "completed_at": "2026-10-24T11:27:43Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860515232,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:27:38Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278039
+      },
+      "completed_at": "2026-10-24T11:26:59Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860404118,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:26:59Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278039
+      },
+      "completed_at": "2026-10-24T11:27:08Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860403435,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:27:01Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108664278039
+      },
+      "completed_at": "2026-10-24T11:27:08Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120860403384,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:27:01Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661641898
+      },
+      "completed_at": "2026-10-24T11:12:20Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857500935,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:12:20Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661641898
+      },
+      "completed_at": "2026-10-24T11:12:20Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857500739,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:12:20Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661641898
+      },
+      "completed_at": "2026-10-24T11:12:26Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857499586,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:12:21Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661640931
+      },
+      "completed_at": "2026-10-24T11:12:19Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857498418,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T11:12:19Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661640931
+      },
+      "completed_at": "2026-10-24T11:12:27Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857497747,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T11:12:21Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108661640931
+      },
+      "completed_at": "2026-10-24T11:12:28Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120857497530,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T11:12:21Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124921
+      },
+      "completed_at": "2026-10-24T10:41:32Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851625319,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T10:41:33Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124921
+      },
+      "completed_at": "2026-10-24T10:41:32Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851625109,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T10:41:33Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124921
+      },
+      "completed_at": "2026-10-24T10:41:37Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851624473,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656125110
+      },
+      "completed_at": "2026-10-24T10:43:19Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851624171,
+      "name": "test",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124664
+      },
+      "completed_at": "2026-10-24T10:41:32Z",
+      "conclusion": "skipped",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851624116,
+      "name": "verify-reset",
+      "started_at": "2026-10-24T10:41:32Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656125110
+      },
+      "completed_at": "2026-10-24T10:42:09Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851624111,
+      "name": "lint",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124664
+      },
+      "completed_at": "2026-10-24T10:41:37Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851623736,
+      "name": "pr-hygiene",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124772
+      },
+      "completed_at": "2026-10-24T10:44:44Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851623723,
+      "name": "local-fake",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124664
+      },
+      "completed_at": "2026-10-24T10:41:38Z",
+      "conclusion": "failure",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851623650,
+      "name": "verify-gate",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656124700
+      },
+      "completed_at": "2026-10-24T10:41:40Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851623642,
+      "name": "english",
+      "started_at": "2026-10-24T10:41:34Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656116862
+      },
+      "completed_at": "2026-10-24T10:41:46Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851615684,
+      "name": "lint",
+      "started_at": "2026-10-24T10:41:31Z",
+      "status": "completed"
+     },
+     {
+      "app": {
+       "id": 15368
+      },
+      "check_suite": {
+       "id": 108656116862
+      },
+      "completed_at": "2026-10-24T10:43:37Z",
+      "conclusion": "success",
+      "head_sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381",
+      "id": 120851615669,
+      "name": "test",
+      "started_at": "2026-10-24T10:41:31Z",
+      "status": "completed"
+     }
+    ],
+    "total_count": 38
+   },
+   "pull": {
+    "base": {
+     "ref": "main"
+    },
+    "draft": false,
+    "head": {
+     "sha": "d23ee5d27e9d1ded824b2405f17a7b0422256381"
+    },
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "merged": false,
+    "number": 33,
+    "state": "open",
+    "title": "ci: /correct loop section, guard.sh wiring and guard-agents.sh sync"
+   },
+   "status": {
+    "state": "pending",
+    "statuses": [],
+    "total_count": 0
+   },
+   "workflow_runs": {
+    "workflow_runs": [
+     {
+      "check_suite_id": 108744472641,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108744473719,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108664571209,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108664571875,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108664571159,
+      "event": "pull_request",
+      "path": ".github/workflows/english.yml"
+     },
+     {
+      "check_suite_id": 108664278039,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108664278882,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108661641898,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108661640931,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108656124921,
+      "event": "pull_request_target",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108656124664,
+      "event": "pull_request",
+      "path": ".github/workflows/repo-guard.yml"
+     },
+     {
+      "check_suite_id": 108656124700,
+      "event": "pull_request",
+      "path": ".github/workflows/english.yml"
+     },
+     {
+      "check_suite_id": 108656125110,
+      "event": "pull_request",
+      "path": ".github/workflows/ci.yml"
+     },
+     {
+      "check_suite_id": 108656124772,
+      "event": "pull_request",
+      "path": ".github/workflows/conformance.yml"
+     },
+     {
+      "check_suite_id": 108656116862,
+      "event": "push",
+      "path": ".github/workflows/ci.yml"
+     }
+    ]
+   }
+  }
+ },
+ "required": [
+  {
+   "context": "english",
+   "integration_id": 15368
+  },
+  {
+   "context": "lint",
+   "integration_id": 15368
+  },
+  {
+   "context": "pr-hygiene",
+   "integration_id": 15368
+  },
+  {
+   "context": "test",
+   "integration_id": 15368
+  },
+  {
+   "context": "verify-gate",
+   "integration_id": 15368
+  },
+  {
+   "context": "vws-verify",
+   "integration_id": 5313004
+  }
+ ]
+}
