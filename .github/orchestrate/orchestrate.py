@@ -1265,10 +1265,16 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
     return actions
 
 
+# vws-deploy#506: body regions whose `Agent:` lines are examples or hidden text, not the owner: code
+# fences (an unclosed fence runs to the end, as in CommonMark) and HTML comments.
+HIDDEN_RE = re.compile(r"^[ \t]*(```|~~~).*?(?:^[ \t]*\1[^\n]*$|\Z)|<!--.*?(?:-->|\Z)", re.M | re.S)
+
+
 def agent_of(body):
-    """The PR body's 'Agent:' value: logged on merge, and the owner a rebuild wake names (Rule R).
+    """The body's 'Agent:' value: logged on merge, the owner a rebuild wake names (Rule R), and the owner
+    a grok-wake names (vws-deploy#506). CRLF line ends count; lines in code fences or HTML comments do not.
     No eligibility rule depends on it."""
-    m = AGENT_RE.search(body or "")
+    m = AGENT_RE.search(HIDDEN_RE.sub("", (body or "").replace("\r\n", "\n")))
     return m.group(1)[:64] if m else ""
 
 
