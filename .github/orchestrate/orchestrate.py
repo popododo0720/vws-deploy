@@ -578,11 +578,21 @@ class Gh:
         return json.loads(body) if body.strip() else None
 
     def graphql(self, query, variables, write=False):
-        """Projects v2 (board_sync) only. A write must be a batch of the three item mutations, built from
+        """Projects v2 (board_sync), plus the AC tick's read-only AC_EDIT_QUERY. A write must be a batch of the three item mutations, built from
         the BOARD_* templates with every value in variables; anything else is refused before the call."""
         if write:
             if not board_write_ok(query):
                 raise PermissionError("graphql mutation not allowed")
+        elif query == AC_EDIT_QUERY:
+            # vws-deploy#486: one PR's body edit time, read on the box login like the REST reads.
+            status, _headers, body = self._run(["gh", "api", "-i", "graphql", "--input", "-"],
+                                               json.dumps({"query": query, "variables": variables}))
+            self.stats["get"] += 1
+            self._count_get("graphql", status)
+            out = json.loads(body) if body.strip() else {}
+            if status != 200 or not isinstance(out, dict) or out.get("errors") or "data" not in out:
+                raise GhError(status, scrub(json.dumps(out.get("errors") if isinstance(out, dict) else body[:200])[:300]))
+            return out["data"]
         elif query != BOARD_QUERY:
             raise PermissionError("graphql query not allowed")
         if not self.board_token:
@@ -1177,7 +1187,8 @@ def ac_tick_comment(a, ticked, still_open, close):
 
 def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
     """Pure: one ac_tick action per PR merged since the rule started whose `Part of` issue has the boxes its
-    `AC: <n>` lines name (vws-deploy#486). Oldest merge first. new_state keeps the start time and the PRs
+    `AC: <n>` lines name (vws-deploy#486), when vws-verify approved the merged head and the body was not edited
+    since (ac_unverified / ac_body_edited otherwise). Oldest merge first. new_state keeps the start time and the PRs
     already handled (marker seen or applied), pruned after the comment window."""
     if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") == "off":
         return []
@@ -1205,6 +1216,10 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
             continue
         ac = parse_ac(m["body"])
         kind = "ac_unparsed" if ac["error"] else "ac_none" if not ac["boxes"] else ""
+        if not kind and not m.get("verified_at"):
+            kind = "ac_unverified"  # no trusted vws-verify approval of the merged head: no body is trusted
+        if not kind and ac_body_edited(m):
+            kind = "ac_body_edited"  # edited after the verdict (or the merge): may retarget, so tick nothing
         if not kind and m.get("marker_seen"):
             kind = "ac_tick_done"
         if not kind and m["issue_state"] != "open":
@@ -2459,7 +2474,8 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
                 continue
             m = {"pr": k, "url": p.get("html_url") or "", "merged_at": p["merged_at"],
                  "merge_sha": p.get("merge_commit_sha") or "", "body": p.get("body") or "", "issue": "",
-                 "issue_state": "", "issue_body": "", "issue_labels": [], "marker_seen": False}
+                 "issue_state": "", "issue_body": "", "issue_labels": [], "marker_seen": False,
+                 "verified_at": "", "body_edited_at": ""}
             ref = PART_OF_RE.search(m["body"])
             if ref:
                 irepo, inum = ref.group(1).split("#")
@@ -2467,6 +2483,12 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
             snap["ac_merged"].append(m)
             if not m["issue"] or not parse_ac(m["body"])["boxes"]:
                 continue  # decide notes it; nothing to read
+            try:
+                if not ac_body_trusted(gh, name, p, m, cfg):
+                    continue  # decide notes ac_unverified / ac_body_edited; the edited body's target is never read
+            except (GhError, PermissionError, KeyError, TypeError, AttributeError, ValueError) as e:
+                m["error"] = scrub(e)
+                continue
             irepo, inum = m["issue"].split("#")
             if irepo not in live:
                 m["error"] = f"{irepo} is not a watched vws repo"
@@ -2481,6 +2503,32 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
                     m["error"] = f"{m['issue']} is a pull request"
             except (GhError, PermissionError, KeyError, TypeError, AttributeError) as e:
                 m["error"] = scrub(e)
+
+
+def ac_body_trusted(gh, repo, p, m, cfg):
+    """vws-deploy#486, review 5640903019: sets m["verified_at"] (the newest trusted vws-verify approval of the
+    merged head) and m["body_edited_at"] (the body's last edit, GraphQL lastEditedAt). True only when the body
+    was not edited at or after that approval, so `Part of` and the AC lines are the ones vws-verify saw; an
+    edit after the verdict or after the merge cannot retarget the tick. Raises on a read error."""
+    head = (p.get("head") or {}).get("sha") or ""
+    if not head:
+        raise ValueError("merged PR has no head sha")
+    pr = {"repo": repo, "number": p["number"], "url": m["url"]}
+    m["verified_at"] = max((r["at"] for r in verify_reviews(gh, pr, cfg) if r["result"] == "pass" and r["sha"] == head),
+                           default="")
+    if not m["verified_at"]:
+        return False
+    data = gh.graphql(AC_EDIT_QUERY, {"o": OWNER, "r": repo, "n": int(p["number"])})
+    node = data["repository"]["pullRequest"]
+    if node["headRefOid"] != head:
+        raise ValueError(f"GraphQL head {str(node['headRefOid'])[:12]} is not the merged head {head[:12]}")
+    m["body_edited_at"] = node.get("lastEditedAt") or ""
+    return not ac_body_edited(m)
+
+
+def ac_body_edited(m):
+    """True when the PR body changed at or after the trusted verdict (the same second counts as after)."""
+    return bool(m.get("body_edited_at")) and utc(m["body_edited_at"]) >= utc(m["verified_at"])
 
 
 def comment_record(c):
@@ -3137,6 +3185,9 @@ BOARD_FIELDS = ("Status", "Owner", "Priority", "Depends on")
 BOARD_BATCH = 20  # aliased mutations per GraphQL request
 BOARD_PAUSE = 3  # seconds between write requests (secondary rate limit)
 BOARD_LABELS = ("blocked", "in-review", "deepseek")  # a change to these triggers a sync on the next tick
+# vws-deploy#486: when a PR body was last edited, so the AC tick trusts only a body vws-verify saw.
+AC_EDIT_QUERY = ("query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){"
+                 " pullRequest(number:$n){ lastEditedAt headRefOid } } }")
 BOARD_QUERY = (
     "query($p:ID!,$after:String){ rateLimit{ remaining resetAt } node(id:$p){ ... on ProjectV2{"
     " fields(first:50){ nodes{ ... on ProjectV2FieldCommon{ id name }"
