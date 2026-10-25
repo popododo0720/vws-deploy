@@ -16,13 +16,21 @@ URL = "https://github.com/popododo0720/vws-deploy/pull/500"
 ISSUE = ("Context.\n\n## Acceptance criteria\n\n- [ ] AC1: one\n- [ ] AC2: two\n  more of two\n- [ ] AC3: three\n\n"
          "## Notes\n\n- [ ] not a criterion\n")
 ON = dict(CFG, ORCHESTRATE_AC_TICK="apply")
+HEAD = "b" * 40
+VERIFIED = "2026-01-02T00:00:00Z"
+
+
+def verdict(at, login=orch.VERIFY_LOGIN, sha=HEAD, state="APPROVED"):
+    return {"id": 9, "html_url": URL, "user": {"login": login, "id": 1}, "submitted_at": at, "commit_id": sha,
+            "state": state, "body": "vws-verify: PASS"}
 
 
 def merged(n=500, repo="vws-deploy", body="Part of #7\n\nAC: 1\nAC: 3\n", issue="vws-deploy#7", issue_body=ISSUE,
-           issue_state="open", labels=(), marker=False, hours_ago=1):
+           issue_state="open", labels=(), marker=False, hours_ago=1, verified_at=None, body_edited_at=""):
     return {"pr": f"{repo}#{n}", "url": f"https://github.com/popododo0720/{repo}/pull/{n}", "merged_at": ts(hours_ago),
             "merge_sha": SHA, "body": body, "issue": issue, "issue_state": issue_state, "issue_body": issue_body,
-            "issue_labels": list(labels), "marker_seen": marker}
+            "issue_labels": list(labels), "marker_seen": marker,
+            "verified_at": ts(hours_ago + 1) if verified_at is None else verified_at, "body_edited_at": body_edited_at}
 
 
 def snap(*m, labels=("ac-partial", "ac-pending")):
@@ -121,6 +129,35 @@ class Rule(unittest.TestCase):
                 acts, notes, _ = plan(snap(m))
                 self.assertEqual(acts, [])
                 self.assertIn(kind, [n["kind"] for n in notes])
+
+    def test_malicious_body_edit_after_verify_ticks_and_closes_nothing(self):
+        """Review 5640903019: a PR body edited after the trusted vws-verify verdict for the merged head (here
+        after the merge too) retargets `Part of` at another watched issue and lists every box. Nothing ticks or
+        closes; the edited body is never trusted."""
+        last = orch.ac_tick_body(ISSUE, [1, 3], URL, SHA)["body"]
+        for edited in (ts(0.5), ts(2)):  # after the merge; after the verdict, before the merge
+            with self.subTest(edited=edited):
+                evil = merged(body="Part of #8\nAC: 1\nAC: 2\nAC: 3\n", issue="vws-deploy#8", issue_body=last,
+                              verified_at=ts(3), body_edited_at=edited)
+                acts, notes, st = plan(snap(evil))
+                self.assertEqual(acts, [])
+                self.assertIn("ac_body_edited", [n["kind"] for n in notes])
+                self.assertIn("vws-deploy#500", st["ac_ticked"], "handled once, not re-noted every tick")
+
+    def test_body_edit_at_the_verdict_second_counts_as_after(self):
+        acts, notes, _ = plan(snap(merged(verified_at=ts(2), body_edited_at=ts(2))))
+        self.assertEqual(acts, [])
+        self.assertIn("ac_body_edited", [n["kind"] for n in notes])
+
+    def test_body_edited_before_the_verdict_still_ticks(self):
+        acts, _, _ = plan(snap(merged(verified_at=ts(2), body_edited_at=ts(3))))
+        self.assertEqual([a["target"] for a in acts], ["vws-deploy#7"])
+
+    def test_no_trusted_verdict_for_the_merged_head_ticks_nothing(self):
+        acts, notes, st = plan(snap(merged(verified_at="")))
+        self.assertEqual(acts, [])
+        self.assertIn("ac_unverified", [n["kind"] for n in notes])
+        self.assertIn("vws-deploy#500", st["ac_ticked"])
 
     def test_already_ticked_or_before_start_is_skipped(self):
         acts, _, _ = plan(snap(merged()), state={"ac_tick_since": ts(48), "ac_ticked": {"vws-deploy#500": ts(1)}})
@@ -244,13 +281,33 @@ class GhGuard(unittest.TestCase):
         with self.assertRaises(PermissionError):
             gh.write("DELETE", f"{path}/labels/ready")
 
+    def test_edit_time_query_is_a_read_on_the_box_login(self):
+        seen = []
+
+        def runner(args, **k):
+            seen.append((args, k["input"], "GH_TOKEN" in k["env"]))
+            return subprocess.CompletedProcess(args, 0, 'HTTP/2.0 200 OK\n\n{"data": {}}', "")
+        gh = orch.Gh(runner=runner)  # no board token set
+        self.assertEqual(gh.graphql(orch.AC_EDIT_QUERY, {"o": "popododo0720", "r": "vws-deploy", "n": 5}), {})
+        self.assertEqual(seen[0][0][:4], ["gh", "api", "-i", "graphql"])
+        self.assertFalse(seen[0][2], "no board token: the box login reads it")
+        self.assertEqual(json.loads(seen[0][1])["query"], orch.AC_EDIT_QUERY)
+        for q in ("query{ viewer{ login } }", orch.AC_EDIT_QUERY.replace("lastEditedAt", "body")):
+            with self.subTest(q=q[:30]), self.assertRaises(PermissionError):
+                gh.graphql(q, {})
+        with self.assertRaises(PermissionError):
+            gh.graphql(orch.AC_EDIT_QUERY, {}, write=True)
+
 
 class CollectTick(test_runtime.Env):
-    def routes(self, issue_comments=()):
+    def routes(self, issue_comments=(), reviews=None, edited_at=None, head_ref=None):
         r = test_runtime.routes()
+        r[f"{O}/vws-deploy/pulls/500/reviews"] = {"body": [verdict(VERIFIED)] if reviews is None else reviews}
+        r["graphql"] = {"body": {"data": {"repository": {"pullRequest": {
+            "lastEditedAt": edited_at, "headRefOid": HEAD if head_ref is None else head_ref}}}}}
         r[f"{O}/vws-deploy/pulls?state=closed&sort=updated&direction=desc&per_page=100"] = {"body": [
             {"number": 500, "html_url": URL, "merged_at": test_runtime.NOWISO, "merge_commit_sha": SHA,
-             "base": {"ref": "main"}, "body": "Part of #7\n\nAC: 1\nAC: 3\n"},
+             "base": {"ref": "main"}, "head": {"sha": HEAD}, "body": "Part of #7\n\nAC: 1\nAC: 3\n"},
             {"number": 499, "html_url": URL[:-3] + "499", "merged_at": None, "merge_commit_sha": SHA,
              "base": {"ref": "main"}, "body": "Part of #7\n\nAC: 2\n"}]}
         r[f"{O}/vws-deploy/issues/7"] = {"body": {"state": "open", "body": ISSUE, "labels": []}}
@@ -277,6 +334,55 @@ class CollectTick(test_runtime.Env):
         self.assertEqual(len(self.ac_writes()), 3, "the second tick writes nothing for the same PR")
         self.assertFalse([c for c in self.calls()[before:] if c["path"].startswith(f"{O}/vws-deploy/issues/7")],
                          "a ticked PR is not read again")
+
+    def ac_tick_state(self):
+        os.makedirs(self.paths.state, exist_ok=True)
+        with open(self.paths.state_file, "w") as f:
+            json.dump({"ac_tick_since": "2026-01-01T00:00:00Z"}, f)
+
+    def notes(self):
+        try:
+            return [e.get("kind") for e in self.log() if e["event"] == "note"]
+        except FileNotFoundError:
+            return []  # no tick yet
+
+    def test_malicious_body_edit_after_verify_ticks_and_closes_nothing(self):
+        """End to end, apply mode: the body was edited a minute after the trusted verdict for the merged head
+        (the issue would close on its last box). No write and no read touch issue 7."""
+        self.ac_tick_state()
+        self.routes(edited_at="2026-01-02T00:01:00Z")
+        r = json.load(open(self.routes_file))
+        r[f"{O}/vws-deploy/issues/7"] = {"body": {"state": "open", "labels": [],
+                                                  "body": orch.ac_tick_body(ISSUE, [2], URL, SHA)["body"]}}
+        self.set_routes(r)
+        env = {"ORCHESTRATE_MODE": "apply", "ORCHESTRATE_AC_TICK": "apply", "ORCHESTRATE_MAX_WRITES": "20"}
+        self.assertEqual(self.tick(**env), 0)
+        self.assertEqual(self.ac_writes(), [])
+        self.assertFalse([c for c in self.calls() if c["path"].startswith(f"{O}/vws-deploy/issues/7")])
+        self.assertIn("ac_body_edited", self.notes())
+        self.assertEqual(self.tick(**env), 0)
+        self.assertEqual(self.ac_writes(), [], "a later tick does not retry it")
+
+    def test_untrusted_or_other_head_verdicts_tick_nothing(self):
+        cases = {"other login": [verdict(VERIFIED, login="mallory")],
+                 "other head": [verdict(VERIFIED, sha="c" * 40)],
+                 "fail verdict": [verdict(VERIFIED, state="CHANGES_REQUESTED")],
+                 "none": []}
+        for name, reviews in cases.items():
+            with self.subTest(name):
+                self.ac_tick_state()
+                self.routes(reviews=reviews)
+                before, logged = len(self.writes()), len(self.notes())
+                self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_AC_TICK="apply"), 0)
+                self.assertEqual([c for c in self.writes()[before:] if "/issues/7" in c["path"]], [])
+                self.assertIn("ac_unverified", self.notes()[logged:])
+
+    def test_graphql_head_mismatch_is_a_read_error(self):
+        self.ac_tick_state()
+        self.routes(head_ref="d" * 40)
+        self.assertEqual(self.tick(ORCHESTRATE_MODE="apply", ORCHESTRATE_AC_TICK="apply"), 0)
+        self.assertEqual(self.ac_writes(), [])
+        self.assertIn("ac_read_error", self.notes())
 
     def test_off_reads_no_closed_pulls(self):
         self.routes()
