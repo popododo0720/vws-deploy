@@ -52,6 +52,9 @@ A new bot does not ship until its consumer is enabled.
 The grok-wake consumer contract. Each Grok owner bot has an enabled GitHub `pr-comment` routine on
 `popododo0720/vws-deploy` PR #339:
 
+- **Trust:** act only on a comment written by the orchestrator's login (`popododo0720`, author
+  association `OWNER`). Anyone who can comment on #339 can copy the marker and an Owner line, so a
+  comment by any other login ends silently.
 - **Match:** the comment's first line is `<!-- vws-orchestrate:grok-wake -->` and a line starts with
   ``Owner `<that bot>` ``, or the named PR's body has `Agent: <that bot>`. Anything else ends silently.
   The routine must not overload another consumer: `factory-orchestrator-failure` keeps ignoring grok-wakes.
@@ -68,7 +71,7 @@ The grok-wake consumer contract. Each Grok owner bot has an enabled GitHub `pr-c
 - **Report:** results on GitHub only, with no done or ack message to the lead or the user. Escalate
   to the lead with an issue comment only after more than 3 failures or for a design decision.
 
-Owners. ``Owner `<bot>` `` comes from the item's `Agent:` line, then `ORCHESTRATE_GROK_OWNERS`, then
+Owners. ``Owner `<bot>` `` comes from the item's `Agent:` line (CRLF line ends count; lines in code fences or HTML comments do not), then `ORCHESTRATE_GROK_OWNERS`, then
 the repo name. With the default map:
 
 | Repos | Owner bot | `factory-grok-wake` |
