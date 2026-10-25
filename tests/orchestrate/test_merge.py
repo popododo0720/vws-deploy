@@ -80,6 +80,30 @@ class Eligibility(unittest.TestCase):
         r = run(snap(candidate(body="Part of popododo0720/vws-deploy#412")))
         self.assertEqual(reasons(r, "vws-deploy#500"), ["part_of_owner_repo"])
         self.assertEqual(merges(r), [])
+        # vws-deploy#504: the skip says what to write and where, with the same allowed forms as pr-hygiene.
+        note = next(n for n in r["notes"] if n["kind"] == "merge_check" and n["target"] == "vws-deploy#500")
+        for want in ("Part of #N", "Part of vws-<repo>#N", "https://github.com/popododo0720/vws-deploy/issues/504",
+                     "https://github.com/popododo0720/vws-deploy/pull/500"):
+            self.assertIn(want, note["hint"])
+
+    def test_status_names_the_owner_repo_skip_with_the_hint(self):
+        # vws-deploy#504: the status issue says which PRs Rule D skips for the owner/repo form and what to write.
+        s = snap(candidate(body="Part of popododo0720/vws-deploy#412"))
+        body = orch.status_body(s, run(s), CFG, {}, "apply", NOW)
+        line = next(ln for ln in body.splitlines() if "part_of_owner_repo" in ln)
+        for want in ("Part of #N", "Part of vws-<repo>#N", "https://github.com/popododo0720/vws-deploy/issues/504",
+                     "https://github.com/popododo0720/vws-deploy/pull/500"):
+            self.assertIn(want, line)
+        clean = snap(candidate())
+        body = orch.status_body(clean, run(clean), CFG, {}, "apply", NOW)
+        self.assertIn("- Merges skipped for part_of_owner_repo: 0\n", body)
+        self.assertNotIn("issues/504", body)
+
+    def test_only_the_owner_repo_skip_carries_a_hint(self):
+        r = run(snap(candidate(body="Agent: x")))
+        note = next(n for n in r["notes"] if n["kind"] == "merge_check" and n["target"] == "vws-deploy#500")
+        self.assertNotIn("hint", note)
+        self.assertNotIn("hint", next(n for n in run(snap(candidate()))["notes"] if n["kind"] == "merge_check"))
 
     def test_every_condition(self):
         sha = candidate()["head_sha"]
