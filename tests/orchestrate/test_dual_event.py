@@ -125,6 +125,14 @@ class SkippedRequiredBelt(unittest.TestCase):
         out = reasons(base_runs() + [run(4, "pr-hygiene", None, app=99), run(5, "pr-hygiene", PRT, "skipped")])
         self.assertIn("required_skipped:pr-hygiene", out)
 
+    def test_requirement_bound_to_no_app_cannot_borrow_another_apps_success(self):
+        out = reasons(base_runs() + [run(4, "pr-hygiene", None, app=99), run(5, "pr-hygiene", PRT, "skipped")],
+                      required=[{"context": "pr-hygiene", "app_id": None}, {"context": "verify-gate", "app_id": -1}])
+        self.assertIn("required_skipped:pr-hygiene", out)
+        out = reasons(base_runs() + [run(4, "pr-hygiene", PR), run(5, "pr-hygiene", PRT, "skipped")],
+                      required=[{"context": "pr-hygiene", "app_id": None}])
+        self.assertEqual(out, [])
+
     def test_neutral_is_not_tolerated(self):
         out = reasons(base_runs() + [run(4, "pr-hygiene", PR), run(5, "pr-hygiene", PRT, "neutral")])
         self.assertIn("required_neutral:pr-hygiene", out)
@@ -160,6 +168,23 @@ class StatusSkipReasons(unittest.TestCase):
 
     def test_reason_text_cannot_break_the_markdown(self):
         self.assertEqual(orch.skip_reason_text("check_failed:a`b\n@x"), "`check_failed:a'b @x`")
+
+    def test_check_name_cannot_forge_a_status_marker(self):
+        # A PR can name a check after the status block's end marker; the block must still splice into #415.
+        it = item("vws-conformance", 33, labels=("verify-approved",), is_pr=True, body="Part of #31", head_sha="d" * 40)
+        evil = orch.STATUS_END_MARKER + " " + orch.STATUS_MARKER
+        it["merge_info"] = {"head_sha": it["head_sha"], "state": "open", "merged": False, "draft": False, "base": "main",
+                            "mergeable": True, "mergeable_state": "clean", "title": "t", "files": [], "statuses": [],
+                            "checks": [run(5, "pr-hygiene", PR), run(6, evil, ".github/workflows/x.yml@pull_request", "failure")]}
+        b = self.body(it, merge={"vws-conformance": {"main_sha": "a" * 40, "main_ci": "green", "required": REQ}})
+        self.assertEqual(orch.status_unowned(b), "")
+        current = "intro\n" + orch.STATUS_MARKER + "\nold\n" + orch.STATUS_END_MARKER + "\noutro\n"
+        spliced = orch.splice_status(current, b)
+        self.assertIsNotNone(spliced)
+        self.assertTrue(spliced.startswith("intro\n") and spliced.endswith("\noutro\n"))
+        line = next(ln for ln in b.splitlines() if ln.startswith("- Verify-approved PRs not merged"))
+        self.assertIn("vws-conformance#33", line)
+        self.assertNotIn("<", line)
 
     def test_long_lists_are_bounded(self):
         notes = [{"kind": "merge_check", "target": f"vws-lib#{i}", "eligible": False, "head": "abcdef1",
