@@ -334,7 +334,8 @@ class BoxLoop(unittest.TestCase):
         os.makedirs(self.config)
         self.env = dict(os.environ, ORCHESTRATE_STATE_DIR=os.path.join(self.tmp, "state"), ORCHESTRATE_CONFIG_DIR=self.config,
                         ORCHESTRATE_PY=self.orch_py, METRICS_PY=self.metrics_py, ORCHESTRATE_BACKOFF_BASE="0",
-                        ORCHESTRATE_INTERVAL="0", ORCHESTRATE_LOOP_ITERATIONS="3", FAKE_RECORD=self.record)
+                        ORCHESTRATE_INTERVAL="0", ORCHESTRATE_LOOP_ITERATIONS="3", FAKE_RECORD=self.record,
+                        ORCHESTRATE_AUTO_UPDATE="0")  # never fetch or move this dev checkout (vws-deploy#490)
         self.env.pop("METRICS_ENABLED", None)
 
     def fake(self, path, name, rc):

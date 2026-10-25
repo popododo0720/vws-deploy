@@ -16,6 +16,12 @@
 # Daily metrics (vws-deploy#345): with METRICS_ENABLED=1, every iteration also runs metrics.py --if-due,
 # which returns at once unless a day is due. It has its own lock and log (log/metrics.log), and its exit
 # status never counts as a failed tick, so it cannot start backoff or a failure section.
+#
+# Auto-update (vws-deploy#490): every iteration first runs orchestrate-update.py, which fast-forwards this
+# checkout to origin/main (--ff-only; it refuses on local changes or divergence and raises an alert) and
+# logs the running sha. ORCHESTRATE_AUTO_UPDATE=0 (the env file's value wins) pins the current sha. When
+# the fast-forward changed this directory, the loop re-execs the new script (same pid, same loop.lock)
+# before the tick, so the tick always runs the new code. ORCHESTRATE_UPDATE_PY overrides the script path.
 set -uo pipefail
 unset GH_TOKEN GITHUB_TOKEN
 
@@ -29,12 +35,18 @@ iterations=${ORCHESTRATE_LOOP_ITERATIONS:-0}
 py=${ORCHESTRATE_PY:-$here/../orchestrate.py}
 metrics_enabled=${METRICS_ENABLED:-0}
 metrics_py=${METRICS_PY:-$here/../../metrics/metrics.py}
+auto_update=${ORCHESTRATE_AUTO_UPDATE:-1}
+update_py=${ORCHESTRATE_UPDATE_PY:-$here/orchestrate-update.py}
 loop_log=$state/log/loop.log
 metrics_log=$state/log/metrics.log
 
 umask 077
 mkdir -p "$state/log"
-exec 9>"$state/loop.lock"
+# After a re-exec (see below) fd 9 is the lock this process already holds; reopening it would drop the lock.
+if [[ ${ORCHESTRATE_LOOP_REEXEC:-} != 1 || ! -e /proc/$$/fd/9 ]]; then
+  exec 9>"$state/loop.lock"
+fi
+unset ORCHESTRATE_LOOP_REEXEC
 if ! flock -n 9; then
   echo "orchestrate-loop: another loop holds $state/loop.lock" >&2
   exit 0
@@ -83,6 +95,17 @@ while :; do
     [[ -n $v ]] && interval=$v
     v=$(sed -n 's/^METRICS_ENABLED=\([01]\)$/\1/p' "$config/env" | tail -n 1)
     [[ -n $v ]] && metrics_enabled=$v
+    v=$(sed -n 's/^ORCHESTRATE_AUTO_UPDATE=\([01]\)$/\1/p' "$config/env" | tail -n 1)
+    [[ -n $v ]] && auto_update=$v
+  fi
+  if [[ -f $update_py ]]; then
+    run env ORCHESTRATE_AUTO_UPDATE="$auto_update" python3 "$update_py" >>"$loop_log" 2>&1
+    if ((rc == 3)) && bash -n "$here/orchestrate-loop.sh" 2>>"$loop_log"; then
+      echo "$(date -u +%FT%TZ) loop files changed; re-exec $here/orchestrate-loop.sh" >>"$loop_log"
+      left=0
+      ((iterations > 0)) && left=$((iterations - n + 1))
+      exec env ORCHESTRATE_LOOP_REEXEC=1 ORCHESTRATE_LOOP_ITERATIONS="$left" bash "$here/orchestrate-loop.sh"
+    fi
   fi
   run python3 "$py" --once >>"$loop_log" 2>&1
   if ((rc == 0)); then

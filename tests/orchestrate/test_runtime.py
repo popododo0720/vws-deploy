@@ -675,7 +675,8 @@ class BoxScripts(unittest.TestCase):
         self.py = os.path.join(self.tmp, "fake_orchestrate.py")
         self.env = dict(os.environ, ORCHESTRATE_STATE_DIR=os.path.join(self.tmp, "state"),
                         ORCHESTRATE_CONFIG_DIR=os.path.join(self.tmp, "config"), ORCHESTRATE_PY=self.py,
-                        ORCHESTRATE_BACKOFF_BASE="0", ORCHESTRATE_INTERVAL="0", FAKE_RECORD=self.record)
+                        ORCHESTRATE_BACKOFF_BASE="0", ORCHESTRATE_INTERVAL="0", FAKE_RECORD=self.record,
+                        ORCHESTRATE_AUTO_UPDATE="0")  # never fetch or move this dev checkout (vws-deploy#490)
 
     def fake(self, rc):
         with open(self.py, "w") as f:
