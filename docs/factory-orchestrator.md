@@ -308,7 +308,7 @@ pre-merge head right after a merge. While a repo is locked, nothing in it merges
 
 **Status entries.** A red main (after our merge, or a red current main head in a repo with a
 candidate) adds **one** entry per repo and commit to "Recent entries" in the status issue body
-(`merge: main CI red in <repo> at <sha7> (key ...)`). The `## Now` section also lists every `verify-approved` PR that Rule D did not merge this tick, with its head and up to five reasons (`- Verify-approved PRs not merged: N: <repo>#<n> `<sha7>` (`<reason>`, ...)`, at most 10 PRs; vws-deploy#505), so an approved PR that GitHub calls `clean` but Rule D parks is visible without the VM journal. Reasons are inline code with backticks and line breaks removed, since check names come from workflow files a PR can edit. A lock still waiting after
+(`merge: main CI red in <repo> at <sha7> (key ...)`). The `## Now` section also lists every `verify-approved` PR that Rule D did not merge this tick, with its head and up to five reasons (`- Verify-approved PRs not merged: N: <repo>#<n> `<sha7>` (`<reason>`, ...)`, at most 10 PRs; vws-deploy#505), so an approved PR that GitHub calls `clean` but Rule D parks is visible without the VM journal. Reasons are inline code with backticks, line breaks and angle brackets replaced (no reason can spell the block's own `<!-- ... -->` markers), since check names come from workflow files a PR can edit. A lock still waiting after
 `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS` (2) adds one `main CI wait timeout` entry and stays locked. The
 key (sha256 of kind, repo and commit) is kept in `state.json` and in the body, so there is no retry
 loop. No comment is posted. Entries are skipped while `ORCHESTRATE_SCOPE` is set.
