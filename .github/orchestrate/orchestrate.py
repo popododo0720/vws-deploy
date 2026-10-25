@@ -1077,10 +1077,15 @@ AC_NONE_RE = re.compile(r"[ \t]*none[ \t]+-[ \t]+([^ \t\n\r\f\v].*?)[ \t]*")
 
 
 def visible_text(text):
-    """The text a reader sees, as guard-agents.sh visible_text: HTML comments (also across lines) and fenced
-    code blocks (``` or ~~~; closed only by a run of the same character at least as long) are removed."""
+    """The text a reader sees: the Python port of guard-agents.sh visible_text, the one normalizer for PR,
+    comment and commit text (vws-deploy#439 class 2; tests/fixtures/guard-text/corpus.json pins both).
+    A CRLF line end is read as LF; HTML comments (also across lines) and fenced code blocks (``` or ~~~,
+    indented by spaces and tabs only, closed only by a run of the same character at least as long) are
+    removed; an unclosed comment or fence runs to the end."""
     out, incom, fence, fch, flen = [], False, False, "", 0
     for line in (text or "").split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
         if not incom and not fence:
             m = re.match(r"[ \t]*(`{3,}|~{3,})", line)
             if m:
@@ -1277,18 +1282,11 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
     return actions
 
 
-# vws-deploy#506: body regions whose `Agent:` lines are examples or hidden text, not the owner: code
-# fences and HTML comments. As in CommonMark, a fence closes only on a line holding the same character
-# at least as many times and nothing else, and an unclosed fence or comment runs to the end.
-HIDDEN_RE = re.compile(r"^[ \t]*((`{3,})|~{3,})[^\n]*$.*?(?:^[ \t]*\1(?(2)`*|~*)[ \t]*$|\Z)|<!--.*?(?:-->|\Z)",
-                       re.M | re.S)
-
-
 def agent_of(body):
     """The body's 'Agent:' value: logged on merge, the owner a rebuild wake names (Rule R), and the owner
-    a grok-wake names (vws-deploy#506). CRLF line ends count; lines in code fences or HTML comments do not.
-    No eligibility rule depends on it."""
-    m = AGENT_RE.search(HIDDEN_RE.sub("", (body or "").replace("\r\n", "\n")))
+    a grok-wake names (vws-deploy#506). CRLF line ends count; lines in code fences or HTML comments do not
+    (visible_text, the one normalizer). No eligibility rule depends on it."""
+    m = AGENT_RE.search(visible_text(body))
     return m.group(1)[:64] if m else ""
 
 

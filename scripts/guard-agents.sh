@@ -231,23 +231,30 @@ SUBJECT_TYPE_RE='^[a-z][a-z0-9-]*(\([a-z0-9._-]+\))?!?:[[:space:]]+[^[:space:]]'
 # issue automatically, so closing keywords are banned outright. Telling a parent issue from a
 # leaf would need the GitHub API (sub-issues or a tracking label) in every hook and run; a
 # plain ban needs no token, works offline and cannot be fooled by a missing label.
-# The text a reader sees: HTML comments (<!-- -->, also across lines) and fenced code blocks
-# (``` or ~~~) are removed, so a "Part of #N" hidden there does not count.
+# The text a reader sees, the one normalizer every guard here reads PR, comment and commit text with
+# (vws-deploy#439 class 2). .github/orchestrate/orchestrate.py visible_text is its Python port and
+# .github/ac/post-merge.sh loads this function; tests/fixtures/guard-text/corpus.json pins all of them.
+#   - A CRLF line end is read as LF. A lone CR is content (Rule D's ^ does not start a line after it).
+#   - HTML comments (<!-- -->, also across lines) are removed; an unclosed one runs to the end.
+#   - Fenced code blocks (``` or ~~~) are removed with their fence lines. As in CommonMark, indentation is
+#     spaces and tabs only, and a fence closes only on a line of the same character, at least as long as the
+#     opening run, with nothing after it; an unclosed fence runs to the end.
+# With the argument "code", lines inside a fence are kept, indented by four spaces (never a heading), for
+# a check where code counts as content (cmd_correct).
 visible_text() {
-  awk '
+  awk -v code="${1:-}" '
     {
-      line = $0; out = ""
-      # A fence closes only on a line of the same character, at least as long as the opening run, with
-      # nothing after it (CommonMark), so "```" inside a "~~~~" block or a "```go" line does not close it.
-      if (!incom && !fence && match(line, /^[[:space:]]*(```+|~~~+)/)) {
-        run = substr(line, RSTART, RLENGTH); sub(/^[[:space:]]*/, "", run)
+      line = $0; sub(/\r$/, "", line); out = ""
+      if (!incom && !fence && match(line, /^[ \t]*(```+|~~~+)/)) {
+        run = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", run)
         fch = substr(run, 1, 1); flen = length(run); fence = 1; next
       }
       if (fence) {
-        if (match(line, /^[[:space:]]*(```+|~~~+)[[:space:]]*$/)) {
-          run = line; gsub(/[[:space:]]/, "", run)
-          if (substr(run, 1, 1) == fch && length(run) >= flen) fence = 0
+        if (match(line, /^[ \t]*(```+|~~~+)[ \t]*$/)) {
+          run = line; gsub(/[ \t]/, "", run)
+          if (substr(run, 1, 1) == fch && length(run) >= flen) { fence = 0; next }
         }
+        if (code == "code") print "    " line
         next
       }
       while (1) {
@@ -484,6 +491,8 @@ cmd_pr_commits() {
   local -a shas
   mapfile -t shas < <(git rev-list "${base}..${head}" || echo "rev-list-failed")
   [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
+  # An empty range checks nothing, so it fails too: a pull request always has at least one commit.
+  [[ -n ${shas[*]:-} ]] || die "pr-commits: there are no commits in ${base}..${head}; nothing was checked"
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
     subject=$(git log -1 --format=%s "$sha")
@@ -532,25 +541,27 @@ CORRECT_HEADING_LEGACY="## /correct 교정 루프"
 CORRECT_FIELDS="what-happened impact detection root-cause catching-check follow-ups"
 
 cmd_correct() {
-  local dir=${1:-.} tpl labels id h=$CORRECT_HEADING
+  local dir=${1:-.} tpl labels id text h=$CORRECT_HEADING
   tpl="${dir}/.github/ISSUE_TEMPLATE/incident.yml"
   labels="${dir}/.github/labels.yml"
   [[ -f ${dir}/AGENTS.md ]] || die "correct: ${dir}/AGENTS.md does not exist"
-  if ! tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h"; then
-    tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$CORRECT_HEADING_LEGACY" && h=$CORRECT_HEADING_LEGACY
-  fi
-  # CRLF line endings are read as LF, so a heading saved on Windows still matches.
-  tr -d '\r' <"${dir}/AGENTS.md" | grep -q -x -F -- "$h" ||
+  # Read once, with CRLF line endings read as LF, so a heading saved on Windows still matches. The readers
+  # below take a here-string, never a pipe from a producer: grep -q and a reader that stops early would close
+  # the pipe, and under pipefail the producer's failure read as a missing heading or an empty section.
+  text=$(tr -d '\r' <"${dir}/AGENTS.md")
+  grep -q -x -F -- "$h" <<<"$text" || { grep -q -x -F -- "$CORRECT_HEADING_LEGACY" <<<"$text" && h=$CORRECT_HEADING_LEGACY; }
+  grep -q -x -F -- "$h" <<<"$text" ||
     die "correct: AGENTS.md has no line that is exactly '${h}' (trailing spaces or a different heading do not match)"
   # Empty: no content before the next # or ## heading. A ### subheading and a line inside a code fence are
-  # content; the fence lines themselves and blank lines are not, so an empty fence is an empty section.
-  tr -d '\r' <"${dir}/AGENTS.md" | awk -v h="$h" '
-    $0 == h { s = 1; next }
-    !s { next }
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    !fence && /^##?([[:space:]]|$)/ { exit }
-    /[^[:space:]]/ { f = 1; exit }
-    END { exit !f }' || die "correct: AGENTS.md '${h}' section is empty (blank lines and empty code fences do not count)"
+  # content; the fence lines themselves, HTML comments and blank lines are not, so an empty fence is an
+  # empty section. visible_text code reads the fences and comments (one parser, vws-deploy#439). The reader
+  # takes all of its input and never exits early.
+  visible_text code <<<"$text" | awk -v h="$h" '
+    done { next }
+    !s { if ($0 == h) s = 1; next }
+    /^##?([[:space:]]|$)/ { done = 1; next }
+    /[^[:space:]]/ { f = 1; done = 1 }
+    END { exit !f }' || die "correct: AGENTS.md '${h}' section is empty (blank lines, HTML comments and empty code fences do not count)"
   [[ -f $tpl ]] || die "correct: ${tpl} does not exist"
   grep -q -E '^labels:.*\bincident\b' "$tpl" || die "correct: ${tpl} does not apply the incident label"
   for id in $CORRECT_FIELDS; do
@@ -929,6 +940,8 @@ Part of #3, see https://github.com/acme/repo/issues/7" bash "$0" pr-body
   expect_fail "/correct body with only an empty code fence" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n  \t\n```sh\n   \n```\n## next\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_fail "/correct body with whitespace and a blank fence" cmd_correct "$cb"
+  rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\n%s\n<!-- fill this in\n-->\n## next\n1. x\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
+  expect_fail "/correct body with only an HTML comment" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\r\n%s\r\n1. x\r\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
   expect_pass "/correct heading with CRLF line endings" cmd_correct "$cb"
   rm -rf "$cb"; cp -r "$cr" "$cb"; printf '# t\r\n%s\r\n\r\n## next\r\n' "$CORRECT_HEADING" >"$cb/AGENTS.md"
@@ -1001,11 +1014,11 @@ GH
   git -C "$repo" checkout -q -b side "$c5"
   git -C "$repo" commit -q --allow-empty -m "ci: side" -m "Part of #4"
   git -C "$repo" checkout -q commits
-  git -C "$repo" merge -q --no-ff -m "Merge side" -m "Closes #4" side
+  git -C "$repo" merge -q --no-ff -m "ci: merge side" -m "Part of #4" -m "Closes #4" side
   expect_fail "a merge commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
   git -C "$repo" reset -q --hard "$c5"
   expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
-  expect_pass "pr-commits on an empty clean range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  expect_fail "pr-commits on an empty range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
   # A commit subject has a lowercase type prefix and a local Part of #N (vws-deploy#394).
   git -C "$repo" switch -q -C prefix "$c5"
   git -C "$repo" commit -q --allow-empty -m "update the guard" -m "Part of #4"
