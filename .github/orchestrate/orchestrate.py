@@ -1008,15 +1008,17 @@ def head_check_reasons(info, required):
         reasons.append("required_checks_unreadable")
     else:
         for req in sorted(required, key=lambda q: (q["context"], q.get("app_id") or 0)):
-            match = [r for (name, app, _s), r in runs.items() if name == req["context"]
-                     and (req.get("app_id") in (None, -1) or app == req["app_id"])]
+            hits = [(app, r) for (name, app, _s), r in runs.items() if name == req["context"]
+                    and (req.get("app_id") in (None, -1) or app == req["app_id"])]
+            match = [r for _app, r in hits]
             if match:
                 # Every distinct check with this name must pass; a success elsewhere cannot hide a failure.
                 # A skip passes only next to a success of the same name and app (vws-deploy#505): a workflow on
                 # both pull_request and pull_request_target skips its pull_request-only job on the other event.
-                ok = any(x.get("status") == "completed" and x.get("conclusion") == "success" for x in match)
-                bad = [x for x in match if x.get("status") != "completed"
-                       or x.get("conclusion") not in (("success", "skipped") if ok else ("success",))]
+                # The app is the run's own, so a requirement bound to no app cannot borrow another app's success.
+                ok = {app for app, x in hits if x.get("status") == "completed" and x.get("conclusion") == "success"}
+                bad = [x for app, x in hits if x.get("status") != "completed"
+                       or x.get("conclusion") not in (("success", "skipped") if app in ok else ("success",))]
                 r = max(bad, key=run_order) if bad else None
                 if r is None:
                     pass
@@ -3166,8 +3168,10 @@ MERGE_SKIP_PRS, MERGE_SKIP_REASONS = 10, 5
 
 def skip_reason_text(reason):
     """One Rule D reason as inline code. Check names come from workflow files a PR can edit, so a backtick
-    or a line break cannot end the code span or the list item."""
-    return "`" + scrub(re.sub(r"\s+", " ", str(reason)).replace("`", "'"))[:120] + "`"
+    or a line break cannot end the code span or the list item, and no angle bracket can spell an HTML
+    comment such as the status block's own markers (status_unowned would refuse the whole block)."""
+    text = re.sub(r"\s+", " ", str(reason)).replace("`", "'").replace("<", "\u2039").replace(">", "\u203a")
+    return "`" + scrub(text)[:120] + "`"
 
 
 def merge_skip_line(result):
