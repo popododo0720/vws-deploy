@@ -1481,7 +1481,8 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
         note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
                 "head": (it.get("head_sha") or "")[:7], "main": main}
         if "part_of_owner_repo" in reasons:
-            note["hint"] = f"{it.get('url', k)}: {PART_OF_HINT}"
+            note["url"] = it.get("url", k)
+            note["hint"] = f"{note['url']}: {PART_OF_HINT}"
         unmapped = (it.get("merge_info") or {}).get("unmapped")
         if unmapped:
             note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
@@ -3161,6 +3162,11 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
     rebuild = result.get("rebuild", [])
     lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
         f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
+    # vws-deploy#504: a PR Rule D skips for the owner/repo Part of form needs a body edit; say which and how.
+    owner_repo = sorted(n["url"] for n in notes if n.get("kind") == "merge_check" and n.get("url")
+                        and "part_of_owner_repo" in n.get("reasons", []))
+    lines.append(f"- Merges skipped for part_of_owner_repo: {len(owner_repo)}"
+                 + (f": {', '.join(owner_repo)}; {PART_OF_HINT}" if owner_repo else ""))
     locks = state.get("merge_locks", {})
     lines.append("- Merge locks: " + ("; ".join(
         f"{repo} {lk.get('status', '?')} ({lk.get('pr', '?')}"
