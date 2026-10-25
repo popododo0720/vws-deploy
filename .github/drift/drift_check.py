@@ -13,11 +13,17 @@ Checks per repo, on its default branch:
               copy whose sha256 that row pins; any other content is checked as a caller. No other workflow
               file may call a repo-guard-*.yml file or report the bare pr-hygiene or verify-gate check name.
               All of this is also checked at the head of every open PR and at each --head REPO=SHA
-              (the workflow passes the PR head from its event), against the pin of the default branches.
+              (the workflow passes the PR head from its event), against the pin of the default branches
+              (vendored and bootstrap are checked at those heads too, against the default-branch script).
               No workflow file, a pending full copy included, runs on both pull_request and
               pull_request_target (vws-deploy#505): the second event reports a skipped check under the same name
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
+  vendored    each file that vendored.tsv pins (verify-queue.yml, check-english.sh) matches its full sha256, or
+              the one variant pinned for that repo; a repo without the file is not checked here (#439 class 4)
+  bootstrap   every workflow run: step that calls scripts/guard-agents.sh SUB, and every vws-deploy
+              repo-guard-*.yml the caller pins, names a SUB that the default-branch script already
+              dispatches: the script lands first, then the workflow that calls it (#439 class 4)
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist, and AGENTS.md has no stale fact (#395)
   incident    .github/ISSUE_TEMPLATE/incident.yml exists, applies the incident label, has every field
               of vws-deploy's form, no incident.md is left, and the repo has the incident label
@@ -70,8 +76,8 @@ def gh(path):
     return json.loads(r.stdout)
 
 
-def content(owner, repo, path):
-    d = gh(f"repos/{owner}/{repo}/contents/{path}")
+def content(owner, repo, path, ref=None):
+    d = gh(f"repos/{owner}/{repo}/contents/{path}" + (f"?ref={ref}" if ref else ""))
     if not d or "content" not in d:
         return None
     return base64.b64decode(d["content"])
@@ -387,6 +393,23 @@ def head_issues(repo, heads, home, pending, common, on_main):
     return out
 
 
+def class4_head_issues(owner, repo, heads, script, vendored, pending, callees, api=None):
+    """Class 4 issues at each PR head: ["label sha: reason"]. Vendored files are read at the head; the
+    bootstrap rule holds the head's workflows (and the callee at the head's pin) to the default-branch script."""
+    out = []
+    for label, sha, files in heads:
+        if files is None:
+            continue  # head_issues already reports an unlistable head
+        got = dict(files)
+        got[VENDORED_CHECK_ENGLISH] = content(owner, repo, VENDORED_CHECK_ENGLISH, ref=sha)
+        issues, _ = vendored_issues(repo, got, vendored)
+        _, pin = ref_issues(files, repo == "vws-deploy", pending.get(repo))
+        issues += bootstrap_for(owner, files, script, pin, callees, api=api)
+        if issues:
+            out.append(f"{label} {sha[:12]}: " + "; ".join(issues))
+    return out
+
+
 def on_main(owner, sha):
     """True when sha is vws-deploy main or an ancestor of it."""
     d = gh(f"repos/{owner}/vws-deploy/compare/{sha}...main")
@@ -400,6 +423,136 @@ def guard_status(got, want, variant=None):
     if variant is not None and got == variant:
         return None, f"accepted variant ({got[:12]})"
     return "guard-agents.sh differs from vws-deploy", "ok"
+
+
+VENDORED_CHECK_ENGLISH = "scripts/check-english.sh"
+
+
+def load_vendored(path):
+    """Pinned vendored files: {path: {"*": sha256, repo: variant sha256}}. A bad row exits 2."""
+    out = {}
+    try:
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    except OSError as e:
+        _bad_baseline(f"drift-check: cannot read {path}: {e}")
+    for n, line in enumerate(lines, 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split("\t")
+        if len(f) != 4 or not f[0] or not f[1] or not f[3].strip():
+            _bad_baseline(f"drift-check: {path}:{n} needs path<TAB>repo or *<TAB>sha256<TAB>reason")
+        if not re.fullmatch(r"[0-9a-f]{64}", f[2]):
+            _bad_baseline(f"drift-check: {path}:{n} sha256 must be 64 lowercase hex characters")
+        row = out.setdefault(f[0], {})
+        if f[1] in row:
+            _bad_baseline(f"drift-check: {path}:{n} repeats {f[0]} for {f[1]}")
+        row[f[1]] = f[2]
+    for p, row in out.items():
+        if "*" not in row:
+            _bad_baseline(f"drift-check: {path} has a variant of {p} but no * row")
+    return out
+
+
+def vendored_issues(repo, got, pins):
+    """([issues], [notes]) for one ref's vendored files. got is {path: bytes or None}; None or absent is skipped."""
+    issues, notes = [], []
+    for path in sorted(pins):
+        raw = got.get(path)
+        if raw is None:
+            continue
+        name = path.rsplit("/", 1)[1]
+        digest = hashlib.sha256(raw).hexdigest()
+        want = pins[path]
+        if digest == want["*"]:
+            continue
+        if digest == want.get(repo):
+            notes.append(f"{name} accepted variant ({digest[:12]})")
+            continue
+        issues.append(f"{name} differs from the vws-deploy pin ({want['*'][:12]}, got {digest[:12]})")
+    return issues, notes
+
+
+DISPATCH = re.compile(r'^case "\$command_name" in$(.*?)^esac$', re.M | re.S)
+ARM = re.compile(r"^\s*([A-Za-z0-9_-]+(?:\s*\|\s*[A-Za-z0-9_-]+)*)\)", re.M)
+GUARD_CALL = re.compile(r"""(?:^|[\s;&|(`])(?:\./)?scripts/guard-agents\.sh["']?[ \t]+["']?([^\s"';&|)]+)""", re.M)
+
+
+def guard_subcommands(script):
+    """The subcommands that a guard-agents.sh dispatches (its `case "$command_name" in` arms), or None."""
+    try:
+        m = DISPATCH.search(script.decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError):
+        return None
+    if not m:
+        return None
+    subs = {name.strip() for arm in ARM.findall(m.group(1)) for name in arm.split("|")}
+    return subs or None
+
+
+def guard_calls(files):
+    """[(path, subcommand)] for every scripts/guard-agents.sh call in a run: step. Comment lines never count;
+    a file that does not parse is skipped (other_workflow_issues reports it). A non-literal SUB stays as is."""
+    out = []
+    for path, raw in sorted(files.items()):
+        if raw is None:
+            continue
+        try:
+            wf = yaml.load(raw.decode("utf-8"), Loader=caller_pin._Strict)  # noqa: S506 (SafeLoader subclass)
+        except (UnicodeDecodeError, yaml.YAMLError):
+            continue
+        for job in _map(_map(wf).get("jobs")).values():
+            steps = _map(job).get("steps")
+            for step in steps if isinstance(steps, list) else []:
+                run = _map(step).get("run")
+                if not isinstance(run, str):
+                    continue
+                text = "\n".join(ln for ln in run.splitlines() if not ln.lstrip().startswith("#"))
+                out += [(path, sub) for sub in GUARD_CALL.findall(text)]
+    return out
+
+
+def bootstrap_issues(files, script, callee=None):
+    """Issues when a workflow at this ref, or a vws-deploy repo-guard-*.yml it pins (callee), calls a
+    guard-agents.sh subcommand that the base-branch script does not dispatch. The trusted script runs from
+    the base, so such a call fails with a usage error until a separate PR lands the script (#439 class 4)."""
+    unread = [f"cannot read vws-deploy {p.rsplit('/', 1)[1]}"
+              for p, raw in sorted((callee or {}).items()) if raw is None]
+    calls = [(p.rsplit("/", 1)[1], s) for p, s in guard_calls(files)]
+    calls += [("vws-deploy " + p.rsplit("/", 1)[1], s) for p, s in guard_calls(callee or {})]
+    if not calls:
+        return unread
+    have = guard_subcommands(script) if script is not None else None
+    if have is None:
+        return unread + ["workflows call guard-agents.sh, but the base branch has no readable "
+                         "scripts/guard-agents.sh dispatch"]
+    missing = {}
+    for where, sub in calls:
+        if sub not in have:
+            missing.setdefault(where, set()).add(sub)
+    return unread + [f"{where} calls guard-agents.sh {', '.join(sorted(subs))}, which the base-branch script does "
+                     "not have; land the script first" for where, subs in sorted(missing.items())]
+
+
+def callee_files(owner, pin, cache, api=None):
+    """{path: bytes or None} of the vws-deploy repo-guard-*.yml files at pin (cached), {} when pin is not a SHA,
+    or None when the listing cannot be read (never cached, so a failed read is never an empty callee)."""
+    if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{40}", pin):
+        return {}
+    if pin not in cache:
+        files = workflow_files(owner, "vws-deploy", ref=pin, api=api)
+        if files is None:
+            return None
+        cache[pin] = {p: raw for p, raw in files.items() if CALLED.search(p)}
+    return cache[pin]
+
+
+def bootstrap_for(owner, files, script, pin, cache, api=None):
+    """bootstrap_issues for one ref, with the callee at its caller pin; an unlistable callee fails closed."""
+    callee = callee_files(owner, pin, cache, api=api)
+    if callee is None:
+        return [f"cannot list the vws-deploy repo-guard-*.yml files at {pin[:12]}"]
+    return bootstrap_issues(files, script, callee)
 
 
 def rule_checks(rules):
@@ -626,6 +779,8 @@ def main():
                     help="admin audit run: check only ruleset bypass actors and fail on any (#458)")
     ap.add_argument("--caller-pending", default=os.path.join(HERE, "caller-pending.tsv"),
                     help="repos not yet moved to the repo-guard caller: repo<TAB>sha256 of the full copy<TAB>reason")
+    ap.add_argument("--vendored", default=os.path.join(HERE, "vendored.tsv"),
+                    help="vendored files pinned by sha256: path<TAB>repo or *<TAB>sha256<TAB>reason (#439)")
     ap.add_argument("--head", action="append", default=[], metavar="REPO=SHA",
                     help="also check the workflows at this PR head (repeatable; the workflow passes its event's head)")
     ap.add_argument("--no-open-prs", action="store_true", help="skip the open PR heads (only --head ones)")
@@ -638,6 +793,8 @@ def main():
     variants = load_variants(a.guard_variants)
     want_incident = load_incident(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "incident.yml"))
     pending = load_pending(a.caller_pending)
+    vendored = load_vendored(a.vendored)
+    scripts, callees = {}, {}
 
     names = [ln.split("\t")[0] for ln in open(a.repos) if ln.strip() and not ln.startswith("#")]
     extra_heads = parse_heads(a.head, set(names))
@@ -648,11 +805,11 @@ def main():
         repo, kind, cfgpath, extra = (line.rstrip("\n").split("\t") + ["", "", ""])[:4]
         info = gh(f"repos/{a.owner}/{repo}")
         if info is None:
-            rows.append([repo, "unreadable", "", "", "", "", "", "", "", ""])
+            rows.append([repo, "unreadable", "", "", "", "", "", "", "", "", "", ""])
             drift += 1
             continue
         if info.get("archived"):
-            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-", "-"])
+            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
             continue
         issues, notes = {}, {}
         p = protection(a.owner, repo)
@@ -714,6 +871,17 @@ def main():
             bad_g, guard_ok = guard_status(hashlib.sha256(g).hexdigest(), want_sha, variants.get(repo))
             if bad_g:
                 issues["guard"] = [bad_g]
+        scripts[repo] = g
+        got = dict(files or {})
+        got[VENDORED_CHECK_ENGLISH] = content(a.owner, repo, VENDORED_CHECK_ENGLISH)
+        bad_v, notes_v = vendored_issues(repo, got, vendored)
+        if bad_v:
+            issues["vendored"] = bad_v
+        if notes_v:
+            notes["vendored"] = notes_v
+        boot = bootstrap_for(a.owner, files or {}, g, pin, callees)
+        if boot:
+            issues["bootstrap"] = boot
         docs = []
         agents = content(a.owner, repo, "AGENTS.md")
         if agents is None:
@@ -762,6 +930,8 @@ def main():
             cell("docs"),
             cell("incident"),
             cell("lint", "ok" if kind == "go" else "n/a"),
+            cell("vendored"),
+            cell("bootstrap"),
         ])
 
     for repo, why in caller_pin.pin_drift(pins, lambda sha: on_main(a.owner, sha)).items():
@@ -785,16 +955,17 @@ def main():
                 seen.add(sha)
                 todo.append((label, sha, workflow_files(a.owner, repo, ref=sha)))
         bad = head_issues(repo, todo, repo == "vws-deploy", pending, common, lambda s: on_main(a.owner, s))
+        bad += class4_head_issues(a.owner, repo, todo, scripts.get(repo), vendored, pending, callees)
         head_rows += [[repo, why] for why in bad]
         drift += len(bad)
         if todo and not bad:
             head_rows.append([repo, f"ok ({len(todo)} PR head(s))"])
 
     head = ["repo", "protection", "ruleset", "required checks", "workflows", "caller", "guard-agents.sh",
-            "AGENTS/QUALITY", "incident form", "lint"]
+            "AGENTS/QUALITY", "incident form", "lint", "vendored copies", "bootstrap"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
-    table += ["", "| repo | caller at PR heads |", "|---|---|"]
+    table += ["", "| repo | caller, vendored copies and bootstrap at PR heads |", "|---|---|"]
     table += ["| " + " | ".join(r) + " |" for r in head_rows]
     if not head_rows:
         table.append("| - | no open PR heads |")

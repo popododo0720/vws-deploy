@@ -29,6 +29,9 @@ on:
       - tests/drift/**
       - .github/workflows/repo-guard.yml
       - .github/workflows/repo-guard-*.yml
+      # vendored.tsv pins its sha256 (#439 class 4); tests/drift checks a change against the pin.
+      - .github/workflows/verify-queue.yml
+      - scripts/guard-agents.sh
       - tests/workflows/**
       - .github/ac/**
       - .github/workflows/post-merge.yml
