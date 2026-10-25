@@ -1209,6 +1209,24 @@ def ac_tick_only(old, new):
     return True
 
 
+def ac_own_ticks(body, boxes, pr_url, sha):
+    """Pure: the listed boxes that are ticked with this PR's own evidence suffix (ac_tick_body's), so a rerun
+    after a tick that wrote the body but not the marker still reports them as ticked by this PR."""
+    lines, suffix = (body or "").split("\n"), f"(evidence: {pr_url} merged {sha})"
+    return [b["n"] for b in ac_boxes(body) if b["n"] in boxes and b["checked"]
+            and lines[b["line"]].rstrip("\r").endswith(suffix)]
+
+
+def ac_recoverable(state, state_reason, body, boxes, pr_url, sha):
+    """Pure (vws-deploy#517 class 3, the #495 finding): True when a closed issue is the end state of this PR's
+    own tick whose marker comment never landed: closed as completed, every box ticked, and at least one of the
+    PR's boxes carries its evidence. The rerun then posts only the missing label removals and the marker. Any
+    other closed issue (a human close, not planned, an open box) is left alone."""
+    found = ac_boxes(body)
+    return (state == "closed" and state_reason == "completed" and bool(found) and all(b["checked"] for b in found)
+            and bool(ac_own_ticks(body, boxes, pr_url, sha)))
+
+
 def ac_tick_comment(a, ticked, still_open, close):
     lines = [f"AC tick for {a['pr_url']} (merged {a['merge_sha']}): boxes {', '.join(map(str, a['boxes']))} "
              f"{'ticked' if ticked else 'were already ticked'}."]
@@ -1258,7 +1276,9 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
             kind = "ac_body_edited"  # edited after the verdict (or the merge): may retarget, so tick nothing
         if not kind and m.get("marker_seen"):
             kind = "ac_tick_done"
-        if not kind and m["issue_state"] != "open":
+        recover = not kind and m["issue_state"] != "open" and ac_recoverable(
+            m["issue_state"], m.get("issue_state_reason"), m["issue_body"], ac["boxes"], m["url"], m["merge_sha"])
+        if not kind and m["issue_state"] != "open" and not recover:
             kind = "ac_issue_closed"
         p = ac_tick_body(m["issue_body"], ac["boxes"], m["url"], m["merge_sha"]) if not kind else None
         if p and p["error"]:
@@ -1274,11 +1294,12 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
             notes.append(dict(note, kind="ac_label_missing", label="ac-partial"))
         actions.append({"type": "ac_tick", "target": m["issue"], "pr": m["pr"], "pr_url": m["url"],
                         "merge_sha": m["merge_sha"], "merged_at": m["merged_at"], "boxes": ac["boxes"], "close": close,
-                        "partial_label": partial_ok,
+                        "partial_label": partial_ok, **({"recover": True} if recover else {}),
                         "labels_add": [] if close or "ac-partial" in labels or not partial_ok else ["ac-partial"],
                         "labels_remove": [x for x in AC_TICK_LABELS if x in labels and (close or x == "ac-pending")],
                         "reason": f"{m['pr']} merged {m['merge_sha'][:7]}: AC {', '.join(map(str, ac['boxes']))}"
-                                  + (", last open box" if close else f", {len(p['open'])} left")})
+                                  + (", closed, marker missing" if recover else ", last open box" if close
+                                     else f", {len(p['open'])} left")})
     return actions
 
 
@@ -2624,7 +2645,7 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
                 continue
             m = {"pr": k, "url": p.get("html_url") or "", "merged_at": p["merged_at"],
                  "merge_sha": p.get("merge_commit_sha") or "", "body": p.get("body") or "", "issue": "",
-                 "issue_state": "", "issue_body": "", "issue_labels": [], "marker_seen": False,
+                 "issue_state": "", "issue_state_reason": "", "issue_body": "", "issue_labels": [], "marker_seen": False,
                  "verified_at": "", "body_edited_at": ""}
             ref = PART_OF_RE.search(m["body"])
             if ref:
@@ -2646,7 +2667,8 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
             try:
                 issue, _ = gh.get(f"repos/{OWNER}/{irepo}/issues/{inum}")
                 comments = gh.get_all(f"repos/{OWNER}/{irepo}/issues/{inum}/comments?per_page=100")
-                m.update(issue_state=issue.get("state") or "", issue_body=issue.get("body") or "",
+                m.update(issue_state=issue.get("state") or "", issue_state_reason=issue.get("state_reason") or "",
+                         issue_body=issue.get("body") or "",
                          issue_labels=sorted(lb["name"] for lb in issue.get("labels") or []),
                          marker_seen=any(ac_tick_marker(k) in (c.get("body") or "") for c in comments))
                 if "pull_request" in issue:
@@ -3070,15 +3092,21 @@ def apply_ac_tick(a, gh, writes, max_writes, new_state, log):
     except (GhError, PermissionError) as e:
         log("apply_failed", action="ac_tick", target=a["target"], pr=a["pr"], error=str(e))
         return 0, 1
-    if not isinstance(issue, dict) or issue.get("state") != "open":
+    if not isinstance(issue, dict):
+        issue = {}
+    body = issue.get("body") or ""
+    recover = issue.get("state") == "closed" and a.get("recover") and ac_recoverable(
+        "closed", issue.get("state_reason"), body, a["boxes"], a["pr_url"], a["merge_sha"])
+    if issue.get("state") != "open" and not recover:
         log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason="issue not open")
         return 0, 0
-    body = issue.get("body") or ""
     p = ac_tick_body(body, a["boxes"], a["pr_url"], a["merge_sha"])
     if p["error"]:
         log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason=p["error"])
         return 0, 0
     labels, close = {lb.get("name") for lb in issue.get("labels") or []}, not p["open"]
+    # Text from the end state, not this run: a rerun after the body edit landed still says "ticked".
+    ticked = p["ticked"] or ac_own_ticks(body, a["boxes"], a["pr_url"], a["merge_sha"])
     calls = []
     if p["body"] != body:
         calls.append(("PATCH", base, {"body": p["body"]}, body))
@@ -3087,9 +3115,9 @@ def apply_ac_tick(a, gh, writes, max_writes, new_state, log):
     for lb in AC_TICK_LABELS:
         if lb in labels and (close or lb == "ac-pending"):
             calls.append(("DELETE", f"{base}/labels/{lb}", None, None))
-    if close:
+    if close and not recover:
         calls.append(("PATCH", base, {"state": "closed", "state_reason": "completed"}, None))
-    calls.append(("POST", f"{base}/comments", {"body": ac_tick_comment(a, p["ticked"], p["open"], close)}, None))
+    calls.append(("POST", f"{base}/comments", {"body": ac_tick_comment(a, ticked, p["open"], close)}, None))
     if writes + len(calls) > max_writes:
         log("skipped", action="ac_tick", target=a["target"], pr=a["pr"], reason=f"write cap {max_writes} reached")
         return 0, 0
@@ -3110,7 +3138,8 @@ def apply_ac_tick(a, gh, writes, max_writes, new_state, log):
             log("apply_failed", action="ac_tick", target=a["target"], pr=a["pr"], error=str(e))
             return n, 1
     done[a["pr"]] = a["merged_at"]
-    log("ac_ticked", target=a["target"], pr=a["pr"], ticked=p["ticked"], open=[b["n"] for b in p["open"]], closed=close)
+    log("ac_ticked", target=a["target"], pr=a["pr"], ticked=p["ticked"], open=[b["n"] for b in p["open"]], closed=close,
+        **({"recovered": True} if recover else {}))
     log("applied", action="ac_tick", target=a["target"], reason=a["reason"])
     return n, 0
 
