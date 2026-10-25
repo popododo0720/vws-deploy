@@ -42,6 +42,8 @@ One commit is one change. Only `scripts/scopes` says which path belongs to which
 
 `make check` sets `core.hooksPath` to `.githooks`. Do not skip hooks with `--no-verify`.
 
+Open a pull request with its body passed through `scripts/guard-agents.sh pr-normalize`, for example `gh pr create --body-file <(scripts/guard-agents.sh pr-normalize pr.md)`, and check it with `scripts/guard-agents.sh pr-body pr.md` first. `pr-normalize` rewrites a line `Part of popododo0720/vws-x#N` to `Part of vws-x#N`, the form the orchestrator's Rule D merges, and leaves everything else byte for byte. `pr-body` (the pr-hygiene check) fails on any line that starts with `Part of <owner>/<repo>#N` and names the allowed forms, `Part of #N` and `Part of vws-<repo>#N` (vws-deploy#504).
+
 ## Using pstack
 
 Design and review go in the order below. Model choice follows the user's pstack rules; do not write model names in this file.

@@ -133,6 +133,10 @@ PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
 # The owner/repo form pr-hygiene rejects. Rule D names it in the reason instead of the generic
 # no_part_of, so a PR skipped for it says what to change (#477).
 OWNER_PART_OF_RE = re.compile(rf"(?im)^\s*Part of\s+{OWNER}/vws-[a-z0-9-]+#[0-9]+")
+# vws-deploy#504: what to write instead, in the part_of_owner_repo merge note and lead wake. pr-hygiene
+# (guard-agents.sh pr-body) names the same allowed forms and `guard-agents.sh pr-normalize` rewrites them.
+PART_OF_HINT = ("write `Part of #N` (same repo) or `Part of vws-<repo>#N` at the start of a line; the owner/repo "
+                "form `Part of <owner>/<repo>#N` is not read (https://github.com/popododo0720/vws-deploy/issues/504)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 # The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
 AGENT_RE = re.compile(r"^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$", re.M)
@@ -1298,7 +1302,7 @@ def merge_reasons(it, ctx, snapshot, repos, cfg, attempts):
         reasons.append(f"mergeable_state:{info.get('mergeable_state')}")
     body = it.get("body") or ""
     if not PART_OF_RE.search(body):
-        reasons.append("part_of_owner_repo" if OWNER_PART_OF_RE.search(body) else "no_part_of")
+        reasons.append("part_of_owner_repo" if owner_repo_part_of(body) else "no_part_of")
     if CLOSING_RE.search(info.get("title") or ""):
         reasons.append("closing_keyword_in_title")
     deps, bad = parse_deps(it.get("body"), it["repo"])
@@ -1308,6 +1312,13 @@ def merge_reasons(it, ctx, snapshot, repos, cfg, attempts):
     if attempts.get(f"{k}@{it.get('head_sha')}", 0) >= int(num(cfg, "ORCHESTRATE_MERGE_MAX_ATTEMPTS")):
         reasons.append("merge_attempts_exhausted")
     return reasons
+
+
+def owner_repo_part_of(body):
+    """True when Rule D skips the body with part_of_owner_repo: no Part of it reads, but this owner's
+    owner/repo form (vws-deploy#477, #504)."""
+    body = body or ""
+    return not PART_OF_RE.search(body) and bool(OWNER_PART_OF_RE.search(body))
 
 
 def merge_status_body(kind, repo, sha, detail, key, run_id):
@@ -1469,6 +1480,8 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
                                         "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
         note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
                 "head": (it.get("head_sha") or "")[:7], "main": main}
+        if "part_of_owner_repo" in reasons:
+            note["hint"] = f"{it.get('url', k)}: {PART_OF_HINT}"
         unmapped = (it.get("merge_info") or {}).get("unmapped")
         if unmapped:
             note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
@@ -2011,18 +2024,24 @@ def lead_key(k, sha):
     return "sha256:" + hashlib.sha256(f"lead-wake\n{k}@{sha}".encode()).hexdigest()
 
 
-def lead_wake_body(it, k, reason, key, run_id):
+LEAD_REBUILD = ("No rule moves this PR head on its own: dr eggbot rebuilds it onto main as a new -vN PR "
+                "(no force-push) or routes the FAIL to its owner.")
+# vws-deploy#504: a part_of_owner_repo skip needs a body edit only; the head and its verdict stay.
+LEAD_BODY_EDIT = ("No rule moves this PR on its own: dr eggbot (or the PR's owner) edits the PR body; the head and "
+                  "its verify verdict stay, and Rule D merges it on a later tick once nothing else holds it.")
+
+
+def lead_wake_body(it, k, reason, key, run_id, action=LEAD_REBUILD):
     return "\n".join([LEAD_WAKE_MARKER, f"vws-orchestrate: lead wake for {k} at `{it['head_sha']}` {it['url']}", "",
-                      f"Reason: {reason}.",
-                      "No rule moves this PR head on its own: dr eggbot rebuilds it onto main as a new -vN PR "
-                      "(no force-push) or routes the FAIL to its owner.", "",
+                      f"Reason: {reason}.", action, "",
                       f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
 
 
 def decide_lead(snapshot, cfg, notes, routed=()):
     """Lead wake (vws-deploy#397). Returns lead_wake actions: one per PR head that is verify-approved but
     conflicts with main, or has a vws-verify FAIL that no rework picks up (a Grok PR, a PR with no
-    DeepSeek owner, or a conflict-only verdict). routed are the PRs the grok rework wake (rule B4,
+    DeepSeek owner, or a conflict-only verdict), or is verify-approved but Rule D skips it with
+    part_of_owner_repo (vws-deploy#504; the wake names the allowed forms and the PR URL). routed are the PRs the grok rework wake (rule B4,
     vws-deploy#398) covers this tick: their owner is woken, so they get no lead wake. Pure."""
     items = snapshot["items"]
     posted = set(snapshot.get("status", {}).get("keys", []))
@@ -2049,18 +2068,25 @@ def decide_lead(snapshot, cfg, notes, routed=()):
                     reason = f"verify FAIL on a Grok PR and no Grok rework wake covers it ({v['url']})"
                 elif k not in reworked:
                     reason = f"verify FAIL on a PR with no DeepSeek owner ({v['url']})"
+        action = LEAD_REBUILD
+        if ("verify-approved" in it["labels"] and info.get("head_sha") == it["head_sha"]
+                and not set(it["labels"]) & set(OPT_OUT_LABELS) and OPT_OUT_MARKER not in (it.get("body") or "")
+                and owner_repo_part_of(it.get("body"))):
+            fix = f"verify-approved but Rule D skips it with part_of_owner_repo ({it['url']}): {PART_OF_HINT}"
+            reason, action = (f"{reason}; also {fix}", action) if reason else (fix, LEAD_BODY_EDIT)
         if reason:
-            due.append((k, it, reason))
+            due.append((k, it, reason, action))
     if due and not wake_target(cfg):
         notes.append({"kind": "lead_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "due": len(due)})
         return []
     actions = []
-    for k, it, reason in due:
+    for k, it, reason, action in due:
         key = lead_key(k, it["head_sha"])
         if key in posted:
             continue
         actions.append({"type": "lead_wake", "target": wake_target(cfg), "item": k, "key": key,
-                        "reason": f"{k}: {reason}", "body": lead_wake_body(it, k, reason, key, snapshot["run_id"])})
+                        "reason": f"{k}: {reason}",
+                        "body": lead_wake_body(it, k, reason, key, snapshot["run_id"], action)})
     return actions
 
 

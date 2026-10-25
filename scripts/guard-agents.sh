@@ -12,6 +12,8 @@
 #   guard-agents.sh pr-checklist [FILE]     each QUALITY_TITLES checklist item exactly once in the pull request text
 #                                           (FILE or $PR_BODY) is ticked and has evidence or "N/A: <reason>"
 #   guard-agents.sh pr-issue [FILE]         prints the issue reference from "Part of #N" (#N, or vws-<repo>#N)
+#   guard-agents.sh pr-normalize [FILE]     prints the pull request text (FILE or $PR_BODY) with each line "Part of
+#                                           <GUARD_PART_OF_OWNER>/vws-<repo>#N" rewritten to "Part of vws-<repo>#N"
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
 #   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
 #   guard-agents.sh push-watch BEFORE AFTER every first-parent commit pushed to main came from a pull request
@@ -31,7 +33,8 @@
 # GUARD_VERIFY_LABEL (default verify-approved), GUARD_QUALITY_ITEMS (default 9, the QUALITY.md checklist),
 # GUARD_VERIFY_ACTORS (comma list of logins allowed to approve; empty = any author), GUARD_VERIFY_LABELER
 # (login that last added the label), GUARD_VERIFY_EXCLUDE (PR author and head pusher: never approve),
-# GUARD_VERIFY_IDENTITY (the vws-verify login, exempt from EXCLUDE), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# GUARD_VERIFY_IDENTITY (the vws-verify login, exempt from EXCLUDE), GUARD_PART_OF_OWNER (default popododo0720,
+# the owner pr-normalize strips), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
 set -euo pipefail
 export LC_ALL=C
 
@@ -209,6 +212,11 @@ PART_OF_ZERO_RE='(^|[^[:alnum:]])part of[[:space:]]+([A-Za-z0-9._/-]+)?#0'
 # PR_PART_OF_ANY_RE is Rule D's own pattern (#0 too), for the first match in the raw text.
 PR_PART_OF_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[1-9][0-9]*'
 PR_PART_OF_ANY_RE='^[[:space:]]*part of[[:space:]]+(vws-[a-z0-9-]+)?#[0-9]+'
+# vws-deploy#504: a line that starts with "Part of <owner>/<repo>#N" fails on its own, anywhere in the raw text,
+# with the allowed forms named: Rule D skips this owner's form as part_of_owner_repo and every other owner's as
+# no_part_of. Stricter than Rule D when a valid line is also present, never looser.
+PR_PART_OF_OWNER_REPO_RE='^[[:space:]]*part of[[:space:]]+[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+'
+PART_OF_OWNER=${GUARD_PART_OF_OWNER:-popododo0720}
 # vws-deploy#486: a pull request body lists the acceptance-criteria boxes of its Part of issue it covers, one
 # "AC: <n>" line per box (n from 1), or one "AC: none - <reason>". Only visible lines that start with "AC:"
 # count. parse_ac in .github/orchestrate/orchestrate.py reads the same syntax; tests/orchestrate/test_ac_parity.py
@@ -297,6 +305,7 @@ cmd_pr_body() {
   fi
   ! grep -q -i -E "$PART_OF_ZERO_RE" <<<"$body" ||
     die "pr-body: 'Part of #0' names no issue; issue numbers start at 1"
+  pr_part_of_owner_repo "$body" "pr-body" || exit 1
   pr_part_of_ref "$body" "pr-body" >/dev/null || exit 1
   ! has_hangul <<<"$body" || die "pr-body: write the pull request text in English (found Hangul)"
   pr_ac_lines "$(visible_text <<<"${body//$'\r'/}")" || exit 1
@@ -394,7 +403,36 @@ cmd_pr_issue() {
     [[ -f $1 ]] || die "pr-issue: ${1} does not exist"
     body=$(cat "$1")
   fi
+  pr_part_of_owner_repo "$body" "pr-issue" || exit 1
   pr_part_of_ref "$body" "pr-issue" || exit 1
+}
+
+# Fails with the allowed forms when a line starts with "Part of <owner>/<repo>#N" (vws-deploy#504).
+pr_part_of_owner_repo() {
+  local line
+  line=$(LC_ALL=C grep -m1 -o -i -E "$PR_PART_OF_OWNER_REPO_RE" <<<"$1") || return 0
+  line=${line#"${line%%[![:space:]]*}"}
+  echo "${2}: '${line}' uses the owner/repo form, which the orchestrator's Rule D does not read; write" \
+    "'Part of #N' (same repo) or 'Part of vws-<repo>#N' at the start of a line, or run" \
+    "'scripts/guard-agents.sh pr-normalize' on the text before opening the pull request" \
+    "(https://github.com/popododo0720/vws-deploy/issues/504)" >&2
+  return 1
+}
+
+# vws-deploy#504: the text with "Part of <PART_OF_OWNER>/vws-<repo>#N" at the start of a line rewritten to
+# "Part of vws-<repo>#N", the form Rule D and pr-body read. Other text, other owners and non-vws repos are
+# printed unchanged, byte for byte (CRLF and a missing final newline too), so it is safe to run twice.
+cmd_pr_normalize() {
+  local owner
+  [[ $PART_OF_OWNER =~ ^[A-Za-z0-9-]+$ ]] || die "pr-normalize: GUARD_PART_OF_OWNER '${PART_OF_OWNER}' is not a login"
+  owner=$PART_OF_OWNER
+  local expr="s/^([[:space:]]*part of)[[:space:]]+${owner}\/(vws-[a-z0-9-]+#[0-9]+)/\1 \2/I"
+  if [[ -n ${1:-} ]]; then
+    [[ -f $1 ]] || die "pr-normalize: ${1} does not exist"
+    sed -E "$expr" -- "$1"
+  else
+    printf '%s' "${PR_BODY:-}" | sed -E "$expr"
+  fi
 }
 
 # The first "Part of" reference in a line of its own, as written ("" when none): the one Rule D links.
@@ -638,6 +676,23 @@ part of vws-lib#7" bash "$0" pr-body
 Part of acme/repo#7" bash "$0" pr-body
   expect_fail "Part of popododo0720/vws-deploy#N (Rule D skips it, vws-deploy#477)" env PR_BODY="AC: 1
 Part of popododo0720/vws-deploy#7" bash "$0" pr-body
+  # vws-deploy#504: the owner/repo form fails with the allowed forms and the issue link, also next to a valid
+  # line, and pr-normalize turns this owner's form into one pr-body accepts.
+  expect_fail "Part of owner/repo#N next to a valid Part of line (vws-deploy#504)" env PR_BODY="AC: 1
+Part of #12
+Part of popododo0720/vws-deploy#7" bash "$0" pr-body
+  local why
+  why=$(PR_BODY=$'AC: 1\nPart of popododo0720/vws-deploy#448' bash "$0" pr-body 2>&1) || true
+  [[ $why == *"'Part of #N'"*"'Part of vws-<repo>#N'"*"vws-deploy/issues/504"* ]] ||
+    die "selftest: the owner/repo Part of message does not name the allowed forms and vws-deploy#504: ${why}"
+  echo "ok: the owner/repo Part of message names the allowed forms and vws-deploy#504"
+  [[ $(PR_BODY=$'AC: 1\n  part of Popododo0720/vws-lib#7\nPart of acme/vws-lib#8' bash "$0" pr-normalize) == \
+    $'AC: 1\n  part of vws-lib#7\nPart of acme/vws-lib#8' ]] ||
+    die "selftest: pr-normalize did not rewrite only this owner's Part of form"
+  echo "ok: pr-normalize rewrites only this owner's Part of form"
+  expect_pass "pr-body after pr-normalize (vws-deploy#504)" bash -c \
+    'PR_BODY=$(PR_BODY=$'"'"'AC: 1\nPart of popododo0720/vws-deploy#448'"'"' bash "$1" pr-normalize) bash "$1" pr-body' _ "$0"
+  expect_fail "pr-normalize with an owner that is not a login" env GUARD_PART_OF_OWNER='a/b' PR_BODY="x" bash "$0" pr-normalize
   expect_fail "Part of in a list item" env PR_BODY="AC: 1
 - Part of #12" bash "$0" pr-body
   expect_fail "Part of mid-sentence" env PR_BODY="AC: 1
@@ -1066,6 +1121,7 @@ case "$command_name" in
   pr-body) cmd_pr_body "$@" ;;
   pr-checklist) cmd_pr_checklist "$@" ;;
   pr-issue) cmd_pr_issue "$@" ;;
+  pr-normalize) cmd_pr_normalize "$@" ;;
   rules | judgment) cmd_rules "$@" ;;
   archtest) cmd_archtest "$@" ;;
   verify-gate) cmd_verify_gate "$@" ;;
@@ -1076,5 +1132,5 @@ case "$command_name" in
   correct) cmd_correct "$@" ;;
   english) cmd_english "$@" ;;
   selftest) cmd_selftest ;;
-  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|pr-checklist [FILE]|pr-issue [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
+  *) die "usage: guard-agents.sh <agents [FILE]|pr-base BASE|rules [FILE] [HEADING]|judgment [FILE] [HEADING]|archtest [FILE] [HEADING]|identity [SUMFILE]|pr-body [FILE]|pr-checklist [FILE]|pr-issue [FILE]|pr-normalize [FILE]|commit-msg FILE|pr-commits BASE HEAD|push-watch BEFORE AFTER|verify-gate HEAD LABELS [FILE]|correct [DIR]|english [ALLOWLIST]|selftest>" ;;
 esac
