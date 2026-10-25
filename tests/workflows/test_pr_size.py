@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
+import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GUARD = os.path.join(ROOT, "scripts", "guard-agents.sh")
@@ -184,6 +185,16 @@ class PrSize(unittest.TestCase):
 class Wiring(unittest.TestCase):
     def test_repo_config_is_800(self):
         self.assertIn("limit=800", open(os.path.join(ROOT, ".github", "pr-size.conf")).read().splitlines())
+
+    def test_pr_hygiene_runs_pr_size(self):
+        wf = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "repo-guard-pr-hygiene.yml")))
+        steps = wf["jobs"]["pr-hygiene"]["steps"]
+        s = next(s for s in steps if "pr-size" in s.get("run", ""))
+        self.assertEqual(s["run"].strip(), 'scripts/guard-agents.sh pr-size "$BASE_SHA" "$HEAD_SHA"')
+        self.assertEqual(s["env"]["PR_BODY"], "${{ github.event.pull_request.body }}")
+        self.assertEqual(s["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
+        self.assertEqual(s["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha }}")
+        self.assertLess(steps.index(s), len(steps) - 1, "pr-size must run before the passed step")
 
     def test_selftest_covers_pr_size(self):
         r = subprocess.run(["bash", GUARD, "selftest"], cwd=ROOT, capture_output=True, text=True)
