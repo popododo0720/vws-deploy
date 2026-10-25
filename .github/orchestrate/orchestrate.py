@@ -104,6 +104,8 @@ GROK_ASSIGN_MARKER = "<!-- orchestrate:grok-wake item="
 REBUILD_WAKE_MARKER = "<!-- vws-orchestrate:rebuild-wake -->"
 NEEDS_REBUILD = "needs-rebuild"
 GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
+# vws-deploy#506: ORCHESTRATE_GROK_OWNERS entries, repo=bot; the bot is what a grok-wake's Owner line names.
+GROK_OWNER_RE = re.compile(r"(vws-[a-z0-9-]+)=([a-z0-9][a-z0-9-]{0,38})")
 # The status issue (vws-deploy#416): the orchestrator owns only the block from STATUS_MARKER to
 # STATUS_END_MARKER in its body and rewrites that block in place; text outside it is kept byte for byte,
 # and a body without exactly one block is never written. Its comments are metrics alerts only
@@ -167,6 +169,10 @@ DEFAULTS = {
     "ORCHESTRATE_GROK_CAP": "1",
     "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
     "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
+    # vws-deploy#506: the Grok dev bot each repo's grok-wakes name (repo=bot); an unlisted repo names
+    # the bot called after the repo (vws-iam -> vws-iam). An issue or PR `Agent:` line wins over both.
+    "ORCHESTRATE_GROK_OWNERS": ",".join(f"{r}=vws-platform" for r in
+                                        ("vws-deploy", "vws-lib", "vws-proto", "vws-test", "vws-conformance")),
     # vws-deploy#411: GitHub logins the woken Grok bots comment as; only their comments (or a current
     # assignee's) claim a woken issue. The Grok bots use the owner's gh login.
     "ORCHESTRATE_GROK_LOGINS": OWNER,
@@ -301,13 +307,14 @@ def load_config(paths, environ):
               "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
+    grok_owners(cfg)  # raises ValueError on a bad ORCHESTRATE_GROK_OWNERS entry
     tf = cfg["ORCHESTRATE_BOARD_TOKEN_FILE"]
     if not os.path.isabs(tf) or re.search(r"[\x00-\x1f]", tf):
         raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
                  "ORCHESTRATE_WAKE_THREAD",
                  "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
-                 "ORCHESTRATE_BOARD_TOKEN_FILE",
+                 "ORCHESTRATE_GROK_OWNERS", "ORCHESTRATE_BOARD_TOKEN_FILE",
                  "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_GROK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN",
                  "ORCHESTRATE_VERIFY_USER_ID")
     for k in DEFAULTS:
@@ -1609,10 +1616,11 @@ def grok_rework_key(k, head_sha):
     return "sha256:" + hashlib.sha256(f"grok-rework\n{k}\n{head_sha}".encode()).hexdigest()
 
 
-def grok_rework_waiting(items):
+def grok_rework_waiting(items, cfg):
     """vws-deploy#398(a): open non-draft PRs into main whose head has a vws-verify FAIL that is not
     conflict-only, that rule B2 does not rework, that are not parked (OPT_OUT_LABELS), and whose owner
-    (pr_owner) resolves to someone other than deepseek. Sorted by key."""
+    (pr_owner) resolves to someone other than deepseek. Sorted by key. bot is the Grok dev bot the wake
+    names (vws-deploy#506): the `Agent:` owner as is, else grok_bot of the PR."""
     reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
     out = []
     for k in sorted(items):
@@ -1626,8 +1634,9 @@ def grok_rework_waiting(items):
             continue
         owner, via = pr_owner(it, items)
         if owner and owner != "deepseek":
+            bot, bot_via = (owner, via) if via == "agent" else grok_bot(it, cfg)
             out.append({"target": k, "url": it["url"], "head_sha": it["head_sha"], "owner": owner, "via": via,
-                        "verdict": v})
+                        "bot": bot, "bot_via": bot_via if bot_via == via else f"{via}, {bot_via}", "verdict": v})
     return out
 
 
@@ -1636,7 +1645,7 @@ def grok_rework_body(p, key, run_id):
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok rework {p['target']} {p['url']}", "",
                       f"Head `{p['head_sha']}` has a vws-verify FAIL: {v['url']}", "",
                       quote(scrub(v["body"] or "")).replace("<!--", "&lt;!--"), "",
-                      f"Owner `{p['owner']}` ({p['via']}): please fix the findings on the same branch with a new "
+                      f"Owner `{p['bot']}` ({p['bot_via']}): please fix the findings on the same branch with a new "
                       "commit (no force-push, no update-branch, no merge commits), then let verify run on the new head.",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`",
                       f"{REWORK_MARKER}{p['head_sha']} verdict={v['id']} item={p['target']} -->"])
@@ -1644,7 +1653,7 @@ def grok_rework_body(p, key, run_id):
 
 def decide_grok_rework(snapshot, cfg, posted, notes):
     """Rule B4 (vws-deploy#398(a)). Returns (grok_rework actions, the PRs the wake covers). Pure."""
-    waiting = grok_rework_waiting(snapshot["items"])
+    waiting = grok_rework_waiting(snapshot["items"], cfg)
     if not waiting:
         return [], set()
     if not wake_target(cfg):
@@ -1808,9 +1817,32 @@ def grok_key(k, since):
     return "sha256:" + hashlib.sha256(f"grok-wake\n{k}\n{int(since)}".encode()).hexdigest()
 
 
-def grok_wake_body(it, k, key, slot, cap, run_id):
+def grok_owners(cfg):
+    """ORCHESTRATE_GROK_OWNERS as {repo: bot}; entries split on commas or whitespace. Raises ValueError on
+    an entry that is not repo=bot (load_config checks it once, so decide never sees a bad value)."""
+    out = {}
+    for t in re.split(r"[,\s]+", cfg.get("ORCHESTRATE_GROK_OWNERS", DEFAULTS["ORCHESTRATE_GROK_OWNERS"])):
+        m = GROK_OWNER_RE.fullmatch(t)
+        if t and not m:
+            raise ValueError(f"ORCHESTRATE_GROK_OWNERS entries must be vws-<repo>=<bot>, got {t[:64]!r}")
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def grok_bot(it, cfg):
+    """vws-deploy#506: the Grok dev bot that owns issue or PR it, as (bot, via): its body's `Agent:` line
+    ("agent"), else ORCHESTRATE_GROK_OWNERS for its repo, else the bot named after its repo ("repo:<repo>")."""
+    agent = agent_of(it.get("body"))
+    if agent:
+        return agent, "agent"
+    return grok_owners(cfg).get(it["repo"], it["repo"]), f"repo:{it['repo']}"
+
+
+def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
+    who = f"Owner `{owner}` ({via})" if owner else "No owner resolved, so the lead (dr eggbot)"
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
-                      "Owning Grok dev bot: please take this issue: one small PR per its acceptance criteria, "
+                      f"{who}: please take this issue: one small PR per its acceptance criteria, "
                       f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
                       f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
@@ -1952,9 +1984,10 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         slot = len(running) + len(actions) + 1
         # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
         # cannot rebuild their reset time from the bare issues list).
-        actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key,
+        owner, via = grok_bot(it, cfg)
+        actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
                         "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
-                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"])})
+                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
     return actions
 
 
