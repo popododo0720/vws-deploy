@@ -13,7 +13,9 @@ Checks per repo, on its default branch:
               copy whose sha256 that row pins; any other content is checked as a caller. No other workflow
               file may call a repo-guard-*.yml file or report the bare pr-hygiene or verify-gate check name.
               All of this is also checked at the head of every open PR and at each --head REPO=SHA
-              (the workflow passes the PR head from its event), against the pin of the default branches
+              (the workflow passes the PR head from its event), against the pin of the default branches.
+              No workflow file, a pending full copy included, runs on both pull_request and
+              pull_request_target (vws-deploy#505): the second event reports a skipped check under the same name
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   docs        AGENTS.md and QUALITY.md (or docs/QUALITY.md) exist, and AGENTS.md has no stale fact (#395)
@@ -305,12 +307,44 @@ def other_workflow_issues(files):
     return out
 
 
+DUAL_EVENTS = {"pull_request", "pull_request_target"}
+
+
+def _events(on):
+    """The trigger names of a workflow's on: value (a string, a list or a mapping)."""
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, list):
+        return {e for e in on if isinstance(e, str)}
+    return {e for e in on if isinstance(e, str)} if isinstance(on, dict) else set()
+
+
+def dual_event_issues(files):
+    """vws-deploy#505: no workflow file, repo-guard.yml included, runs on both pull_request and
+    pull_request_target. Each event gets its own run of every job, so a job gated to one event reports a
+    skipped check run under the same name on the other, and Rule D never merges a skipped required check.
+    Files that do not parse are reported by the other checks."""
+    out = []
+    for path, raw in sorted((files or {}).items()):
+        if raw is None:
+            continue
+        try:
+            wf = yaml.load(raw.decode("utf-8"), Loader=caller_pin._Strict)  # noqa: S506 (SafeLoader subclass)
+        except (UnicodeDecodeError, yaml.YAMLError):
+            continue
+        if isinstance(wf, dict) and DUAL_EVENTS <= _events(wf.get("on", wf.get(True))):
+            out.append(f"{path} runs on both pull_request and pull_request_target: a job gated to one event reports "
+                       "a skipped check under the same name on the other, and Rule D never merges a skipped "
+                       "required check (vws-deploy#505)")
+    return out
+
+
 def ref_issues(files, home, full_copy):
     """([issues], pin) for the workflows at one ref. pin is the caller's 40-hex SHA, "local" (vws-deploy),
     "pending" (the exact full copy that caller-pending.tsv pins, full_copy is its sha256), or None."""
     if files is None:
         return [f"cannot list {WF_DIR}"], None
-    others = other_workflow_issues(files)
+    others = other_workflow_issues(files) + dual_event_issues(files)
     rg = WORKFLOWS[0]
     if rg not in files:
         return [f"no {rg}"] + others, None
