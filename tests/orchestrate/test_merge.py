@@ -80,6 +80,17 @@ class Eligibility(unittest.TestCase):
         r = run(snap(candidate(body="Part of popododo0720/vws-deploy#412")))
         self.assertEqual(reasons(r, "vws-deploy#500"), ["part_of_owner_repo"])
         self.assertEqual(merges(r), [])
+        # vws-deploy#504: the skip says what to write and where, with the same allowed forms as pr-hygiene.
+        note = next(n for n in r["notes"] if n["kind"] == "merge_check" and n["target"] == "vws-deploy#500")
+        for want in ("Part of #N", "Part of vws-<repo>#N", "https://github.com/popododo0720/vws-deploy/issues/504",
+                     "https://github.com/popododo0720/vws-deploy/pull/500"):
+            self.assertIn(want, note["hint"])
+
+    def test_only_the_owner_repo_skip_carries_a_hint(self):
+        r = run(snap(candidate(body="Agent: x")))
+        note = next(n for n in r["notes"] if n["kind"] == "merge_check" and n["target"] == "vws-deploy#500")
+        self.assertNotIn("hint", note)
+        self.assertNotIn("hint", next(n for n in run(snap(candidate()))["notes"] if n["kind"] == "merge_check"))
 
     def test_every_condition(self):
         sha = candidate()["head_sha"]

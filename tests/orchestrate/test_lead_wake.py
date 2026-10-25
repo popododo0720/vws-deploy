@@ -52,6 +52,39 @@ class LeadWake(unittest.TestCase):
         self.assertEqual(lead(run(approved(mergeable=True))), [])
         self.assertEqual(lead(run(approved(mergeable=None))), [])  # unknown is not a conflict
 
+    def test_approved_but_owner_repo_part_of_wakes_the_lead_with_the_fix(self):
+        # vws-deploy#504: vws-compute#127 sat verify-approved with part_of_owner_repo and no wake.
+        pr = approved(mergeable=True, repo="vws-compute", number=127)
+        pr["body"] = "Part of popododo0720/vws-deploy#448\nAgent: vws-platform"
+        a = lead(run(pr))
+        self.assertEqual(len(a), 1)
+        body = a[0]["body"]
+        for want in ("owner/repo", "Part of #N", "Part of vws-<repo>#N", pr["url"],
+                     "https://github.com/popododo0720/vws-deploy/issues/504", "edits the PR body"):
+            self.assertIn(want, body)
+        self.assertNotIn("new -vN PR", body)  # a body edit, not a rebuild
+        self.assertEqual(lead(run(pr, keys=[a[0]["key"]])), [])  # once per head
+
+    def test_owner_repo_part_of_and_a_conflict_is_one_wake_naming_both(self):
+        pr = approved()
+        pr["body"] = "Part of popododo0720/vws-deploy#448"
+        a = lead(run(pr))
+        self.assertEqual(len(a), 1)
+        self.assertIn("conflicts with main", a[0]["body"])
+        self.assertIn("Part of vws-<repo>#N", a[0]["body"])
+
+    def test_owner_repo_part_of_is_quiet_when_not_approved_or_opted_out_or_read(self):
+        body = "Part of popododo0720/vws-deploy#448"
+        unapproved = approved(mergeable=True)
+        unapproved["labels"], unapproved["body"] = [], body
+        held = approved(mergeable=True, number=501)
+        held["labels"], held["body"] = ["blocked", "verify-approved"], body
+        moved = approved(mergeable=True, number=502)
+        moved["body"], moved["merge_info"]["head_sha"] = body, "e" * 40
+        valid_too = approved(mergeable=True, number=503)
+        valid_too["body"] = body + "\nPart of #12"  # Rule D reads #12, so it is not skipped for Part of
+        self.assertEqual(lead(run(unapproved, held, moved, valid_too)), [])
+
     def test_one_wake_per_head(self):
         pr = approved()
         key = lead(run(pr))[0]["key"]
