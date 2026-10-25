@@ -279,13 +279,19 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
 - `collect` reads each watched repo's newest 100 closed PRs (one ETag-cached `GET pulls?state=closed`).
   It keeps a PR that was merged into `main` after `ac_tick_since`, within `ORCHESTRATE_COMMENT_WINDOW_DAYS`,
   and that is not yet in `ac_ticked` (both in `state.json`). For one with a `Part of` issue (the first
-  `Part of #N` or `Part of vws-<repo>#N` line, as rule D reads it) and `AC: <n>` lines, it reads that issue
-  and its comments. A PR merged in another vws-* repo with `Part of vws-deploy#N` ticks the vws-deploy
+  `Part of #N` or `Part of vws-<repo>#N` line, as rule D reads it) and `AC: <n>` lines, it first checks
+  that the body is the one vws-verify approved: it reads the PR's reviews for the newest vws-verify
+  approval of the merged head (the verify login, and user id when pinned) and the body's last edit time
+  (one read-only GraphQL `lastEditedAt` query on the box login). Only when the body was not edited at or
+  after that approval does it read the `Part of` issue and its comments. A body edited after the verdict
+  or after the merge could point `Part of` at another issue, so it is never trusted. A PR merged in another vws-* repo with `Part of vws-deploy#N` ticks the vws-deploy
   issue. A read error skips that PR for this tick (note `ac_read_error`); the tick does not fail.
 - The first tick with the rule on only sets `ac_tick_since` to now (note `ac_tick_start`), so PRs merged
   before it are never ticked.
 - `decide` (oldest merge first) plans one `ac_tick` per PR. It plans nothing and notes `ac_none`,
-  `ac_unparsed`, `ac_no_part_of`, `ac_issue_closed`, `ac_no_section` (no box under the heading),
+  `ac_unparsed`, `ac_no_part_of`, `ac_unverified` (no vws-verify approval of the merged head, for example
+  a lead merge: tick its boxes by hand), `ac_body_edited` (the body changed at or after that approval),
+  `ac_issue_closed`, `ac_no_section` (no box under the heading),
   `ac_index_invalid` (an `n` beyond the box count: no box is ticked) or `ac_tick_done` (the issue already
   has the PR's marker). These PRs go into `ac_ticked` and are not read again.
 - `apply` (only with `ORCHESTRATE_AC_TICK=apply` and `ORCHESTRATE_MODE=apply`) reads the issue's comments
