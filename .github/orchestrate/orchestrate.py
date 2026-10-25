@@ -1012,11 +1012,17 @@ def head_check_reasons(info, required):
                      and (req.get("app_id") in (None, -1) or app == req["app_id"])]
             if match:
                 # Every distinct check with this name must pass; a success elsewhere cannot hide a failure.
-                bad = [x for x in match if x.get("status") != "completed" or x.get("conclusion") != "success"]
-                r = max(bad or match, key=run_order)
-                if r.get("status") != "completed":
+                # A skip passes only next to a success of the same name and app (vws-deploy#505): a workflow on
+                # both pull_request and pull_request_target skips its pull_request-only job on the other event.
+                ok = any(x.get("status") == "completed" and x.get("conclusion") == "success" for x in match)
+                bad = [x for x in match if x.get("status") != "completed"
+                       or x.get("conclusion") not in (("success", "skipped") if ok else ("success",))]
+                r = max(bad, key=run_order) if bad else None
+                if r is None:
+                    pass
+                elif r.get("status") != "completed":
                     reasons.append(f"required_pending:{req['context']}")
-                elif r.get("conclusion") != "success":
+                else:
                     reasons.append(f"required_{r.get('conclusion')}:{req['context']}")
             elif req["context"] in statuses and req.get("app_id") in (None, -1):
                 # A commit status has no app, so it can only satisfy a requirement not bound to one.
@@ -3155,6 +3161,32 @@ def add_deploy_alerts(state, deploy, now):
 
 # ---------------------------------------------------------------- the status issue body (vws-deploy#416)
 
+MERGE_SKIP_PRS, MERGE_SKIP_REASONS = 10, 5
+
+
+def skip_reason_text(reason):
+    """One Rule D reason as inline code. Check names come from workflow files a PR can edit, so a backtick
+    or a line break cannot end the code span or the list item."""
+    return "`" + scrub(re.sub(r"\s+", " ", str(reason)).replace("`", "'"))[:120] + "`"
+
+
+def merge_skip_line(result):
+    """The status line naming every verify-approved PR Rule D did not merge this tick, with its reasons
+    (vws-deploy#505), so a CLEAN and approved PR that parks is visible outside the VM journal."""
+    rows = [n for n in result.get("notes", []) if n.get("kind") == "merge_check" and not n.get("eligible")
+            and "no_verify_approved" not in n.get("reasons", [])]
+    parts = []
+    for n in rows[:MERGE_SKIP_PRS]:
+        rs = n.get("reasons", [])
+        more = f" (+{len(rs) - MERGE_SKIP_REASONS} more)" if len(rs) > MERGE_SKIP_REASONS else ""
+        parts.append(f"{n['target']} `{n.get('head') or '?'}` ("
+                     + ", ".join(skip_reason_text(r) for r in rs[:MERGE_SKIP_REASONS]) + more + ")")
+    if len(rows) > MERGE_SKIP_PRS:
+        parts.append(f"+{len(rows) - MERGE_SKIP_PRS} more PRs")
+    return f"- Verify-approved PRs not merged: {len(rows)}: " + "; ".join(parts) if rows else \
+        "- Verify-approved PRs not merged: none"
+
+
 def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None):
     """Pure: the status issue body. Only the last line (_Updated ..._) changes from tick to tick without a
     real change, and status_same ignores it, so a quiet tick edits nothing."""
@@ -3177,6 +3209,7 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
     lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
         f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
     locks = state.get("merge_locks", {})
+    lines.append(merge_skip_line(result))
     lines.append("- Merge locks: " + ("; ".join(
         f"{repo} {lk.get('status', '?')} ({lk.get('pr', '?')}"
         + (f", main `{lk['merge_sha'][:7]}`" if lk.get("merge_sha") else "") + ")"
