@@ -370,7 +370,7 @@ def class4_head_issues(owner, repo, heads, script, vendored, pending, callees, a
         got[VENDORED_CHECK_ENGLISH] = content(owner, repo, VENDORED_CHECK_ENGLISH, ref=sha)
         issues, _ = vendored_issues(repo, got, vendored)
         _, pin = ref_issues(files, repo == "vws-deploy", pending.get(repo))
-        issues += bootstrap_issues(files, script, callee_files(owner, pin, callees, api=api))
+        issues += bootstrap_for(owner, files, script, pin, callees, api=api)
         if issues:
             out.append(f"{label} {sha[:12]}: " + "; ".join(issues))
     return out
@@ -482,29 +482,43 @@ def bootstrap_issues(files, script, callee=None):
     """Issues when a workflow at this ref, or a vws-deploy repo-guard-*.yml it pins (callee), calls a
     guard-agents.sh subcommand that the base-branch script does not dispatch. The trusted script runs from
     the base, so such a call fails with a usage error until a separate PR lands the script (#439 class 4)."""
+    unread = [f"cannot read vws-deploy {p.rsplit('/', 1)[1]}"
+              for p, raw in sorted((callee or {}).items()) if raw is None]
     calls = [(p.rsplit("/", 1)[1], s) for p, s in guard_calls(files)]
     calls += [("vws-deploy " + p.rsplit("/", 1)[1], s) for p, s in guard_calls(callee or {})]
     if not calls:
-        return []
+        return unread
     have = guard_subcommands(script) if script is not None else None
     if have is None:
-        return ["workflows call guard-agents.sh, but the base branch has no readable scripts/guard-agents.sh dispatch"]
+        return unread + ["workflows call guard-agents.sh, but the base branch has no readable "
+                         "scripts/guard-agents.sh dispatch"]
     missing = {}
     for where, sub in calls:
         if sub not in have:
             missing.setdefault(where, set()).add(sub)
-    return [f"{where} calls guard-agents.sh {', '.join(sorted(subs))}, which the base-branch script does not have; "
-            "land the script first" for where, subs in sorted(missing.items())]
+    return unread + [f"{where} calls guard-agents.sh {', '.join(sorted(subs))}, which the base-branch script does "
+                     "not have; land the script first" for where, subs in sorted(missing.items())]
 
 
 def callee_files(owner, pin, cache, api=None):
-    """{path: bytes} of the vws-deploy repo-guard-*.yml files at pin (cached); {} when pin is not a SHA."""
+    """{path: bytes or None} of the vws-deploy repo-guard-*.yml files at pin (cached), {} when pin is not a SHA,
+    or None when the listing cannot be read (never cached, so a failed read is never an empty callee)."""
     if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{40}", pin):
         return {}
     if pin not in cache:
-        files = workflow_files(owner, "vws-deploy", ref=pin, api=api) or {}
+        files = workflow_files(owner, "vws-deploy", ref=pin, api=api)
+        if files is None:
+            return None
         cache[pin] = {p: raw for p, raw in files.items() if CALLED.search(p)}
     return cache[pin]
+
+
+def bootstrap_for(owner, files, script, pin, cache, api=None):
+    """bootstrap_issues for one ref, with the callee at its caller pin; an unlistable callee fails closed."""
+    callee = callee_files(owner, pin, cache, api=api)
+    if callee is None:
+        return [f"cannot list the vws-deploy repo-guard-*.yml files at {pin[:12]}"]
+    return bootstrap_issues(files, script, callee)
 
 
 def rule_checks(rules):
@@ -831,7 +845,7 @@ def main():
             issues["vendored"] = bad_v
         if notes_v:
             notes["vendored"] = notes_v
-        boot = bootstrap_issues(files or {}, g, callee_files(a.owner, pin, callees))
+        boot = bootstrap_for(a.owner, files or {}, g, pin, callees)
         if boot:
             issues["bootstrap"] = boot
         docs = []
