@@ -1,5 +1,6 @@
 """Tests for .github/ac/ac-lint.sh (ported from the box vws-issue-ac skill) and the post-merge
-ac-pending labeler (.github/ac/post-merge.sh, .github/workflows/post-merge.yml), vws-deploy#399.
+ac-pending labeler (.github/ac/post-merge.sh), vws-deploy#399. Its workflow, post-merge.yml, was retired
+by vws-deploy#526; the Retired class keeps it gone.
 
 Run: python3 -m unittest discover -s tests/workflows
 """
@@ -336,42 +337,35 @@ class PostMerge(unittest.TestCase):
         self.assertEqual({(m, p.strip("\"").split("/")[-1]) for m, p in writes}, {("POST", "labels")})
 
 
-WF = yaml.safe_load(open(WF_PATH)) if os.path.exists(WF_PATH) else {}
+WF_DIR = os.path.dirname(WF_PATH)
+LABELS_PATH = os.path.join(ROOT, ".github", "labels.yml")
 
 
-class Workflow(unittest.TestCase):
-    def test_trigger_merged_pull_request_only(self):
-        on = WF.get("on", WF.get(True))
-        self.assertEqual(on, {"pull_request": {"types": ["closed"]}})
-        job = WF["jobs"]["ac-pending"]
-        self.assertEqual(job["if"], "github.event.pull_request.merged == true")
+class Retired(unittest.TestCase):
+    """vws-deploy#526 AC4: orchestrate's AC tick rule (#486) replaced post-merge.yml's ac-pending job.
+    .github/ac/post-merge.sh stays as a library for the tests above; no workflow runs it."""
 
-    def test_permissions_issues_write_only(self):
-        self.assertEqual(WF["permissions"], {"contents": "read", "issues": "write"})
-        self.assertNotIn("permissions", WF["jobs"]["ac-pending"])
+    def test_post_merge_workflow_is_gone(self):
+        self.assertFalse(os.path.exists(WF_PATH), "post-merge.yml was retired by vws-deploy#526")
 
-    def test_never_checks_out_pr_code(self):
-        text = open(WF_PATH).read()
-        self.assertNotIn("pull_request_target", text)
-        checkouts = [s for s in WF["jobs"]["ac-pending"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout")]
-        self.assertEqual(len(checkouts), 1)
-        w = checkouts[0]["with"]
-        self.assertEqual(w["ref"], "${{ github.event.repository.default_branch }}")
-        self.assertEqual(w["sparse-checkout"].split(), [".github/ac", "scripts/guard-agents.sh"])
-        # Cone mode takes directories only; a file pattern needs non-cone mode (vws-deploy#418).
-        self.assertIs(w["sparse-checkout-cone-mode"], False)
-        self.assertNotRegex(text, r"head\.(sha|ref)|refs/pull")
+    def test_no_workflow_defines_an_ac_pending_job(self):
+        jobs = {}
+        for name in sorted(os.listdir(WF_DIR)):
+            if name.endswith((".yml", ".yaml")):
+                wf = yaml.safe_load(open(os.path.join(WF_DIR, name))) or {}
+                if "ac-pending" in (wf.get("jobs") or {}):
+                    jobs[name] = "ac-pending"
+        self.assertEqual(jobs, {})
 
-    def test_head_repo_passed_for_the_fork_skip(self):
-        run = next(s for s in WF["jobs"]["ac-pending"]["steps"] if s.get("name") == "Label issues with open AC")
-        self.assertEqual(run["env"]["HEAD_REPO"], "${{ github.event.pull_request.head.repo.full_name }}")
+    def test_no_workflow_runs_post_merge_sh(self):
+        hits = [n for n in sorted(os.listdir(WF_DIR)) if "ac/post-merge.sh" in open(os.path.join(WF_DIR, n)).read()]
+        self.assertEqual(hits, [])
 
-    def test_pr_body_via_file_not_shell_interpolation(self):
-        text = open(WF_PATH).read()
-        self.assertNotIn("${{ github.event.pull_request.body }}", text.replace("PR_BODY: ${{ github.event.pull_request.body }}", ""))
-        run = next(s for s in WF["jobs"]["ac-pending"]["steps"] if s.get("name") == "Label issues with open AC")
-        self.assertIn("PR_BODY", run["env"])
-        self.assertNotIn("${{", run["run"])
+    def test_labels_yml_defines_ac_partial_and_ac_pending(self):
+        # The orchestrate AC tick rule (#486) adds ac-partial and removes both; colors match GitHub (#526 AC3).
+        labels = {x["name"]: x for x in yaml.safe_load(open(LABELS_PATH))}
+        self.assertEqual(labels.get("ac-partial", {}).get("color", "").lower(), "fbca04")
+        self.assertEqual(labels.get("ac-pending", {}).get("color", "").lower(), "bfdadc")
 
 
 if __name__ == "__main__":

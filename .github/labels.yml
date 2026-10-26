@@ -24,3 +24,9 @@
 - name: priority/blocker
   color: "d73a4a"
   description: "The factory orchestrator dispatches this task before all other queued tasks (vws-deploy#333)"
+- name: ac-partial
+  color: "FBCA04"
+  description: "Some acceptance criteria ticked by a merged PR; boxes still open (vws-deploy#526)"
+- name: ac-pending
+  color: "bfdadc"
+  description: "Merged; issue acceptance criteria not yet ticked"

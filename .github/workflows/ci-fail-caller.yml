@@ -4,7 +4,7 @@
 # comment per head SHA. It and its script are pinned to one vws-deploy main commit; bump the SHA to
 # update. workflow_run always runs this file from the default branch, so a PR cannot change it.
 # repo-guard is not listed: its verify-gate job is red on every head until vws-verify approves.
-# post-merge (closed PRs only) and verify-queue (labels only) are not CI and are not listed. tests/workflows/test_ci_fail_caller.py fails
+# verify-queue (labels only) is not CI and is not listed. tests/workflows/test_ci_fail_caller.py fails
 # when a pull_request workflow is missing here.
 name: ci-fail-caller
 

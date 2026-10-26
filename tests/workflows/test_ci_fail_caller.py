@@ -17,8 +17,8 @@ WF_DIR = os.path.join(ROOT, ".github", "workflows")
 CALLER = os.path.join(WF_DIR, "ci-fail-caller.yml")
 USES_RE = re.compile(r"^popododo0720/vws-deploy/\.github/workflows/ci-fail\.yml@([0-9a-f]{40})$")
 # Not CI on a PR head: repo-guard's verify-gate is red on every head until vws-verify approves,
-# post-merge runs only on closed PRs, and verify-queue only moves the needs-verify label.
-NOT_CI = {"repo-guard", "post-merge", "verify-queue"}
+# and verify-queue only moves the needs-verify label. post-merge.yml was retired by vws-deploy#526.
+NOT_CI = {"repo-guard", "verify-queue"}
 
 
 def load(path):

@@ -34,7 +34,6 @@ on:
       - scripts/guard-agents.sh
       - tests/workflows/**
       - .github/ac/**
-      - .github/workflows/post-merge.yml
       - .github/orchestrate/**
       - tests/orchestrate/**
       - .github/ci-fail/**
