@@ -191,7 +191,7 @@ DEFAULTS = {
     "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
     "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
     # vws-deploy#486: tick a merged PR's AC: boxes on its Part of issue (off, dry-run = plan only, apply).
-    "ORCHESTRATE_AC_TICK": "dry-run",
+    "ORCHESTRATE_AC_TICK": "apply",
     "ORCHESTRATE_BOARD": "dry-run",
     "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
     "ORCHESTRATE_BOARD_EVERY": "6",
@@ -1247,7 +1247,7 @@ def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
     `AC: <n>` lines name (vws-deploy#486), when vws-verify approved the merged head and the body was not edited
     since (ac_unverified / ac_body_edited otherwise). Oldest merge first. new_state keeps the start time and the PRs
     already handled (marker seen or applied), pruned after the comment window."""
-    if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") == "off":
+    if cfg.get("ORCHESTRATE_AC_TICK", "apply") == "off":
         return []
     if "ac_tick_since" not in new_state:
         new_state["ac_tick_since"] = iso(now)  # no back-fill: only merges after the first tick count
@@ -2610,7 +2610,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         history.update(version=HISTORY_VERSION, last_tick=iso(now))
     if cfg.get("ORCHESTRATE_MERGE", "dry-run") != "off":
         collect_merge(gh, snap, repo_names, state)
-    if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") != "off":
+    if cfg.get("ORCHESTRATE_AC_TICK", "apply") != "off":
         collect_ac(gh, snap, repo_names, state, now, cfg)
     allow = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))[0]
     for k, it in sorted(snap["items"].items()):
@@ -2932,9 +2932,9 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("skipped", action=a["type"], target=a["target"], reason="outside ORCHESTRATE_SCOPE")
             continue
         if a["type"] == "ac_tick":
-            if cfg.get("ORCHESTRATE_AC_TICK", "dry-run") != "apply":
+            if cfg.get("ORCHESTRATE_AC_TICK", "apply") != "apply":
                 log("skipped", action=a["type"], target=a["target"],
-                    reason=f"ORCHESTRATE_AC_TICK={cfg.get('ORCHESTRATE_AC_TICK', 'dry-run')}")
+                    reason=f"ORCHESTRATE_AC_TICK={cfg.get('ORCHESTRATE_AC_TICK', 'apply')}")
                 continue
             n, failed = apply_ac_tick(a, gh, writes, max_writes, new_state, log)
             writes, errors = writes + n, errors + failed
@@ -3257,6 +3257,7 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
              f"- Mode: {mode}; dispatch {cfg['ORCHESTRATE_DISPATCH']}, "
              f"wakes {'off (' + wake_silence(cfg) + ')' if wake_silence(cfg) else 'on'}, merge {cfg['ORCHESTRATE_MERGE']}, "
              f"board {cfg['ORCHESTRATE_BOARD']}",
+             f"- AC tick: {cfg['ORCHESTRATE_AC_TICK']}",
              f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
              + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),
              f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
