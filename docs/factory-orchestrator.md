@@ -77,12 +77,12 @@ the repo name. With the default map:
 | Repos | Owner bot | `factory-grok-wake` |
 |---|---|---|
 | vws-deploy, vws-lib, vws-proto, vws-test, vws-conformance | `vws-platform` | enabled 2026-10-25 |
-| vws-compute | `vws-compute` | to install |
-| vws-storage | `vws-storage` | to install |
-| vws-network | `vws-network` | to install |
-| vws-console-api | `vws-console-api` (set `vws-console-api=vws-api` in `ORCHESTRATE_GROK_OWNERS` if that bot is named `vws-api`) | to install |
-| vws-console | `vws-console` | to install |
-| vws-iam | `vws-iam` | to install |
+| vws-compute | `vws-compute` | enabled 2026-10-26 (#511 comment 6405369171) |
+| vws-storage | `vws-storage` | enabled 2026-10-26 (#511 comment 6405373284) |
+| vws-network | `vws-network` | enabled 2026-10-26 (#511 comment 6405372140) |
+| vws-console-api | `vws-api` (default map entry `vws-console-api=vws-api`, vws-deploy#511) | enabled 2026-10-26 (#511 comment 6405377036) |
+| vws-console | `vws-console` | enabled 2026-10-26 (#511 comment 6405375498) |
+| vws-iam | `vws-iam` | enabled 2026-10-26 (#511 comment 6405374055) |
 
 Evidence case: the 10:26 KST grok-wake for vws-deploy#499 on 2026-10-25 (#339 comment 6391937446)
 named ``Owner `vws-platform` `` from the PR's `Agent:` line, but vws-platform had only
@@ -640,7 +640,7 @@ Config keys and defaults:
 - `ORCHESTRATE_GROK_CAP=1` (rule G: Grok tasks in flight at once; a positive integer)
 - `ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN=120` (rule G: minutes a woken issue holds its slot unclaimed before `grok_wake_expired`; a positive integer)
 - `ORCHESTRATE_GROK_LOGINS=popododo0720` (rule G: comma-separated GitHub logins the Grok dev bots comment as; only their comments, or a current assignee's, claim a woken issue)
-- `ORCHESTRATE_GROK_OWNERS=vws-deploy=vws-platform,vws-lib=vws-platform,vws-proto=vws-platform,vws-test=vws-platform,vws-conformance=vws-platform` (vws-deploy#506: `vws-<repo>=<bot>` entries split on commas or whitespace; the bot a grok-wake's ``Owner `<bot>` `` line names for that repo when the item has no `Agent:` line; an unlisted repo names the bot called after the repo; setting it replaces the whole map; a bad entry fails the config load)
+- `ORCHESTRATE_GROK_OWNERS=vws-deploy=vws-platform,vws-lib=vws-platform,vws-proto=vws-platform,vws-test=vws-platform,vws-conformance=vws-platform,vws-console-api=vws-api` (vws-deploy#506, #511: `vws-<repo>=<bot>` entries split on commas or whitespace; the bot a grok-wake's ``Owner `<bot>` `` line names for that repo when the item has no `Agent:` line; an unlisted repo names the bot called after the repo; setting it replaces the whole map; a bad entry fails the config load)
 - `ORCHESTRATE_GROK_ALLOWLIST=` (rule G: `repo#N` entries such as `vws-deploy#378,vws-iam#12`, split on commas or whitespace; empty assigns nothing; anything else is ignored with a `grok_allowlist_invalid` note)
 - `ORCHESTRATE_DEEPSEEK_LOGINS=popododo0720` (comma-separated GitHub logins whose `[deepseek-dev]` results count: the poller's account; each must be a valid login, optionally ending in `[bot]`)
 - `ORCHESTRATE_VERIFY_LOGIN=vws-verify[bot]` (the one GitHub login whose verdict comments, markers and reviews count besides an `OWNER` comment; a valid login, optionally ending in `[bot]`)
