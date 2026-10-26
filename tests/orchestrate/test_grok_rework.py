@@ -105,9 +105,11 @@ class Rule(unittest.TestCase):
         self.assertEqual(unrouted(r), [])
 
     def test_dispatch_off_pauses(self):
+        # vws-deploy#521: the pause is the plan boundary's wake_suppressed note, with what would have posted.
         r = run(snapshot(failed_pr(), grok_issue()), dict(CFG, ORCHESTRATE_DISPATCH="off"))
         self.assertEqual(wakes(r), [])
-        self.assertIn({"kind": "grok_rework_paused", "reason": "ORCHESTRATE_DISPATCH=off", "waiting": 1}, r["notes"])
+        self.assertIn({"kind": "wake_suppressed", "reason": "ORCHESTRATE_DISPATCH=off", "total": 1,
+                       "counts": {"grok_rework": 1}, "items": ["vws-deploy#441"]}, r["notes"])
 
 
 class FakeGh:

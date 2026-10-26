@@ -182,6 +182,9 @@ DEFAULTS = {
     "ORCHESTRATE_LOG_MAX_BYTES": str(5 * 1024 * 1024),
     "ORCHESTRATE_LOG_KEEP": "5",
     "ORCHESTRATE_DISPATCH": "on",
+    # vws-deploy#521: off = full wake-thread silence (no wake_verify, lead_wake, grok_wake, grok_rework,
+    # rebuild_wake) and no metrics-alert comment. STOP sets it off, RESUME sets it on. DISPATCH=off implies it.
+    "ORCHESTRATE_WAKES": "on",
     # vws-deploy#487: needs-verify and verify-approved follow each PR head (decide_verify_labels). off = no label writes.
     "ORCHESTRATE_VERIFY_LABELS": "on",
     "ORCHESTRATE_MERGE": "dry-run",
@@ -282,6 +285,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_FAILURE_ALERT must be apply, always or never")
     if cfg["ORCHESTRATE_DISPATCH"] not in ("on", "off"):
         raise ValueError("ORCHESTRATE_DISPATCH must be on or off")
+    if cfg["ORCHESTRATE_WAKES"] not in ("on", "off"):
+        raise ValueError("ORCHESTRATE_WAKES must be on or off")
     if cfg["ORCHESTRATE_VERIFY_LABELS"] not in ("on", "off"):
         raise ValueError("ORCHESTRATE_VERIFY_LABELS must be on or off")
     if cfg["ORCHESTRATE_MERGE"] not in ("off", "dry-run", "apply"):
@@ -302,7 +307,7 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
                  "ORCHESTRATE_WAKE_THREAD",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_WAKES", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_GROK_OWNERS", "ORCHESTRATE_BOARD_TOKEN_FILE",
                  "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_GROK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN",
                  "ORCHESTRATE_VERIFY_USER_ID")
@@ -312,6 +317,36 @@ def load_config(paths, environ):
     # Other keys in the shared env file (METRICS_* for .github/metrics) belong to other scripts,
     # which validate them; they must not stop a tick.
     return cfg
+
+
+# vws-deploy#521: every comment the orchestrator posts on the wake thread (ORCHESTRATE_WAKE_THREAD).
+WAKE_TYPES = ("wake_verify", "lead_wake", "grok_wake", "grok_rework", "rebuild_wake")
+
+
+def wake_silence(cfg):
+    """vws-deploy#521: why the status bus is silent, or "" when wakes may post. STOP (ORCHESTRATE_WAKES=off)
+    and the dispatch pause (ORCHESTRATE_DISPATCH=off) both silence every wake and the metrics alert, even
+    when work is queued: bots ignoring a wake still burn a wake-up each, so nothing may be posted."""
+    if cfg.get("ORCHESTRATE_WAKES", "on") == "off":
+        return "ORCHESTRATE_WAKES=off"
+    if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
+        return "ORCHESTRATE_DISPATCH=off"
+    return ""
+
+
+def suppress_wakes(actions, cfg, notes):
+    """vws-deploy#521: under wake_silence, drop every WAKE_TYPES action at the plan boundary and record what
+    would have posted (note wake_suppressed: reason, total, counts per type, items). Pure."""
+    why = wake_silence(cfg)
+    if not why:
+        return actions
+    held = [a for a in actions if a["type"] in WAKE_TYPES]
+    if held:
+        counts = {t: sum(1 for a in held if a["type"] == t) for t in WAKE_TYPES}
+        notes.append({"kind": "wake_suppressed", "reason": why, "total": len(held),
+                      "counts": {t: n for t, n in counts.items() if n},
+                      "items": sorted({a.get("item", a["target"]) for a in held})})
+    return [a for a in actions if a["type"] not in WAKE_TYPES]
 
 
 def status_target(cfg):
@@ -1679,9 +1714,6 @@ def decide_grok_rework(snapshot, cfg, posted, notes):
     if not wake_target(cfg):
         notes.append({"kind": "grok_rework_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": len(waiting)})
         return [], set()
-    if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
-        notes.append({"kind": "grok_rework_paused", "reason": "ORCHESTRATE_DISPATCH=off", "waiting": len(waiting)})
-        return [], set()
     actions = []
     for p in waiting:
         key = grok_rework_key(p["target"], p["head_sha"])
@@ -1980,7 +2012,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
     if running:
         notes.append({"kind": "grok_in_flight", "targets": running})
     cap = int(num(cfg, "ORCHESTRATE_GROK_CAP"))
-    free = 0 if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off" else max(0, cap - len(running))
+    free = max(0, cap - len(running))  # paused by wake_silence at the plan boundary (vws-deploy#521)
     busy = grok_busy(items, held)
     actions = []
     if queue and free and not wake_target(cfg):
@@ -2314,7 +2346,7 @@ def decide(snapshot, state, now, cfg, exclusions):
     busy = {items[k]["repo"] for k in in_flight}
     free = max(0, cap - slots_used)
     if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
-        free = 0  # pause switch: no new dispatches; in-flight, verify-wake and merges carry on
+        free = 0  # pause switch: no new dispatches; in-flight tracking and merges carry on, wakes go silent
     picked, seen = 0, set()
     for q in sorted(queue):
         if picked >= free:
@@ -2354,6 +2386,8 @@ def decide(snapshot, state, now, cfg, exclusions):
     actions += decide_ac_ticks(snapshot, new_state, now, cfg, notes)
     # Last: label repairs take the writes left under the cap, and a PR missed this tick converges on the next.
     actions += decide_verify_labels(items, cfg, notes)
+    # vws-deploy#521: STOP / DISPATCH=off is full wake-thread silence, even with work queued.
+    actions = suppress_wakes(actions, cfg, notes)
     return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending), "rebuild": rebuild}
 
 
@@ -2887,6 +2921,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
+        if a["type"] in WAKE_TYPES and wake_silence(cfg):
+            # Defense in depth (vws-deploy#521): decide already drops these; a stale plan must not post either.
+            log("skipped", action=a["type"], target=a["target"], reason=wake_silence(cfg))
+            continue
         if a["type"] in ("wake_verify", "merge_status", "infra_status", "grok_wake", "rebuild_wake", "grok_rework", "lead_wake") and scope:
             log("skipped", action=a["type"], reason="ORCHESTRATE_SCOPE is set")
             continue
@@ -3216,7 +3254,8 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
              "",
              f"Comments here are metrics alerts only (marker `{METRICS_ALERT_MARKER}`). verify-wake does not post here.",
              "", "## Now", "", running_line(deploy),
-             f"- Mode: {mode}; dispatch {cfg['ORCHESTRATE_DISPATCH']}, merge {cfg['ORCHESTRATE_MERGE']}, "
+             f"- Mode: {mode}; dispatch {cfg['ORCHESTRATE_DISPATCH']}, "
+             f"wakes {'off (' + wake_silence(cfg) + ')' if wake_silence(cfg) else 'on'}, merge {cfg['ORCHESTRATE_MERGE']}, "
              f"board {cfg['ORCHESTRATE_BOARD']}",
              f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
              + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),

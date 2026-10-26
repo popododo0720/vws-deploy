@@ -1,4 +1,5 @@
-"""ORCHESTRATE_DISPATCH=off pauses new DeepSeek dispatches only; merges and in-flight tracking continue."""
+"""ORCHESTRATE_DISPATCH=off pauses new DeepSeek dispatches and (vws-deploy#521) every wake; merges and in-flight
+tracking continue. The wake silence itself is tested in test_wake_silence.py."""
 import unittest
 
 import test_merge as tm

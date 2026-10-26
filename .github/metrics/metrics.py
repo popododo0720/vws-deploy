@@ -972,11 +972,21 @@ def run_day(ctx, gh, log, args, day, now, recompute=False):
         new = commit_files(gh, head, tree_sha, out, msg)
         log("metrics_published", day=day, commit=new, content_sha256=doc["content_sha256"])
     # Silent on a normal day. The alert goes out after the data is on the branch, so it points at it.
-    if day in pending:
+    silence = orch.wake_silence(ctx.cfg)
+    if pending and silence:
+        # vws-deploy#521: STOP is full status-bus silence. The alert stays journaled and posts on the first
+        # run after RESUME; the log counts what would have posted.
         state["verified_head"] = new
         orch.write_json(ctx.state_file, state)
-        post_alert(gh, ctx, log, pending[day], state)
-        del pending[day]
+        log("metrics_suppressed", day=day, reason=silence, alerts=len(pending), days=sorted(pending))
+    elif pending:
+        state["verified_head"] = new
+        orch.write_json(ctx.state_file, state)
+        # This day's alert, and any held back during a STOP window (vws-deploy#521), oldest first.
+        for d in sorted(pending):
+            post_alert(gh, ctx, log, pending[d], state)
+            del pending[d]
+            orch.write_json(ctx.state_file, state)
     return mark_published(ctx, state, day, new)
 
 

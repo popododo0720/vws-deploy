@@ -89,9 +89,13 @@ class Rule(unittest.TestCase):
         self.assertEqual([p["target"] for p in r["rebuild"]], ["vws-iam#5"])
         self.assertIn({"kind": "rebuild_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": 1}, r["notes"])
 
-    def test_dispatch_off_still_wakes(self):
-        self.assertEqual(len(wakes(run(snapshot(pr(5, merge_state="dirty")), dict(CFG, ORCHESTRATE_DISPATCH="off")))), 1,
-                         "a rebuild wake is a notice to the owner, not a DeepSeek dispatch")
+    def test_dispatch_off_silences_the_wake(self):
+        # vws-deploy#521: a notice still wakes a bot; DISPATCH=off (STOP) is full wake-thread silence.
+        r = run(snapshot(pr(5, merge_state="dirty")), dict(CFG, ORCHESTRATE_DISPATCH="off"))
+        self.assertEqual(wakes(r), [])
+        self.assertEqual([p["target"] for p in r["rebuild"]], ["vws-iam#5"], "the status body still lists it")
+        self.assertIn({"kind": "wake_suppressed", "reason": "ORCHESTRATE_DISPATCH=off", "total": 1,
+                       "counts": {"rebuild_wake": 1}, "items": ["vws-iam#5"]}, r["notes"])
 
 
 class StatusBody(unittest.TestCase):
