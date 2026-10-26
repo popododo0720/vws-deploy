@@ -29,7 +29,7 @@ Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `G
 
 ## PR size limit (#401)
 
-`scripts/guard-agents.sh pr-size BASE HEAD` keeps PRs small enough to review. Under the bootstrap rule (#439 class 4) the script lands first; a later PR adds the repo-guard pr-hygiene step that runs it, and until then nothing calls it.
+`scripts/guard-agents.sh pr-size BASE HEAD` runs in repo-guard pr-hygiene and keeps PRs small enough to review. The step landed after the script was on main (bootstrap rule, #439 class 4).
 
 - It counts added plus deleted lines in `BASE...HEAD` with `git diff --numstat -M`, the same numbers as the PR's "Files changed" view. A pure rename counts as its changed lines only; binary files count 0.
 - The limit is the single `limit=N` line in `.github/pr-size.conf` (800), read from the PR's base commit. A PR that raises the limit therefore only affects later PRs, and a base without the file uses 800. Any other non-comment line, a second `limit=`, or a value that is not a positive integer fails the check.

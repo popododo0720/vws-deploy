@@ -79,6 +79,12 @@ jobs:
           fi
           rm -f "$body"
           exit 0
+      - name: PR size is within the limit, or the body has a Size-exception
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/guard-agents.sh pr-size "$BASE_SHA" "$HEAD_SHA"
       - name: guard-agents.sh is the canonical vws-deploy copy
         run: scripts/guard-agents.sh identity scripts/guard-agents.sh.sha256
       - name: AGENTS.md has the guardrails
