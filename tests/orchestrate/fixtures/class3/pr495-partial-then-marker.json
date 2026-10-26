@@ -1,0 +1,23 @@
+{
+ "source": "Sibling of the #495 finding, found by the class 3 harness: a partial tick that stops after the body edit reruns with a marker comment saying the boxes 'were already ticked', so the end state differs from one clean run. The removal of ac-pending also reruns into a 404 (lib-v2 654da9a finding).",
+ "issue": {
+  "number": 7,
+  "body": "Context.\n\n## Acceptance criteria\n\n- [ ] AC1: one\n- [ ] AC2: two\n  more of two\n- [ ] AC3: three\n\n## Notes\n\n- [ ] not a criterion\n",
+  "labels": [
+   "ac-pending"
+  ]
+ },
+ "pr": {
+  "number": 500,
+  "body": "Part of #7\n\nAC: 1\nAC: 3\n"
+ },
+ "expect": {
+  "state": "open",
+  "state_reason": null,
+  "labels": [
+   "ac-partial"
+  ],
+  "comments": 1,
+  "comment_has": "boxes 1, 3 ticked."
+ }
+}

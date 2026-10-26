@@ -366,7 +366,7 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
 - `decide` (oldest merge first) plans one `ac_tick` per PR. It plans nothing and notes `ac_none`,
   `ac_unparsed`, `ac_no_part_of`, `ac_unverified` (no vws-verify approval of the merged head, for example
   a lead merge: tick its boxes by hand), `ac_body_edited` (the body changed at or after that approval),
-  `ac_issue_closed`, `ac_no_section` (no box under the heading),
+  `ac_issue_closed` (a closed issue this rule did not close, see below), `ac_no_section` (no box under the heading),
   `ac_index_invalid` (an `n` beyond the box count: no box is ticked) or `ac_tick_done` (the issue already
   has the PR's marker). These PRs go into `ac_ticked` and are not read again.
 - `apply` (only with `ORCHESTRATE_AC_TICK=apply` and `ORCHESTRATE_MODE=apply`) reads the issue's comments
@@ -380,7 +380,18 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
   5. one comment with the PR link, the merge sha, the boxes, the boxes still open (index and text) and
      the marker.
   The marker goes last, so a crash part way is finished by the next tick: a box already ticked is left
-  alone. The PR then goes into `ac_ticked`.
+  alone, and a box that carries this PR's own evidence suffix still counts as ticked in the comment. A
+  crash or lost reply after step 4 leaves the issue closed with no marker (the vws-deploy#495 finding). The
+  next tick recovers it only when the issue is closed as completed, every box is ticked, and one of the
+  PR's boxes carries the PR's evidence suffix: it writes steps 3 and 5 and nothing else. A closed issue
+  that fails any of these (a human close, not planned, a box still open) is noted `ac_issue_closed`. The
+  PR then goes into `ac_ticked`.
+- `tests/orchestrate/test_restart.py` checks this with the fault-injecting fake in
+  `tests/orchestrate/fault_gh.py` (vws-deploy#517 class 3). For each write N it stops the tick after write
+  N, or makes write N land and answer 502, or makes it fail with 500. Then it runs the tick again and
+  requires the end state of one clean run. `tests/orchestrate/test_restart_lint.py` fails when an
+  orchestrate function with two or more GitHub writes (two write calls, or one in a loop) has no
+  `restart_check(..., covers=("<name>",))`.
 - Every write counts toward `ORCHESTRATE_MAX_WRITES`. A tick that cannot fit all of one PR's writes skips
   that PR (`write cap N reached`), and a later tick does it. `ORCHESTRATE_SCOPE` limits the rule to one issue.
 - The gh wrapper refuses any other issue body edit: a body `PATCH` must differ from the body just read
