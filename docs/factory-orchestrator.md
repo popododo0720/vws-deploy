@@ -223,9 +223,10 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
 - It runs when a PR workflow completes on a PR head (`workflow_run`, from the default branch) and on
   `pull_request` `ready_for_review` and `synchronize`. The `workflow_run` list must name every workflow
   that runs on `pull_request`, because any of them can finish last: vws-deploy's `ci`, `drift-check`,
-  `installer-image`, `post-merge` (closed PRs; it only clears a stale label) and `repo-guard`, plus
+  `installer-image` and `repo-guard`, plus
   `CI` (vws-console), `english` (most repos), `buf` (vws-proto), `conformance` (vws-conformance) and
-  `tla` (vws-console-api). `tests/workflows/test_verify_queue.py` fails when a `pull_request` workflow
+  `tla` (vws-console-api). The list still names `post-merge`, retired by vws-deploy#526, so the copies
+  in other repos stay byte for byte the same; a name a repo does not have is ignored. `tests/workflows/test_verify_queue.py` fails when a `pull_request` workflow
   in this repo, or one of those names, is missing; a repo that adds a PR workflow under a new name must
   add it to the list here and copy the file again. The drift check (`.github/drift/drift-check.sh`)
   reports a repo without `verify-queue.yml` as drift (vws-deploy#460). `check_suite` is not used because GitHub starts no workflow for check suites
@@ -436,8 +437,9 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
   (`ac_tick_only`). The only other issue edit allowed besides the status issue's body is
   `{"state": "closed", "state_reason": "completed"}`, never on the status issue.
 - The rule does not judge evidence (vws-verify does that on the PR). It ticks no box for an `AC: none`
-  PR or for a box no PR names; the lead ticks those by hand. Retiring `post-merge.yml`'s `ac-pending`
-  job and creating `ac-partial` in every repo are separate steps (#486 AC8).
+  PR or for a box no PR names; the lead ticks those by hand. vws-deploy#526 retired `post-merge.yml`
+  and its `ac-pending` job (this rule replaces it; `tests/workflows/test_post_merge.py` `Retired` keeps it
+  gone) and created `ac-partial` in every non-archived vws-* repo; `.github/labels.yml` defines both labels.
 
 ## Infra retries (provider errors)
 
