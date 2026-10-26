@@ -112,3 +112,5 @@ finding and a passing fixture (AC2, AC5):
 6. AC3: run the new checks from the shared reusable workflow in every vws-*
    repo. AC4: the project verification script for the manual checks listed
    above.
+   AC4 is done in the vws-deploy#517 AC4 PR: `.github/verify/verify-check.py`
+   (`ac` and `rebuild`), described in `docs/verify-check.md`.
