@@ -227,7 +227,34 @@ cmd_hooks() {
   rc=$?
   set -e
   [[ $rc -ne 0 ]] || die "R1: pre-push accepted a push to master"
-  printf '%s\n' 'refs/heads/topic 111 refs/heads/topic 222' | .githooks/pre-push >/dev/null
+  local hook repo base next side zero=0000000000000000000000000000000000000000
+  hook="$PWD/.githooks/pre-push"
+  repo=$(mktemp -d)
+  git -C "$repo" init -q
+  git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  base=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m next
+  next=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" checkout -q "$base"
+  git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m side
+  side=$(git -C "$repo" rev-parse HEAD)
+  (cd "$repo" && printf '%s\n' "refs/heads/topic $next refs/heads/topic $base" | "$hook" >/dev/null) ||
+    { rm -rf "$repo"; die "R1: pre-push refused a fast-forward push"; }
+  (cd "$repo" && printf '%s\n' "refs/heads/topic $next refs/heads/topic $zero" | "$hook" >/dev/null) ||
+    { rm -rf "$repo"; die "R1: pre-push refused a new branch"; }
+  (cd "$repo" && printf '%s\n' "(delete) $zero refs/heads/topic $next" | "$hook" >/dev/null) ||
+    { rm -rf "$repo"; die "R1: pre-push refused a branch deletion"; }
+  set +e
+  (cd "$repo" && printf '%s\n' "refs/heads/topic $side refs/heads/topic $next" | "$hook" >/dev/null 2>&1)
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || { rm -rf "$repo"; die "R1: pre-push accepted a force-push (non-fast-forward)"; }
+  set +e
+  (cd "$repo" && printf '%s\n' "refs/heads/topic $next refs/heads/topic 1111111111111111111111111111111111111111" | "$hook" >/dev/null 2>&1)
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || { rm -rf "$repo"; die "R1: pre-push accepted a push over an unknown remote head"; }
+  rm -rf "$repo"
   local tmp
   tmp=$(mktemp)
   printf '%s\n' 'not a scoped subject' > "$tmp"

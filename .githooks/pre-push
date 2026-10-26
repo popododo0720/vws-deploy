@@ -1,5 +1,7 @@
 #!/bin/sh
-# R1: refuse to publish main or master.
+# R1: refuse to publish main or master, and refuse a force-push: an update of an
+# existing remote branch must fast-forward it (vws-deploy#449).
+zero=0000000000000000000000000000000000000000
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/main|refs/heads/master)
@@ -7,5 +9,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       exit 1
       ;;
   esac
+  [ "$local_sha" = "$zero" ] && continue
+  [ "$remote_sha" = "$zero" ] && continue
+  if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    echo "R1: refusing a force-push to ${remote_ref}: ${local_sha} does not fast-forward ${remote_sha}; add new commits or rebuild as a new -vN branch" >&2
+    exit 1
+  fi
 done
 exit 0

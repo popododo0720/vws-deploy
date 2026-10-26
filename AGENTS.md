@@ -6,7 +6,7 @@ This repository holds only the deployment artifacts of the VWS private cloud. Th
 
 | ID | Rule | Structure | Check |
 | --- | --- | --- | --- |
-| R1 | Work on a branch; never push to main or master | `.githooks/pre-push` | `scripts/guard.sh hooks` |
+| R1 | Work on a branch; never push to main or master, and never force-push: a push to an existing branch must fast-forward it | `.githooks/pre-push` | `scripts/guard.sh hooks` |
 | R2 | A commit touches one scope from scripts/scopes, and its subject is `scope: summary` | `scripts/scopes` | `scripts/guard.sh commits` |
 | R4 | Control-plane workloads have startup, liveness and readiness probes, a PodDisruptionBudget and restartPolicy Always, and a workload with state has a volume that survives a restart | `charts/vws/templates/control-plane.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh recovery` |
 | R5 | The services map in values.yaml is the one place to add or change a control service | `charts/vws/values.yaml` `charts/vws/values.schema.json` | `scripts/guard.sh names` |
