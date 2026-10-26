@@ -45,6 +45,12 @@ class Config(unittest.TestCase):
         self.assertEqual(orch.status_target(orch.DEFAULTS), "vws-deploy#415")
         self.assertEqual(orch.wake_target(orch.DEFAULTS), "")
 
+    def test_ac_tick_defaults_to_apply(self):
+        # vws-deploy#526: an unset ORCHESTRATE_AC_TICK must not silently dry-run under DISPATCH=on.
+        self.assertEqual(orch.DEFAULTS["ORCHESTRATE_AC_TICK"], "apply")
+        paths = orch.Paths({"ORCHESTRATE_STATE_DIR": "/nonexistent/s", "ORCHESTRATE_CONFIG_DIR": "/nonexistent/c"})
+        self.assertEqual(orch.load_config(paths, {})["ORCHESTRATE_AC_TICK"], "apply")
+
     def test_wake_thread_may_not_be_the_status_issue(self):
         paths = orch.Paths({"ORCHESTRATE_STATE_DIR": "/nonexistent/s", "ORCHESTRATE_CONFIG_DIR": "/nonexistent/c"})
         with self.assertRaisesRegex(ValueError, "verify-wake never posts there"):
@@ -91,6 +97,13 @@ class Body(unittest.TestCase):
         self.assertIn("PRs waiting for verify: 5", a)
         self.assertIn("verify wakes go to vws-deploy#339", a)
         self.assertIn("verify wake is off", self.render(cfg=dict(CFG, ORCHESTRATE_WAKE_THREAD="")))
+
+    def test_now_shows_the_live_ac_tick_switch(self):
+        # vws-deploy#526 AC2: the Now block names the AC tick mode from the live config each tick.
+        for mode in ("apply", "dry-run", "off"):
+            body = self.render(cfg=dict(CFG, ORCHESTRATE_AC_TICK=mode))
+            now = body.split("## Now", 1)[1].split("\n## ", 1)[0]
+            self.assertIn(f"\n- AC tick: {mode}\n", now)
 
     def test_entries_and_failure_section_change_the_body(self):
         a = self.render()
