@@ -39,9 +39,14 @@ class TaskWake(unittest.TestCase):
                 self.assertEqual(w["owner"], "vws-platform")
 
     def test_service_repo_names_its_own_bot(self):
-        for repo in ("vws-compute", "vws-storage", "vws-network", "vws-console-api", "vws-console", "vws-iam"):
+        for repo in ("vws-compute", "vws-storage", "vws-network", "vws-console", "vws-iam"):
             with self.subTest(repo=repo):
                 self.assertEqual(owners(task_wake(grok_task(repo, 7))["body"]), [repo])
+
+    def test_console_api_names_vws_api(self):
+        # vws-deploy#511: the console-api Grok dev bot is named vws-api, so the default map names it.
+        w = task_wake(grok_task("vws-console-api", 7))
+        self.assertEqual((w["owner"], owners(w["body"])), ("vws-api", ["vws-api"]))
 
     def test_issue_agent_line_wins(self):
         w = task_wake(grok_task("vws-deploy", 7, body="Scope: compute.\n\nAgent: vws-compute\n"))
@@ -105,6 +110,13 @@ class Config(unittest.TestCase):
 
     def test_default_maps_platform_repos(self):
         self.assertEqual(orch.grok_owners(CFG)["vws-deploy"], "vws-platform")
+
+    def test_default_map(self):
+        # vws-deploy#511: the whole default map, so a dropped or renamed entry fails here.
+        self.assertEqual(orch.grok_owners(dict(CFG, ORCHESTRATE_GROK_OWNERS=orch.DEFAULTS["ORCHESTRATE_GROK_OWNERS"])),
+                         {"vws-deploy": "vws-platform", "vws-lib": "vws-platform", "vws-proto": "vws-platform",
+                          "vws-test": "vws-platform", "vws-conformance": "vws-platform",
+                          "vws-console-api": "vws-api"})
 
     def test_bad_entries_are_rejected(self):
         paths = orch.Paths(self.ENV)
