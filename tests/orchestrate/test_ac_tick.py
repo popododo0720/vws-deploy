@@ -231,7 +231,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(gh.writes[3][2], {"state": "closed", "state_reason": "completed"})
 
     def test_ac5_marker_rechecked_at_apply(self):
-        gh = FakeGh(comments=[{"body": "x\n<!-- vws-orchestrate:ac-tick pr=vws-deploy#500 -->"}])
+        gh = FakeGh(comments=[{"user": {"login": "popododo0720"}, "body": "x\n<!-- vws-orchestrate:ac-tick pr=vws-deploy#500 -->"}])
         st, events, _ = self.apply(gh)
         self.assertEqual(gh.writes, [])
         self.assertIn("vws-deploy#500", st["ac_ticked"])

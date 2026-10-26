@@ -143,7 +143,7 @@ class Apply(unittest.TestCase):
 
     def test_skips_a_key_already_posted(self):
         r = run(snapshot(pr(5, merge_state="dirty")))
-        gh = FakeGh(comments=[{"body": wakes(r)[0]["body"]}])
+        gh = FakeGh(comments=[{"user": {"login": "popododo0720"}, "body": wakes(r)[0]["body"]}])
         _, events = self.apply(gh)
         self.assertEqual(gh.writes, [])
         self.assertIn("a comment with this key already exists", [e.get("reason") for e in events])

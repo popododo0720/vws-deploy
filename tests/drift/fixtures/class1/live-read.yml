@@ -1,0 +1,11 @@
+# Passing: live reads, and the forbidden fields only in YAML comments.
+# Not github.event.pull_request.labels, not head_commit.committer.
+on: pull_request
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh api "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels"

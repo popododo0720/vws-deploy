@@ -50,7 +50,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           GUARD_VERIFY_ACTORS: ${{ vars.VWS_VERIFY_ACTORS }}
           GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}

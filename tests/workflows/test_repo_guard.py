@@ -48,24 +48,52 @@ class Stub:
 
 
 class VerifyReset(unittest.TestCase):
-    ENV = {"GH_TOKEN": "x", "REPO": "o/r", "NUMBER": "7", "LABELS": "bug,verify-approved"}
+    """vws-deploy#439 AC2 class 1: no event-snapshot labels; the DELETE is pinned to the pushed head."""
+    HEAD = "a" * 40
+    ENV = {"GH_TOKEN": "x", "REPO": "o/r", "NUMBER": "7", "HEAD_SHA": HEAD}
 
     def script(self):
         return step("verify-reset", "Remove verify-approved")["run"]
 
+    def gh(self, delete, head=HEAD):
+        return f'''case "$*" in
+  *"-X DELETE"*) {delete} ;;
+  *pulls/7*) echo {head} ;;
+  *) exit 1 ;;
+esac'''
+
+    def test_no_event_snapshot(self):
+        """A re-run replays the push-time labels; the step must not take them (the pre-fix LABELS env)."""
+        env = step("verify-reset", "Remove verify-approved")["env"]
+        self.assertNotIn("LABELS", env)
+        self.assertEqual(env["HEAD_SHA"], "${{ github.event.pull_request.head.sha }}")
+
+    def test_removed_even_when_the_event_snapshot_lacked_it(self):
+        """Labels added after the push event (or missing from its snapshot) are still removed."""
+        rc, calls, out = Stub(self, self.gh("exit 0")).run(self.script(), dict(self.ENV, LABELS="bug"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+
+    def test_head_moved_writes_nothing(self):
+        """A re-run of an older push: the run for the newer head owns the reset."""
+        rc, calls, out = Stub(self, self.gh("exit 0", head="b" * 40)).run(self.script(), self.ENV)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("DELETE", calls)
+        self.assertIn("head moved", out)
+
+    def test_unreadable_head_fails(self):
+        rc, calls, _ = Stub(self, 'exit 1').run(self.script(), self.ENV)
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("DELETE", calls)
+
     def test_label_already_gone_is_ok(self):
-        rc, _, out = Stub(self, 'echo "gh: Label does not exist (HTTP 404)" >&2; exit 1').run(self.script(), self.ENV)
+        rc, _, out = Stub(self, self.gh('echo "gh: Label does not exist (HTTP 404)" >&2; exit 1')).run(self.script(), self.ENV)
         self.assertEqual(rc, 0, out)
         self.assertIn("already removed", out)
 
     def test_other_error_fails(self):
-        rc, _, _ = Stub(self, 'echo "gh: Server Error (HTTP 500)" >&2; exit 1').run(self.script(), self.ENV)
+        rc, _, _ = Stub(self, self.gh('echo "gh: Server Error (HTTP 500)" >&2; exit 1')).run(self.script(), self.ENV)
         self.assertNotEqual(rc, 0)
-
-    def test_removed(self):
-        rc, calls, _ = Stub(self, "exit 0").run(self.script(), self.ENV)
-        self.assertEqual(rc, 0)
-        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
 
 
 class PrHygiene(unittest.TestCase):

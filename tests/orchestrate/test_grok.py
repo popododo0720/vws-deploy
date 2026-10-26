@@ -424,7 +424,7 @@ class Apply(unittest.TestCase):
 
     def test_recheck_skips_posted_key(self):
         r, _ = self.plan()
-        gh = FakeGh(comments=[{"body": wakes(r)[0]["body"]}])
+        gh = FakeGh(comments=[{"user": {"login": "popododo0720"}, "body": wakes(r)[0]["body"]}])
         self.apply(gh)
         self.assertEqual(gh.writes, [])
 

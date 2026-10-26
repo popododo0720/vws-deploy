@@ -184,7 +184,7 @@ class Apply(unittest.TestCase):
 
     def test_recheck_skips_a_key_already_posted(self):
         r, _ = self.go(FakeGh())
-        gh = FakeGh(comments=[{"body": lead(r)[0]["body"]}])
+        gh = FakeGh(comments=[{"user": {"login": "popododo0720"}, "body": lead(r)[0]["body"]}])
         self.go(gh)
         self.assertEqual(gh.writes, [])
 

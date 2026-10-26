@@ -146,6 +146,23 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
   never logged. So a forged FAIL posts no rework prompt and counts no failure toward the grok swap,
   and a forged PASS cannot hide a trusted FAIL. A new dispatch found by the pre-dispatch re-read
   blocks only when its author is trusted.
+- **Trusted reads (vws-deploy#439 AC2, class 1):** `.github/orchestrate/trusted_read.py` holds every
+  marker, marker regex and match of one; orchestrate.py imports it and
+  `.github/drift/trusted_read_lint.py` (run by drift-check) fails on a marker match anywhere else.
+  - A verify wake, an idempotency key, a key's first time (the Grok wake timeout) and the
+    `ac-tick` marker count only from a comment by the orchestrator's own login (`popododo0720`, the
+    box gh login). A copy posted by anyone else neither suppresses, backdates nor dedupes a write.
+  - The failure section's idempotency key counts only inside the status block.
+  - A Grok claim comment counts only from an `ORCHESTRATE_GROK_LOGINS` login or a current assignee
+    (vws-deploy#507).
+  - Writes on a PR re-read it right before the write at the head the tick decided on (`pr_at_head`):
+    merges, rebuild and Grok rework wakes, reworks, and the `needs-verify` / `verify-approved` label
+    writes. A closed PR or a moved head writes nothing (`PR changed since collect: head moved`).
+  - The AC tick reads `Part of` and the `AC:` lines only from `verified_body`: the body vws-verify
+    approved, not edited at or after that approval (vws-deploy#499).
+  - No workflow reads `github.event.pull_request.labels` (a re-run replays the push-time labels) or
+    `head_commit.committer` (anyone sets it). verify-reset deletes `verify-approved` only while the PR
+    is still at the pushed head.
 - **Done report with a PR outside `popododo0720/vws-*`:** that PR is never read (the gh allowlist
   refuses it). The attempt counts as one failure (kind `pr_outside_vws`) and each tick logs a
   `note` with kind `report_pr_outside_vws`, so the task is retried or moved to grok instead of

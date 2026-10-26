@@ -27,17 +27,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [[ ",${LABELS}," == *",verify-approved,"* ]]; then
-            # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
-            if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
-              echo "verify-approved removed: a new head needs a new verification"
-            elif [[ $out == *"HTTP 404"* ]]; then
-              echo "verify-approved was already removed"
-            else
-              echo "$out" >&2
-              exit 1
-            fi
+          # vws-deploy#439 class 1: no event-snapshot labels (a re-run replays the push-time ones, and a label
+          # added after the push is missing from them). The DELETE is pinned to the pushed head instead: a
+          # re-run of an older push writes nothing, because the run for the newer head owns the reset.
+          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
+          if [[ $head != "$HEAD_SHA" ]]; then
+            echo "head moved to ${head}; the run for that push removes verify-approved"
+            exit 0
+          fi
+          # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
+          if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+            echo "verify-approved removed: a new head needs a new verification"
+          elif [[ $out == *"HTTP 404"* ]]; then
+            echo "verify-approved was already removed"
+          else
+            echo "$out" >&2
+            exit 1
           fi
