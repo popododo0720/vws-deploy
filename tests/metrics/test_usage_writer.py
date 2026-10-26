@@ -93,12 +93,12 @@ class Write(unittest.TestCase):
 
     def test_an_unreadable_file_is_left_alone(self):
         os.makedirs(os.path.dirname(self.path))
-        for text in ("{not json", "[1, 2]"):
-            with self.subTest(text=text):
+        for bad in ("{not json", "[1, 2]"):
+            with self.subTest(bad=bad):
                 with open(self.path, "w") as f:
-                    f.write(text)
+                    f.write(bad)
                 self.assertIsNone(metrics.write_usage(self.path, 2))
-                self.assertEqual(text(self.path), text)
+                self.assertEqual(text(self.path), bad)
 
     def test_none_writes_nothing(self):
         self.assertFalse(metrics.write_usage(self.path, None))
