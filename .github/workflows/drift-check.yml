@@ -44,6 +44,9 @@ on:
       - tests/metrics/**
       - scripts/codex-round-count.sh
       - tests/codex/**
+      # verify-check imports orchestrate.py; its tests use tests/orchestrate/stub_gh.py (vws-deploy#517 AC4).
+      - .github/verify/**
+      - tests/verify/**
       # trusted_read_lint.py reads every workflow (vws-deploy#439 class 1).
       - .github/workflows/**
 
@@ -81,6 +84,9 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/codex -v
           shellcheck scripts/codex-round-count.sh
+      # Repeated verify checks (vws-deploy#517 AC4); stub gh and temp git repos, no network.
+      - name: Verify check tests
+        run: python3 -m unittest discover -s tests/verify -v
       - name: Compare every repo against the baseline
         env:
           GH_TOKEN: ${{ github.token }}
