@@ -94,10 +94,14 @@ class LeadWake(unittest.TestCase):
         self.assertNotEqual(lead(run(moved, keys=[key]))[0]["key"], key)
 
     def test_fail_on_grok_or_ownerless_pr_wakes_the_lead(self):
-        paused = dict(CFG, ORCHESTRATE_DISPATCH="off")  # rule B4 posts no Grok rework wake
-        for labels, cfg, why in ((("grok",), paused, "Grok"), ((), CFG, "no DeepSeek owner")):
+        def uncovered(pr):  # rule B4 covers no PR this tick (routed is empty)
+            s = snapshot(pr)
+            s["status"]["keys"] = []
+            return {"actions": orch.decide_lead(s, CFG, [], routed=())}
+
+        for labels, plan, why in ((("grok",), uncovered, "Grok"), ((), run, "no DeepSeek owner")):
             pr = failed(labels=labels)
-            a = lead(run(pr, cfg=cfg))
+            a = lead(plan(pr))
             self.assertEqual(len(a), 1, labels)
             self.assertIn("vws-iam#501", a[0]["body"])
             self.assertIn(pr["head_sha"], a[0]["body"])

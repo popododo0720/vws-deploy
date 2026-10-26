@@ -327,6 +327,34 @@ class Delivery(Env):
         self.assertTrue(body.startswith(metrics.ALERT_MARKER) and "vws-iam#7" in body)
         self.assertEqual(orch.read_json(os.path.join(self.state, "metrics-state.json"), {})["pending_alerts"], {})
 
+    def test_stop_suppresses_the_alert_and_resume_posts_it_once(self):
+        # vws-deploy#521: STOP (ORCHESTRATE_WAKES=off, or ORCHESTRATE_DISPATCH=off alone) is full status-bus
+        # silence: no metrics-alert comment and no webhook while it lasts; the alert stays journaled.
+        for stop in ({"ORCHESTRATE_WAKES": "off"}, {"ORCHESTRATE_DISPATCH": "off"}):
+            with self.subTest(stop=stop):
+                state_file = os.path.join(self.state, "metrics-state.json")
+                if os.path.exists(state_file):
+                    os.remove(state_file)  # forget the key the previous lever's RESUME posted
+                before = len(self.comments())
+                with mock.patch.object(metrics, "anomalies", return_value=ALERT), \
+                        mock.patch.object(metrics, "alert_webhook") as hook:
+                    self.assertEqual(self.run_m("--date", DAY, METRICS_MODE="apply", **stop), 0)
+                    self.assertEqual(len(self.comments()), before, "no metrics-alert comment under STOP")
+                    hook.assert_not_called()
+                    [e] = [e for e in self.log() if e["event"] == "metrics_suppressed"][-1:]
+                    self.assertEqual((e["reason"], e["alerts"], e["days"]),
+                                     (f"{next(iter(stop))}=off", 1, [DAY]))
+                    self.assertEqual(list(orch.read_json(state_file, {})["pending_alerts"]), [DAY])
+                    # RESUME: the next run posts the held alert once, then never again.
+                    self.assertEqual(self.run_m("--recompute", DAY, METRICS_MODE="apply"), 0)
+                    self.assertEqual(len(self.comments()), before + 1)
+                    self.assertEqual(json.loads(self.comments()[-1]["stdin"])["body"].splitlines()[0],
+                                     metrics.ALERT_MARKER)
+                    self.assertEqual(self.run_m("--recompute", DAY, METRICS_MODE="apply"), 0)
+                    self.assertEqual(len(self.comments()), before + 1)
+                    self.assertEqual(orch.read_json(state_file, {})["pending_alerts"], {})
+                self.set_routes(routes())  # a fresh stub thread for the next STOP lever
+
     def test_failed_alert_fails_the_run_and_retries_next_tick(self):
         r = routes()
         r[f"POST {D}/issues/415/comments"] = {"status": 502, "body": {"message": "Bad Gateway"}}
