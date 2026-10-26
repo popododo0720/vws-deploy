@@ -158,8 +158,10 @@ DEFAULTS = {
     "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
     # vws-deploy#506: the Grok dev bot each repo's grok-wakes name (repo=bot); an unlisted repo names
     # the bot called after the repo (vws-iam -> vws-iam). An issue or PR `Agent:` line wins over both.
-    "ORCHESTRATE_GROK_OWNERS": ",".join(f"{r}=vws-platform" for r in
-                                        ("vws-deploy", "vws-lib", "vws-proto", "vws-test", "vws-conformance")),
+    # vws-deploy#511: the console-api Grok dev bot is named vws-api.
+    "ORCHESTRATE_GROK_OWNERS": ",".join([f"{r}=vws-platform" for r in
+                                         ("vws-deploy", "vws-lib", "vws-proto", "vws-test", "vws-conformance")]
+                                        + ["vws-console-api=vws-api"]),
     # vws-deploy#411: GitHub logins the woken Grok bots comment as; only their comments (or a current
     # assignee's) claim a woken issue. The Grok bots use the owner's gh login.
     "ORCHESTRATE_GROK_LOGINS": OWNER,
