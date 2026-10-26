@@ -102,6 +102,11 @@ in D's denominator. It alerts when D's rate is at least baseline + `RATE_MIN_RIS
 baseline is above 0, at least `RATE_MIN_RATIO = 2.0` times it. Rates are compared as exact fractions,
 so a rate exactly at a threshold alerts.
 
+**STOP silence (vws-deploy#521).** While `ORCHESTRATE_WAKES=off` or `ORCHESTRATE_DISPATCH=off` (shared env
+file), the day is still published but no alert comment is posted and the webhook is not called; the run logs
+`metrics_suppressed` and keeps the alert in `pending_alerts`. The first run after RESUME posts every held
+alert once, oldest day first. See [STOP and RESUME](factory-orchestrator.md#stop-and-resume-vws-deploy521).
+
 **Token-usage input.** See [Daily usage input](#daily-usage-input). Without it, `tokens` is `null`
 and no token alert is raised.
 
@@ -203,8 +208,8 @@ Env file keys (`/home/box/.config/vws-orchestrate/env`):
 - `METRICS_MAX_GETS=1500`;
 - `METRICS_TOKEN_DIR` (optional token-usage input).
 
-`ORCHESTRATE_RATE_FLOOR`, `ORCHESTRATE_EXTRA_REPOS`, `ORCHESTRATE_STATUS_ISSUE`, `DEEPSEEK_TIMEOUT_HOURS`
-and the `STOP` file are shared with the orchestrator.
+`ORCHESTRATE_RATE_FLOOR`, `ORCHESTRATE_EXTRA_REPOS`, `ORCHESTRATE_STATUS_ISSUE`, `DEEPSEEK_TIMEOUT_HOURS`,
+`ORCHESTRATE_WAKES`, `ORCHESTRATE_DISPATCH` and the `STOP` file are shared with the orchestrator.
 
 Process environment only (export it where `orchestrate-ensure.sh` starts the loop, then restart the
 loop; not the env file): `VWS_ALERT_WEBHOOK_URL`, `VWS_ALERT_WEBHOOK_KEY`.
