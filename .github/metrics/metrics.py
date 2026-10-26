@@ -708,6 +708,43 @@ def read_lead_wakes(path):
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
 
 
+def lead_wakes_from_github(raw, cfg):
+    """Pure (vws-deploy#410). The lead wakes of the day: comments on the wake thread (ORCHESTRATE_WAKE_THREAD in
+    vws-deploy) created in the KST day whose first line is the lead-wake marker. The orchestrator posts one per
+    wake and dr eggbot's routine fires on it. None when there is no source (no wake thread configured, or
+    vws-deploy not collected), never 0."""
+    thread = cfg.get("ORCHESTRATE_WAKE_THREAD", "")
+    repo = raw["repos"].get(orch.STATUS_REPO)
+    if not thread or repo is None:
+        return None
+    start, end = kst_day_window(raw["day"])
+    return sum(1 for c in repo["comments"] if c["issue"] == int(thread) and start <= orch.utc(c["created_at"]) < end
+               and c["body"].split("\n", 1)[0].strip() == orch.LEAD_WAKE_MARKER)
+
+
+def write_usage(path, lead_wakes):
+    """The daily usage writer (vws-deploy#410): set "lead_wakes" in the usage file, keeping every other key
+    (by_agent belongs to whoever reports tokens; this writer has no token source and never writes it).
+    Returns True when the file changed, False when nothing was written (no value, or the same value: a rerun
+    writes nothing), None when the existing file is not a JSON object (left alone)."""
+    if lead_wakes is None:
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("lead_wakes") == lead_wakes and type(data["lead_wakes"]) is int:
+        return False
+    data["lead_wakes"] = lead_wakes
+    orch.write_json(path, data)
+    return True
+
+
 def headline(doc):
     w = doc.get("wakes") or {}  # days written before vws-deploy#400 have none
     return {"day": doc["day"], "prs_opened": doc["prs"]["totals"]["opened"], "prs_merged": doc["prs"]["totals"]["merged"],
@@ -901,6 +938,17 @@ def run_day(ctx, gh, log, args, day, now, recompute=False):
     recs, covered = read_orchestrator_log(args.orchestrator_log_dir or ctx.paths.log_dir, start, end)
     exclusions = orch.load_exclusions(os.path.join(HERE, "..", "orchestrate", "exclusions.tsv"))
     usage = os.path.join(ctx.token_dir, f"{day}.json")
+    if not args.fixture:
+        # The daily usage writer (vws-deploy#410): lead_wakes from GitHub, once the day is over. A fixture
+        # never writes it, and a day still running would get a partial count.
+        lead = lead_wakes_from_github(raw, cfg) if now >= end else None
+        if lead is None:
+            log("metrics_usage_skipped", day=day, reason="day not over" if now < end else "ORCHESTRATE_WAKE_THREAD unset "
+                "or vws-deploy not collected: lead_wakes stays null")
+        else:
+            changed = write_usage(usage, lead)
+            event = {True: "metrics_usage_written", False: "metrics_usage_unchanged"}.get(changed, "metrics_usage_refused")
+            log(event, day=day, path=usage, lead_wakes=lead)
     doc = compute(raw, recs, covered, cfg, exclusions, snapshot_at=orch.iso(now) if snap else None,
                   tokens=read_tokens(usage), lead_wakes=read_lead_wakes(usage))
     # History: the published files in apply mode, the local dry-run copies otherwise.
