@@ -2,8 +2,7 @@
 
 Class 2 of docs/lessons/verify-findings-2026-10.md: guards read PR bodies, comments and commit messages
 in different ways, and each difference was a bypass. One normalizer spec now has two implementations,
-visible_text in scripts/guard-agents.sh (pr-body, pr-checklist, commit-msg, correct, and
-.github/ac/post-merge.sh, which loads the same function) and visible_text in
+visible_text in scripts/guard-agents.sh (pr-body, pr-checklist, commit-msg, correct) and visible_text in
 .github/orchestrate/orchestrate.py (parse_ac and agent_of). tests/fixtures/guard-text/corpus.json is the one
 set of vectors both must agree on.
 
@@ -29,8 +28,7 @@ orch = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(orch)
 
 ENV = {"PATH": os.environ["PATH"], "LC_ALL": "C"}
-# Load visible_text from the guard file the way .github/ac/post-merge.sh does, so this is the code its
-# consumers run, not a copy.
+# Load visible_text from the guard file itself, so this is the code its consumers run, not a copy.
 LOAD = 'eval "$(sed -n "/^visible_text() {\\$/,/^}\\$/p" "$1")"; declare -F visible_text >/dev/null && visible_text'
 
 
