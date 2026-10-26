@@ -436,8 +436,9 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
   (`ac_tick_only`). The only other issue edit allowed besides the status issue's body is
   `{"state": "closed", "state_reason": "completed"}`, never on the status issue.
 - The rule does not judge evidence (vws-verify does that on the PR). It ticks no box for an `AC: none`
-  PR or for a box no PR names; the lead ticks those by hand. Retiring `post-merge.yml`'s `ac-pending`
-  job and creating `ac-partial` in every repo are separate steps (#486 AC8).
+  PR or for a box no PR names; the lead ticks those by hand.
+- `ac-pending` is legacy: the `post-merge.yml` labeler that added it after each merge is retired
+  (#526 AC4), so rule T only removes it. `ac-partial` exists in every non-archived vws-* repo (#526 AC3).
 
 ## Infra retries (provider errors)
 
