@@ -23,6 +23,11 @@ def lead(cid, created, issue=339):
     return gh_comment(cid, issue, created, f"{LEAD}\nvws-orchestrate: lead wake for vws-deploy#7 at `{'a' * 40}`")
 
 
+def text(path):
+    with open(path) as f:
+        return f.read()
+
+
 def raw_comment(c):
     return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
             "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"]}
@@ -75,9 +80,9 @@ class Write(unittest.TestCase):
 
     def test_rerun_is_idempotent(self):
         metrics.write_usage(self.path, 3)
-        before = (open(self.path).read(), os.stat(self.path).st_mtime_ns)
+        before = (text(self.path), os.stat(self.path).st_mtime_ns)
         self.assertFalse(metrics.write_usage(self.path, 3))
-        self.assertEqual((open(self.path).read(), os.stat(self.path).st_mtime_ns), before)
+        self.assertEqual((text(self.path), os.stat(self.path).st_mtime_ns), before)
 
     def test_keeps_by_agent_from_another_writer(self):
         os.makedirs(os.path.dirname(self.path))
@@ -93,7 +98,7 @@ class Write(unittest.TestCase):
                 with open(self.path, "w") as f:
                     f.write(text)
                 self.assertIsNone(metrics.write_usage(self.path, 2))
-                self.assertEqual(open(self.path).read(), text)
+                self.assertEqual(text(self.path), text)
 
     def test_none_writes_nothing(self):
         self.assertFalse(metrics.write_usage(self.path, None))
@@ -138,6 +143,7 @@ class Runtime(Env):
         before = os.stat(self.usage()).st_mtime_ns
         self.publish(ORCHESTRATE_WAKE_THREAD="339")
         self.assertEqual(os.stat(self.usage()).st_mtime_ns, before)
+        self.assertIn("metrics_usage_unchanged", self.events())
         self.assertEqual(self.daily()["wakes"]["lead_wakes"], 2)
 
     def test_missing_source_shows_a_dash(self):
