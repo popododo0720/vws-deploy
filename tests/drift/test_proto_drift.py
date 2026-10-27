@@ -183,6 +183,77 @@ class ProtoCell(unittest.TestCase):
         self.assertEqual(issues, ["go.mod unreadable"])
 
 
+SHA = "0123456789abcdef0123456789abcdef01234567"  # 40 hex
+BIG = "api/big.pb.go"
+
+
+def _none(content="", sha=SHA, size=1500000):
+    """A Contents response for a file over about 1MB: encoding none, empty or missing body."""
+    d = {"type": "file", "encoding": "none", "sha": sha, "size": size}
+    if content is not None:
+        d["content"] = content
+    return d
+
+
+class LargeFile(unittest.TestCase):
+    """A 1MB+ *.pb.go Contents response must not pass the source-header check (vws-deploy#547)."""
+
+    def cell(self, contents, blob=None, tree_sha=None, calls=None):
+        def gh(path):
+            if calls is not None:
+                calls.append(path)
+            if path == "repos/o/r/git/trees/main?recursive=1":
+                entry = {"type": "blob", "path": BIG, "size": 1500000}
+                if tree_sha:
+                    entry["sha"] = tree_sha
+                return {"truncated": False, "tree": [entry]}
+            if path == "repos/o/r/contents/" + BIG:
+                return contents
+            if blob is not None and path == "repos/o/r/git/blobs/" + (tree_sha or SHA):
+                return blob
+            return None
+        return pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)
+
+    def test_encoding_none_empty_content_does_not_pass(self):
+        # "aGVsbG8=" is base64 for "hello". encoding none must not be decoded, or the check passes.
+        for content in ("", "\n", None, "aGVsbG8="):
+            with self.subTest(content=content):
+                issues, _ = self.cell(_none(content))
+                self.assertEqual(issues, [BIG + " unreadable"])
+
+    def test_blob_encoding_none_is_unreadable(self):
+        issues, _ = self.cell(_none(), blob={"encoding": "none", "content": "", "sha": SHA, "size": 1500000})
+        self.assertEqual(issues, [BIG + " unreadable"])
+
+    def test_blob_body_with_vws_source_is_a_copy(self):
+        raw = fixture("copied.pb.go.txt")
+        blob = {"encoding": "base64", "content": base64.b64encode(raw).decode(), "sha": SHA}
+        issues, _ = self.cell(_none(), blob=blob)
+        self.assertEqual(issues, ["1 vws-proto pb.go copy: " + BIG])
+
+    def test_blob_body_of_own_proto_passes(self):
+        raw = fixture("own.pb.go.txt")
+        blob = {"encoding": "base64", "content": base64.b64encode(raw).decode(), "sha": SHA}
+        self.assertEqual(self.cell(_none(), blob=blob), ([], "not used (latest v0.5.0)"))
+
+    def test_tree_sha_is_used_when_contents_omits_sha(self):
+        raw = fixture("copied.pb.go.txt")
+        blob = {"encoding": "base64", "content": base64.b64encode(raw).decode(), "sha": SHA}
+        contents = {"type": "file", "encoding": "none", "content": "", "size": 1500000}
+        issues, _ = self.cell(contents, blob=blob, tree_sha=SHA)
+        self.assertEqual(issues, ["1 vws-proto pb.go copy: " + BIG])
+
+    def test_non_sha_is_not_requested(self):
+        calls = []
+        issues, _ = self.cell(_none(sha="../secret"), calls=calls)
+        self.assertEqual(issues, [BIG + " unreadable"])
+        self.assertFalse(any("secret" in c or ".." in c for c in calls))
+
+    def test_empty_base64_file_is_not_unreadable(self):
+        issues, _ = self.cell({"encoding": "base64", "content": "", "sha": SHA, "size": 0})
+        self.assertEqual(issues, [])
+
+
 class Tags(unittest.TestCase):
     def test_tag_names(self):
         def gh(p):
@@ -199,6 +270,8 @@ class DocRule(unittest.TestCase):
             text = f.read()
         self.assertIn(f"more than {pd.MAX_MINOR_LAG} minor version behind", text)
         self.assertIn(".github/drift/proto_drift.py", text)
+        self.assertIn("encoding: none", text)
+        self.assertIn("Git Blobs API", text)
 
 
 if __name__ == "__main__":
