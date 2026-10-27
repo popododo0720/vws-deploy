@@ -141,11 +141,11 @@ jobs:
               pullRequest(number:$number) {
                 reviews(last:100, before:$reviewCursor, author:"vws-verify[bot]") {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { databaseId submittedAt state commit { oid } author { login } }
+                  nodes { databaseId submittedAt state commit { oid } author { __typename login } }
                 }
                 comments(last:100, before:$commentCursor) {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { databaseId createdAt author { login } authorAssociation body }
+                  nodes { databaseId createdAt author { __typename login } authorAssociation body }
                 }
               }
             }
@@ -156,7 +156,7 @@ jobs:
               pullRequest(number:$number) {
                 reviews(last:100, before:$reviewCursor, author:"vws-verify[bot]") {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { databaseId submittedAt state commit { oid } author { login } }
+                  nodes { databaseId submittedAt state commit { oid } author { __typename login } }
                 }
               }
             }
@@ -167,21 +167,23 @@ jobs:
               pullRequest(number:$number) {
                 comments(last:100, before:$commentCursor) {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { databaseId createdAt author { login } authorAssociation body }
+                  nodes { databaseId createdAt author { __typename login } authorAssociation body }
                 }
               }
             }
           }
           # vq-comments'
-            review_jq='[.data.repository.pullRequest.reviews.nodes[]?
-              | select(.author.login == "vws-verify[bot]" and .commit.oid == $sha and .submittedAt != null
+            # GraphQL Bot.login is "vws-verify". The review author argument and this filter use "vws-verify[bot]".
+            gh_login='def gh_login: if .__typename == "Bot" and ((.login // "") | length) > 0 and ((.login | endswith("[bot]")) | not) then .login + "[bot]" else (.login // "") end;'
+            review_jq="${gh_login}"'[.data.repository.pullRequest.reviews.nodes[]?
+              | select((.author | gh_login) == "vws-verify[bot]" and .commit.oid == $sha and .submittedAt != null
                 and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
               | last
               | if . == null then "" else
                 [.submittedAt, (if .state == "CHANGES_REQUESTED" then "FAIL" else "PASS" end), "review \(.databaseId)"] | @tsv
               end'
-            comment_jq='[.data.repository.pullRequest.comments.nodes[]?
-              | {user:{login:(.author.login // "")}, author_association:.authorAssociation, body:(.body // ""), created_at:.createdAt, id:.databaseId}
+            comment_jq="${gh_login}"'[.data.repository.pullRequest.comments.nodes[]?
+              | {user:{login:(.author | gh_login)}, author_association:.authorAssociation, body:(.body // ""), created_at:.createdAt, id:.databaseId}
               | select(.user.login == "vws-verify[bot]" or (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
               | ((.body // "") | gsub("\r\n"; "\n") | sub("\\A\\s+"; "")) as $b
               | ($b | capture("\\A#\\s+(?<t>[A-Za-z0-9._-]+#[0-9]+)\\s+@\\s+(?<s>[0-9a-f]{40})\\s*\n+Result:\\s*(?<r>PASS|FAIL)\\b")? ) as $m

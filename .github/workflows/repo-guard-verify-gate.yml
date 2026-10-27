@@ -143,11 +143,11 @@ jobs:
               pullRequest(number:$number) {
                 comments(first:100) {
                   pageInfo { hasNextPage endCursor }
-                  nodes { author { login } body }
+                  nodes { author { __typename login } body }
                 }
                 timelineItems(last:100, itemTypes:[LABELED_EVENT]) {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { ... on LabeledEvent { actor { login } label { name } } }
+                  nodes { ... on LabeledEvent { actor { __typename login } label { name } } }
                 }
               }
               object(oid:$sha) { ... on Commit { committer { user { login } } } }
@@ -159,7 +159,7 @@ jobs:
               pullRequest(number:$number) {
                 comments(first:100, after:$cursor) {
                   pageInfo { hasNextPage endCursor }
-                  nodes { author { login } body }
+                  nodes { author { __typename login } body }
                 }
               }
             }
@@ -170,14 +170,17 @@ jobs:
               pullRequest(number:$number) {
                 timelineItems(last:100, before:$cursor, itemTypes:[LABELED_EVENT]) {
                   pageInfo { hasPreviousPage startCursor }
-                  nodes { ... on LabeledEvent { actor { login } label { name } } }
+                  nodes { ... on LabeledEvent { actor { __typename login } label { name } } }
                 }
               }
             }
           }
           # vg-labels'
+          # GraphQL Bot.login is "vws-verify". REST, GUARD_VERIFY_ACTORS and GUARD_VERIFY_IDENTITY use
+          # "vws-verify[bot]". A User keeps the login GraphQL returned. Normalize before @@comment-by and the labeler.
+          gh_login='def gh_login: if .__typename == "Bot" and ((.login // "") | length) > 0 and ((.login | endswith("[bot]")) | not) then .login + "[bot]" else (.login // "") end;'
           # Same defang as the previous REST filter: a body line cannot claim another author.
-          comment_jq='.data.repository.pullRequest.comments.nodes[]? | "@@comment-by: \(.author.login)\n\((.body // "") | gsub("\r\n"; "\n") | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"'
+          comment_jq="${gh_login}"'.data.repository.pullRequest.comments.nodes[]? | "@@comment-by: \(.author | gh_login)\n\((.body // "") | gsub("\r\n"; "\n") | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"'
           vg_ok() {
             if jq -e '((.errors // []) | length) > 0' >/dev/null <<<"$1"; then
               echo "verify-gate: GitHub query failed" >&2
@@ -233,7 +236,7 @@ jobs:
             fi
             count=$(jq -r '[.nodes[]? | select(.label.name == "verify-approved")] | length' <<<"$timeline")
             if [[ ${count:-0} -gt 0 ]]; then
-              labeler=$(jq -r '[.nodes[]? | select(.label.name == "verify-approved")][-1] | .actor.login // ""' <<<"$timeline")
+              labeler=$(jq -r "${gh_login}"'[.nodes[]? | select(.label.name == "verify-approved")][-1].actor | gh_login' <<<"$timeline")
               break
             fi
             if [[ $(jq -r '.pageInfo.hasPreviousPage' <<<"$timeline") != true ]]; then
