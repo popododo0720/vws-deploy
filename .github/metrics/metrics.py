@@ -239,7 +239,8 @@ def collect(gh, repo_names, day, cfg, snapshot=False):
         for c in pages(gh, f"repos/{OWNER}/{name}/issues/comments?since={since}&sort=created&direction=asc&per_page=100"):
             if lookback <= orch.utc(c["created_at"]) < end:
                 r["comments"].append({"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
-                                      "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c.get("body") or ""})
+                                      "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c.get("body") or "",
+                                      "author": (c.get("user") or {}).get("login") or ""})
         for e in pages(gh, f"repos/{OWNER}/{name}/issues/events?per_page=100",
                        stop=lambda e: orch.utc(e["created_at"]) < start):
             if e.get("event") in ("labeled", "unlabeled") and start <= orch.utc(e["created_at"]) < end:
@@ -710,16 +711,18 @@ def read_lead_wakes(path):
 
 def lead_wakes_from_github(raw, cfg):
     """Pure (vws-deploy#410). The lead wakes of the day: comments on the wake thread (ORCHESTRATE_WAKE_THREAD in
-    vws-deploy) created in the KST day whose first line is the lead-wake marker. The orchestrator posts one per
-    wake and dr eggbot's routine fires on it. None when there is no source (no wake thread configured, or
-    vws-deploy not collected), never 0."""
+    vws-deploy) created in the KST day whose first line is the lead-wake marker and whose author is the
+    orchestrator's login (trusted_read.own_comment, vws-deploy#543: the thread is public, so a copied marker by
+    any other login, or a comment with no author, does not count). The orchestrator posts one per wake and dr
+    eggbot's routine fires on it. None when there is no source (no wake thread configured, a thread that is not
+    a positive integer, or vws-deploy not collected), never 0."""
     thread = cfg.get("ORCHESTRATE_WAKE_THREAD", "")
     repo = raw["repos"].get(orch.STATUS_REPO)
-    if not thread or repo is None:
+    if not re.fullmatch(r"[1-9][0-9]*", thread) or repo is None:
         return None
     start, end = kst_day_window(raw["day"])
     return sum(1 for c in repo["comments"] if c["issue"] == int(thread) and start <= orch.utc(c["created_at"]) < end
-               and c["body"].split("\n", 1)[0].strip() == orch.LEAD_WAKE_MARKER)
+               and c["body"].split("\n", 1)[0].strip() == orch.LEAD_WAKE_MARKER and orch.tr.own_comment(c))
 
 
 def write_usage(path, lead_wakes):
