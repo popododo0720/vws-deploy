@@ -3277,6 +3277,8 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
     real change, and status_same ignores it, so a quiet tick edits nothing."""
     notes = result.get("notes", [])
     in_flight = next((n["targets"] for n in notes if n.get("kind") == "in_flight"), [])
+    # vws-deploy#532: the same holders decide_grok counts against ORCHESTRATE_GROK_CAP, always printed.
+    grok_held_now = next((n["targets"] for n in notes if n.get("kind") == "grok_in_flight"), [])
     wake = wake_target(cfg)
     lines = [STATUS_MARKER,
              "Factory status. The orchestrator rewrites this block (down to the end marker) in place each tick; "
@@ -3291,7 +3293,9 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
              f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
              + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),
              f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
-             + (": " + ", ".join(in_flight) if in_flight else "")]
+             + (": " + ", ".join(in_flight) if in_flight else ""),
+             f"- Grok in flight: {len(grok_held_now)} of {int(num(cfg, 'ORCHESTRATE_GROK_CAP'))}"
+             + (": " + ", ".join(grok_held_now) if grok_held_now else "")]
     rebuild = result.get("rebuild", [])
     lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
         f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
