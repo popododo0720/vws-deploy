@@ -85,13 +85,19 @@ func (srv *Server) Handler() http.Handler {
 		method, path, _ := strings.Cut(pattern, " ")
 		allowed[path] = append(allowed[path], method)
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			rw := &responseWriter{ResponseWriter: w}
 			if err := srv.auth.Check(token(r)); err != nil {
-				writeError(w, r, err)
+				writeError(rw, r, err)
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-			if err := h(w, r); err != nil {
-				writeError(w, r, err)
+			if err := h(rw, r); err != nil {
+				if rw.sent {
+					slog.LogAttrs(r.Context(), slog.LevelError, "installer api",
+						slog.String("err", err.Error()), slog.Bool("response_sent", true))
+					return
+				}
+				writeError(rw, r, err)
 			}
 		})
 	}
