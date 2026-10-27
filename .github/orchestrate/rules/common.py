@@ -47,8 +47,10 @@ DEEPSEEK = "@deepseek-dev"
 VERIFY_LOGIN = "vws-verify[bot]"
 # CI-failure marker (vws-deploy#412): a PR comment that #420's ci-fail workflow posts with the caller's
 # GITHUB_TOKEN. Line 1 is the marker and a fenced json block is the record; the comment counts only as
-# #420 parse_comment accepts it (.github/ci-fail/ci_fail.py, ported below). Only github-actions[bot]
-# is trusted, and n/wake are recomputed from the comments (the marker can only tighten them).
+# #420 parse_comment accepts it (.github/ci-fail/ci_fail.py, ported below). github-actions[bot] is
+# trusted, and so is this orchestrator's own login when it posts the second startup_failure marker
+# (vws-deploy#446: workflow_run does not fire for that conclusion). Anyone else is ignored. n/wake are
+# recomputed from the comments (the marker can only tighten them).
 CI_FAIL_LOGIN = "github-actions[bot]"
 # Exactly #420 JSON_BLOCK_RE and marker_line's field checks (MARKER_RE is trusted_read.CI_FAIL_RE).
 CI_FAIL_JSON_RE = re.compile(r"^```json\n(.*?)^```$", re.M | re.S)
@@ -657,16 +659,22 @@ def pr_owner(pr, items):
     return "", ""
 
 
+def ci_fail_author_ok(c):
+    """True for github-actions[bot], or for the orchestrator's own login (the #446 second-failure marker).
+    A comment with no login, or any other login, is not trusted."""
+    return c.get("author") == CI_FAIL_LOGIN or tr.own_comment(c)
+
+
 def ci_fails(pr):
     """CI-failure markers on a PR, oldest first: (accepted, untrusted). Accepted means posted by
-    github-actions[bot], v=1, and naming this repo#N. A comment with no recorded author is untrusted."""
+    github-actions[bot] or by this orchestrator's login, v=1, and naming this repo#N."""
     ok, bad = [], []
     for c in sorted(pr.get("comments", []), key=lambda c: (c["created_at"], c["id"])):
         kind = classify_comment(c["body"])
         if not kind or kind[0] != "ci_fail":
             continue
         d = kind[1]
-        if c.get("author") != CI_FAIL_LOGIN:
+        if not ci_fail_author_ok(c):
             bad.append(c)
         elif d["v"] == 1 and d["repo"] == pr["repo"] and d["pr"] == pr["number"]:
             ok.append(dict(d, id=c["id"], url=c["url"], at=c["created_at"], body=c["body"]))
