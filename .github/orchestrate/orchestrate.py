@@ -671,7 +671,10 @@ def action_order(registry):
 
 
 def action_key(a):
-    """Two actions with the same type, target and label (or key) are one write; the first is kept."""
+    """Two actions with the same type, target and label (or key) are one write; the first is kept. ac_tick
+    also keys on pr: two merged PRs ticking boxes of one issue are two writes (vws-deploy#567)."""
+    if a["type"] == "ac_tick":
+        return (a["type"], a["target"], a.get("pr"))
     return (a["type"], a["target"], a.get("label", a.get("key")))
 
 
