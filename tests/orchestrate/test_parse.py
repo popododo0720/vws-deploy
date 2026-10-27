@@ -1,8 +1,9 @@
 """Parsing tests for .github/orchestrate/orchestrate.py (vws-deploy#333).
 Run: python3 -m unittest discover -s tests/orchestrate"""
+import re
 import unittest
 
-from orch_testlib import orch
+from orch_testlib import SCRIPT, orch
 
 
 class DependsOn(unittest.TestCase):
@@ -97,6 +98,44 @@ class Files(unittest.TestCase):
         self.assertEqual(orch.ci_verdict(runs, {}), "ok")
         runs["check_runs"].append({"id": 3, "name": "hygiene / pr-hygiene", "conclusion": "failure"})
         self.assertEqual(orch.ci_verdict(runs, {}), "failing")
+
+
+class VerifyCheckParity(unittest.TestCase):
+    """ci_verdict is failing exactly when pr_ci is red (vws-deploy#502). One set of check names."""
+
+    def cr(self, rid, name, status="completed", conclusion="success"):
+        return {"id": rid, "name": name, "status": status, "conclusion": conclusion}
+
+    def test_vectors(self):
+        ok = self.cr(1, "test")
+        # expect_red is the shared answer. A pending check is neither failing nor red.
+        cases = [
+            ("gate / verify-gate failing", [ok, self.cr(2, "gate / verify-gate", conclusion="failure")], None, False),
+            ("verify-gate failing", [ok, self.cr(2, "verify-gate", conclusion="failure")], None, False),
+            ("vws-verify failing", [ok, self.cr(2, "vws-verify", conclusion="failure")], None, False),
+            ("needs-verify job failing", [ok, self.cr(2, "needs-verify", conclusion="failure")], None, False),
+            ("needs-verify status failing", [ok], [{"context": "needs-verify", "state": "failure"}], False),
+            ("real check failing", [self.cr(1, "test", conclusion="failure")], None, True),
+            ("real status failing", [ok], [{"context": "ci", "state": "error"}], True),
+            ("pending check", [self.cr(1, "test", status="in_progress", conclusion=None)], None, False),
+        ]
+        for name, runs, statuses, expect_red in cases:
+            with self.subTest(name):
+                status = {"statuses": list(statuses or [])}
+                body = {"check_runs": runs, "total_count": len(runs)}
+                failing = orch.ci_verdict(body, status) == "failing"
+                red = orch.pr_ci(body, status)[0] == "red"
+                self.assertEqual(failing, red)
+                self.assertEqual(failing, expect_red)
+
+    def test_one_literal_verify_check_set(self):
+        with open(SCRIPT, encoding="utf-8") as f:
+            src = f.read()
+        sets = re.findall(r"\{[^{}]*gate / verify-gate[^{}]*\}", src)
+        self.assertEqual(sets, ['{"verify-gate", "gate / verify-gate", "vws-verify", "needs-verify"}'])
+        self.assertFalse(hasattr(orch, "WAIT_CHECKS"))
+        self.assertEqual(orch.VERIFY_CHECKS,
+                         {"verify-gate", "gate / verify-gate", "vws-verify", "needs-verify"})
 
 
 if __name__ == "__main__":
