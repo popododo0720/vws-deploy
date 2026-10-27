@@ -390,6 +390,8 @@ class Gh:
         self.allow = allow or allowed
         self.cache = read_json(cache_path, {}) if cache_path else {}
         self.used = {}
+        # Paths whose last get() was answered 304 from the cache (get_all revalidates a stale last page).
+        self.not_modified = set()
         self.runner, self.sleep, self.timeout, self.tries = runner, sleep, timeout, tries
         self.stats = {"get": 0, "not_modified": 0, "write": 0}
         # GETs per endpoint class and status ("200", "304", or the error status), for the tick_end log.
@@ -439,6 +441,7 @@ class Gh:
         if status == 304 and cached:
             self.stats["not_modified"] += 1
             self.used[path] = cached
+            self.not_modified.add(path)
             return cached["data"], cached.get("next", False)
         if status != 200:
             raise GhError(status, scrub(body[:200]))
@@ -446,13 +449,24 @@ class Gh:
         nxt = 'rel="next"' in headers.get("link", "")
         entry = {"etag": headers.get("etag", ""), "data": data, "next": nxt}
         self.used[path] = entry
+        self.not_modified.discard(path)
         return data, nxt
 
     def get_all(self, path, limit=20):
         sep = "&" if "?" in path else "?"
+        m = re.search(r"[?&]per_page=([0-9]+)", path)
+        per_page = int(m.group(1)) if m else 30
         items, page = [], 1
         while True:
-            data, nxt = self.get(f"{path}{sep}page={page}" if page > 1 else path)
+            p = f"{path}{sep}page={page}" if page > 1 else path
+            data, nxt = self.get(p)
+            if not nxt and p in self.not_modified and len(data or []) >= per_page:
+                # vws-deploy#575: a 304 carries no Link header, so a full page cached while it was the last
+                # page keeps next=False after the list grows and would hide every newer page (the lead-wake
+                # key on the wake thread). Re-read it once without If-None-Match for a fresh Link. A partial
+                # page that is unchanged is still the last page, so it keeps the 304.
+                self.cache.pop(p, None)
+                data, nxt = self.get(p)
             items.extend(data or [])
             if not nxt:
                 return items
