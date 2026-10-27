@@ -2,6 +2,7 @@
 report that shows a provider 429/503 is re-mentioned after ORCHESTRATE_INFRA_RETRY_DELAY_MIN, at most
 INFRA_MAX_RETRIES times, never counts toward the grok swap, and ends with one failure comment.
 Run: python3 -m unittest discover -s tests/orchestrate"""
+import glob
 import json
 import os
 import time
@@ -80,8 +81,10 @@ class Patterns(unittest.TestCase):
                 self.assertEqual(orch.infra_error(f"[deepseek-dev] Failed for x: {text}"), "")
 
     def test_one_constant(self):
-        with open(orch.__file__, encoding="utf-8") as f:
-            src = f.read()
+        src = ""
+        for path in [orch.__file__] + sorted(glob.glob(os.path.join(os.path.dirname(orch.__file__), "rules", "*.py"))):
+            with open(path, encoding="utf-8") as f:
+                src += f.read()
         self.assertEqual(src.count("(?:RATE_LIMIT|SERVER)"), 2, "the patterns live in INFRA_ERROR_RE only")
 
     def test_history_kind(self):
