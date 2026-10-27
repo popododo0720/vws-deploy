@@ -93,6 +93,37 @@ class RecordedRuns(unittest.TestCase):
         self.assertEqual(plan(pr(runs("storage-133-second.json"), comments=[marker("popododo0720")]))[0], [])
         self.assertEqual(plan(pr(runs("storage-133-second.json"), comments=[marker("github-actions[bot]")]))[0], [])
 
+    def test_reset_failures_drops_older_heads_from_n(self):
+        """Three failing heads before an OWNER reset do not raise n. Without the reset, n is 4 and wake is false."""
+        old = []
+        for i, sha in enumerate(("1" * 40, "2" * 40, "3" * 40)):
+            c = marker("github-actions[bot]", sha)
+            old.append(dict(c, id=i + 1, created_at=f"2026-10-23T07:0{i}:00Z"))
+        reset = {"id": 8, "url": "https://example.test/r", "created_at": "2026-10-23T07:20:00Z",
+                 "author": "popododo0720", "assoc": "OWNER", "body": "/orchestrate reset-failures"}
+        it = pr(runs("storage-133-second.json"), labels=["verify-approved", "grok"])
+        kept = plan(dict(it, comments=old))[0][0]["body"]
+        self.assertIn("n=4", kept)
+        self.assertIn("wake=false", kept)
+        dropped = plan(dict(it, comments=old + [reset]))[0][0]["body"]
+        self.assertIn("n=1", dropped)
+        self.assertIn("wake=true", dropped)
+
+    def test_a_missing_ci_fail_file_plans_no_marker(self):
+        import orchestrate_rules.guard_startup as gs
+        orig = gs.ci_fail_module
+
+        def missing():
+            raise FileNotFoundError("ci_fail.py")
+
+        gs.ci_fail_module = missing
+        try:
+            actions, notes, _ = plan(pr(runs("storage-133-second.json")))
+        finally:
+            gs.ci_fail_module = orig
+        self.assertEqual(actions, [])
+        self.assertEqual([n["kind"] for n in notes], ["guard_report_unavailable"])
+
     def test_a_stranger_marker_does_not_count(self):
         actions, _, _ = plan(pr(runs("storage-133-stuck.json"), comments=[marker("mallory")]))
         self.assertEqual([a["type"] for a in actions], ["guard_retry"])
@@ -167,8 +198,21 @@ class Apply(unittest.TestCase):
     def log(self, *args, **kw):
         self.events.append(kw)
 
-    def gh(self, body="Part of #446\n", sha=HEAD, comments=None, fail=False):
-        return _Gh(body, sha, comments or [], fail)
+    def gh(self, body="Part of #446\n", sha=HEAD, comments=None, fail=False, edited_at="2026-10-23T05:00:00Z"):
+        return _Gh(body, sha, comments or [], fail, edited_at=edited_at)
+
+    def ac_after_retry(self, gh, state):
+        """collect_ac then decide_ac_ticks on the body the retry left behind."""
+        snap = {"repos": [{"name": "vws-storage", "archived": False}],
+                "labels": {"vws-storage": ["ac-partial"]}, "ac_merged": []}
+        cfg = dict(orch.DEFAULTS, ORCHESTRATE_AC_TICK="apply")
+        state = dict(state, ac_tick_since="2026-01-01T00:00:00Z")
+        now = orch.utc("2026-10-23T08:00:00Z")
+        orch.collect_ac(gh, snap, ["vws-storage"], state, now, cfg)
+        notes = []
+        actions = orch.decide_ac_ticks(snap, {"ac_tick_since": state["ac_tick_since"], "ac_ticked": {}},
+                                       now, cfg, notes)
+        return actions, notes, snap
 
     def apply(self, actions, gh, state=None):
         st = state if state is not None else {}
@@ -239,6 +283,46 @@ class Apply(unittest.TestCase):
         self.assertEqual((errors, gh.writes), (0, []))
         self.assertTrue(new_state["guard_retry"][KEY]["reported"])
 
+    def test_an_approved_body_is_exempt_and_ticks(self):
+        """The retry is the only edit after the pass, so the stored pre-image is ticked."""
+        approved = "Part of #1\n\nAC: 1\n"
+        actions, _, st = plan(pr(runs("storage-133-stuck.json")))
+        gh = self.gh(body=approved)
+        new_state, errors = self.apply(actions, gh, st)
+        self.assertEqual(errors, 0)
+        self.assertEqual(new_state["guard_retry"][KEY]["body_sha"], hashlib.sha256(approved.encode()).hexdigest())
+        gh.edited_at = "2026-10-23T07:35:00Z"  # the retry line, after the pass
+        got, notes, snap = self.ac_after_retry(gh, new_state)
+        self.assertEqual([a["type"] for a in got], ["ac_tick"])
+        self.assertEqual(got[0]["target"], "vws-storage#1")
+        self.assertEqual(snap["ac_merged"][0]["body"], approved)
+        self.assertEqual([n["kind"] for n in notes], [])
+
+    def test_a_body_edited_after_approval_is_not_an_ac_exemption(self):
+        """approve, then change Part of, then retry. The retry still runs. AC tick does not."""
+        edited = "Part of #1\n\nAC: 1\n"
+        actions, _, st = plan(pr(runs("storage-133-stuck.json")))
+        gh = self.gh(body=edited, edited_at="2026-10-23T07:10:00Z")
+        new_state, errors = self.apply(actions, gh, st)
+        self.assertEqual(errors, 0)
+        self.assertEqual(gh.writes[0][0], "PATCH")
+        self.assertIn(orch.tr.guard_retry_line(HEAD, RUN), gh.pr["body"])
+        self.assertNotIn("body_sha", new_state["guard_retry"][KEY])
+        got, notes, snap = self.ac_after_retry(gh, new_state)
+        self.assertEqual(got, [])
+        self.assertIn("ac_body_edited", [n["kind"] for n in notes])
+        self.assertIn("Part of #1", snap["ac_merged"][0]["body"])
+        self.assertEqual(snap["ac_merged"][0].get("issue_body", ""), "")
+
+    def test_an_unreadable_approval_stores_no_preimage(self):
+        actions, _, st = plan(pr(runs("storage-133-stuck.json")))
+        gh = self.gh()
+        gh.graphql_error = True
+        new_state, errors = self.apply(actions, gh, st)
+        self.assertEqual(errors, 0)
+        self.assertEqual(gh.writes[0][0], "PATCH")
+        self.assertNotIn("body_sha", new_state["guard_retry"][KEY])
+
 
 class BodyGate(unittest.TestCase):
     def test_only_the_retry_line_may_be_appended(self):
@@ -276,19 +360,70 @@ class BodyGate(unittest.TestCase):
         self.assertFalse(orch.guard_retry_restores(attacked, state))
         self.assertIn("Part of #1", attacked["body"])
 
+    def test_an_older_heads_retry_line_does_not_block_the_next(self):
+        previous = orch.tr.guard_retry_line("a" * 40, 11)
+        before = "Part of #446\n" + previous + "\n"
+        new = orch.tr.guard_retry_append(before, HEAD, RUN)
+        self.assertTrue(orch.tr.guard_body_edit(before, new))
+        self.assertNotEqual(before, new)
+        ran = []
+
+        def runner(*args, **kw):
+            ran.append(args)
+            class Done:
+                stdout = "HTTP/1.1 200 OK\n\n{}"
+                returncode = 0
+            return Done()
+
+        gh = orch.Gh(runner=runner, allow=lambda method, path: True)
+        gh.write("PATCH", "repos/popododo0720/vws-storage/issues/133", {"body": new}, before=before)
+        self.assertEqual(len(ran), 1)
+        m = {"pr": "vws-storage#133", "head_sha": HEAD, "body": new}
+        state = {"guard_retry": {KEY: {"body_sha": hashlib.sha256(before.encode()).hexdigest()}}}
+        self.assertTrue(orch.guard_retry_restores(m, state))
+        self.assertEqual(m["body"], before)
+
+
+ONE = "## Acceptance criteria\n\n- [ ] AC1: one\n"
+APPROVED_AT = "2026-10-23T06:00:00Z"
+MERGE_AT = "2026-10-23T07:40:00Z"
+
 
 class _Gh:
-    def __init__(self, body, sha, comments, fail):
-        self.pr = {"state": "open", "merged": False, "body": body, "head": {"sha": sha, "ref": "ci/ci-fail-caller"}}
+    def __init__(self, body, sha, comments, fail, edited_at="2026-10-23T05:00:00Z", reviews=None):
+        self.pr = {"state": "open", "merged": False, "body": body,
+                   "html_url": "https://github.com/popododo0720/vws-storage/pull/133",
+                   "head": {"sha": sha, "ref": "ci/ci-fail-caller"}}
         self.comments = comments
         self.fail = fail
         self.writes = []
+        self.edited_at = edited_at
+        self.reviews = [{
+            "id": 9, "html_url": self.pr["html_url"], "user": {"login": "vws-verify[bot]", "id": 1},
+            "submitted_at": APPROVED_AT, "commit_id": sha, "state": "APPROVED", "body": "PASS",
+        }] if reviews is None else reviews
+        self.issue = {"state": "open", "body": ONE, "labels": []}
+        self.graphql_error = False
 
     def get(self, path):
+        if "pulls?" in path and "state=closed" in path:
+            return [{"number": 133, "html_url": self.pr["html_url"], "merged_at": MERGE_AT,
+                     "merge_commit_sha": "c" * 40, "base": {"ref": "main"},
+                     "head": {"sha": self.pr["head"]["sha"]}, "body": self.pr.get("body") or ""}], False
+        if path.endswith("/issues/1"):
+            return self.issue, False
         return self.pr, False
 
     def get_all(self, path):
+        if "/reviews?" in path:
+            return list(self.reviews)
         return list(self.comments)
+
+    def graphql(self, query, variables, write=False):
+        if self.graphql_error:
+            raise orch.GhError(500, "graphql")
+        return {"repository": {"pullRequest": {
+            "lastEditedAt": self.edited_at, "headRefOid": self.pr["head"]["sha"]}}}
 
     def write(self, method, path, payload=None, before=None):
         if self.fail:
