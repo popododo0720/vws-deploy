@@ -81,10 +81,8 @@ def gh(path):
 
 
 def content(owner, repo, path, ref=None):
-    d = gh(f"repos/{owner}/{repo}/contents/{path}" + (f"?ref={ref}" if ref else ""))
-    if not d or "content" not in d:
-        return None
-    return base64.b64decode(d["content"])
+    """A file's bytes, or None when unreadable; a 1MB+ file is read through the Git Blobs API (vws-deploy#547)."""
+    return proto_drift.read_file(owner, repo, path, gh, ref=ref)
 
 
 def protection(owner, repo):

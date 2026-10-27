@@ -183,6 +183,73 @@ class ProtoCell(unittest.TestCase):
         self.assertEqual(issues, ["go.mod unreadable"])
 
 
+def _large(path, sha="b1"):
+    """A GitHub Contents reply for a file over 1MB: no inline body (vws-deploy#547)."""
+    return {"type": "file", "path": path, "sha": sha, "size": 1_500_000, "encoding": "none", "content": ""}
+
+
+class LargeBlob(unittest.TestCase):
+    """Contents returns encoding none and an empty body over ~1MB; that is never a clean read (#547)."""
+
+    PB = "internal/api/big.pb.go"
+
+    def api(self, blob=None, tree_sha="b1"):
+        calls = []
+
+        def gh(path):
+            calls.append(path)
+            if path == "repos/o/r/git/trees/main?recursive=1":
+                return {"truncated": False, "tree": [{"type": "blob", "path": self.PB, "sha": tree_sha}]}
+            if path == f"repos/o/r/contents/{self.PB}":
+                return _large(self.PB)
+            if blob is not None and path == "repos/o/r/git/blobs/b1":
+                return blob
+            return None
+        return gh, calls
+
+    def test_fixture_is_a_large_pb_go(self):
+        d = _large(self.PB)
+        self.assertGreater(d["size"], 1024 * 1024)
+        self.assertEqual((d["encoding"], d["content"]), ("none", ""))
+
+    def test_encoding_none_without_blob_fails_closed(self):
+        gh, _ = self.api()
+        issues, _ = pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)
+        self.assertEqual(issues, [f"{self.PB} unreadable"])
+
+    def test_blob_fallback_finds_a_large_copy(self):
+        body = fixture("copied.pb.go.txt") + b"// pad\n" * 200_000
+        blob = {"sha": "b1", "size": len(body), "encoding": "base64", "content": base64.b64encode(body).decode()}
+        gh, calls = self.api(blob)
+        issues, _ = pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)
+        self.assertEqual(issues, [f"1 vws-proto pb.go copy: {self.PB}"])
+        self.assertIn("repos/o/r/git/blobs/b1", calls)
+
+    def test_blob_fallback_own_large_pb_go_is_ok(self):
+        body = fixture("own.pb.go.txt") + b"// pad\n" * 200_000
+        blob = {"sha": "b1", "size": len(body), "encoding": "base64", "content": base64.b64encode(body).decode()}
+        gh, _ = self.api(blob)
+        self.assertEqual(pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)[0], [])
+
+    def test_blob_sha_comes_from_contents_when_tree_has_none(self):
+        body = fixture("copied.pb.go.txt")
+        blob = {"sha": "b1", "size": len(body), "encoding": "base64", "content": base64.b64encode(body).decode()}
+        gh, calls = self.api(blob, tree_sha=None)
+        self.assertEqual(pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)[0], [f"1 vws-proto pb.go copy: {self.PB}"])
+        self.assertIn("repos/o/r/git/blobs/b1", calls)
+
+    def test_blob_that_is_not_base64_fails_closed(self):
+        gh, _ = self.api({"sha": "b1", "size": 5, "encoding": "utf-8", "content": "hello"})
+        self.assertEqual(pd.proto_cell("o", "r", "v0.5.0", TAGS, gh)[0], [f"{self.PB} unreadable"])
+
+    def test_body_shorter_than_size_fails_closed(self):
+        self.assertIsNone(pd.decode_contents({"encoding": "base64", "size": 10, "content": ""}))
+        self.assertIsNone(pd.decode_contents({"encoding": "none", "content": ""}))
+        self.assertIsNone(pd.decode_contents({"encoding": "base64", "content": "!!not base64!!"}))
+        self.assertEqual(pd.decode_contents({"encoding": "base64", "size": 0, "content": ""}), b"")
+        self.assertEqual(pd.decode_contents(_b64(b"x")), b"x")
+
+
 class Tags(unittest.TestCase):
     def test_tag_names(self):
         def gh(p):
@@ -199,6 +266,8 @@ class DocRule(unittest.TestCase):
             text = f.read()
         self.assertIn(f"more than {pd.MAX_MINOR_LAG} minor version behind", text)
         self.assertIn(".github/drift/proto_drift.py", text)
+        self.assertIn("Git Blobs API", text)
+        self.assertIn("encoding: none", text)
 
 
 if __name__ == "__main__":
