@@ -93,6 +93,11 @@ class VendoredPins(unittest.TestCase):
         # vws-deploy runs the same check as scripts/guard.sh english (R22); it holds the pin, not a copy.
         self.assertEqual(dc.vendored_issues("vws-deploy", {CE: None}, repo_pins()), ([], []))
 
+    def test_archived_vws_hypervisor_needs_no_check_english_copy(self):
+        # vws-deploy#423 lead decision B: vws-hypervisor is archived and not needed, so it needs no copy.
+        self.assertEqual(dc.vendored_issues("vws-hypervisor", {CE: None}, repo_pins()), ([], []))
+        self.assertEqual(dc.VENDORED_REQUIRED[CE], {"vws-deploy", "vws-hypervisor"})
+
     def test_accepted_variant_is_a_note_only_for_its_repo(self):
         raw = b"variant\n"
         sha = hashlib.sha256(raw).hexdigest()
