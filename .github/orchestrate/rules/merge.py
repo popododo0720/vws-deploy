@@ -24,7 +24,9 @@ STATE_KEYS = ("merge_locks", "merge_attempts")
 
 
 # Rule D serial set (vws-deploy#397): PRs touching these merge one at a time across all repos, oldest approval first.
-SERIAL_MERGE_RE = re.compile(r"^(?:\.github/orchestrate/orchestrate\.py|\.github/workflows/repo-guard[^/]*\.ya?ml|AGENTS\.md)$")
+# vws-deploy#501: the rule modules are what orchestrate.py was, so they stay serial too (rules/*.py, one level).
+SERIAL_MERGE_RE = re.compile(r"^(?:\.github/orchestrate/orchestrate\.py|\.github/orchestrate/rules/[^/]+\.py"
+                             r"|\.github/workflows/repo-guard[^/]*\.ya?ml|AGENTS\.md)$")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 
 

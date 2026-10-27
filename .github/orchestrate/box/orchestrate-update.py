@@ -10,7 +10,7 @@ tick: whatever happens, the tick runs on whatever sha the checkout has afterward
   `git merge --ff-only`. No reset, rebase or merge commit. It refuses, keeps the current sha and raises an
   alert when the checkout has local changes (tracked or untracked, outside the state dir), has diverged
   from origin/main, or the candidate fails a syntax check (bash -n on the box scripts, compile() on the
-  Python entry points). A fetch or fast-forward failure also raises an alert.
+  Python entry points and every rule module in .github/orchestrate/rules/, vws-deploy#501). A fetch or fast-forward failure also raises an alert.
 - A service directory that is not a git checkout (an archive install) is result no_checkout, one alert.
 - Drift: when the running sha is behind the newest commit on origin/main that touches WATCHED for two
   ticks in a row, one alert per that commit's sha.
@@ -34,6 +34,7 @@ BASH_CHECK = (".github/orchestrate/box/orchestrate-loop.sh", ".github/orchestrat
 PY_CHECK = (".github/orchestrate/orchestrate.py", ".github/orchestrate/trusted_read.py",
             ".github/orchestrate/box/orchestrate-update.py")
 PY_OPTIONAL = (".github/metrics/metrics.py",)
+PY_DIRS = (".github/orchestrate/rules/",)  # every *.py the candidate has there (vws-deploy#501)
 MAIN_REF = "refs/remotes/origin/main"
 EXIT_REEXEC = 3
 DRIFT_TICKS = 2
@@ -109,8 +110,13 @@ def local_changes(git, root, state):
 
 
 def candidate_problem(git, sha):
-    """'' when the box scripts and Python entry points at sha pass a syntax check, else the first problem."""
-    for rel in BASH_CHECK + PY_CHECK + PY_OPTIONAL:
+    """'' when the box scripts, Python entry points and rule modules at sha pass a syntax check, else the
+    first problem."""
+    rules = []
+    for d in PY_DIRS:
+        rc, out = git.run("ls-tree", "--name-only", sha, d)
+        rules += sorted(p for p in out.splitlines() if p.endswith(".py")) if rc == 0 else []
+    for rel in BASH_CHECK + PY_CHECK + PY_OPTIONAL + tuple(rules):
         rc, src = git.run("show", f"{sha}:{rel}")
         if rc != 0:
             if rel in PY_OPTIONAL:
