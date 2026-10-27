@@ -8,6 +8,7 @@
    "type": "wake_verify"
   },
   {
+   "allow_assigned": false,
    "body": "<!-- vws-orchestrate:grok-wake -->\nvws-orchestrate: Grok task vws-proto#3 https://github.com/popododo0720/vws-proto/issues/3\n\nOwner `vws-platform` (repo:vws-proto): please take this issue: one small PR per its acceptance criteria, `Part of #3` in commits and the PR body, no closing keywords.\nGrok slot 1 of 1; this issue holds the slot while it is open with `grok`.\n\nIdempotency key: `sha256:b0ab9df7ce3b7b27bd05229fdf10827dc1a8c6f0c9af5713a6f87e2bf1ae620c`\nRun id: `20261021T120000Z-501501`\n<!-- orchestrate:grok-wake item=vws-proto#3 -->",
    "item": "vws-proto#3",
    "key": "sha256:b0ab9df7ce3b7b27bd05229fdf10827dc1a8c6f0c9af5713a6f87e2bf1ae620c",

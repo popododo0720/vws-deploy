@@ -1,6 +1,8 @@
 """vws-deploy#501 AC2: splitting orchestrate.py into rules/ modules is a pure move.
 
-Both fixtures were recorded from the pre-split orchestrate.py (main 1c21811) and must stay byte-identical:
+Both fixtures were recorded from the pre-split orchestrate.py (main 1c21811); the outputs were re-recorded
+from the same inputs on pre-split main f3ba31e (#549 adds `allow_assigned` to grok_wake). They must stay
+byte-identical:
 
 - decide-cases.jsonl: decide() inputs and outputs recorded while the tests/orchestrate suite ran on the
   pre-split code (867 calls, 692 distinct inputs), reduced to the 34 calls that together produce every
