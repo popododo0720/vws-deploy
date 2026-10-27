@@ -46,17 +46,17 @@ Merged commits on vws-proto `main` after the latest tag reach no consumer until 
 
 ## Checks that fail on drift
 
-Per consumer, in the repo's own tests:
+Cross-repo, in vws-deploy drift-check (present: `.github/drift/proto_drift.py`, called by `.github/drift/drift_check.py` as the `vws-proto` column; daily schedule and every drift-check PR run):
 
-- no `replace` for `github.com/popododo0720/vws-proto` in `go.mod`;
-- no `third_party/vws-proto` directory and no tracked `*.pb.go` under a `vws-proto/gen/go` package path;
-- the required version is a release tag, not a pseudo-version.
+- reports each Go repo's required vws-proto version from every `go.mod` (outside `third_party/`, `vendor/` and `testdata/`) next to the latest release tag (the highest `vX.Y.Z` tag on vws-proto; pre-releases are ignored);
+- fails when a consumer is more than 1 minor version behind the latest tag, or on any older major version. With latest v0.5.0, v0.4.x passes and v0.3.x fails. One minor of lag gives each consumer one release cycle to bump in its own PR;
+- fails on a `replace` for vws-proto, a pseudo-version, or a version that is not a vws-proto tag;
+- fails on vws-proto generated code in the tree: anything under `third_party/vws-proto/`, a `*.pb.go` under a `gen/go/vws/` path, or any other `*.pb.go` whose header is `// source: vws/...` (the `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API);
+- fails closed: an unreadable tree, `go.mod` or tag list, and a truncated tree listing, are drift.
 
-Cross-repo, in vws-deploy drift-check (`.github/drift/drift_check.py`, a later PR of #404):
+Per consumer, in the repo's own tests: not present, and not planned. No service repo has a test for its `go.mod` vws-proto entry (checked on 2026-10-27 in the five consumers). drift-check is the one place for the rule, so it is not copied into five repos. The cost: a consumer PR that adds a copy is caught by the next daily run, not at the PR.
 
-- reports each consumer's required vws-proto version next to the latest tag;
-- fails on a `replace`, a copied `*.pb.go`, a pseudo-version, or a consumer more than one minor version behind the latest tag;
-- `govulncheck ./...` exits 0 per consumer.
+`govulncheck ./...` exits 0 per consumer: run by hand for #404 (see the PR evidence), not yet in drift-check.
 
 ## State on 2026-10-27
 
@@ -72,7 +72,7 @@ Read from each repo's `main` with `gh api`:
 
 vws-console, vws-conformance, vws-hypervisor and vws-deploy do not use vws-proto.
 
-vws-proto has tags v0.1.0 to v0.5.0; v0.5.0 is commit 3fbc83c and `https://proxy.golang.org/github.com/popododo0720/vws-proto/@v/v0.5.0.info` returns 200. `main` is 5 commits past v0.5.0 (CI workflows, guard scripts and AGENTS.md only; no `.proto` or `gen/go` change). There is no GitHub Release object for any tag yet.
+vws-proto has tags v0.1.0 to v0.5.0; v0.5.0 is commit 3fbc83c and `https://proxy.golang.org/github.com/popododo0720/vws-proto/@v/v0.5.0.info` returns 200. `main` is 5 commits past v0.5.0 (CI workflows, guard scripts and AGENTS.md only; no `.proto` or `gen/go` change). The GitHub Release for v0.5.0 was published on 2026-10-27: https://github.com/popododo0720/vws-proto/releases/tag/v0.5.0. `GOPROXY=https://proxy.golang.org go list -m github.com/popododo0720/vws-proto@v0.5.0` resolves it (origin hash 3fbc83c).
 
 `scripts/vendor-proto.sh` is still in vws-lib and vws-lib#27 (proto pin check) is still open; both are superseded by the per-repo checks above and are retired in a later PR.
 

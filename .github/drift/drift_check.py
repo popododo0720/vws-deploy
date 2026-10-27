@@ -29,6 +29,9 @@ Checks per repo, on its default branch:
               of vws-deploy's form, no incident.md is left, and the repo has the incident label
   lint        Go repos: the golangci config enables every linter in .github/golangci-common.yml,
               sets lll to 120 and enables gofumpt and goimports
+  vws-proto   Go repos: each go.mod's vws-proto version next to the latest vws-proto tag; drift on a replace,
+              a pseudo-version, more than one minor version behind, or a copied vws-proto *.pb.go
+              (proto_drift.py, vws-deploy#404)
 An archived repo is reported and skipped; it is not drift.
 
 --bypass-audit (vws-deploy#458) checks only the ruleset bypass actors, for the admin audit run on the
@@ -53,6 +56,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import caller_pin  # noqa: E402
+import proto_drift  # noqa: E402
 
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
 # verify-queue.yml (#460): without it a repo's PRs never get needs-verify and Rule A never wakes vws-verify.
@@ -795,6 +799,7 @@ def main():
     pending = load_pending(a.caller_pending)
     vendored = load_vendored(a.vendored)
     scripts, callees = {}, {}
+    proto = {}  # the vws-proto tags, read once for the first Go repo (#404)
 
     names = [ln.split("\t")[0] for ln in open(a.repos) if ln.strip() and not ln.startswith("#")]
     extra_heads = parse_heads(a.head, set(names))
@@ -805,13 +810,14 @@ def main():
         repo, kind, cfgpath, extra = (line.rstrip("\n").split("\t") + ["", "", ""])[:4]
         info = gh(f"repos/{a.owner}/{repo}")
         if info is None:
-            rows.append([repo, "unreadable", "", "", "", "", "", "", "", "", "", ""])
+            rows.append([repo, "unreadable", "", "", "", "", "", "", "", "", "", "", ""])
             drift += 1
             continue
         if info.get("archived"):
-            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
+            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
             continue
         issues, notes = {}, {}
+        proto_ok = "n/a"
         p = protection(a.owner, repo)
         if not p or not p["protected"]:
             issues["protection"] = ["main is not protected"]
@@ -906,6 +912,12 @@ def main():
             issues_l = [f"no {cfgpath}"] if cfg is None else lint_drift(cfg, common)
             if issues_l:
                 issues["lint"] = issues_l
+            if not proto:
+                proto["tags"] = proto_drift.proto_tags(a.owner, gh)
+                proto["latest"] = proto_drift.latest_tag(proto["tags"] or [])
+            bad_p, proto_ok = proto_drift.proto_cell(a.owner, repo, proto["latest"], proto["tags"], gh)
+            if bad_p:
+                issues["vws-proto"] = bad_p
         if issues:
             drift += 1
         if notes:
@@ -932,6 +944,7 @@ def main():
             cell("lint", "ok" if kind == "go" else "n/a"),
             cell("vendored"),
             cell("bootstrap"),
+            cell("vws-proto", proto_ok),
         ])
 
     for repo, why in caller_pin.pin_drift(pins, lambda sha: on_main(a.owner, sha)).items():
@@ -962,7 +975,7 @@ def main():
             head_rows.append([repo, f"ok ({len(todo)} PR head(s))"])
 
     head = ["repo", "protection", "ruleset", "required checks", "workflows", "caller", "guard-agents.sh",
-            "AGENTS/QUALITY", "incident form", "lint", "vendored copies", "bootstrap"]
+            "AGENTS/QUALITY", "incident form", "lint", "vendored copies", "bootstrap", "vws-proto"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
     table += ["", "| repo | caller, vendored copies and bootstrap at PR heads |", "|---|---|"]

@@ -303,10 +303,13 @@ class RulesetDrift(unittest.TestCase):
             self.assertEqual(len(unverified), 1, value)
 
 
+REQ = b"module m\nrequire github.com/popododo0720/vws-proto %s\n"
+
+
 class MainRulesetCell(unittest.TestCase):
     """main() end to end with a stubbed gh: the non-admin ruleset detail must never print ruleset ok."""
 
-    def run_main(self, detail, rules=None, extra_files=None):
+    def run_main(self, detail, rules=None, extra_files=None, kind="proto", api=None):
         files = {".github/workflows/repo-guard.yml": b"x", ".github/workflows/direct-push-watch.yml": b"x",
                  ".github/workflows/verify-queue.yml": b"x",
                  "AGENTS.md": b"main is protected by the active vws-main ruleset", "QUALITY.md": b"q"}
@@ -314,6 +317,8 @@ class MainRulesetCell(unittest.TestCase):
         files = {k: v for k, v in files.items() if v is not None}
 
         def gh(path):
+            if api is not None and api(path) is not None:  # the vws-proto cell's reads (#404)
+                return api(path)
             if path.endswith("/rulesets/1"):
                 return detail
             if path.endswith("/rulesets"):
@@ -338,7 +343,7 @@ class MainRulesetCell(unittest.TestCase):
             return files.get(path)
 
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
-            f.write("r\tproto\t-\t\n")
+            f.write(f"r\t{kind}\t.golangci.yml\t\n")
         self.addCleanup(os.unlink, f.name)
         # The caller cell (#402) is not under test: r is a pending repo on the pinned full copy.
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as pend:
@@ -374,6 +379,42 @@ class MainRulesetCell(unittest.TestCase):
         rc, cell, _, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": [{"actor_id": 5}]})
         self.assertEqual(cell, "ruleset vws-main has 1 bypass actor(s)")
         self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def proto_api(self, gomod, tags=("v0.5.0", "v0.4.0", "v0.3.0")):
+        def api(path):
+            if path == "repos/o/vws-proto/tags?per_page=100":
+                return [{"name": t} for t in tags]
+            if path == "repos/o/r/git/trees/main?recursive=1":
+                return {"truncated": False, "tree": [{"type": "blob", "path": "go.mod"}]}
+            if path == "repos/o/r/contents/go.mod":
+                return _b64(gomod)
+            return None
+        return api
+
+    def go_cfg(self):
+        """A .golangci.yml that passes the lint cell against the real common baseline."""
+        enable = dc.load_common(os.path.join(ROOT, ".github", "golangci-common.yml"))["linters"]["enable"]
+        return ("linters:\n  enable: [%s]\n  settings:\n    lll:\n      line-length: 120\n"
+                "formatters:\n  enable: [gofumpt, goimports]\n" % ", ".join(enable)).encode()
+
+    def test_go_repo_reports_its_vws_proto_version(self):
+        detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+        rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
+                                           api=self.proto_api(REQ % b"v0.4.0"))
+        self.assertIn("vws-proto", text.splitlines()[0])
+        self.assertEqual(cells[-1], "v0.4.0 (latest v0.5.0) |")
+        self.assertEqual(rc, 0, text)
+
+    def test_go_repo_two_minors_behind_is_drift(self):
+        detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+        rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
+                                           api=self.proto_api(REQ % b"v0.3.0"))
+        self.assertEqual(cells[-1], "go.mod: v0.3.0 is 2 minor versions behind v0.5.0 (max 1) |")
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_non_go_repo_vws_proto_cell_is_na(self):
+        _, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
+        self.assertEqual(cells[-1], "n/a |")
 
     def test_admin_detail_without_actor_is_ok(self):
         _, cell, text, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
