@@ -14,6 +14,10 @@ tests are `tests/ci_fail/` (fake gh, no network).
 - It acts only when the run's event is `pull_request`, the conclusion is `failure`, `timed_out`,
   `startup_failure` or `action_required` (not `cancelled`), the head branch is in the same repo and
   is not `main`/`master`, and exactly one open PR has that head SHA. Push runs on main never post.
+- GitHub does not send `workflow_run` for `startup_failure`, so this workflow never sees that run.
+  The orchestrator posts the marker for a second one on a verify-approved head (vws-deploy#446). A later
+  real `workflow_run` updates that comment: a marker counts when its author is `github-actions[bot]` or
+  the orchestrator login `popododo0720`. Any other login is still ignored.
 - A green run does nothing. There is no passed state; consumers compare `sha` with the PR head.
 - A run whose only failed job is `verify-gate` (or `<job> / verify-gate` from a reusable workflow)
   posts nothing: verify-gate is red on every head until vws-verify approves, so alone it is not a CI
@@ -55,7 +59,9 @@ are never retried.
 
 ## One comment per head SHA
 
-- No marker by `github-actions[bot]` for the SHA on the PR: post a new one. Only this wakes anyone.
+- No marker by `github-actions[bot]` or `popododo0720` for the SHA on the PR: post a new one. Only a
+  marker by `github-actions[bot]` wakes a Grok dev bot (see below). The orchestrator's marker is how a
+  second `startup_failure` is reported when `workflow_run` never fired (vws-deploy#446).
 - A marker exists (a rerun, or another workflow failing on the same SHA): edit it. The workflow's
   own `runs` and `failed_jobs` entries are replaced, other workflows' entries are kept, `n` and
   `wake` never change. A per-repo-and-SHA concurrency group serializes the runs.
@@ -92,7 +98,7 @@ First match wins:
 
 - Chain: same-repo PRs whose head branch minus a trailing `-v<N>` equals this one's (`fix/x`,
   `fix/x-v2`), plus PRs named by a `Supersedes #N` line in a chain PR's body (optional).
-- `n` = 1 + the distinct SHAs of earlier markers by `github-actions[bot]` on the chain, counted after
+- `n` = 1 + the distinct SHAs of earlier markers by `github-actions[bot]` or `popododo0720` on the chain, counted after
   the latest reset on any chain PR. A reset is a `needs-human` `unlabeled` event, or a
   `/orchestrate reset-failures` comment whose `author_association` is `OWNER`, `MEMBER` or
   `COLLABORATOR`. Other authors' resets are ignored. The cap is CI-only.
@@ -117,7 +123,10 @@ Set up one GitHub-trigger routine per Grok dev bot, on the repos it works in:
 
 - Event: issue comment **created** on a pull request. Ignore `edited`: dedupe edits the comment on
   reruns, and an edit is never a new failure.
-- Author: `comment.user.login == "github-actions[bot]"`. Anyone else can paste a marker.
+- Author: `comment.user.login == "github-actions[bot]"`. Anyone else can paste a marker. The orchestrator
+  posts the second `startup_failure` marker as `popododo0720` (vws-deploy#446); that comment does not match
+  this routine, so it does not wake the bot. The orchestrator logs `owner=grok` and a later real failure
+  patches the same comment.
 - Body: starts with `<!-- vws-ci-fail ` and line 1 contains ` owner=grok agent=<your name> ` and
   ` wake=true `. Use the sidebar name exactly, e.g. ` agent=vws-storage `.
 - Before working: read the PR (`gh pr view <N> --json headRefOid,state`) and continue only when it is
