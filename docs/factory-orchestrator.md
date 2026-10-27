@@ -30,10 +30,34 @@ A deterministic script that runs five routine factory steps on GitHub state. It 
 | L, lead wake (vws-deploy#397) | Posts **one** comment on the wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no lead wake and the note `lead_wake_off`; never the status issue) per PR head that no rule moves on its own: an open, non-draft PR on `main` that is `verify-approved` but conflicts with main (`mergeable` false), or is `verify-approved` (not `blocked`, `hold` or `do-not-merge`, at the read head) but Rule D skips it with `part_of_owner_repo` (vws-deploy#504: the reason names the PR URL and the allowed forms, and the wake asks for a body edit, not a rebuild), or whose newest vws-verify verdict on its current head is a FAIL with no B2 rework and no B4 Grok rework wake this tick: a conflict-only verdict, a Grok PR (`grok` on the PR or on the issue its `Part of` names) that B4 does not wake, or a PR no `ready`+`deepseek` item owns. The first line is `<!-- vws-orchestrate:lead-wake -->`; the comment names `repo#N`, the head sha and the reason. The idempotency key is sha256 of `repo#N@head`, so a head is woken once and a new push can wake again; apply re-reads the thread and skips a key that is already there. dr eggbot's GitHub-trigger routine on that thread matches the marker and rebuilds the PR onto main as a new -vN PR (no force-push) or routes the FAIL to its owner. Logged as `lead_wake_posted`. |
 | T, AC tick (vws-deploy#486) | A PR merged into `main` after the rule started, with a `Part of` issue and `AC: <n>` lines, gets box n of that issue ticked with `(evidence: <PR URL> merged <sha>)`. One comment carries the marker. The issue gets `ac-partial` while boxes stay open and is closed as completed when none are left. `ORCHESTRATE_AC_TICK` (`apply` by default, so an unset value applies) switches it; the #415 Now block shows it as `AC tick: <mode>`. See "The AC tick rule" below. |
 | V, verify labels (vws-deploy#487) | `needs-verify` and `verify-approved` follow each open PR's current head in every vws-* repo, with or without `verify-queue.yml`. See "The verify labels rule" below. Runs after every other rule, so it takes the writes left under `ORCHESTRATE_MAX_WRITES`; `ORCHESTRATE_VERIFY_LABELS=off` stops it. |
+| S, repo-guard startup retry (vws-deploy#446) | A `verify-approved`, open, non-draft PR on `main` whose newest `repo-guard` `pull_request` run is `startup_failure`, with nothing newer in progress or successful, is re-triggered once. See "Repo-guard startup retry" below. |
 
 Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
 Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
+
+## Repo-guard startup retry (vws-deploy#446)
+
+GitHub does not emit `workflow_run` for `startup_failure`, so ci-fail never sees the run that left
+vws-storage#133 and vws-iam#144 blocked after `verify-approved`. The check suite still blocks the merge.
+`collect` already GETs `actions/runs?head_sha=` for Rule D, and the runs ride along on `merge_info`
+(`ORCHESTRATE_MERGE=off` collects nothing, so this rule does not fire). A truncated page is the note
+`guard_startup_truncated` and no action. `blocked`, `hold`, `do-not-merge` and the no-merge marker skip it.
+STOP does not: this is a CI repair, not a wake.
+
+- One re-trigger per head. `apply` appends `<!-- vws-orchestrate:repo-guard-retry sha=<head> run=<id> -->`,
+  which fires `pull_request` `edited` and starts a new repo-guard run. The attempt is journaled in
+  `state['guard_retry']` before the PATCH, with the sha256 of the body it started from. A body that already
+  has that line is not patched, and the stored hash is not replaced.
+- A second `startup_failure` (another run id, or the same run still newest after 15 minutes) posts one #412
+  marker via `ci_fail.format_comment` instead of touching the body again. The author is the orchestrator
+  login. ci-fail treats that login like `github-actions[bot]` when it looks for a marker to update, so a
+  later real failure patches the same comment. `n` is 1 plus the distinct head SHAs of trusted markers
+  already on this PR. `owner=grok` still does not wake a Grok dev bot: those routines match only
+  `github-actions[bot]`.
+- AC tick (#486, #499) accepts the body edit only when the stored hash is the pre-image. Any other edit
+  still fails closed. The record stays while the PR is open at that head, and for
+  `ORCHESTRATE_COMMENT_WINDOW_DAYS` after it closes, so a tick after the merge still has the hash.
 
 ## STOP and RESUME (vws-deploy#521)
 
@@ -51,8 +75,9 @@ overnight), so silence is enforced where the plan is made, not left to the consu
 - `metrics.py` posts no `<!-- vws-orchestrate:metrics-alert -->` comment on the status issue and calls no
   alert webhook; it logs `metrics_suppressed` (`reason`, `alerts`, `days`). The alert stays in
   `pending_alerts` and is posted once by the first metrics run after RESUME.
-- What continues: in-flight tracking, label repairs (rule V), merges if `ORCHESTRATE_MERGE` allows them, and
-  the quiet in-place rewrite of the status issue body, whose `## Now` line shows `wakes off (<reason>)`.
+- What continues: in-flight tracking, label repairs (rule V), the repo-guard startup retry (vws-deploy#446),
+  merges if `ORCHESTRATE_MERGE` allows them, and the quiet in-place rewrite of the status issue body, whose
+  `## Now` line shows `wakes off (<reason>)`.
 - Nothing is recorded as posted, so after RESUME each due wake posts once on the next tick.
 
 `ORCHESTRATE_DISPATCH=off` alone is enough to silence the bus. `ORCHESTRATE_WAKES=off` is the explicit
