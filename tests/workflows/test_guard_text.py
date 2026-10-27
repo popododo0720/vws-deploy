@@ -11,6 +11,7 @@ Each past bypass is one failing fixture; each has a passing neighbour. GUARD_AGE
 another copy of guard-agents.sh (for example an old one) to show which bypasses it still has.
 Run: python3 -m unittest discover -s tests/workflows
 """
+import glob
 import importlib.util
 import json
 import os
@@ -166,8 +167,10 @@ class CallSites(unittest.TestCase):
     def test_orchestrate_has_one_text_parser(self):
         # Only visible_text strips comments and fences. Marker strings and the ci-fail json block are not
         # readers of hidden text.
-        with open(ORCH, encoding="utf-8") as f:
-            src = f.read()
+        src = ""
+        for path in [ORCH] + sorted(glob.glob(os.path.join(os.path.dirname(ORCH), "rules", "*.py"))):
+            with open(path, encoding="utf-8") as f:
+                src += f.read()
         head, tail = src.split("def visible_text(", 1)
         rest = head + tail.split("\ndef ", 1)[1]
         self.assertNotIn("<!--.*", rest)
