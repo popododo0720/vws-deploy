@@ -198,8 +198,9 @@ class Apply(unittest.TestCase):
     def log(self, *args, **kw):
         self.events.append(kw)
 
-    def gh(self, body="Part of #446\n", sha=HEAD, comments=None, fail=False, edited_at="2026-10-23T05:00:00Z"):
-        return _Gh(body, sha, comments or [], fail, edited_at=edited_at)
+    def gh(self, body="Part of #446\n", sha=HEAD, comments=None, fail=False, edited_at="2026-10-23T05:00:00Z",
+           reviews=None):
+        return _Gh(body, sha, comments or [], fail, edited_at=edited_at, reviews=reviews)
 
     def ac_after_retry(self, gh, state):
         """collect_ac then decide_ac_ticks on the body the retry left behind."""
@@ -313,6 +314,19 @@ class Apply(unittest.TestCase):
         self.assertIn("ac_body_edited", [n["kind"] for n in notes])
         self.assertIn("Part of #1", snap["ac_merged"][0]["body"])
         self.assertEqual(snap["ac_merged"][0].get("issue_body", ""), "")
+
+    def test_the_same_second_or_no_approval_stores_no_preimage(self):
+        """An edit at the verdict's own second, or no pass review, is not a pre-image."""
+        actions, _, st = plan(pr(runs("storage-133-stuck.json")))
+        for gh in (self.gh(edited_at=APPROVED_AT), self.gh(reviews=[])):
+            new_state, errors = self.apply(actions, gh, dict(st))
+            self.assertEqual(errors, 0)
+            self.assertEqual(gh.writes[0][0], "PATCH")
+            self.assertNotIn("body_sha", new_state["guard_retry"][KEY])
+        never = self.gh(edited_at=None)
+        new_state, errors = self.apply(actions, never, dict(st))
+        self.assertEqual(errors, 0)
+        self.assertIn("body_sha", new_state["guard_retry"][KEY])
 
     def test_an_unreadable_approval_stores_no_preimage(self):
         actions, _, st = plan(pr(runs("storage-133-stuck.json")))
