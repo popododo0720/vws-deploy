@@ -7,7 +7,7 @@ box/orchestrate-loop.sh with the box's gh login; GH_TOKEN is always removed from
 The one exception is board_sync: its GraphQL calls run with GH_TOKEN set to the project-scope classic
 PAT read from ORCHESTRATE_BOARD_TOKEN_FILE (no file: board_sync is skipped for that tick).
 
-Rules (see docs/factory-orchestrator.md):
+Rules (one module each in rules/, merged by decide, vws-deploy#501; see docs/factory-orchestrator.md):
   A  wake vws-verify with one marker comment on the verify-wake thread (ORCHESTRATE_WAKE_THREAD; never
      the status issue) when needs-verify PRs wait (labeled by verify-queue.yml): the oldest for
      VERIFY_WAKE_MAX_WAIT_MIN or at least VERIFY_WAKE_THRESHOLD of them; one comment per pending set
@@ -37,6 +37,7 @@ import argparse
 import datetime as dt
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -57,159 +58,50 @@ from trusted_read import (  # noqa: E402,F401  (re-exported: tests and .github/m
     STATUS_MARKER, WAKE_MARKER, ac_tick_marker, is_trusted_reset_author, key_times,
     rework_kind, status_unowned,
 )
-STATUS_REPO = "vws-deploy"  # the status issue and the verify-wake thread live here; config picks the numbers
+
+
+# vws-deploy#501: every rule is a module in rules/ next to this file, loaded as the package
+# orchestrate_rules (not "rules": tests/orchestrate/rules is a package too). A cached package from another
+# checkout is dropped first, so two copies of this script never share rules.
+def _load_rules():
+    init = os.path.join(HERE, "rules", "__init__.py")
+    cached = sys.modules.get("orchestrate_rules")
+    if cached is not None and os.path.abspath(getattr(cached, "__file__", "")) == init:
+        return cached
+    for name in [m for m in sys.modules if m == "orchestrate_rules" or m.startswith("orchestrate_rules.")]:
+        del sys.modules[name]
+    spec = importlib.util.spec_from_file_location("orchestrate_rules", init,
+                                                  submodule_search_locations=[os.path.dirname(init)])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["orchestrate_rules"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+rules = _load_rules()
+from orchestrate_rules.common import (  # noqa: E402
+    ACTIONS_APP_ID, AC_ISSUE_BOX_RE, AC_TICK_LABELS, DEFAULTS, EXCLUSIONS_KEY, MANAGED_LABELS, MERGEABLE_OK,
+    NEEDS_VERIFY, OPT_OUT_LABELS, PART_OF_HINT, PART_OF_RE, STATUS_EVENT_KEY_RE, STATUS_REPO, URL_RE, VERIFY_CHECK,
+    ac_boxes, ac_own_ticks, ac_recoverable, ac_tick_body, classify_comment, grok_allowlist, grok_busy, grok_held,
+    grok_link, grok_owners, head_check_reasons, iso, num, parse_ac, parse_deps, rework_prs, run_state, scrub,
+    status_target, utc, vws_pr_key, wake_target,
+)
+# Compat: orch.X keeps naming every helper and constant that moved into rules/ (tests, .github/metrics and
+# .github/verify read them through this file). Definitions below this line win.
+globals().update(rules.exports())
+
+
 FAIL_EXIT = 4
-DEEPSEEK = "@deepseek-dev"
-DISPATCH_TEXT = (
-    "@deepseek-dev please take this issue: one small PR per the acceptance criteria above. "
-    "Small diff, no unrelated changes, no closing keywords."
-)
-# Rework (vws-deploy#373): a verify FAIL on the current head of a DeepSeek PR is re-dispatched on the
-# same branch with the verdict quoted. The marker keys it to the head, so one head is reworked once.
-REWORK_TEXT = (
-    "@deepseek-dev please rework this PR: push new commits to this branch (no force-push, no new PR) "
-    "that fix every blocking point of the verify verdict below. Small diff, no unrelated changes, no closing keywords."
-)
-VERIFY_LOGIN = "vws-verify[bot]"
-# CI-failure marker (vws-deploy#412): a PR comment that #420's ci-fail workflow posts with the caller's
-# GITHUB_TOKEN. Line 1 is the marker and a fenced json block is the record; the comment counts only as
-# #420 parse_comment accepts it (.github/ci-fail/ci_fail.py, ported below). Only github-actions[bot]
-# is trusted, and n/wake are recomputed from the comments (the marker can only tighten them).
-CI_FAIL_LOGIN = "github-actions[bot]"
-# Exactly #420 JSON_BLOCK_RE and marker_line's field checks (MARKER_RE is trusted_read.CI_FAIL_RE).
-CI_FAIL_JSON_RE = re.compile(r"^```json\n(.*?)^```$", re.M | re.S)
-CI_FAIL_SHA_RE = re.compile(r"[0-9a-f]{40}")
-CI_FAIL_REPO_RE = re.compile(r"vws-[a-z0-9-]+")
-CI_FAIL_AGENT_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,38}")
-CI_FAIL_OWNERS = {"deepseek", "grok", "none"}
-CI_FAIL_CAP = 3  # CI reworks per head chain; the 4th failing head waits for a human
-RESET_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}  # who may reset the CI cap
-# A verify verdict comment or review body: "# vws-iam#127 @ <40-hex head>" then "Result: FAIL ...".
-VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s*\n+Result:\s*(PASS|FAIL)\b")
-# Conflict-only verdicts are a rebuild for eggbot, not a DeepSeek rework.
-CONFLICT_RE = re.compile(r"(?i)conflicts? with main|merge conflict|needs? (?:a )?rebase|rebase onto main")
-MANAGED_LABELS = ("blocked", "in-review")
+
+
 # These checks fail by design until vws-verify approves, so they never make a PR "CI failing".
 # "gate / verify-gate": repo-guard.yml calls the gate next to its bare shim (vws-deploy#402).
 VERIFY_CHECKS = {"verify-gate", "gate / verify-gate", "vws-verify"}
 CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-NEEDS_VERIFY = "needs-verify"  # set by verify-queue.yml while every non-verify check is green (vws-deploy#397)
-# Rule D serial set (vws-deploy#397): PRs touching these merge one at a time across all repos, oldest approval first.
-SERIAL_MERGE_RE = re.compile(r"^(?:\.github/orchestrate/orchestrate\.py|\.github/workflows/repo-guard[^/]*\.ya?ml|AGENTS\.md)$")
-NEEDS_REBUILD = "needs-rebuild"
-GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
-# vws-deploy#506: ORCHESTRATE_GROK_OWNERS entries, repo=bot; the bot is what a grok-wake's Owner line names.
-GROK_OWNER_RE = re.compile(r"(vws-[a-z0-9-]+)=([a-z0-9][a-z0-9-]{0,38})")
 STATUS_UPDATED_RE = re.compile(r"^_Updated [^\n]*_$", re.M)  # the one volatile line; ignored when comparing
-STATUS_EVENT_KEY_RE = re.compile(r"key `(sha256:[0-9a-f]{64})`")
 STATUS_EVENTS_KEEP = 20
-# Rule D (vws-deploy#346).
-VERIFY_CHECK = "vws-verify"
-VERIFY_APP_ID = 5313004
-ACTIONS_APP_ID = 15368  # GitHub Actions
-CHECK_OK = {"success", "neutral", "skipped"}
-# blocked: a human or the dependency rule holds the PR (vws-deploy#393); it never merges while labeled.
-OPT_OUT_LABELS = ("do-not-merge", "hold", "blocked")
-# repo-guard / verify-gate must pass on the head by name, even when main's protection does not list it.
-GATE_CHECK = "verify-gate"
-# GitHub's own verdict (REST mergeable_state = GraphQL mergeStateStatus) must be clean: it already counts
-# main's protection and rulesets, which the PAT cannot read (vws-deploy#408). Anything else never merges.
-MERGEABLE_OK = {"clean"}
-# Rule D reads the same forms pr-hygiene accepts: `Part of #N` and `Part of vws-x#N` at the start
-# of a line. The owner/repo form `Part of popododo0720/vws-x#N` is rejected by both (vws-deploy#477).
-PART_OF_RE = re.compile(r"(?im)^\s*Part of\s+((?:vws-[a-z0-9-]+)?#[0-9]+)")
-# The owner/repo form pr-hygiene rejects. Rule D names it in the reason instead of the generic
-# no_part_of, so a PR skipped for it says what to change (#477).
-OWNER_PART_OF_RE = re.compile(rf"(?im)^\s*Part of\s+{OWNER}/vws-[a-z0-9-]+#[0-9]+")
-# vws-deploy#504: what to write instead, in the part_of_owner_repo merge note and lead wake. pr-hygiene
-# (guard-agents.sh pr-body) names the same allowed forms and `guard-agents.sh pr-normalize` rewrites them.
-PART_OF_HINT = ("write `Part of #N` (same repo) or `Part of vws-<repo>#N` at the start of a line; the owner/repo "
-                "form `Part of <owner>/<repo>#N` is not read (https://github.com/popododo0720/vws-deploy/issues/504)")
-CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
-# The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
-AGENT_RE = re.compile(r"^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$", re.M)
 LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
 MERGE_PAYLOAD_KEYS = {"merge_method", "sha", "commit_title"}
-# A [deepseek-dev] Failed report is a provider (infra) failure, not a task failure, when its body has
-# the last dsh line of the "Last output" block, `dsh: SERVER: 503: {...}` or `dsh: RATE_LIMIT: 429: ...`
-# (the real reports on vws-proto#51, comments 6310291529 and 6311725351; the poller's format per the VM
-# owner), or the first-line form `Failed for <url>: provider 503 (SERVER)`. A plain "dsh exited with
-# code 1" without that line is a task failure. Bare HTTP statuses are never matched: a task's own test
-# output can print them.
-INFRA_ERROR_RE = re.compile(
-    r"^dsh: (?:RATE_LIMIT|SERVER): \d{3}:"
-    r"|^\[deepseek-dev\] Failed for \S+: provider \d{3} \((?:RATE_LIMIT|SERVER)\)",
-    re.M)
-INFRA_MAX_RETRIES = 3
-TOKEN_RE = re.compile(r"(gh[opsu]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|Bearer\s+\S+)")
-
-DEFAULTS = {
-    "ORCHESTRATE_MODE": "dry-run",
-    "ORCHESTRATE_SCOPE": "",
-    "ORCHESTRATE_MAX_WRITES": "5",
-    "ORCHESTRATE_RATE_FLOOR": "1000",
-    "ORCHESTRATE_EXTRA_REPOS": "vws-conformance",
-    "ORCHESTRATE_COMMENT_WINDOW_DAYS": "14",
-    "DEEPSEEK_TIMEOUT_HOURS": "3",
-    "DEEPSEEK_MAX_FAILURES": "2",
-    "ORCHESTRATE_DEEPSEEK_CAP": "2",
-    "ORCHESTRATE_GROK_CAP": "1",
-    "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
-    "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
-    # vws-deploy#506: the Grok dev bot each repo's grok-wakes name (repo=bot); an unlisted repo names
-    # the bot called after the repo (vws-iam -> vws-iam). An issue or PR `Agent:` line wins over both.
-    # vws-deploy#511: the console-api Grok dev bot is named vws-api.
-    "ORCHESTRATE_GROK_OWNERS": ",".join([f"{r}=vws-platform" for r in
-                                         ("vws-deploy", "vws-lib", "vws-proto", "vws-test", "vws-conformance")]
-                                        + ["vws-console-api=vws-api"]),
-    # vws-deploy#411: GitHub logins the woken Grok bots comment as; only their comments (or a current
-    # assignee's) claim a woken issue. The Grok bots use the owner's gh login.
-    "ORCHESTRATE_GROK_LOGINS": OWNER,
-    # GitHub logins whose [deepseek-dev] Done/Failed comments count: the poller's account (the VM PAT user).
-    "ORCHESTRATE_DEEPSEEK_LOGINS": "popododo0720",
-    # vws-deploy#433/#434: the login whose verify verdict comments and reviews count (besides an OWNER
-    # comment), and optionally its numeric user id, so a re-registered login does not match.
-    "ORCHESTRATE_VERIFY_LOGIN": VERIFY_LOGIN,
-    "ORCHESTRATE_VERIFY_USER_ID": "",
-    "ORCHESTRATE_INFRA_RETRY_DELAY_MIN": "5",
-    "VERIFY_WAKE_THRESHOLD": "3",
-    "VERIFY_WAKE_MAX_WAIT_MIN": "30",
-    "ORCHESTRATE_STATUS_ISSUE": "415",
-    "ORCHESTRATE_WAKE_THREAD": "",
-    "ORCHESTRATE_FAILURE_ALERT": "apply",
-    "ORCHESTRATE_FAILURE_THRESHOLD": "3",
-    "ORCHESTRATE_FAILURE_MIN_GAP_HOURS": "1",
-    "ORCHESTRATE_LOG_MAX_BYTES": str(5 * 1024 * 1024),
-    "ORCHESTRATE_LOG_KEEP": "5",
-    "ORCHESTRATE_DISPATCH": "on",
-    # vws-deploy#521: off = full wake-thread silence (no wake_verify, lead_wake, grok_wake, grok_rework,
-    # rebuild_wake) and no metrics-alert comment. STOP sets it off, RESUME sets it on. DISPATCH=off implies it.
-    "ORCHESTRATE_WAKES": "on",
-    # vws-deploy#487: needs-verify and verify-approved follow each PR head (decide_verify_labels). off = no label writes.
-    "ORCHESTRATE_VERIFY_LABELS": "on",
-    "ORCHESTRATE_MERGE": "dry-run",
-    "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS": "2",
-    "ORCHESTRATE_MERGE_MAX_ATTEMPTS": "2",
-    # vws-deploy#486: tick a merged PR's AC: boxes on its Part of issue (off, dry-run = plan only, apply).
-    "ORCHESTRATE_AC_TICK": "apply",
-    "ORCHESTRATE_BOARD": "dry-run",
-    "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
-    "ORCHESTRATE_BOARD_EVERY": "6",
-    "ORCHESTRATE_BOARD_WRITES": "50",
-    # Classic PAT with only the `project` scope, used for board_sync GraphQL calls and nothing else.
-    "ORCHESTRATE_BOARD_TOKEN_FILE": "/root/.config/vws/board-sync-token",
-}
-
-
-# ---------------------------------------------------------------- config, paths and time
-
-def utc(ts):
-    """Parse a GitHub timestamp (2026-10-21T05:54:25Z) to epoch seconds."""
-    return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
-
-
-def iso(epoch):
-    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def read_env_file(path):
@@ -349,21 +241,6 @@ def suppress_wakes(actions, cfg, notes):
     return [a for a in actions if a["type"] not in WAKE_TYPES]
 
 
-def status_target(cfg):
-    """The status issue in vws-deploy: the orchestrator edits its body; it never comments there."""
-    return f"{STATUS_REPO}#{int(cfg['ORCHESTRATE_STATUS_ISSUE'])}"
-
-
-def wake_target(cfg):
-    """The verify-wake thread in vws-deploy ('' = unset: Rule A plans no wake). Never the status issue."""
-    n = cfg.get("ORCHESTRATE_WAKE_THREAD", "")
-    return f"{STATUS_REPO}#{int(n)}" if n else ""
-
-
-def num(cfg, key):
-    return float(cfg[key])
-
-
 def ensure_dir(path):
     os.makedirs(path, mode=0o700, exist_ok=True)
 
@@ -383,12 +260,6 @@ def read_json(path, default):
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return default
-
-
-# ---------------------------------------------------------------- structured log
-
-def scrub(text):
-    return TOKEN_RE.sub("[redacted]", str(text))[:300]
 
 
 class Log:
@@ -657,91 +528,6 @@ class Gh:
             write_json(self.cache_path, self.used)
 
 
-# ---------------------------------------------------------------- parsing
-
-DEP_RE = re.compile(r"(?im)^\s*depends on\s+(.+)$")
-REF_RE = re.compile(r"^(?:(vws-[a-z0-9-]+))?#([0-9]+)$")
-REPORT_RE = re.compile(r"^\[deepseek-dev\]\s+(Done|Failed)\s+for\s+(\S+?)(?::\s+(.*))?$")
-PR_RE = re.compile(r"PR:\s*(https://github\.com/[\w.-]+/[\w.-]+/pull/[0-9]+)")
-URL_RE = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/(?:issues|pull)/([0-9]+)")
-
-
-def parse_deps(body, repo):
-    """'Depends on #N' or 'Depends on vws-<repo>#N', comma separated. Returns (keys, bad tokens)."""
-    deps, bad = [], []
-    for m in DEP_RE.finditer(body or ""):
-        for tok in m.group(1).split(","):
-            tok = tok.strip().rstrip(".")
-            if not tok:
-                continue
-            r = REF_RE.match(tok)
-            if not r:
-                bad.append(tok)
-                continue
-            key = f"{r.group(1) or repo}#{r.group(2)}"
-            if key not in deps:
-                deps.append(key)
-    return deps, bad
-
-
-def ci_fail_marker_line(rec):
-    """#420 marker_line: line 1 for a record; raises on an invalid field (KeyError/TypeError/ValueError)."""
-    if not (CI_FAIL_SHA_RE.fullmatch(rec["head_sha"]) and CI_FAIL_REPO_RE.fullmatch(rec["repo"])
-            and rec["owner"] in CI_FAIL_OWNERS and (rec["agent"] == "" or CI_FAIL_AGENT_RE.fullmatch(rec["agent"]))):
-        raise ValueError("record has an invalid marker field")
-    return (f"<!-- vws-ci-fail sha={rec['head_sha']} v={int(rec['v'])} repo={rec['repo']} pr={int(rec['pr'])} "
-            f"owner={rec['owner']} agent={rec['agent'] or '-'} n={int(rec['n'])} "
-            f"wake={'true' if rec['wake'] else 'false'} -->")
-
-
-def ci_fail_record(body):
-    """#420 parse_comment: the JSON record of a CI-failure comment, or None when line 1 and the record
-    (the last json block) disagree or are absent."""
-    body = (body or "").replace("\r\n", "\n")
-    m = tr.ci_fail_match(body.split("\n", 1)[0])
-    blocks = CI_FAIL_JSON_RE.findall(body)
-    if not m or not blocks:
-        return None
-    try:
-        rec = json.loads(blocks[-1])
-    except ValueError:
-        return None
-    try:
-        if not isinstance(rec, dict) or ci_fail_marker_line(rec) != m.group(0):
-            return None
-    except (KeyError, TypeError, ValueError):
-        return None
-    return rec
-
-
-def classify_comment(body):
-    """Return (kind, data) for comments the orchestrator cares about, else None."""
-    rec = ci_fail_record(body)
-    if rec is not None:
-        m = tr.ci_fail_match((body or "").replace("\r\n", "\n").split("\n", 1)[0])
-        return "ci_fail", {"sha": m.group(1), "v": int(m.group(2)), "repo": m.group(3), "pr": int(m.group(4)),
-                           "owner": m.group(5), "agent": m.group(6), "n": int(m.group(7)),
-                           "wake": m.group(8) == "true", "record": rec}
-    text = (body or "").lstrip()
-    first = text.split("\n", 1)[0].strip()
-    if text.startswith(DEEPSEEK):
-        return "dispatch", {}
-    m = REPORT_RE.match(first)
-    if m:
-        pr = PR_RE.search(text)
-        return "report", {"result": m.group(1).lower(), "for": m.group(2), "reason": m.group(3) or "",
-                          "pr": pr.group(1) if pr else ""}
-    if text.startswith("/orchestrate reset-failures"):
-        return "reset", {}
-    m = VERDICT_RE.match(text)
-    if m:
-        return "verdict", {"target": f"{m.group(1)}#{m.group(2)}", "sha": m.group(3), "result": m.group(4).lower()}
-    kind = tr.marker_kind(text)
-    if kind:
-        return "marker", {"marker": kind}
-    return None
-
-
 def is_verifier(login, user_id, cfg):
     """vws-deploy#433: the configured verify login, and its user id when ORCHESTRATE_VERIFY_USER_ID pins one."""
     want_login = cfg.get("ORCHESTRATE_VERIFY_LOGIN", DEFAULTS["ORCHESTRATE_VERIFY_LOGIN"])
@@ -777,14 +563,6 @@ def pr_key(url):
     return f"{m.group(2)}#{m.group(3)}" if m and m.group(1) == OWNER else ""
 
 
-def vws_pr_key(url):
-    """'repo#n' for a PR URL in popododo0720/vws-*, else '' (the gh allowlist refuses other repos)."""
-    m = URL_RE.match(url or "")
-    if not m or m.group(1) != OWNER or not re.fullmatch(r"vws-[a-z0-9-]+", m.group(2)):
-        return ""
-    return f"{m.group(2)}#{m.group(3)}"
-
-
 def load_exclusions(path):
     out = set()
     try:
@@ -809,255 +587,10 @@ def load_repos(tsv, extra):
     return names
 
 
-# ---------------------------------------------------------------- decide (pure)
-
-def wake_body(pending, key, run_id, threshold, max_wait, repos):
-    lines = [WAKE_MARKER,
-             f"vws-orchestrate: {len(pending)} PRs wait for verify (wake at {threshold} or after {max_wait} min).", ""]
-    lines += [f"- {p['repo']}#{p['number']}@{p['head_sha']} {p['url']} (CI pre-check: green, waited {p['waited'] // 60}m)"
-              for p in pending]
-    lines += ["", f"Repos scanned: {', '.join(repos)}", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
-    return "\n".join(lines)
-
-
 def status_wakes(comments):
     """The orchestrator's own verify-wake comments on the verify-wake thread: [{"key", "at"}]. Anyone can
     comment there; a copied wake from another login is not a wake (vws-deploy#439 class 1)."""
     return tr.wake_comments(comments, utc)
-
-
-def pending_key(prs):
-    lines = sorted(f"{p['repo']}#{p['number']}@{p['head_sha']}" for p in prs)
-    return "sha256:" + hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-
-def infra_error(body):
-    """The provider error a Failed report shows, as one redacted line ('' = not an infra failure)."""
-    text = body or ""
-    if not INFRA_ERROR_RE.search(text):
-        return ""
-    for line in reversed(text.splitlines()):
-        if INFRA_ERROR_RE.search(line):
-            return scrub(line.strip())[:200]
-    return ""
-
-
-def dispatch_history(item, now, cfg, exclusions):
-    """Per dispatch on one item: outcome in in_flight | done | review | failed | infra | excluded.
-    infra: a Failed report that shows a provider error; it never counts toward the grok swap."""
-    timeout = num(cfg, "DEEPSEEK_TIMEOUT_HOURS") * 3600
-    comments = sorted(item.get("comments", []), key=lambda c: (c["created_at"], c["id"]))
-    dispatches, reports = [], {}
-    for c in comments:
-        kind = classify_comment(c["body"])
-        if not kind:
-            continue
-        if kind[0] == "dispatch":
-            dispatches.append(c)
-        elif kind[0] == "report":
-            reports.setdefault(kind[1]["for"], (c, kind[1]))
-    out = []
-    for d in dispatches:
-        rep = reports.get(d["url"])
-        h = {"url": d["url"], "at": utc(d["created_at"]), "report": rep[0]["url"] if rep else ""}
-        if rep is None:
-            h["outcome"] = "in_flight" if now - h["at"] < timeout else "failed"
-            h["kind"] = "timeout"
-        elif rep[1]["result"] == "failed":
-            h["outcome"], h["kind"] = "failed", "failed_report"
-            err = infra_error(rep[0]["body"])
-            if err and not (h["url"] in exclusions or h["report"] in exclusions):
-                # An exclusions.tsv entry still wins: that attempt is ignored, not retried with a delay.
-                h["outcome"], h["kind"], h["error"] = "infra", "provider_error", err
-                h["report_at"] = utc(rep[0]["created_at"])
-        elif rep[1]["pr"] and not vws_pr_key(rep[1]["pr"]):
-            # The PR cannot be read or checked (outside popododo0720/vws-*): one failed attempt, so the
-            # task is retried or moved to grok instead of waiting for review forever.
-            h["outcome"], h["kind"], h["pr"] = "failed", "pr_outside_vws", rep[1]["pr"]
-        else:
-            pr = item.get("report_prs", {}).get(rep[1]["pr"], {})
-            if pr.get("merged"):
-                h["outcome"], h["kind"] = "done", "merged"
-            elif pr.get("state") == "closed":
-                h["outcome"], h["kind"] = "failed", "closed_unmerged"
-            elif rep[1]["pr"]:
-                h["outcome"], h["kind"], h["pr"] = "review", "pr_open", rep[1]["pr"]
-            else:
-                h["outcome"], h["kind"] = "done", "no_pr"
-        if h["outcome"] == "failed" and (h["url"] in exclusions or h["report"] in exclusions):
-            h["outcome"] = "excluded"
-        out.append(h)
-    return out
-
-
-def reset_time(item):
-    """Latest human reset: a /orchestrate reset-failures comment, or deepseek re-added after grok."""
-    t = 0.0
-    for c in item.get("comments", []):
-        k = classify_comment(c["body"])
-        if k and k[0] == "reset":
-            t = max(t, utc(c["created_at"]))
-    seen_grok = False
-    for e in sorted(item.get("events", []), key=lambda e: e["created_at"]):
-        label = (e.get("label") or {}).get("name")
-        if label == "grok" and e.get("event") in ("labeled", "unlabeled"):
-            seen_grok = True
-        if label == "deepseek" and e.get("event") == "labeled" and seen_grok:
-            t = max(t, utc(e["created_at"]))
-    return t
-
-
-def ready_time(item):
-    t = None
-    for e in item.get("events", []):
-        if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == "ready":
-            t = max(t or 0, utc(e["created_at"]))
-    return t if t is not None else utc(item.get("created_at", "1970-01-01T00:00:00Z"))
-
-
-def dep_state(key, snapshot, repos):
-    repo = key.split("#")[0]
-    if repo not in repos:
-        return "outside"
-    d = snapshot["items"].get(key) or snapshot.get("deps", {}).get(key)
-    if not d or d.get("unreadable"):
-        return "unreadable"
-    if d.get("merged") or (d.get("state") == "closed" and d.get("state_reason") == "completed"):
-        return "met"
-    return "open"
-
-
-def find_cycles(snapshot):
-    """Nodes on a dependency cycle. Iterative three-colour DFS: each node and edge is visited once."""
-    graph = {k: parse_deps(v.get("body"), v["repo"])[0] for k, v in snapshot["items"].items()}
-    colour, cyclic = {}, set()
-    for root in sorted(graph):
-        if colour.get(root):
-            continue
-        stack, path = [(root, iter(graph.get(root, [])))], [root]
-        colour[root] = 1
-        while stack:
-            node, edges = stack[-1]
-            nxt = next(edges, None)
-            if nxt is None:
-                colour[node] = 2
-                stack.pop()
-                path.pop()
-            elif colour.get(nxt) == 1:
-                cyclic.update(path[path.index(nxt):])
-            elif not colour.get(nxt):
-                colour[nxt] = 1
-                stack.append((nxt, iter(graph.get(nxt, []))))
-                path.append(nxt)
-    return cyclic
-
-
-# ---------------------------------------------------------------- rule D: serialized merges (pure)
-
-def run_order(r):
-    # A queued run has no started_at yet; it counts as the newest so it holds the gate.
-    return (r.get("started_at") or "9999", r.get("id", 0))
-
-
-def check_key(r):
-    """(name, app id, source). An Actions re-run gets a new check suite, so Actions runs are keyed by their
-    workflow (path or id, plus event); a suite not mapped to a workflow stays alone (an old failure there keeps blocking).
-    Other apps keep (name, app id)."""
-    if r.get("app_id") != ACTIONS_APP_ID:
-        return (r.get("name"), r.get("app_id"), "")
-    if r.get("workflow"):
-        return (r.get("name"), r.get("app_id"), f"wf:{r['workflow']}")
-    return (r.get("name"), r.get("app_id"), f"suite:{r.get('suite_id')}")
-
-
-def latest_runs(check_runs):
-    """Newest check run (started_at, then id) per check_key."""
-    out = {}
-    for r in check_runs or []:
-        k = check_key(r)
-        if k not in out or run_order(r) > run_order(out[k]):
-            out[k] = r
-    return out
-
-
-def run_state(r):
-    if r.get("status") != "completed":
-        return "pending"
-    return "ok" if r.get("conclusion") in CHECK_OK else "failed"
-
-
-def head_check_reasons(info, required):
-    """Why the PR head's checks do not allow a merge ([] = they do). Pure.
-    info: {"head_sha", "checks": [{"id", "name", "app_id", "suite_id", "status", "conclusion", "head_sha"}],
-    "statuses": [{"context", "state"}], "checks_truncated"}; required: [{"context", "app_id"}] or None."""
-    reasons = []
-    runs = latest_runs([r for r in info.get("checks", []) if r.get("head_sha") == info.get("head_sha")])
-    vs = [r for (name, app, _s), r in runs.items() if name == VERIFY_CHECK and app == VERIFY_APP_ID]
-    v = max(vs, key=run_order) if vs else None
-    if v is None:
-        reasons.append("verify_check_missing")
-    elif v.get("status") != "completed" or v.get("conclusion") != "success":
-        reasons.append(f"verify_check_{v.get('conclusion') or v.get('status')}")
-    # Every verify-gate run from GitHub Actions on the head must be success; a success elsewhere cannot hide a failure.
-    gates = [r for (name, app, _s), r in runs.items() if name == GATE_CHECK and app == ACTIONS_APP_ID]
-    bad_gates = [r for r in gates if r.get("status") != "completed" or r.get("conclusion") != "success"]
-    if not gates:
-        reasons.append("verify_gate_missing")
-    elif bad_gates:
-        g = max(bad_gates, key=run_order)
-        reasons.append("verify_gate_pending" if g.get("status") != "completed" else f"verify_gate_{g.get('conclusion')}")
-    if info.get("checks_truncated"):
-        reasons.append("checks_truncated")
-    if info.get("statuses_truncated"):
-        reasons.append("statuses_truncated")
-    if info.get("statuses") and info.get("status_state") not in (None, "success"):
-        reasons.append(f"combined_status_{info.get('status_state')}")
-    statuses = {}
-    for st in info.get("statuses", []):
-        statuses.setdefault(st.get("context"), st)  # the combined status lists the newest per context
-    if required is None:
-        reasons.append("required_checks_unreadable")
-    else:
-        for req in sorted(required, key=lambda q: (q["context"], q.get("app_id") or 0)):
-            hits = [(app, r) for (name, app, _s), r in runs.items() if name == req["context"]
-                    and (req.get("app_id") in (None, -1) or app == req["app_id"])]
-            match = [r for _app, r in hits]
-            if match:
-                # Every distinct check with this name must pass; a success elsewhere cannot hide a failure.
-                # A skip passes only next to a success of the same name and app (vws-deploy#505): a workflow on
-                # both pull_request and pull_request_target skips its pull_request-only job on the other event.
-                # The app is the run's own, so a requirement bound to no app cannot borrow another app's success.
-                ok = {app for app, x in hits if x.get("status") == "completed" and x.get("conclusion") == "success"}
-                bad = [x for app, x in hits if x.get("status") != "completed"
-                       or x.get("conclusion") not in (("success", "skipped") if app in ok else ("success",))]
-                r = max(bad, key=run_order) if bad else None
-                if r is None:
-                    pass
-                elif r.get("status") != "completed":
-                    reasons.append(f"required_pending:{req['context']}")
-                else:
-                    reasons.append(f"required_{r.get('conclusion')}:{req['context']}")
-            elif req["context"] in statuses and req.get("app_id") in (None, -1):
-                # A commit status has no app, so it can only satisfy a requirement not bound to one.
-                state = statuses[req["context"]].get("state")
-                if state != "success":
-                    reasons.append(f"required_{state}:{req['context']}")
-            else:
-                reasons.append(f"required_missing:{req['context']}")
-    # AGENTS.md rule 5: every check on the head is success (skipped and neutral helpers allowed).
-    for (name, _app, _s), r in sorted(runs.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0, kv[0][2])):
-        st = run_state(r)
-        if st != "ok":
-            reasons.append(f"check_{st}:{name}")
-    for ctx, st in sorted(statuses.items(), key=lambda kv: str(kv[0])):
-        if st.get("state") != "success":
-            reasons.append(f"status_{st.get('state')}:{ctx}")
-    seen, out = set(), []
-    for r in reasons:
-        if r not in seen:
-            seen.add(r)
-            out.append(r)
-    return out
 
 
 def main_ci_verdict(runs):
@@ -1075,116 +608,7 @@ def main_ci_verdict(runs):
     return "pending" if "pending" in states else "green"
 
 
-# vws-deploy#486: the acceptance-criteria boxes a PR covers, one `AC: <n>` line per box of its `Part of`
-# issue (n from 1), or one `AC: none - <reason>`. Same syntax as pr-body in scripts/guard-agents.sh;
-# tests/orchestrate/test_ac_parity.py runs one set of vectors through both.
-AC_LINE_RE = re.compile(r"^[ \t]*AC:(.*)$", re.M)
-AC_BOX_RE = re.compile(r"[ \t]*([1-9][0-9]*)[ \t]*")
-AC_NONE_RE = re.compile(r"[ \t]*none[ \t]+-[ \t]+([^ \t\n\r\f\v].*?)[ \t]*")
-
-
-def visible_text(text):
-    """The text a reader sees: the Python port of guard-agents.sh visible_text, the one normalizer for PR,
-    comment and commit text (vws-deploy#439 class 2; tests/fixtures/guard-text/corpus.json pins both).
-    A CRLF line end is read as LF; HTML comments (also across lines) and fenced code blocks (``` or ~~~,
-    indented by spaces and tabs only, closed only by a run of the same character at least as long) are
-    removed; an unclosed comment or fence runs to the end."""
-    out, incom, fence, fch, flen = [], False, False, "", 0
-    for line in (text or "").split("\n"):
-        if line.endswith("\r"):
-            line = line[:-1]
-        if not incom and not fence:
-            m = re.match(r"[ \t]*(`{3,}|~{3,})", line)
-            if m:
-                fence, fch, flen = True, m.group(1)[0], len(m.group(1))
-                continue
-        if fence:
-            m = re.fullmatch(r"[ \t]*(`{3,}|~{3,})[ \t]*", line)
-            if m and m.group(1)[0] == fch and len(m.group(1)) >= flen:
-                fence = False
-            continue
-        seen = ""
-        while True:
-            if incom:
-                i = line.find("-->")
-                if i < 0:
-                    break
-                line, incom = line[i + 3:], False
-            else:
-                i = line.find("<!--")
-                if i < 0:
-                    seen += line
-                    break
-                seen, line, incom = seen + line[:i], line[i + 4:], True
-        out.append(seen)
-    return "\n".join(out)
-
-
-def parse_ac(body):
-    """The `AC:` lines of a PR body's visible text: {"boxes": sorted box numbers, "none": the reason of
-    `AC: none - <reason>`, "error": why the lines are invalid, "" when valid}."""
-    boxes, none = set(), ""
-    lines = [m.group(0).strip() for m in AC_LINE_RE.finditer(visible_text((body or "").replace("\r", "")))]
-    if not lines:
-        return {"boxes": [], "none": "", "error": "no 'AC: <n>' or 'AC: none - <reason>' line"}
-    for line in lines:
-        rest = line[3:]
-        b, n = AC_BOX_RE.fullmatch(rest), AC_NONE_RE.fullmatch(rest)
-        if b:
-            boxes.add(int(b.group(1)))
-        elif n:
-            none = n.group(1)
-        else:
-            return {"boxes": [], "none": "", "error": f"'{line}' is not 'AC: <n>' (n from 1) or 'AC: none - <reason>'"}
-    if boxes and none:
-        return {"boxes": [], "none": "", "error": "'AC: none - <reason>' cannot be combined with 'AC: <n>' lines"}
-    return {"boxes": sorted(boxes), "none": none, "error": ""}
-
-
-AC_HEADING_RE = re.compile(r"^#{1,6}[ \t]+Acceptance criteria[ \t]*$", re.I)
-AC_ANY_HEADING_RE = re.compile(r"^#{1,6}[ \t]")
-AC_ISSUE_BOX_RE = re.compile(r"^([ \t]*[-*] \[)([ xX])(\] )(.*)$")  # the box lines .github/ac/ac-lint.sh lists
 AC_EVIDENCE_RE = re.compile(rf" \(evidence: https://github\.com/{OWNER}/vws-[a-z0-9-]+/pull/[0-9]+ merged [0-9a-f]{{40}}\)")
-AC_TICK_LABELS = ("ac-partial", "ac-pending")
-
-
-def ac_boxes(body):
-    """The boxes under the issue's `## Acceptance criteria` heading, up to the next heading:
-    [{"n": 1-based index, "checked", "text", "line": index into body.split("\n")}]."""
-    out, inside = [], False
-    for i, raw in enumerate((body or "").split("\n")):
-        line = raw[:-1] if raw.endswith("\r") else raw
-        if AC_HEADING_RE.match(line):
-            inside = True
-            continue
-        if inside and AC_ANY_HEADING_RE.match(line):
-            break
-        m = AC_ISSUE_BOX_RE.match(line) if inside else None
-        if m:
-            out.append({"n": len(out) + 1, "checked": m.group(2) != " ", "text": m.group(4), "line": i})
-    return out
-
-
-def ac_tick_body(body, boxes, pr_url, sha):
-    """Pure: tick the listed boxes of an issue body, each with an evidence suffix ac-lint.sh accepts.
-    {"body", "ticked": boxes newly ticked, "open": boxes still open after, "error": "" | ac_no_section |
-    ac_index_invalid}. Any invalid index means no edit at all."""
-    found = ac_boxes(body)
-    if not found:
-        return {"body": body, "ticked": [], "open": [], "error": "ac_no_section"}
-    if any(n > len(found) for n in boxes):
-        return {"body": body, "ticked": [], "open": [], "error": "ac_index_invalid"}
-    lines = (body or "").split("\n")
-    ticked = []
-    for b in found:
-        if b["n"] in boxes and not b["checked"]:
-            raw = lines[b["line"]]
-            cr = "\r" if raw.endswith("\r") else ""
-            m = AC_ISSUE_BOX_RE.match(raw[:-1] if cr else raw)
-            lines[b["line"]] = (f"{m.group(1)}x{m.group(3)}{m.group(4).rstrip()} (evidence: {pr_url} merged {sha}){cr}")
-            b["checked"] = True
-            ticked.append(b["n"])
-    return {"body": "\n".join(lines), "ticked": ticked, "open": [b for b in found if not b["checked"]], "error": ""}
 
 
 def ac_tick_only(old, new):
@@ -1212,24 +636,6 @@ def ac_tick_only(old, new):
     return True
 
 
-def ac_own_ticks(body, boxes, pr_url, sha):
-    """Pure: the listed boxes that are ticked with this PR's own evidence suffix (ac_tick_body's), so a rerun
-    after a tick that wrote the body but not the marker still reports them as ticked by this PR."""
-    lines, suffix = (body or "").split("\n"), f"(evidence: {pr_url} merged {sha})"
-    return [b["n"] for b in ac_boxes(body) if b["n"] in boxes and b["checked"]
-            and lines[b["line"]].rstrip("\r").endswith(suffix)]
-
-
-def ac_recoverable(state, state_reason, body, boxes, pr_url, sha):
-    """Pure (vws-deploy#517 class 3, the #495 finding): True when a closed issue is the end state of this PR's
-    own tick whose marker comment never landed: closed as completed, every box ticked, and at least one of the
-    PR's boxes carries its evidence. The rerun then posts only the missing label removals and the marker. Any
-    other closed issue (a human close, not planned, an open box) is left alone."""
-    found = ac_boxes(body)
-    return (state == "closed" and state_reason == "completed" and bool(found) and all(b["checked"] for b in found)
-            and bool(ac_own_ticks(body, boxes, pr_url, sha)))
-
-
 def ac_tick_comment(a, ticked, still_open, close):
     lines = [f"AC tick for {a['pr_url']} (merged {a['merge_sha']}): boxes {', '.join(map(str, a['boxes']))} "
              f"{'ticked' if ticked else 'were already ticked'}."]
@@ -1242,1153 +648,77 @@ def ac_tick_comment(a, ticked, still_open, close):
     return "\n".join(lines)
 
 
-def decide_ac_ticks(snapshot, new_state, now, cfg, notes):
-    """Pure: one ac_tick action per PR merged since the rule started whose `Part of` issue has the boxes its
-    `AC: <n>` lines name (vws-deploy#486), when vws-verify approved the merged head and the body was not edited
-    since (ac_unverified / ac_body_edited otherwise). Oldest merge first. new_state keeps the start time and the PRs
-    already handled (marker seen or applied), pruned after the comment window."""
-    if cfg.get("ORCHESTRATE_AC_TICK", "apply") == "off":
-        return []
-    if "ac_tick_since" not in new_state:
-        new_state["ac_tick_since"] = iso(now)  # no back-fill: only merges after the first tick count
-        notes.append({"kind": "ac_tick_start", "since": new_state["ac_tick_since"]})
-        return []
-    since = utc(new_state["ac_tick_since"])
-    floor = now - int(num(cfg, "ORCHESTRATE_COMMENT_WINDOW_DAYS")) * 86400
-    done = new_state.setdefault("ac_ticked", {})
-    for k in [k for k, at in done.items() if utc(at) < floor]:
-        del done[k]
-    actions = []
-    for m in sorted(snapshot.get("ac_merged", []), key=lambda m: (m["merged_at"], m["pr"])):
-        at = utc(m["merged_at"])
-        if m["pr"] in done or at < since or at < floor:
+# ---------------------------------------------------------------- decide: the thin rule dispatcher (vws-deploy#501)
+# Each rule is a module in rules/ with a pure decide(snapshot, state, cfg, now) -> Decision (rules/common.py
+# decision). rules/__init__.py REGISTRY fixes the order; docs/factory-orchestrator.md has the recipe.
+
+
+def action_order(registry):
+    """The registry with each rule that sets ACTIONS_AFTER moved right after the rule it names."""
+    order = [r for r in registry if not getattr(r, "ACTIONS_AFTER", "")]
+    for r in registry:
+        after = getattr(r, "ACTIONS_AFTER", "")
+        if not after:
             continue
-        note = {"target": m["issue"] or "", "pr": m["pr"]}
-        if m.get("error"):
-            notes.append(dict(note, kind="ac_read_error", error=m["error"]))
-            continue
-        if not m["issue"]:
-            notes.append(dict(note, kind="ac_no_part_of"))
-            done[m["pr"]] = m["merged_at"]
-            continue
-        ac = parse_ac(m["body"])
-        kind = "ac_unparsed" if ac["error"] else "ac_none" if not ac["boxes"] else ""
-        if not kind and not m.get("verified_at"):
-            kind = "ac_unverified"  # no trusted vws-verify approval of the merged head: no body is trusted
-        if not kind and tr.body_edited(m, utc):
-            kind = "ac_body_edited"  # edited after the verdict (or the merge): may retarget, so tick nothing
-        if not kind and m.get("marker_seen"):
-            kind = "ac_tick_done"
-        recover = not kind and m["issue_state"] != "open" and ac_recoverable(
-            m["issue_state"], m.get("issue_state_reason"), m["issue_body"], ac["boxes"], m["url"], m["merge_sha"])
-        if not kind and m["issue_state"] != "open" and not recover:
-            kind = "ac_issue_closed"
-        # The boxes come from the body vws-verify approved (vws-deploy#439 class 1); kind is '' only then.
-        p = ac_tick_body(m["issue_body"], parse_ac(tr.verified_body(m, utc))["boxes"], m["url"], m["merge_sha"]) if not kind else None
-        if p and p["error"]:
-            kind = p["error"]
-        if kind:
-            notes.append(dict(note, kind=kind, **({"reason": ac["error"] or ac["none"]} if kind in ("ac_unparsed", "ac_none") else {})))
-            done[m["pr"]] = m["merged_at"]
-            continue
-        labels, close = set(m["issue_labels"]), not p["open"]
-        repo = m["issue"].split("#")[0]
-        partial_ok = "ac-partial" in snapshot.get("labels", {}).get(repo, [])
-        if not close and not partial_ok:
-            notes.append(dict(note, kind="ac_label_missing", label="ac-partial"))
-        actions.append({"type": "ac_tick", "target": m["issue"], "pr": m["pr"], "pr_url": m["url"],
-                        "merge_sha": m["merge_sha"], "merged_at": m["merged_at"], "boxes": ac["boxes"], "close": close,
-                        "partial_label": partial_ok, **({"recover": True} if recover else {}),
-                        "labels_add": [] if close or "ac-partial" in labels or not partial_ok else ["ac-partial"],
-                        "labels_remove": [x for x in AC_TICK_LABELS if x in labels and (close or x == "ac-pending")],
-                        "reason": f"{m['pr']} merged {m['merge_sha'][:7]}: AC {', '.join(map(str, ac['boxes']))}"
-                                  + (", closed, marker missing" if recover else ", last open box" if close
-                                     else f", {len(p['open'])} left")})
-    return actions
-
-
-def agent_of(body):
-    """The body's 'Agent:' value: logged on merge, the owner a rebuild wake names (Rule R), and the owner
-    a grok-wake names (vws-deploy#506). CRLF line ends count; lines in code fences or HTML comments do not
-    (visible_text, the one normalizer). No eligibility rule depends on it."""
-    m = AGENT_RE.search(visible_text(body))
-    return m.group(1)[:64] if m else ""
-
-
-def merge_reasons(it, ctx, snapshot, repos, cfg, attempts):
-    """Every reason PR item `it` cannot be merged this tick ([] = eligible). Pure.
-    ctx is the repo's merge context from collect (main head, required checks, lock inputs)."""
-    k = f"{it['repo']}#{it['number']}"
-    labels = set(it["labels"])
-    info = it.get("merge_info")
-    reasons = []
-    if it.get("draft"):
-        reasons.append("draft")
-    if it.get("base") != "main":
-        reasons.append("base_not_main")
-    if "verify-approved" not in labels:
-        reasons.append("no_verify_approved")
-    if labels & set(OPT_OUT_LABELS) or tr.opted_out(it.get("body")) or k in (status_target(cfg), wake_target(cfg)):
-        reasons.append("opted_out")
-    if reasons:
-        return reasons  # the cheap rules decide; nothing else was read for this PR
-    if not info:
-        return ["merge_info_unreadable"]
-    if info.get("head_sha") != it.get("head_sha") or not re.fullmatch(r"[0-9a-f]{40}", info.get("head_sha") or ""):
-        reasons.append("head_moved_during_collect")
-    if info.get("state") != "open" or info.get("merged"):
-        reasons.append("not_open")
-    if info.get("draft") or info.get("base") != "main":
-        reasons.append("draft_or_base_changed")
-    if info.get("mergeable") is None:
-        reasons.append("mergeable_unknown")
-    elif info.get("mergeable") is False:
-        reasons.append("conflicts")
-    elif info.get("mergeable_state") not in MERGEABLE_OK:
-        reasons.append(f"mergeable_state:{info.get('mergeable_state')}")
-    body = it.get("body") or ""
-    if not PART_OF_RE.search(body):
-        reasons.append("part_of_owner_repo" if owner_repo_part_of(body) else "no_part_of")
-    if CLOSING_RE.search(info.get("title") or ""):
-        reasons.append("closing_keyword_in_title")
-    deps, bad = parse_deps(it.get("body"), it["repo"])
-    reasons += [f"dep_unmet:{d}" for d in deps if dep_state(d, snapshot, repos) != "met"]
-    reasons += [f"dep_unparsed:{b}" for b in bad]
-    reasons += head_check_reasons(info, ctx.get("required"))
-    if attempts.get(f"{k}@{it.get('head_sha')}", 0) >= int(num(cfg, "ORCHESTRATE_MERGE_MAX_ATTEMPTS")):
-        reasons.append("merge_attempts_exhausted")
-    return reasons
-
-
-def owner_repo_part_of(body):
-    """True when Rule D skips the body with part_of_owner_repo: no Part of it reads, but this owner's
-    owner/repo form (vws-deploy#477, #504)."""
-    body = body or ""
-    return not PART_OF_RE.search(body) and bool(OWNER_PART_OF_RE.search(body))
-
-
-def merge_status_body(kind, repo, sha, detail, key, run_id):
-    lines = [FAILURE_MARKER,
-             f"vws-orchestrate: {kind} in {repo}; merges in {repo} are stopped.", "",
-             f"Kind: merge-{kind.replace(' ', '-')}", f"Repo: {repo}", f"Main commit: `{sha}`", f"Detail: {detail}", "",
-             "Merges in this repo resume by themselves once a newer main head has a green push CI run.",
-             f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
-    return "\n".join(lines)
-
-
-def infra_status_body(target, hist, key, run_id):
-    last = hist[-1]
-    lines = [FAILURE_MARKER,
-             f"vws-orchestrate: {target} failed {len(hist)} times on provider errors; "
-             f"{INFRA_MAX_RETRIES} infra retries are used up. The item is now `blocked` for a human.", "",
-             "Kind: infra-retries-exhausted", f"Item: {target}", f"Last report: {last['report']}",
-             f"Last error (redacted): {scrub(last.get('error', '')).replace(chr(10), ' ')}", "",
-             "These failures did not count toward the grok swap. To retry, fix the provider and comment "
-             "`/orchestrate reset-failures` on the item (the orchestrator then removes its `blocked`).",
-             f"Idempotency key: `{key}`", f"Run id: `{run_id}`"]
-    return "\n".join(lines)
-
-
-def infra_key(target, report_url):
-    return "sha256:" + hashlib.sha256(f"infra-exhausted:{target}:{report_url}".encode()).hexdigest()
-
-
-def status_key(kind, repo, sha):
-    return "sha256:" + hashlib.sha256(f"merge-{kind}:{repo}:{sha}".encode()).hexdigest()
-
-
-def serial_merge_pr(info):
-    """True when the PR touches a serial-merge path (SERIAL_MERGE_RE). Unread files count as serial."""
-    files = (info or {}).get("files")
-    return files is None or any(SERIAL_MERGE_RE.match(f or "") for f in files)
-
-
-def verify_approved_at(info):
-    """When vws-verify approved the PR head: the newest successful vws-verify check run on it ('' = unknown)."""
-    runs = [r for r in (info or {}).get("checks", []) if r.get("name") == VERIFY_CHECK and r.get("app_id") == VERIFY_APP_ID
-            and r.get("head_sha") == (info or {}).get("head_sha") and r.get("conclusion") == "success"]
-    return max((r.get("completed_at") or r.get("started_at") or "" for r in runs), default="")
-
-
-def decide_merges(snapshot, new_state, now, cfg, repos):
-    """Rule D. Updates new_state["merge_locks"] / ["merge_attempts"]; returns (actions, notes). Pure."""
-    actions, notes = [], []
-    if cfg.get("ORCHESTRATE_MERGE", "dry-run") == "off":
-        return actions, notes
-    items = snapshot["items"]
-    merge = snapshot.get("merge", {})
-    posted = status_keys(snapshot, new_state)
-    locks = new_state.setdefault("merge_locks", {})
-    attempts = new_state.setdefault("merge_attempts", {})
-    open_heads = {f"{k}@{it.get('head_sha')}" for k, it in items.items() if it["is_pr"] and it["state"] == "open"}
-    for a in list(attempts):
-        if a not in open_heads:
-            del attempts[a]  # the PR merged, closed or moved: its attempts no longer matter
-    timeout = num(cfg, "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS") * 3600
-    rows = []  # (repo, PR item, reasons, main) for every PR in a readable repo; chosen after the loop
-
-    def comment(kind, repo, sha, detail):
-        key = status_key(kind, repo, sha)
-        if key in posted:
-            return
-        posted.add(key)
-        actions.append({"type": "merge_status", "target": status_target(cfg), "key": key, "repo": repo,
-                        "reason": f"{kind} in {repo} at {sha[:7]}",
-                        "body": merge_status_body(kind, repo, sha, detail, key, snapshot["run_id"])})
-
-    for repo in sorted(repos):
-        ctx = merge.get(repo)
-        lock = locks.get(repo)
-        prs = sorted((it for it in items.values() if it["repo"] == repo and it["is_pr"] and it["state"] == "open"),
-                     key=lambda it: it["number"])
-        if ctx is None or ctx.get("error"):
-            # Not read (no verify-approved candidate and no lock) or unreadable: nothing merges here.
-            if ctx is not None:
-                notes.append({"kind": "merge_repo_unreadable", "repo": repo, "error": ctx["error"]})
-            elif lock:
-                notes.append({"kind": "merge_lock", "repo": repo, "status": lock.get("status"), "detail": "repo not read"})
-            for it in prs:
-                reasons = merge_reasons(it, {}, snapshot, repos, cfg, attempts)
-                notes.append({"kind": "merge_check", "target": f"{repo}#{it['number']}", "eligible": False,
-                              "reasons": reasons if ctx is None else ["merge_repo_unreadable"] + reasons,
-                              "head": (it.get("head_sha") or "")[:7], "main": "not read"})
-            continue
-        main_sha, main_ci = ctx.get("main_sha", ""), ctx.get("main_ci", "none")
-        held = ""
-        if lock and lock.get("status") == "merging":
-            lp = ctx.get("lock_pr") or {}
-            if lp.get("merged") and re.fullmatch(r"[0-9a-f]{40}", lp.get("merge_commit_sha") or ""):
-                lock = dict(lock, status="waiting", merge_sha=lp["merge_commit_sha"], merged_at=lock.get("at", now))
-                locks[repo] = lock
-                notes.append({"kind": "merge_confirmed", "repo": repo, "pr": lock["pr"], "merge_sha": lock["merge_sha"]})
-            elif lp.get("state") == "open" and not lp.get("merged"):
-                notes.append({"kind": "merge_not_landed", "repo": repo, "pr": lock["pr"]})
-                del locks[repo]
-                lock = None
-            else:
-                held = "merge outcome unknown"
-        if lock and lock.get("status") == "waiting":
-            lci = main_ci if lock["merge_sha"] == main_sha else ctx.get("lock_ci", "none")
-            if lci == "green" or (lci != "red" and ctx.get("lock_ahead") is True and main_ci == "green"):
-                # Green for the squash commit, or a newer main head that contains it is already green. A
-                # different main sha alone is not enough: it may be a stale read of the pre-merge head.
-                notes.append({"kind": "merge_lock_released", "repo": repo, "pr": lock["pr"], "merge_sha": lock["merge_sha"],
-                              "via": "merge commit" if lci == "green" else f"newer main {main_sha[:7]}"})
-                del locks[repo]
-                lock = None
-            elif lci == "red":
-                lock = dict(lock, status="red", red_sha=lock["merge_sha"])
-                locks[repo] = lock
-                comment("main CI red", repo, lock["merge_sha"], f"push CI failed on the squash commit of {lock['pr']}")
-            else:
-                held = f"push CI {lci} for {lock['merge_sha'][:7]}"
-                if now - lock.get("merged_at", now) >= timeout:
-                    comment("main CI wait timeout", repo, lock["merge_sha"],
-                            f"no green push CI {int(timeout // 60)} min after merging {lock['pr']} (now {lci})")
-        if lock and lock.get("status") == "red":
-            if ctx.get("red_ahead") is True and main_ci == "green":
-                notes.append({"kind": "merge_red_cleared", "repo": repo, "red_sha": lock["red_sha"], "main_sha": main_sha})
-                del locks[repo]
-                lock = None
-            else:
-                held = f"main CI red at {lock['red_sha'][:7]}"
-        gate = []
-        if lock:
-            gate.append(f"repo_locked:{held or lock.get('status')}")
-            notes.append({"kind": "merge_lock", "repo": repo, "status": lock.get("status"), "pr": lock.get("pr"),
-                          "detail": held})
-        elif main_ci != "green":
-            gate.append(f"main_ci_{main_ci}")
-            if main_ci == "red":
-                comment("main CI red", repo, main_sha, "the push CI run for the current main head failed")
-        for it in prs:
-            reasons = merge_reasons(it, ctx, snapshot, repos, cfg, attempts)
-            rows.append((repo, it, reasons or list(gate), f"{main_sha[:7]} {main_ci}"))
-    # The serial set (vws-deploy#397): at most one merge per tick among PRs that touch orchestrate.py,
-    # repo-guard*.yml or AGENTS.md, in any repo; the oldest verify approval goes first.
-    serial = sorted((verify_approved_at(it.get("merge_info")) or "~", repo, it["number"])
-                    for repo, it, reasons, _ in rows if not reasons and serial_merge_pr(it.get("merge_info")))
-    first = f"{serial[0][1]}#{serial[0][2]}" if serial else ""
-    chosen = {}
-    for repo, it, reasons, main in sorted(rows, key=lambda r: (r[0], f"{r[0]}#{r[1]['number']}" != first, r[1]["number"])):
-        k = f"{repo}#{it['number']}"
-        if not reasons and k != first and serial_merge_pr(it.get("merge_info")):
-            reasons = [f"serial_after:{first}"]
-        if not reasons and repo in chosen:
-            reasons = [f"one_merge_per_repo:{chosen[repo]}"]
-        eligible = not reasons
-        if eligible:
-            chosen[repo] = k
-            head = it["head_sha"]
-            actions.append({"type": "merge", "target": k, "repo": repo, "head": head, "reason": "verify PASS for the head, checks green, main green",
-                            "agent": agent_of(it.get("body")),
-                            "payload": {"merge_method": "squash", "sha": head,
-                                        "commit_title": f"{it['merge_info']['title']} (#{it['number']})"}})
-        note = {"kind": "merge_check", "target": k, "eligible": eligible, "reasons": reasons,
-                "head": (it.get("head_sha") or "")[:7], "main": main}
-        if "part_of_owner_repo" in reasons:
-            note["url"] = it.get("url", k)
-            note["hint"] = f"{note['url']}: {PART_OF_HINT}"
-        unmapped = (it.get("merge_info") or {}).get("unmapped")
-        if unmapped:
-            note["unmapped_suite_checks"] = unmapped  # keyed per suite (conservative)
-        notes.append(note)
-    return actions, notes
-
-
-def conflict_only(body):
-    """True when every blocking bullet of a FAIL verdict is a merge conflict / rebase request."""
-    bullets = [ln.strip()[2:] for ln in (body or "").splitlines() if ln.strip().startswith("- ")]
-    blocking = [b for b in bullets if not re.match(r"(?i)(codex|follow-?ups?|non-blocking)\b", b)] or [body or ""]
-    return all(CONFLICT_RE.search(b) for b in blocking)
-
-
-def head_verdict(pr):
-    """The newest vws-verify verdict (review or verdict comment) on the PR's current head, or None."""
-    k = f"{pr['repo']}#{pr['number']}"
-    vs = [v for v in pr.get("reviews", []) if v["sha"] == pr["head_sha"]]
-    for c in pr.get("comments", []):
-        kind = classify_comment(c["body"])
-        if kind and kind[0] == "verdict" and kind[1]["target"] == k and kind[1]["sha"] == pr["head_sha"]:
-            vs.append({"id": c["id"], "url": c["url"], "at": c["created_at"], "sha": kind[1]["sha"],
-                       "result": kind[1]["result"], "body": c["body"]})
-    return max(vs, key=lambda v: (v["at"], v["id"]), default=None)
-
-
-def verify_labels_wanted(it):
-    """(needs-verify, verify-approved, why) for one PR collect read (vws-deploy#487 table). Pure.
-    verify-approved True means "may stay"; decide_verify_labels never adds it (see there)."""
-    if it["verify_ci"] == "ineligible":
-        return False, False, "draft or not into main"
-    if it.get("verify_check_failed"):
-        # The newest vws-verify check on this head failed: it beats an earlier PASS review on the same head.
-        return False, False, f"vws-verify check failed on head {it['head_sha'][:7]}"
-    v = head_verdict(it)
-    if v and v["result"] == "pass":
-        return False, True, f"PASS on head {it['head_sha'][:7]} {v['url']}"
-    if v:
-        return False, False, f"FAIL on head {it['head_sha'][:7]} {v['url']}"
-    if it["verify_ci"] == "green":
-        return True, False, f"checks green on head {it['head_sha'][:7]}, no verdict yet"
-    return False, False, f"checks {it['verify_ci']} on head {it['head_sha'][:7]}"
-
-
-def decide_verify_labels(items, cfg, notes):
-    """vws-deploy#487: needs-verify and verify-approved as one rule over every vws-* repo (verify-queue.yml
-    is retired). Only PRs collect read (verify_ci set) are touched; an unreadable state writes nothing. A
-    blocked, held or do-not-merge PR gets removals only. verify-approved is only ever removed: verify-gate
-    rejects one added by the PR author or pusher, and this rule writes as the repo owner (vws-verify adds it,
-    review on vws-deploy#488). Longest-waiting PRs first, so a write cap that
-    stops this tick short serves them first; the rest converge on later ticks. Pure."""
-    if cfg.get("ORCHESTRATE_VERIFY_LABELS", "on") != "on":
-        return []
-    out = []
-    for k, it in sorted(items.items(), key=lambda kv: (kv[1].get("created_at") or "", kv[0])):
-        if not it.get("is_pr") or it.get("verify_ci") not in ("green", "pending", "red", "ineligible"):
-            continue
-        labels = set(it["labels"])
-        want_nv, want_va, why = verify_labels_wanted(it)
-        parked = sorted(labels & set(OPT_OUT_LABELS))
-        if parked:
-            want_nv = False  # a parked PR does not wait for verify (AC7)
-        for label, want in ((NEEDS_VERIFY, want_nv), ("verify-approved", want_va)):
-            if want and label not in labels:
-                if label == "verify-approved":
-                    continue  # vws-verify adds it; an orchestrator-added one would fail verify-gate
-                if parked:
-                    notes.append({"kind": "verify_label_parked", "target": k, "label": label, "parked": parked})
-                    continue
-                out.append({"type": "add_label", "target": k, "label": label, "head": it["head_sha"],
-                            "reason": f"verify labels: {why}"})
-            elif not want and label in labels:
-                extra = f" ({', '.join(parked)})" if parked and label == NEEDS_VERIFY else ""
-                out.append({"type": "remove_label", "target": k, "label": label, "head": it["head_sha"],
-                            "reason": f"verify labels: {why}{extra}"})
-    return out
-
-
-def rework_prs(k, it, items):
-    """Open PRs a ready+deepseek item owns: the item itself when it is a PR, else the open vws PRs its
-    DeepSeek reports named, then (vws-deploy#457) open PRs whose `Part of` names it and whose owner
-    resolves to deepseek. A PR that is itself a ready+deepseek item is reworked on its own."""
-    if not {"ready", "deepseek"} <= set(it["labels"]) or "grok" in it["labels"]:
-        return []
-    if it["is_pr"]:
-        return [k]
-    keys = [vws_pr_key(u) for u, p in sorted(it.get("report_prs", {}).items()) if p.get("state") == "open"]
-    out = [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
-    for pk in sorted(items):
-        p = items[pk]
-        if (pk not in out and p["is_pr"] and p["state"] == "open" and grok_link(p) == k
-                and not {"ready", "deepseek"} <= set(p["labels"]) and pr_owner(p, items)[0] == "deepseek"):
-            out.append(pk)
-    return out
-
-
-def pr_owner(pr, items):
-    """vws-deploy#457: who owns a PR, as (owner, via). In order: the PR body `Agent:` line (via "agent"),
-    the PR's grok or deepseek label ("label"), then the grok or deepseek label of the item its `Part of`
-    names ("part_of:<repo#N>"). grok wins over deepseek, as in rework_prs. ("", "") when none resolves."""
-    agent = agent_of(pr.get("body"))
-    if agent:
-        return agent, "agent"
-    for name in ("grok", "deepseek"):
-        if name in pr["labels"]:
-            return name, "label"
-    link = grok_link(pr)
-    for name in ("grok", "deepseek"):
-        if link and name in items.get(link, {}).get("labels", []):
-            return name, f"part_of:{link}"
-    return "", ""
-
-
-def verify_fail_unrouted(items, prev, notes, routed=()):
-    """vws-deploy#457: open non-draft PRs into main whose head has a vws-verify FAIL that no rule picks up
-    (rule B2 reworks only PRs a ready+deepseek item owns; a conflict-only FAIL is Rule R's; routed are
-    the PRs the grok rework wake, vws-deploy#398, covers this tick). Adds one verify_fail_unrouted note
-    per PR head not in prev ({repo#N: head}); returns the new {repo#N: head}."""
-    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
-    seen = {}
-    for k in sorted(items):
-        it = items[k]
-        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
-            continue
-        v = head_verdict(it)
-        if not v or v["result"] != "fail" or conflict_only(v["body"]) or k in reworked or k in routed:
-            continue
-        owner, _ = pr_owner(it, items)
-        reason = ("no_owner" if not owner else "owner_grok" if owner == "grok"
-                  else "owner_deepseek_not_ready" if owner == "deepseek" else "owner_agent")
-        seen[k] = it["head_sha"]
-        if prev.get(k) != it["head_sha"]:
-            notes.append({"kind": "verify_fail_unrouted", "target": k, "head": it["head_sha"], "verdict": v["url"],
-                          "owner": owner, "reason": reason})
-    return seen
-
-
-def grok_rework_key(k, head_sha):
-    """One grok rework wake per PR head: a new push re-arms it."""
-    return "sha256:" + hashlib.sha256(f"grok-rework\n{k}\n{head_sha}".encode()).hexdigest()
-
-
-def grok_rework_waiting(items, cfg):
-    """vws-deploy#398(a): open non-draft PRs into main whose head has a vws-verify FAIL that is not
-    conflict-only, that rule B2 does not rework, that are not parked (OPT_OUT_LABELS), and whose owner
-    (pr_owner) resolves to someone other than deepseek. Sorted by key. bot is the Grok dev bot the wake
-    names (vws-deploy#506): the `Agent:` owner as is, else grok_bot of the PR."""
-    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
-    out = []
-    for k in sorted(items):
-        it = items[k]
-        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
-            continue
-        if k in reworked or set(it["labels"]) & set(OPT_OUT_LABELS):
-            continue
-        v = head_verdict(it)
-        if not v or v["result"] != "fail" or conflict_only(v["body"]):
-            continue
-        owner, via = pr_owner(it, items)
-        if owner and owner != "deepseek":
-            bot, bot_via = (owner, via) if via == "agent" else grok_bot(it, cfg)
-            out.append({"target": k, "url": it["url"], "head_sha": it["head_sha"], "owner": owner, "via": via,
-                        "bot": bot, "bot_via": bot_via if bot_via == via else f"{via}, {bot_via}", "verdict": v})
-    return out
-
-
-def grok_rework_body(p, key, run_id):
-    v = p["verdict"]
-    return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok rework {p['target']} {p['url']}", "",
-                      f"Head `{p['head_sha']}` has a vws-verify FAIL: {v['url']}", "",
-                      quote(scrub(v["body"] or "")).replace("<!--", "&lt;!--"), "",
-                      f"Owner `{p['bot']}` ({p['bot_via']}): please fix the findings on the same branch with a new "
-                      "commit (no force-push, no update-branch, no merge commits), then let verify run on the new head.",
-                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`",
-                      f"{REWORK_MARKER}{p['head_sha']} verdict={v['id']} item={p['target']} -->"])
-
-
-def decide_grok_rework(snapshot, cfg, posted, notes):
-    """Rule B4 (vws-deploy#398(a)). Returns (grok_rework actions, the PRs the wake covers). Pure."""
-    waiting = grok_rework_waiting(snapshot["items"], cfg)
-    if not waiting:
-        return [], set()
-    if not wake_target(cfg):
-        notes.append({"kind": "grok_rework_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": len(waiting)})
-        return [], set()
-    actions = []
-    for p in waiting:
-        key = grok_rework_key(p["target"], p["head_sha"])
-        if key in posted:
-            continue
-        actions.append({"type": "grok_rework", "target": wake_target(cfg), "item": p["target"], "head": p["head_sha"],
-                        "owner": p["owner"], "key": key,
-                        "reason": f"{p['target']}: verify FAIL on head {p['head_sha'][:7]}, owner {p['owner']}",
-                        "body": grok_rework_body(p, key, snapshot["run_id"])})
-    return actions, {p["target"] for p in waiting}
-
-
-def ci_fails(pr):
-    """CI-failure markers on a PR, oldest first: (accepted, untrusted). Accepted means posted by
-    github-actions[bot], v=1, and naming this repo#N. A comment with no recorded author is untrusted."""
-    ok, bad = [], []
-    for c in sorted(pr.get("comments", []), key=lambda c: (c["created_at"], c["id"])):
-        kind = classify_comment(c["body"])
-        if not kind or kind[0] != "ci_fail":
-            continue
-        d = kind[1]
-        if c.get("author") != CI_FAIL_LOGIN:
-            bad.append(c)
-        elif d["v"] == 1 and d["repo"] == pr["repo"] and d["pr"] == pr["number"]:
-            ok.append(dict(d, id=c["id"], url=c["url"], at=c["created_at"], body=c["body"]))
-    return ok, bad
-
-
-def authorized_reset(c):
-    """A `/orchestrate reset-failures` comment by an OWNER, MEMBER or COLLABORATOR (author_association as
-    recorded by comment_record). Only the CI cap uses it so far; vws-deploy#419 can reuse it."""
-    kind = classify_comment(c.get("body"))
-    return bool(kind and kind[0] == "reset" and c.get("assoc") in RESET_ASSOC)
-
-
-def ci_reset_time(pr, owner):
-    """Latest CI-cap reset: /orchestrate reset-failures by an OWNER, MEMBER or COLLABORATOR on the PR or
-    its owner item, or needs-human removed from the PR."""
-    t = 0.0
-    for c in pr.get("comments", []) + (owner.get("comments", []) if owner is not pr else []):
-        if authorized_reset(c):
-            t = max(t, utc(c["created_at"]))
-    for e in pr.get("events", []):
-        if e.get("event") == "unlabeled" and (e.get("label") or {}).get("name") == "needs-human":
-            t = max(t, utc(e["created_at"]))
-    return t
-
-
-def ci_fail_head(pr, owner):
-    """The CI failure on the PR's current head and why it is not reworked ('' = rework it), or (None, '').
-    n is recomputed: the distinct failing shas on this PR since the last CI reset, this head included.
-    A marker posted after that reset can only raise n (it also counts rebuilt predecessors)."""
-    ok, _ = ci_fails(pr)
-    m = next((x for x in ok if x["sha"] == pr["head_sha"]), None)
-    if not m:
-        return None, ""
-    since = ci_reset_time(pr, owner)
-    shas = []
-    for x in ok:
-        if utc(x["at"]) > since and x["sha"] not in shas:
-            shas.append(x["sha"])
-    n = shas.index(m["sha"]) + 1 if m["sha"] in shas else len(shas) + 1
-    if utc(m["at"]) > since:
-        n = max(n, m["n"])
-    m = dict(m, n=n)
-    labels = set(pr["labels"]) | set(owner["labels"])
-    if m["owner"] != "deepseek":
-        return m, f"owner_{m['owner']}"
-    for reason, bad in (("wake_false", not m["wake"]),
-                        ("needs-human", "needs-human" in labels), ("blocked", "blocked" in labels),
-                        ("cap", n > CI_FAIL_CAP)):
-        if bad:
-            return m, reason
-    return m, ""
-
-
-def rework_plan(k, it, items, since):
-    """Rework state of the item's DeepSeek PR (vws-deploy#373, #412). counted: the reworks already
-    dispatched since the last reset plus a pending FAIL, each one failure toward the grok swap. A head
-    with a verify FAIL and a CI failure is one rework and one count. state: pending | done (this head
-    was reworked already) | conflict_only (left to eggbot) | None (no FAIL on the head)."""
-    plan = {"target": "", "verdict": None, "ci": None, "state": None, "counted": [], "ci_skipped": []}
-    for pk in rework_prs(k, it, items):
-        pr = items[pk]
-        dispatches = [c for c in pr.get("comments", []) if (classify_comment(c["body"]) or ("",))[0] == "dispatch"]
-        plan["counted"] += [{"url": c["url"], "kind": rework_kind(c["body"]), "report": ""} for c in dispatches
-                            if tr.is_rework(c["body"]) and utc(c["created_at"]) > since]
-        if plan["state"]:
-            continue
-        v = head_verdict(pr)
-        if v and v["result"] != "fail":
-            v = None
-        cf, why = ci_fail_head(pr, it)
-        if cf and why:
-            plan["ci_skipped"].append({"kind": "ci_fail_skipped", "target": pk, "comment": cf["url"],
-                                       "reason": why, "n": cf["n"]})
-            cf = None
-        if v and conflict_only(v["body"]):
-            if not cf:
-                plan["target"], plan["verdict"], plan["state"] = pk, v, "conflict_only"
-                continue
-            v = None  # the CI failure is still reworked; the conflict stays with eggbot
-        if not v and not cf:
-            continue
-        plan["target"], plan["verdict"], plan["ci"] = pk, v, cf
-        first = min(x["at"] for x in (v, cf) if x)
-        if any(tr.reworked_head(c["body"], pr["head_sha"]) or c["created_at"] >= first for c in dispatches):
-            plan["state"] = "done"
-        else:
-            plan["state"] = "pending"
-            plan["counted"].append({"url": (v or cf)["url"], "kind": "verify_fail" if v else "ci_fail", "report": ""})
-    return plan
-
-
-def ci_fail_text(body):
-    """The human part of a CI-failure comment (failed jobs, log tails): no marker line, no JSON record,
-    and no HTML comment opener, so a log line cannot add an orchestrator marker."""
-    lines = (body or "").replace("\r\n", "\n").split("\n")[1:]
-    end = next((i for i, ln in enumerate(lines) if ln.strip() == "```json"), len(lines))
-    return scrub("\n".join(lines[:end]).strip()).replace("<!--", "&lt;!--")
-
-
-def quote(text):
-    return "\n".join("> " + ln for ln in text[:3000].splitlines())
-
-
-def rework_body(pr, v, cf=None):
-    parts, keys = [REWORK_TEXT], ""
-    if v:
-        parts.append(f"Verify verdict: {v['url']} (head `{pr['head_sha'][:7]}`)\n\n{quote(scrub(v['body']))}")
-        keys += f" verdict={v['id']}"
-    if cf:
-        parts.append(f"CI failure: {cf['url']} (head `{pr['head_sha'][:7]}`, failing head {cf['n']} of {CI_FAIL_CAP})"
-                     f"\n\n{quote(ci_fail_text(cf['body']))}")
-        keys += f" ci={cf['id']}"
-    parts.append(f"{REWORK_MARKER}{pr['head_sha']}{keys} -->")
-    return "\n\n".join(parts)
-
-
-def grok_allowlist(text):
-    """ORCHESTRATE_GROK_ALLOWLIST: repo#N entries split on commas or whitespace. Returns (keys, bad)."""
-    toks = [t for t in re.split(r"[,\s]+", text or "") if t]
-    return {t for t in toks if GROK_ALLOW_RE.fullmatch(t)}, [t for t in toks if not GROK_ALLOW_RE.fullmatch(t)]
-
-
-def grok_key(k, since):
-    """One wake per issue per failure reset (/orchestrate reset-failures re-arms it)."""
-    return "sha256:" + hashlib.sha256(f"grok-wake\n{k}\n{int(since)}".encode()).hexdigest()
-
-
-def grok_owners(cfg):
-    """ORCHESTRATE_GROK_OWNERS as {repo: bot}; entries split on commas or whitespace. Raises ValueError on
-    an entry that is not repo=bot (load_config checks it once, so decide never sees a bad value)."""
-    out = {}
-    for t in re.split(r"[,\s]+", cfg.get("ORCHESTRATE_GROK_OWNERS", DEFAULTS["ORCHESTRATE_GROK_OWNERS"])):
-        m = GROK_OWNER_RE.fullmatch(t)
-        if t and not m:
-            raise ValueError(f"ORCHESTRATE_GROK_OWNERS entries must be vws-<repo>=<bot>, got {t[:64]!r}")
-        if m:
-            out[m.group(1)] = m.group(2)
-    return out
-
-
-def grok_bot(it, cfg):
-    """vws-deploy#506: the Grok dev bot that owns issue or PR it, as (bot, via): its body's `Agent:` line
-    ("agent"), else ORCHESTRATE_GROK_OWNERS for its repo, else the bot named after its repo ("repo:<repo>")."""
-    agent = agent_of(it.get("body"))
-    if agent:
-        return agent, "agent"
-    return grok_owners(cfg).get(it["repo"], it["repo"]), f"repo:{it['repo']}"
-
-
-def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
-    who = f"Owner `{owner}` ({via})" if owner else "No owner resolved, so the lead (dr eggbot)"
-    return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
-                      f"{who}: please take this issue: one small PR per its acceptance criteria, "
-                      f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
-                      f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
-                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
-
-
-def grok_link(it):
-    """The issue a PR's `Part of #N` / `Part of repo#N` line names, as repo#N, or ""."""
-    m = PART_OF_RE.search(it.get("body") or "") if it.get("is_pr") else None
-    return "" if not m else (it["repo"] + m.group(1) if m.group(1).startswith("#") else m.group(1))
-
-
-def grok_held(items):
-    """Grok work in flight without a wake key: an open grok item with an assignee, or the issue an open
-    grok PR (draft too) names with `Part of`. Returns the set of held repo#N (the linked issue for a PR)."""
-    held = set()
-    for k, it in items.items():
-        if it["state"] != "open" or "grok" not in it["labels"]:
-            continue
-        if it["is_pr"] and grok_link(it):
-            held.add(grok_link(it))
-        elif it.get("assignees"):
-            held.add(k)
-    return held
-
-
-def grok_busy(items, held):
-    """Repos with Grok work in flight: the repo of each held task, plus the repo of each open grok PR
-    that names an issue (a PR in vws-proto with `Part of vws-iam#1` keeps both repos busy)."""
-    return {k.split("#")[0] for k in held} | {
-        it["repo"] for it in items.values()
-        if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)}
-
-
-AC_CHECKBOX_RE = re.compile(r"^[ \t]*[-*] \[([ xX])\]", re.M)
-GROK_REARM_LABELS = ("ready", "grok")
-
-
-def grok_wake_key(k, it, key_times):
-    """The issue's current wake key: grok_key from its reset time, re-armed (vws-deploy#411) by a `ready` or
-    `grok` labeled event after the wake with that key was posted."""
-    key = grok_key(k, reset_time(it))
-    for _ in range(20):
-        at = key_times.get(key)
-        later = [utc(e["created_at"]) for e in it.get("events", []) if at and e.get("event") == "labeled"
-                 and (e.get("label") or {}).get("name") in GROK_REARM_LABELS and utc(e["created_at"]) > utc(at)]
-        if not later:
-            break
-        key = grok_key(k, max(later))
-    return key
-
-
-def grok_release(k, it, items, woken_at, now, timeout_min):
-    """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
-    grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
-    its body is ticked. grok_wake_expired: nothing claimed it (no assignee; no comment, assignment or linked
-    PR after the wake) within timeout_min of the wake. An unread timeline or wake time keeps the slot."""
-    act = it.get("grok_activity")
-    if act is None or not woken_at:
-        return "", {}
-    t0 = utc(woken_at)
-    merged = [p for p in act.get("prs", []) if p.get("merged_at") and utc(p["merged_at"]) > t0]
-    if merged:
-        return "grok_task_done", {"reason": "pr_merged", "pr": merged[0]["key"]}
-    boxes = AC_CHECKBOX_RE.findall(it.get("body") or "")
-    if boxes and " " not in boxes:
-        return "grok_task_done", {"reason": "ac_done"}
-    claimed = (it.get("assignees") or act.get("prs")
-               or any(utc(t) > t0 for t in act.get("comments", []) + act.get("assigned", []))
-               or any(p["is_pr"] and p["state"] == "open" and grok_link(p) == k for p in items.values()))
-    if claimed or now - t0 < timeout_min * 60:
-        return "", {}
-    return "grok_wake_expired", {"woken_at": woken_at, "timeout_min": timeout_min}
-
-
-def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_before=None, released=None):
-    """Rule G (vws-deploy#378). Returns the grok_wake actions. Pure. With now (vws-deploy#411), a woken task
-    that grok_release frees no longer holds a slot; it is recorded in released ({repo#N: key}) and noted
-    once per key (not when released_before already has it)."""
-    items = snapshot["items"]
-    key_times = snapshot.get("status", {}).get("key_times", {})
-    allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
-    notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
-    held, queue, woken, freed = grok_held(items), [], set(), []
-    for k in sorted(items):
-        it = items[k]
-        labels = set(it["labels"])
-        if it["state"] != "open" or "grok" not in labels:
-            continue
-        unit = grok_link(it) or k  # a PR and the issue it is part of are one Grok task
-        key = grok_wake_key(k, it, key_times)
-        if key in posted:
-            kind, details = ("", {}) if now is None else grok_release(
-                k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
-            if kind:  # done or never claimed: the slot is free, and the same key is never posted again
-                held.discard(unit)
-                held.discard(k)
-                freed.append(k)
-                if released is not None:
-                    released[k] = key
-                if (released_before or {}).get(k) != key:
-                    notes.append(dict({"kind": kind, "item": k, "key": key}, **details))
-                continue
-            held.add(unit)  # woken and still open with grok: the slot stays taken
-            woken.add(k)
-            continue
-        if unit in held or k in held:
-            continue
-        if (k not in allow or "ready" not in labels or labels & ({"deepseek"} | set(OPT_OUT_LABELS))
-                or (it["is_pr"] and it.get("draft"))):
-            continue
-        deps, bad_deps = parse_deps(it.get("body"), it["repo"])
-        unmet = [d for d in deps if dep_state(d, snapshot, repos) != "met"]
-        notes += [{"kind": "dep_unmet", "target": k, "dep": d, "state": dep_state(d, snapshot, repos)} for d in unmet]
-        if unmet or bad_deps or k in cycles:
-            continue
-        security = "security" in labels or re.search(r"(?i)\bsecurity\b", it.get("title") or "")
-        prio = 0 if "priority/blocker" in labels else 1 if security else 2
-        queue.append((prio, ready_time(it), it["repo"], it["number"], k))
-    running = sorted(held)
-    if running:
-        notes.append({"kind": "grok_in_flight", "targets": running})
-    cap = int(num(cfg, "ORCHESTRATE_GROK_CAP"))
-    free = max(0, cap - len(running))  # paused by wake_silence at the plan boundary (vws-deploy#521)
-    busy = grok_busy(items, held)
-    actions = []
-    if queue and free and not wake_target(cfg):
-        # Grok wakes go to the verify-wake thread (vws-deploy#416); never to the status issue.
-        notes.append({"kind": "grok_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "queued": len(queue)})
-        return actions
-    for q in sorted(queue):
-        if len(actions) >= free:
-            break
-        if q[2] in busy:
-            notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
-            continue
-        busy.add(q[2])
-        it = items[q[4]]
-        key = grok_wake_key(q[4], it, key_times)
-        slot = len(running) + len(actions) + 1
-        # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
-        # cannot rebuild their reset time from the bare issues list).
-        owner, via = grok_bot(it, cfg)
-        actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
-                        "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
-                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
-    return actions
-
-
-def rebuild_key(k, head_sha):
-    """One rebuild wake per PR head: a push (the rebuild itself, or any new head) re-arms it."""
-    return "sha256:" + hashlib.sha256(f"rebuild-wake\n{k}\n{head_sha}".encode()).hexdigest()
-
-
-def rebuild_waiting(items):
-    """Open non-draft PRs into main labeled needs-rebuild or with mergeable_state dirty, sorted by key.
-    mergeable_state comes from GET pulls/N; GitHub computes it lazily, so "unknown" is not a conflict."""
-    out = []
-    for k in sorted(items):
-        it = items[k]
-        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
-            continue
-        why = ("labeled needs-rebuild" if NEEDS_REBUILD in it["labels"]
-               else "conflicts with main" if it.get("mergeable_state") == "dirty" else "")
-        if why:
-            out.append({"target": k, "url": it["url"], "head_sha": it["head_sha"], "owner": agent_of(it.get("body")),
-                        "why": why})
-    return out
-
-
-def rebuild_wake_body(p, key, run_id):
-    who = (f"Owner `{p['owner']}` (the PR's `Agent:` line)" if p["owner"]
-           else "The PR has no `Agent:` line, so the lead (dr eggbot)")
-    return "\n".join([REBUILD_WAKE_MARKER, f"vws-orchestrate: rebuild {p['target']} {p['url']}", "",
-                      f"Head `{p['head_sha']}` {p['why']}.",
-                      f"{who}: please rebuild it on current main with `vws-rebuild-pr` as a new `-vN` branch and PR "
-                      "(no force-push, no update-branch, no merge commits).",
-                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
-
-
-def decide_rebuild(snapshot, cfg, posted, notes):
-    """Rule R (vws-deploy#460). Returns (rebuild_wake actions, the PRs waiting for a rebuild). Pure."""
-    waiting = rebuild_waiting(snapshot["items"])
-    if waiting and not wake_target(cfg):
-        notes.append({"kind": "rebuild_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "waiting": len(waiting)})
-        return [], waiting
-    actions = []
-    for p in waiting:
-        key = rebuild_key(p["target"], p["head_sha"])
-        if key in posted:
-            continue
-        actions.append({"type": "rebuild_wake", "target": wake_target(cfg), "item": p["target"], "head": p["head_sha"],
-                        "owner": p["owner"], "key": key, "reason": f"{p['target']} {p['why']}",
-                        "body": rebuild_wake_body(p, key, snapshot["run_id"])})
-    return actions, waiting
-
-
-def lead_key(k, sha):
-    """One lead wake per PR head (vws-deploy#397)."""
-    return "sha256:" + hashlib.sha256(f"lead-wake\n{k}@{sha}".encode()).hexdigest()
-
-
-LEAD_REBUILD = ("No rule moves this PR head on its own: dr eggbot rebuilds it onto main as a new -vN PR "
-                "(no force-push) or routes the FAIL to its owner.")
-# vws-deploy#504: a part_of_owner_repo skip needs a body edit only; the head and its verdict stay.
-LEAD_BODY_EDIT = ("No rule moves this PR on its own: dr eggbot (or the PR's owner) edits the PR body; the head and "
-                  "its verify verdict stay, and Rule D merges it on a later tick once nothing else holds it.")
-
-
-def lead_wake_body(it, k, reason, key, run_id, action=LEAD_REBUILD):
-    return "\n".join([LEAD_WAKE_MARKER, f"vws-orchestrate: lead wake for {k} at `{it['head_sha']}` {it['url']}", "",
-                      f"Reason: {reason}.", action, "",
-                      f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
-
-
-def decide_lead(snapshot, cfg, notes, routed=()):
-    """Lead wake (vws-deploy#397). Returns lead_wake actions: one per PR head that is verify-approved but
-    conflicts with main, or has a vws-verify FAIL that no rework picks up (a Grok PR, a PR with no
-    DeepSeek owner, or a conflict-only verdict), or is verify-approved but Rule D skips it with
-    part_of_owner_repo (vws-deploy#504; the wake names the allowed forms and the PR URL). routed are the PRs the grok rework wake (rule B4,
-    vws-deploy#398) covers this tick: their owner is woken, so they get no lead wake. Pure."""
-    items = snapshot["items"]
-    posted = set(snapshot.get("status", {}).get("keys", []))
-    reworked = {pk for k, it in items.items() if it["state"] == "open" for pk in rework_prs(k, it, items)}
-    due = []
-    for k in sorted(items):
-        it = items[k]
-        if not (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"):
-            continue
-        if k in (status_target(cfg), wake_target(cfg)):
-            continue
-        info = it.get("merge_info") or {}
-        reason = ""
-        if ("verify-approved" in it["labels"] and info.get("head_sha") == it["head_sha"]
-                and info.get("mergeable") is False):
-            reason = "verify-approved but conflicts with main"
-        else:
-            v = head_verdict(it)
-            if v and v["result"] == "fail" and (k not in routed or conflict_only(v["body"])):
-                owner = items.get(grok_link(it), {})
-                if conflict_only(v["body"]):
-                    reason = f"verify FAIL is conflict-only ({v['url']})"
-                elif "grok" in it["labels"] or "grok" in owner.get("labels", []):
-                    reason = f"verify FAIL on a Grok PR and no Grok rework wake covers it ({v['url']})"
-                elif k not in reworked:
-                    reason = f"verify FAIL on a PR with no DeepSeek owner ({v['url']})"
-        action = LEAD_REBUILD
-        if ("verify-approved" in it["labels"] and info.get("head_sha") == it["head_sha"]
-                and not set(it["labels"]) & set(OPT_OUT_LABELS) and not tr.opted_out(it.get("body"))
-                and owner_repo_part_of(it.get("body"))):
-            fix = f"verify-approved but Rule D skips it with part_of_owner_repo ({it['url']}): {PART_OF_HINT}"
-            reason, action = (f"{reason}; also {fix}", action) if reason else (fix, LEAD_BODY_EDIT)
-        if reason:
-            due.append((k, it, reason, action))
-    if due and not wake_target(cfg):
-        notes.append({"kind": "lead_wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "due": len(due)})
-        return []
-    actions = []
-    for k, it, reason, action in due:
-        key = lead_key(k, it["head_sha"])
-        if key in posted:
-            continue
-        actions.append({"type": "lead_wake", "target": wake_target(cfg), "item": k, "key": key,
-                        "reason": f"{k}: {reason}",
-                        "body": lead_wake_body(it, k, reason, key, snapshot["run_id"], action)})
-    return actions
-
-
-def status_keys(snapshot, state):
-    """Keys of merge and infra entries already reported: in the status issue body, in state, or (before
-    vws-deploy#416) as comments on the verify-wake thread."""
-    keys = set(snapshot.get("status", {}).get("keys", []))
-    keys |= set(STATUS_EVENT_KEY_RE.findall(snapshot.get("status_issue", {}).get("body", "")))
-    return keys | {e["key"] for e in state.get("status_events", [])}
-
-
-def decide(snapshot, state, now, cfg, exclusions):
-    """Pure: the same inputs give the same output. Returns {"actions", "notes", "state"}."""
-    actions, notes = [], []
+        names = [x.NAME for x in order]
+        if after not in names:
+            raise ValueError(f"rule {r.NAME}: ACTIONS_AFTER names {after!r}, not a registered rule")
+        order.insert(names.index(after) + 1, r)
+    return order
+
+
+def action_key(a):
+    """Two actions with the same type, target and label (or key) are one write; the first is kept."""
+    return (a["type"], a["target"], a.get("label", a.get("key")))
+
+
+def merge_decisions(registry, decisions, state):
+    """Merge {rule NAME: Decision} the same way whatever order the rules ran in. Notes, state updates and
+    extras merge in registry order; actions in action_order, a stable sort on that position, deduped by
+    action_key. A state key outside the rule's STATE_KEYS, or a state or extra key two rules set, raises."""
+    names = [r.NAME for r in registry]
+    if len(set(names)) != len(names) or sorted(names) != sorted(decisions):
+        raise ValueError(f"decisions {sorted(decisions)} do not match the registry {names}")
+    rank = {r.NAME: i for i, r in enumerate(action_order(registry))}
+    tagged = sorted(((rank[n], i, a) for n in names for i, a in enumerate(decisions[n]["actions"])),
+                    key=lambda t: t[:2])
+    actions, seen = [], set()
+    for _, _, a in tagged:
+        if action_key(a) not in seen:
+            seen.add(action_key(a))
+            actions.append(a)
     new_state = json.loads(json.dumps(state))
-    repos = {r["name"] for r in snapshot["repos"] if not r.get("archived")}
-    items = snapshot["items"]
-    owned = new_state.setdefault("owned_labels", {name: [] for name in MANAGED_LABELS})
-    for name in MANAGED_LABELS:
-        # Ownership is journaled before the write; drop entries whose label is not on the item
-        # (the write never happened, or a human removed it).
-        owned[name] = [k for k in owned.get(name, []) if k in items and name in items[k]["labels"]]
-    max_fail = int(num(cfg, "DEEPSEEK_MAX_FAILURES"))
-    cap = int(num(cfg, "ORCHESTRATE_DEEPSEEK_CAP"))
-    infra_delay = int(num(cfg, "ORCHESTRATE_INFRA_RETRY_DELAY_MIN")) * 60
-    posted = status_keys(snapshot, state)
-    cycles = find_cycles(snapshot)
+    out = {"actions": actions, "notes": [n for name in names for n in decisions[name]["notes"]], "state": new_state}
+    owner = {}
+    for r in registry:
+        d = decisions[r.NAME]
+        for k, v in d["state"].items():
+            if k not in r.STATE_KEYS:
+                raise ValueError(f"rule {r.NAME} set state key {k!r}, not in its STATE_KEYS")
+            if k in owner:
+                raise ValueError(f"state key {k!r} set by rules {owner[k]} and {r.NAME}")
+            owner[k] = r.NAME
+            new_state[k] = v
+        for k, v in d["extra"].items():
+            if k in out:
+                raise ValueError(f"rule {r.NAME} set result key {k!r}, already set")
+            out[k] = v
+    return out
 
-    # Rule A: needs-verify PRs and the verify wake (vws-deploy#397)
-    pending = []
-    for key in sorted(items):
-        it = items[key]
-        if (it["is_pr"] and it["state"] == "open" and not it.get("draft") and it.get("base") == "main"
-                and NEEDS_VERIFY in it["labels"] and "verify-approved" not in it["labels"] and it.get("ci") != "failing"):
-            # A stale label on a head vws-verify already failed is not a wait: verify will not run it again
-            # until a push, so it must not wake verify or hold the pending set (vws-deploy#430, console-api#362).
-            v = head_verdict(it)
-            if v and v["result"] == "fail":
-                notes.append({"kind": "needs_verify_failed_head", "target": key, "verdict": v["url"]})
-                continue
-            parked = sorted(set(it["labels"]) & set(OPT_OUT_LABELS))
-            if parked:
-                # vws-deploy#487 AC7: a parked PR never wakes verify; rule V removes its label this tick.
-                notes.append({"kind": "needs_verify_parked", "target": key, "labels": parked})
-                continue
-            # Waited since the latest needs-verify label (a push removes it); unknown counts as just labeled.
-            since = max((utc(e["created_at"]) for e in it.get("events", [])
-                         if e["event"] == "labeled" and e["label"]["name"] == NEEDS_VERIFY), default=now)
-            pending.append({"repo": it["repo"], "number": it["number"], "url": it["url"], "head_sha": it["head_sha"],
-                            "waited": int(max(0, now - since))})
-    threshold = int(num(cfg, "VERIFY_WAKE_THRESHOLD"))
-    max_wait = int(num(cfg, "VERIFY_WAKE_MAX_WAIT_MIN"))
-    key = pending_key(pending)
-    wakes = snapshot.get("status", {}).get("wakes", [])
-    oldest = max((p["waited"] for p in pending), default=0)
-    due = pending and (len(pending) >= threshold or oldest >= max_wait * 60)
-    if not wake_target(cfg):
-        if due:
-            notes.append({"kind": "wake_off", "reason": "ORCHESTRATE_WAKE_THREAD is unset", "pending": len(pending)})
-    elif due and key not in {w["key"] for w in wakes}:
-        actions.append({"type": "wake_verify", "target": wake_target(cfg),
-                        "reason": f"{len(pending)} PRs need verify, oldest waited {oldest // 60}m", "key": key,
-                        "body": wake_body(pending, key, snapshot["run_id"], threshold, max_wait, sorted(repos))})
-    new_state["prev_pending_count"] = len(pending)
 
-    # CI-failure markers (vws-deploy#412): untrusted authors are ignored; owner=grok waits for #398(a).
-    for k in sorted(items):
-        it = items[k]
-        if not (it["is_pr"] and it["state"] == "open"):
-            continue
-        ok, bad = ci_fails(it)
-        for c in bad:
-            notes.append({"kind": "ci_fail_untrusted", "target": k, "comment": c["url"], "author": c.get("author", "")})
-        for m in ok:
-            if m["sha"] == it["head_sha"] and m["owner"] == "grok":
-                notes.append({"kind": "ci_fail_grok_pending", "target": k, "comment": m["url"], "sha": m["sha"],
-                              "agent": m["agent"]})
-                break
-
-    # Rules B and C
-    in_flight, queue, slots_used = [], [], 0
-    for k in sorted(items):
-        it = items[k]
-        if it["state"] != "open":
-            continue
-        hist = dispatch_history(it, now, cfg, exclusions)
-        for h in hist:
-            if h["kind"] == "pr_outside_vws":
-                notes.append({"kind": "report_pr_outside_vws", "target": k, "pr": h["pr"]})
-        running = sum(1 for h in hist if h["outcome"] == "in_flight")
-        if running:
-            in_flight.append(k)
-            slots_used += running
-        labels = set(it["labels"])
-        if "grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]:
-            # Moved to grok earlier (or a swap stopped before this label call): DeepSeek review is over.
-            actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
-        if "deepseek" not in labels or "ready" not in labels:
-            continue
-        since = reset_time(it)
-        rw = rework_plan(k, it, items, since)
-        notes += rw["ci_skipped"]
-        counted = [h for h in hist if h["outcome"] == "failed" and h["at"] > since] + rw["counted"]
-        latest = hist[-1] if hist else None
-        if len(counted) >= max_fail:
-            marker = any((classify_comment(c["body"]) or ("",))[0] == "marker"
-                         and "orchestrate:swap" in c["body"] and utc(c["created_at"]) > since
-                         for c in it.get("comments", []))
-            lines = "\n".join(f"- {h['url']} ({h['kind']}{', report ' + h['report'] if h['report'] else ''})" for h in counted)
-            # "grok" may already be there when an earlier swap stopped between its two label calls.
-            actions.append({"type": "swap_label", "target": k, "reason": f"{len(counted)} counted DeepSeek failures",
-                            "remove": "deepseek", "add": "" if "grok" in labels else "grok", "comment": not marker,
-                            "body": f"Moving this task from DeepSeek to grok after {len(counted)} failed attempts:\n"
-                                    f"{lines}\n\n<!-- orchestrate:swap -->"})
-            if "in-review" in labels and k in owned["in-review"]:
-                actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
-            continue
-        if "grok" in labels:
-            continue
-        # Infra failures (provider 429/503) since the last reset: never counted above. While the latest
-        # attempt is one, re-mention it after the delay, at most INFRA_MAX_RETRIES times; the count
-        # comes from the comments, so a restart or rerun sees the same number.
-        infra = [h for h in hist if h["outcome"] == "infra" and h["at"] > since]
-        retry, exhausted = 0, False
-        if latest and latest["outcome"] == "infra" and latest["at"] > since:
-            if len(infra) > INFRA_MAX_RETRIES:
-                exhausted = True
-                notes.append({"kind": "infra_exhausted", "target": k, "failures": len(infra), "report": latest["report"]})
-                key = infra_key(k, latest["report"])
-                if key not in posted:
-                    posted.add(key)
-                    actions.append({"type": "infra_status", "target": status_target(cfg), "key": key, "item": k,
-                                    "reason": f"{k}: infra retries exhausted",
-                                    "body": infra_status_body(k, infra, key, snapshot["run_id"])})
-            else:
-                due = latest["report_at"] + infra_delay
-                if now < due:
-                    notes.append({"kind": "infra_wait", "target": k, "retry": len(infra), "due": iso(due),
-                                  "error": latest.get("error", "")})
-                else:
-                    retry = len(infra)
-        deps, bad = parse_deps(it.get("body"), it["repo"])
-        unmet = [d for d in deps if dep_state(d, snapshot, repos) != "met"]
-        for d in unmet:
-            notes.append({"kind": "dep_unmet", "target": k, "dep": d, "state": dep_state(d, snapshot, repos)})
-        for b in bad:
-            notes.append({"kind": "dep_unparsed", "target": k, "token": b})
-        if k in cycles:
-            notes.append({"kind": "dep_cycle", "target": k})
-        blocked = bool(unmet or bad or k in cycles or exhausted)
-        if blocked and "blocked" not in labels:
-            actions.append({"type": "add_label", "target": k, "label": "blocked",
-                            "reason": "infra retries exhausted" if exhausted else "unmet dependency"})
-        if not blocked and "blocked" in labels and k in owned["blocked"]:
-            actions.append({"type": "remove_label", "target": k, "label": "blocked", "reason": "dependencies met"})
-        if latest and latest["outcome"] == "review" and "in-review" not in labels:
-            actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
-        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels and k in owned["in-review"]):
-            actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
-        if rw["state"]:
-            # A FAIL on the PR head replaces the issue-style dispatch with a rework of that PR.
-            pr = items[rw["target"]]
-            pr_running = any(h["outcome"] == "in_flight" for h in dispatch_history(pr, now, cfg, exclusions))
-            if rw["state"] == "pending" and not (running or pr_running or blocked or "blocked" in labels or pr.get("draft")):
-                queue.append((1, ready_time(it), pr["repo"], pr["number"], rw["target"], 0, k))
-            else:
-                notes.append({"kind": "rework_skipped", "target": rw["target"], "verdict": (rw["verdict"] or rw["ci"])["url"],
-                              "reason": "in flight or blocked" if rw["state"] == "pending" else rw["state"]})
-            continue
-        # A running target is never dispatched again, even after a failure reset.
-        eligible = (not running and not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
-                    and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since
-                         or retry > 0))
-        if eligible:
-            prio = 0 if "priority/blocker" in labels else 2
-            queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry, k))
-    grok_rework_actions, routed = decide_grok_rework(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
-    new_state["verify_fail_unrouted"] = verify_fail_unrouted(items, state.get("verify_fail_unrouted", {}), notes, routed)
-    scope = cfg.get("ORCHESTRATE_SCOPE", "")
-    if scope:
-        queue = [q for q in queue if q[4] == scope]
-    if in_flight:
-        notes.append({"kind": "in_flight", "targets": in_flight})
-    # Dependent tasks never run together without an extra guard: a queued task has every Depends on
-    # target met (closed as completed or merged), while an in-flight or same-tick target is an open item,
-    # so its dependents are blocked above.
-    # dsh runs one task per repo at a time and queues the rest, and a queued task could hit the 3h
-    # timeout and count as a failure. So one DeepSeek task per repo: a repo with a task in flight or
-    # picked in this tick is skipped, and the slot goes to the next task from another repo.
-    busy = {items[k]["repo"] for k in in_flight}
-    free = max(0, cap - slots_used)
-    if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
-        free = 0  # pause switch: no new dispatches; in-flight tracking and merges carry on, wakes go silent
-    picked, seen = 0, set()
-    for q in sorted(queue):
-        if picked >= free:
-            break
-        if q[4] in seen:
-            continue  # a PR queued by both itself and its issue
-        seen.add(q[4])
-        if q[2] in busy:
-            notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
-            continue
-        busy.add(q[2])
-        picked += 1
-        if q[0] == 1:
-            pr = items[q[4]]
-            plan = rework_plan(q[6], items[q[6]], items, reset_time(items[q[6]]))
-            v, cf = plan["verdict"], plan["ci"]
-            why = f"verify FAIL {v['url']}" if v else f"CI failure {cf['url']}"
-            actions.append({"type": "dispatch", "target": q[4], "owner": q[6], "head": pr["head_sha"],
-                            "reason": f"rework after {why}, DeepSeek slot {slots_used + picked} of {cap}",
-                            "body": rework_body(pr, v, cf)})
-            continue
-        retry_line = f"Retry {q[5]}/{INFRA_MAX_RETRIES} after provider error.\n\n" if q[5] else ""
-        actions.append({"type": "dispatch", "target": q[4],
-                        "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
-                        + f"DeepSeek slot {slots_used + picked} of {cap}",
-                        "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
-    new_state["grok_released"] = {}
-    actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes,
-                           now, state.get("grok_released", {}), new_state["grok_released"])
-    rebuild_actions, rebuild = decide_rebuild(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), notes)
-    actions += rebuild_actions
-    actions += grok_rework_actions
-    actions += decide_lead(snapshot, cfg, notes, routed)
-    merge_actions, merge_notes = decide_merges(snapshot, new_state, now, cfg, repos)
-    actions += merge_actions
-    notes += merge_notes
-    actions += decide_ac_ticks(snapshot, new_state, now, cfg, notes)
-    # Last: label repairs take the writes left under the cap, and a PR missed this tick converges on the next.
-    actions += decide_verify_labels(items, cfg, notes)
+def decide(snapshot, state, now, cfg, exclusions, call_order=None):
+    """Pure: the same inputs give the same output. Returns {"actions", "notes", "state", "pending_count",
+    "rebuild"}. Every rule in rules.RULES decides on its own copy of state; call_order (tests) changes only
+    the order the rules are called in, never the result."""
+    rule_cfg = dict(cfg)
+    rule_cfg[EXCLUSIONS_KEY] = exclusions
+    decisions = {}
+    for r in call_order or rules.RULES:
+        decisions[r.NAME] = r.decide(snapshot, json.loads(json.dumps(state)), rule_cfg, now)
+    result = merge_decisions(rules.RULES, decisions, state)
     # vws-deploy#521: STOP / DISPATCH=off is full wake-thread silence, even with work queued.
-    actions = suppress_wakes(actions, cfg, notes)
-    return {"actions": actions, "notes": notes, "state": new_state, "pending_count": len(pending), "rebuild": rebuild}
+    result["actions"] = suppress_wakes(result["actions"], cfg, result["notes"])
+    return result
 
 
 # ---------------------------------------------------------------- collect
