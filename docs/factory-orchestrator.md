@@ -265,7 +265,9 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
 - **Trusted reads (vws-deploy#439 AC2, class 1):** `.github/orchestrate/trusted_read.py` holds every
   marker, marker regex and match of one; orchestrate.py and the rule modules import it and
   `.github/drift/trusted_read_lint.py` (run by drift-check) fails on a marker match anywhere else in
-  `orchestrate.py` or `rules/*.py`.
+  `orchestrate.py` or `rules/*.py`. The compiled marker regexes are `CI_FAIL_RE`, `KEY_RE`,
+  `MARKER_KIND_RE`, `FAILURE_SECTION_RE` and `GUARD_RETRY_RE` (the #446 repo-guard retry line).
+  `tests/drift/test_trusted_read_lint.py` pins that set, so a new one is a deliberate change.
   - A verify wake, an idempotency key, a key's first time (the Grok wake timeout) and the
     `ac-tick` marker count only from a comment by the orchestrator's own login (`popododo0720`, the
     box gh login). A copy posted by anyone else neither suppresses, backdates nor dedupes a write.
