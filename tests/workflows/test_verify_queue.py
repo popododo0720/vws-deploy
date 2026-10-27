@@ -27,6 +27,58 @@ GH = """case "$*" in
   *"/reviews?per_page=100") if [ -n "${READ_FAIL:-}" ]; then echo "$READ_FAIL" >&2; exit 1; fi
     [ -n "${REVIEWS_JSON:-}" ] && printf '%s\\n' "$REVIEWS_JSON" ;;
   *"/comments?per_page=100") [ -n "${COMMENTS_JSON:-}" ] && printf '%s\\n' "$COMMENTS_JSON" ;;
+  *vq-verdicts*|*vq-reviews*|*vq-comments*)
+    if [ -n "${READ_FAIL:-}" ]; then echo "$READ_FAIL" >&2; exit 1; fi
+    export GH_ARGS="$*"
+    python3 - <<'PY'
+import json, os, sys
+args = os.environ.get("GH_ARGS", "")
+spec = os.environ.get("VQ_PAGES", "")
+if spec:
+    data = json.loads(spec)
+    def pick(kind, flag):
+        pages = data.get(kind) or [{"nodes": [], "hasPreviousPage": False}]
+        cursor = None
+        for part in args.split():
+            if part.startswith(flag):
+                cursor = part.split("=", 1)[1]
+        if cursor in (None, "", "null"):
+            page = pages[0]
+        else:
+            page = next(p for p in pages if p.get("when") == cursor)
+        return {"pageInfo": {"hasPreviousPage": bool(page.get("hasPreviousPage")), "startCursor": page.get("startCursor")},
+                "nodes": page.get("nodes") or []}
+    pr = {}
+    if "vq-reviews" in args or "vq-verdicts" in args:
+        pr["reviews"] = pick("reviews", "reviewCursor=")
+    if "vq-comments" in args or "vq-verdicts" in args:
+        pr["comments"] = pick("comments", "commentCursor=")
+    json.dump({"data": {"repository": {"pullRequest": pr}}}, sys.stdout)
+    raise SystemExit
+def pages(raw):
+    items = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if line:
+            items.extend(json.loads(line))
+    return items
+reviews = pages(os.environ.get("REVIEWS_JSON", ""))
+comments = pages(os.environ.get("COMMENTS_JSON", ""))
+def review(r):
+    return {"databaseId": r.get("id"), "submittedAt": r.get("submitted_at"), "state": r.get("state"),
+            "commit": {"oid": r.get("commit_id")}, "author": {"login": (r.get("user") or {}).get("login")}}
+def comment(c):
+    return {"databaseId": c.get("id"), "createdAt": c.get("created_at"),
+            "author": {"login": (c.get("user") or {}).get("login")},
+            "authorAssociation": c.get("author_association"), "body": c.get("body")}
+# One page and no older page. Walking older pages is VQ_PAGES, tested separately.
+out = {"data": {"repository": {"pullRequest": {
+    "reviews": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [review(r) for r in reviews]},
+    "comments": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [comment(c) for c in comments]},
+}}}}
+json.dump(out, sys.stdout)
+PY
+    ;;
   *"-X DELETE"*) if [ -n "${DELETE_FAIL:-}" ]; then echo "$DELETE_FAIL" >&2; exit 1; fi ;;
   *"-X POST"*) exit 0 ;;
   *) echo "unexpected gh $*" >&2; exit 9 ;;
@@ -178,6 +230,19 @@ class Label(unittest.TestCase):
     def test_green_except_verify_checks_adds_the_label(self):
         writes, _ = self.go()
         self.assertEqual(writes, [self.ADD])
+
+    def test_green_verdict_read_is_one_query_not_a_full_walk(self):
+        # main listed every review page and every comment page. One GraphQL read replaces both.
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": ""}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls.count("vq-verdicts"), 1, calls)
+        self.assertNotIn("vq-reviews", calls)
+        self.assertNotIn("vq-comments", calls)
+        self.assertNotIn("/reviews?", calls)
+        self.assertNotIn("/comments?", calls)
+        self.assertIn(self.ADD, calls)
 
     def test_called_verify_gate_waits_for_the_verdict_too(self):
         # vws-deploy#402: repo-guard.yml calls the gate as "gate / verify-gate", next to its bare shim.
@@ -440,6 +505,51 @@ class HeadFail(unittest.TestCase):
         rc, calls, out = Stub(self, GH).run(self.script(), e)
         self.assertEqual(rc, 0, out)
         self.assertNotIn("/reviews", calls)
+
+    def test_newest_page_with_a_fail_does_not_read_older_reviews(self):
+        # An older PASS must not be fetched, and must not hide the newest FAIL.
+        fail = {"databaseId": 9, "submittedAt": "2026-10-23T09:00:00Z", "state": "CHANGES_REQUESTED",
+                "commit": {"oid": SHA}, "author": {"login": "vws-verify[bot]"}}
+        older = {"databaseId": 1, "submittedAt": "2026-10-23T01:00:00Z", "state": "APPROVED",
+                 "commit": {"oid": SHA}, "author": {"login": "vws-verify[bot]"}}
+        pages = json.dumps({
+            "reviews": [
+                {"nodes": [fail], "hasPreviousPage": True, "startCursor": "r1"},
+                {"when": "r1", "nodes": [older], "hasPreviousPage": False},
+            ],
+            "comments": [{"nodes": [], "hasPreviousPage": False}],
+        })
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": "", "VQ_PAGES": pages}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls.count("vq-verdicts"), 1, calls)
+        self.assertNotIn("vq-reviews", calls)
+        self.assertNotIn("reviewCursor=r1", calls)
+        self.assertNotIn("-X POST", calls)
+        self.assertIn("verdict review 9", out)
+
+    def test_older_fail_on_this_head_still_blocks(self):
+        # The newest page has no verdict for this head. Skipping the older page would add needs-verify.
+        other = {"databaseId": 3, "submittedAt": "2026-10-23T09:00:00Z", "state": "CHANGES_REQUESTED",
+                 "commit": {"oid": OTHER}, "author": {"login": "vws-verify[bot]"}}
+        fail = {"databaseId": 4, "submittedAt": "2026-10-23T08:00:00Z", "state": "CHANGES_REQUESTED",
+                "commit": {"oid": SHA}, "author": {"login": "vws-verify[bot]"}}
+        pages = json.dumps({
+            "reviews": [
+                {"nodes": [other], "hasPreviousPage": True, "startCursor": "r1"},
+                {"when": "r1", "nodes": [fail], "hasPreviousPage": False},
+            ],
+            "comments": [{"nodes": [], "hasPreviousPage": False}],
+        })
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": "", "VQ_PAGES": pages}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("vq-reviews", calls)
+        self.assertIn("reviewCursor=r1", calls)
+        self.assertNotIn("-X POST", calls)
+        self.assertIn("verdict review 4", out)
 
     def test_failed_verdict_read_fails_the_job_without_labeling(self):
         e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
