@@ -7,9 +7,12 @@ Per Go repo, on its default branch:
   copies   no vws-proto generated code in the tree: nothing under third_party/vws-proto/, no *.pb.go under a
            gen/go/vws/ path, and no other *.pb.go whose header names a vws/ proto source (the
            `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API)
-Every read that fails, and a truncated tree listing, is drift, never ok.
+Every read that fails, and a truncated tree listing, is drift, never ok. A Contents reply over ~1MB has
+`encoding: none` and an empty body (vws-deploy#547): that is not a read. The file is read again through the
+Git Blobs API by sha, and when that fails too the file is unreadable.
 """
 import base64
+import binascii
 import re
 
 MODULE = "github.com/popododo0720/vws-proto"
@@ -120,12 +123,41 @@ def proto_tags(owner, api):
     return [t.get("name") for t in d if isinstance(t, dict) and isinstance(t.get("name"), str)]
 
 
-def _read(owner, repo, api):
+def decode_contents(d):
+    """The bytes of a Contents or Git Blobs reply, or None when the reply holds no full body: not base64
+    (Contents sends `encoding: none` and an empty content over ~1MB), not decodable, or shorter than its size."""
+    if not isinstance(d, dict) or not isinstance(d.get("content"), str) or d.get("encoding", "base64") != "base64":
+        return None
+    try:
+        body = base64.b64decode(d["content"], validate=False)
+    except (binascii.Error, ValueError):
+        return None
+    size = d.get("size")
+    if isinstance(size, int) and not isinstance(size, bool) and len(body) != size:
+        return None
+    return body
+
+
+def read_file(owner, repo, path, api, sha=None, ref=None):
+    """A file's bytes through the Contents API, then the Git Blobs API by sha (from the tree, or from the
+    Contents reply) when Contents gives no full body; None when neither does (fail closed)."""
+    d = api(f"repos/{owner}/{repo}/contents/{path}" + (f"?ref={ref}" if ref else ""))
+    body = decode_contents(d)
+    if body is not None:
+        return body
+    if isinstance(d, dict) and d.get("type", "file") != "file":
+        return None
+    sha = sha or (d.get("sha") if isinstance(d, dict) else None)
+    if not isinstance(sha, str) or not sha:
+        return None
+    return decode_contents(api(f"repos/{owner}/{repo}/git/blobs/{sha}"))
+
+
+def _read(owner, repo, api, shas=None):
+    shas = shas or {}
+
     def read(path):
-        d = api(f"repos/{owner}/{repo}/contents/{path}")
-        if not isinstance(d, dict) or "content" not in d:
-            return None
-        return base64.b64decode(d["content"])
+        return read_file(owner, repo, path, api, sha=shas.get(path))
     return read
 
 
@@ -135,9 +167,10 @@ def proto_cell(owner, repo, latest, tags, api):
     if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
         return ["repo tree unreadable"], ""
     issues = ["repo tree truncated; pb.go copy check incomplete"] if t.get("truncated") else []
-    paths = [e.get("path") for e in t["tree"] if isinstance(e, dict) and e.get("type") == "blob"
+    blobs = [e for e in t["tree"] if isinstance(e, dict) and e.get("type") == "blob"
              and isinstance(e.get("path"), str)]
-    read = _read(owner, repo, api)
+    paths = [e["path"] for e in blobs]
+    read = _read(owner, repo, api, {e["path"]: e.get("sha") for e in blobs if isinstance(e.get("sha"), str)})
     used = []
     for path in paths:
         if path.rsplit("/", 1)[-1] != "go.mod" or SKIP_DIRS & set(path.split("/")[:-1]):
