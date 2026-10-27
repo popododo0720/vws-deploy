@@ -101,6 +101,35 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
+// responseWriter records whether the handler already sent the response header, so the router
+// does not write an error over a response that started (vws-deploy#387).
+type responseWriter struct {
+	http.ResponseWriter
+	sent bool
+}
+
+func (w *responseWriter) WriteHeader(status int) {
+	w.sent = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseWriter) Write(p []byte) (int, error) {
+	w.sent = true
+	n, err := w.ResponseWriter.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("write response: %w", err)
+	}
+	return n, nil
+}
+
+// Flush keeps the event stream's http.Flusher assertion working through the wrapper.
+func (w *responseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		w.sent = true
+		f.Flush()
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
