@@ -463,3 +463,28 @@ class CollectTick(test_runtime.Env):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusLine(unittest.TestCase):
+    """vws-deploy#532: the #415 Now block always shows Grok slot occupancy next to the DeepSeek line."""
+
+    @staticmethod
+    def now_block(s, cfg=ON):
+        body = orch.status_body(s, run(s, cfg), cfg, {}, "apply", NOW)
+        return body.split("## Now", 1)[1].split("\n## ", 1)[0]
+
+    def test_claimed_holder_is_named(self):
+        s = snapshot(grok_task("vws-iam", 1, ready_hours_ago=20), grok_task("vws-deploy", 2))
+        s = posted(s, run(s))
+        now = self.now_block(s)
+        self.assertIn("\n- Grok in flight: 1 of 1: vws-iam#1\n", now)
+        self.assertLess(now.index("- DeepSeek in flight:"), now.index("- Grok in flight:"))
+
+    def test_assigned_without_wake_holds_and_is_named(self):
+        s = snapshot(item("vws-proto", 9, labels=("grok",)))
+        s["items"]["vws-proto#9"]["assignees"] = ["grok-dev"]
+        self.assertIn("\n- Grok in flight: 1 of 2: vws-proto#9\n", self.now_block(s, dict(ON, ORCHESTRATE_GROK_CAP="2")))
+
+    def test_empty_still_prints_the_line(self):
+        for cfg, cap in ((ON, 1), (dict(ON, ORCHESTRATE_GROK_CAP="3"), 3)):
+            self.assertIn(f"\n- Grok in flight: 0 of {cap}\n", self.now_block(snapshot(), cfg))
