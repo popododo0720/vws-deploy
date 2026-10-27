@@ -53,6 +53,7 @@ Cross-repo, in vws-deploy drift-check (present: `.github/drift/proto_drift.py`, 
 - fails on a `replace` for vws-proto, a pseudo-version, or a version that is not a vws-proto tag;
 - fails on vws-proto generated code in the tree: anything under `third_party/vws-proto/`, a `*.pb.go` under a `gen/go/vws/` path, or any other `*.pb.go` whose header is `// source: vws/...` (the `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API);
 - fails closed: an unreadable tree, `go.mod` or tag list, and a truncated tree listing, are drift.
+- reads large files through the Git Blobs API: the contents API answers a file over ~1MB with `encoding: none` and an empty body, which is never a read. drift-check reads that file again by its tree sha through the Git Blobs API, and when that fails too the file is unreadable, so a large `*.pb.go` copy fails closed and never passes uninspected (#547).
 
 Per consumer, in the repo's own tests: not present, and not planned. No service repo has a test for its `go.mod` vws-proto entry (checked on 2026-10-27 in the five consumers). drift-check is the one place for the rule, so it is not copied into five repos. The cost: a consumer PR that adds a copy is caught by the next daily run, not at the PR.
 
