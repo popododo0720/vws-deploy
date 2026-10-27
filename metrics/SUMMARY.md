@@ -1,14 +1,15 @@
 # Factory metrics summary
 
-Through 2026-10-26 (KST days). Written by .github/metrics/metrics.py in vws-deploy (#345); one file per day in metrics/daily/.
+Through 2026-10-27 (KST days). Written by .github/metrics/metrics.py in vws-deploy (#345); one file per day in metrics/daily/.
 
-- Last 7 days (7 with data): 242 PRs merged, 333 opened, 88 DeepSeek dispatches (72 done, 19 failed, 0 timed out), 201 grok swaps.
-- Last 7 days wakes: 113 verify wakes, 88 DeepSeek and 12 grok dispatches (16 reworks) (4 days with data), lead wakes: - (0 days with input); tokens per merged PR: - (0 days with input).
-- Last 28 days (13 with data): 459 PRs merged, 605 opened, 88 DeepSeek dispatches (72 done, 19 failed, 0 timed out), 201 grok swaps.
-- Last 28 days wakes: 113 verify wakes, 88 DeepSeek and 12 grok dispatches (16 reworks) (4 days with data), lead wakes: - (0 days with input); tokens per merged PR: - (0 days with input).
+- Last 7 days (7 with data): 270 PRs merged, 370 opened, 98 DeepSeek dispatches (81 done, 20 failed, 0 timed out), 209 grok swaps.
+- Last 7 days wakes: 139 verify wakes, 98 DeepSeek and 18 grok dispatches (21 reworks) (5 days with data), lead wakes: 31 (1 days with input); tokens per merged PR: - (0 days with input).
+- Last 28 days (14 with data): 487 PRs merged, 645 opened, 98 DeepSeek dispatches (81 done, 20 failed, 0 timed out), 209 grok swaps.
+- Last 28 days wakes: 139 verify wakes, 98 DeepSeek and 18 grok dispatches (21 reworks) (5 days with data), lead wakes: 31 (1 days with input); tokens per merged PR: - (0 days with input).
 
 | day | prs_opened | prs_merged | lead_time_median_h | verify_pass_rate | deepseek_dispatched | deepseek_done | deepseek_failed | deepseek_timeout | grok_swaps | ci_failure_rate | verify_backlog | stalls | tokens | verify_wakes | grok_dispatches | rework_dispatches | lead_wakes | alerts |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-27 | 40 | 28 | 0.58 | 0.906 | 10 | 9 | 1 | 0 | 8 | 0.031 | 16 | 103 | - | 26 | 6 | 5 | 31 | stall |
 | 2026-10-26 | 30 | 30 | 0.64 | 1.0 | 0 | 0 | 0 | 0 | 5 | 0.004 | 18 | 114 | - | 52 | 4 | 0 | - | stall |
 | 2026-10-25 | 26 | 28 | 1.01 | 0.938 | 0 | 0 | 0 | 0 | 7 | 0.01 | 18 | 103 | - | 26 | 2 | 13 | - | stall |
 | 2026-10-24 | 54 | 38 | 1.11 | 0.902 | 2 | 2 | 0 | 0 | 9 | 0.0 | 29 | 1 | - | 17 | 1 | 1 | - | stall |
