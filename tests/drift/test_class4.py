@@ -34,6 +34,11 @@ def local(path):
         return f.read()
 
 
+def local_ce():
+    """The pinned check-english.sh (vws-deploy has no copy of its own)."""
+    return fixture("vws-lib-main-check-english.sh")
+
+
 def repo_pins():
     return dc.load_vendored(os.path.join(ROOT, ".github", "drift", "vendored.tsv"))
 
@@ -55,14 +60,14 @@ class VendoredPins(unittest.TestCase):
         raw = fixture("vws-storage-140-919f516-verify-queue.yml")
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
                          "1db525d00d9c5e1752509b763a952a2ba34eed5c097e61fb826fbecc0d96a0d0")
-        issues, notes = dc.vendored_issues("vws-storage", {VQ: raw}, repo_pins())
+        issues, notes = dc.vendored_issues("vws-storage", {VQ: raw, CE: local_ce()}, repo_pins())
         self.assertEqual(len(issues), 1)
         self.assertIn("verify-queue.yml differs from the vws-deploy pin", issues[0])
         self.assertIn("got 1db525d00d9c", issues[0])
         self.assertEqual(notes, [])
 
     def test_byte_identical_copy_passes(self):
-        self.assertEqual(dc.vendored_issues("vws-storage", {VQ: local(VQ)}, repo_pins()), ([], []))
+        self.assertEqual(dc.vendored_issues("vws-storage", {VQ: local(VQ), CE: local_ce()}, repo_pins()), ([], []))
 
     def test_check_english_copy_passes_and_one_byte_off_is_drift(self):
         raw = fixture("vws-lib-main-check-english.sh")
@@ -230,7 +235,8 @@ class PrHeads(unittest.TestCase):
     def test_clean_head_passes_and_check_english_is_read_at_the_head(self):
         sha = "a" * 40
         heads = [("#1", sha, {VQ: local(VQ)})]
-        self.assertEqual(self.run_heads(heads, local("scripts/guard-agents.sh")), [])
+        self.assertEqual(self.run_heads(heads, local("scripts/guard-agents.sh"),
+                                        at_head={(CE, sha): local_ce()}), [])
         out = self.run_heads(heads, local("scripts/guard-agents.sh"), at_head={(CE, sha): b"drifted\n"})
         self.assertEqual(len(out), 1)
         self.assertIn("check-english.sh differs", out[0])
