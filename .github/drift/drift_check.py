@@ -20,7 +20,8 @@ Checks per repo, on its default branch:
   guard       scripts/guard-agents.sh matches vws-deploy's scripts/guard-agents.sh.sha256, or the one
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   vendored    each file that vendored.tsv pins (verify-queue.yml, check-english.sh) matches its full sha256, or
-              the one variant pinned for that repo; a repo without the file is not checked here (#439 class 4)
+              the one variant pinned for that repo (#439 class 4). Every repo but vws-deploy must have
+              check-english.sh (#423); a missing verify-queue.yml is the workflows cell's drift
   bootstrap   every workflow run: step that calls scripts/guard-agents.sh SUB, and every vws-deploy
               repo-guard-*.yml the caller pins, names a SUB that the default-branch script already
               dispatches: the script lands first, then the workflow that calls it (#439 class 4)
@@ -428,6 +429,9 @@ def guard_status(got, want, variant=None):
 
 
 VENDORED_CHECK_ENGLISH = "scripts/check-english.sh"
+# Vendored files every repo must carry: {path: repos exempt}. vws-deploy runs guard.sh english instead (#423).
+# vws-hypervisor is archived and not needed, so it carries no copy (#423 lead decision B).
+VENDORED_REQUIRED = {VENDORED_CHECK_ENGLISH: {"vws-deploy", "vws-hypervisor"}}
 
 
 def load_vendored(path):
@@ -457,11 +461,14 @@ def load_vendored(path):
 
 
 def vendored_issues(repo, got, pins):
-    """([issues], [notes]) for one ref's vendored files. got is {path: bytes or None}; None or absent is skipped."""
+    """([issues], [notes]) for one ref's vendored files. got is {path: bytes or None}; None or absent is
+    skipped unless VENDORED_REQUIRED holds the path for this repo."""
     issues, notes = [], []
     for path in sorted(pins):
         raw = got.get(path)
         if raw is None:
+            if path in VENDORED_REQUIRED and repo not in VENDORED_REQUIRED[path]:
+                issues.append(f"no {path}")
             continue
         name = path.rsplit("/", 1)[1]
         digest = hashlib.sha256(raw).hexdigest()

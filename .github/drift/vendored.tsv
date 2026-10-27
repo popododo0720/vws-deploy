@@ -1,7 +1,7 @@
 # Shared files that other vws-* repos vendor byte for byte (vws-deploy#439 class 4, drift_check.py).
 # path<TAB>repo<TAB>full sha256<TAB>reason. Repo "*" is the digest every repo must hold; a repo row is that
-# repo's one accepted variant. A repo without the file is not checked here (a missing verify-queue.yml is
-# the workflows cell). When vws-deploy changes its own copy, update the "*" row in the same commit:
+# repo's one accepted variant. A repo without check-english.sh is drift except vws-deploy and the archived
+# vws-hypervisor (#423, lead decision B: archived / not needed; VENDORED_REQUIRED); a missing verify-queue.yml is the workflows cell. When vws-deploy changes its own copy, update the "*" row in the same commit:
 # tests/workflows/test_vendored_pin.py (scripts/guard.sh R13) fails until it matches.
 .github/workflows/verify-queue.yml	*	cee05d9a20e585de8566b9ef4b29dbd31f3322e36b89a57e8cf2deeb10a14983	vws-deploy's own file
 scripts/check-english.sh	*	69e1c3a81248fab8635c2f6fde30ae49b74ce3fa56c7832b58c5464a27b585d8	no copy in vws-deploy; the one copy in all 8 repos that carry it on 2026-10-25 (vws-lib main)
