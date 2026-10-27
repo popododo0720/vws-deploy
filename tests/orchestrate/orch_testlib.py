@@ -45,10 +45,11 @@ def event(kind, label, hours_ago):
 
 
 def item(repo, number, labels=(), is_pr=False, draft=False, base="main", body="", comments=(), events=(),
-         ci="ok", state="open", state_reason=None, report_prs=None, created_hours_ago=100, head_sha=None):
+         ci="ok", state="open", state_reason=None, report_prs=None, created_hours_ago=100, head_sha=None,
+         title=""):
     return {"repo": repo, "number": number, "url": f"{U}/{repo}/{'pull' if is_pr else 'issues'}/{number}",
             "is_pr": is_pr, "state": state, "state_reason": state_reason, "created_at": ts(created_hours_ago),
-            "labels": sorted(labels), "body": body, "draft": draft, "base": base if is_pr else "",
+            "labels": sorted(labels), "body": body, "title": title, "draft": draft, "base": base if is_pr else "",
             "head_sha": head_sha or (hashlib.sha1(f"{repo}#{number}".encode()).hexdigest() if is_pr else ""), "comments": list(comments),
             "events": list(events), "report_prs": report_prs or {}, "ci": ci}
 

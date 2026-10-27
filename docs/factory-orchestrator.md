@@ -262,8 +262,18 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
   waiting for review forever. The tick itself does not fail. If such a report was a real mistake,
   `/orchestrate reset-failures` or an exclusions.tsv entry clears it.
 - **Move to grok and `in-review`:** when a task moves to grok, the orchestrator also removes
-  `in-review` if it added that label itself; a human-set `in-review` stays. A task already on grok
-  that still has an orchestrator-owned `in-review` loses it on the next tick.
+  `in-review` if it added that label itself and no open PR still names the issue. A task already
+  on grok that still has an orchestrator-owned `in-review` loses it on the next tick in the same
+  case.
+- **Stale `in-review` (vws-deploy#560):** an open issue loses `in-review` when no open PR names it
+  with `Part of` (`Part of #N`, `Part of vws-<repo>#N`, or `Part of owner/repo#N`), `Closes`,
+  `Fixes` or `Resolves` (`#N`, `vws-<repo>#N` or `owner/repo#N` in the PR title or body). The
+  ownership journal is not required, so a missing `state.json` entry cannot leave the label on
+  after the PR closes. A Done report whose PR is still open keeps the label. A keyword inside a
+  code fence or an HTML comment does not count. The next tick plans nothing once the label is
+  gone. A pull request's own `in-review` label is left as it is. A human-set `in-review` stays
+  only while such a PR is open. The check lives in `rules/deepseek.py`; the link forms live in
+  `rules/common.py`.
 - **Failure resets** (failures before them do not count):
   - `deepseek` re-added after `grok`;
   - a comment starting `/orchestrate reset-failures` from a trusted author (see Trusted comments);
@@ -603,7 +613,8 @@ board is overwritten on the next sync. Design: vws-deploy#347.
 - **Crash recovery:**
   - An interrupted grok swap (`grok` added, `deepseek` still there) is finished on the next tick.
   - Ownership of `blocked` and `in-review` is journaled in `state.json` before the write, and pruned
-    when the label is not on the item.
+    when the label is not on the item. A missing `in-review` entry does not keep the label: the
+    stale-`in-review` rule removes it when no open PR names the issue.
 - **Re-check before a Grok wake:** right before each wake comment, it is skipped if the verify-wake thread already has
   its key, or the issue closed, lost `ready` or `grok`, or got an assignee, `deepseek` or an opt-out
   label since collect. An `ac-partial` continuation wake (vws-deploy#545) may keep its assignee; any other wake is still skipped when an assignee appeared. It then re-reads `issues?state=open&labels=grok` in every scoped repo and
