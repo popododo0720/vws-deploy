@@ -1147,3 +1147,29 @@ class DualEventWorkflows(unittest.TestCase):
                          [".github/workflows/repo-guard.yml runs on both pull_request and pull_request_target: a job "
                           "gated to one event reports a skipped check under the same name on the other, and Rule D "
                           "never merges a skipped required check (vws-deploy#505)"])
+
+
+class LargeContents(unittest.TestCase):
+    """content() never returns the empty body of a Contents reply over ~1MB (vws-deploy#547)."""
+
+    LARGE = {"type": "file", "sha": "b1", "size": 1_500_000, "encoding": "none", "content": ""}
+
+    def run_content(self, replies):
+        calls = []
+
+        def gh(path):
+            calls.append(path)
+            return replies.get(path)
+        with mock.patch.object(dc, "gh", gh):
+            return dc.content("o", "r", "AGENTS.md"), calls
+
+    def test_encoding_none_without_blob_is_unreadable(self):
+        got, _ = self.run_content({"repos/o/r/contents/AGENTS.md": self.LARGE})
+        self.assertIsNone(got)
+
+    def test_encoding_none_reads_the_blob(self):
+        body = b"# AGENTS\n" * 200_000
+        blob = {"sha": "b1", "size": len(body), "encoding": "base64", "content": base64.b64encode(body).decode()}
+        got, calls = self.run_content({"repos/o/r/contents/AGENTS.md": self.LARGE, "repos/o/r/git/blobs/b1": blob})
+        self.assertEqual(got, body)
+        self.assertIn("repos/o/r/git/blobs/b1", calls)
