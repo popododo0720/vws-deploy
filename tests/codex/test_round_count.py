@@ -1,4 +1,7 @@
-"""Behavior tests for scripts/codex-round-count.sh, the per-issue Codex round cap (vws-deploy#403).
+"""Behavior tests for scripts/codex-round-count.sh, the per-PR Codex round cap (vws-deploy#579).
+
+The cap counts unique heads per (repo, PR). The issue column is kept for reporting only; it
+superseded the per-issue cap of vws-deploy#403.
 
 Run: python3 -m unittest discover -s tests/codex
 """
@@ -40,22 +43,21 @@ class Base(unittest.TestCase):
         res = self.run_script("init", "--out-dir", self.out)
         self.assertEqual(res.returncode, 0, res.stderr)
 
-    def q(self, issue, pr=None, repo=REPO):
-        args = ["--out-dir", self.out, "--repo", repo, "--issue", str(issue)]
-        return args + (["--pr", str(pr)] if pr is not None else [])
+    def q(self, issue, pr, repo=REPO):
+        return ["--out-dir", self.out, "--repo", repo, "--issue", str(issue), "--pr", str(pr)]
 
     def record(self, issue, pr, sha):
         res = self.run_script("record", *self.q(issue, pr), "--sha", sha)
         self.assertEqual(res.returncode, 0, res.stderr)
 
-    def check(self, issue, **kw):
-        return self.run_script("check", *self.q(issue), **kw)
+    def check(self, issue, pr, **kw):
+        return self.run_script("check", *self.q(issue, pr), **kw)
 
     def car(self, issue, pr, sha, repo=REPO):
         return self.run_script("check-and-record", *self.q(issue, pr, repo), "--sha", sha)
 
-    def count(self, issue):
-        res = self.run_script("count", *self.q(issue))
+    def count(self, issue, pr):
+        res = self.run_script("count", *self.q(issue, pr))
         self.assertEqual(res.returncode, 0, res.stderr)
         return int(res.stdout.strip())
 
@@ -84,40 +86,90 @@ class CapTest(Base):
             self.assertEqual(self.car(319, 319, sha).returncode, 0)
         res = self.car(319, 319, "ddddddd")
         self.assertEqual(res.returncode, 1)
-        self.assertIn("already had 3 Codex rounds (max 3)", res.stderr)
+        self.assertIn("PR vws-console-api#319 already had 3 Codex rounds (max 3)", res.stderr)
         self.assertIn("split the work", res.stderr)
         self.assertEqual(len(self.rows()), 3)
-        self.assertEqual(self.check(319).returncode, 1)
+        self.assertEqual(self.check(319, 319).returncode, 1)
 
-    def test_rebuilt_pr_for_same_issue_keeps_the_count(self):
-        self.car(300, 319, "aaaaaaa")
-        self.car(300, 319, "bbbbbbb")
-        self.assertEqual(self.car(300, 327, "ccccccc").returncode, 0)
-        res = self.car(300, 327, "ddddddd")
-        self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("issue vws-console-api#300 already had 3", res.stderr)
-
-    def test_different_issues_and_repos_are_independent(self):
+    def test_same_issue_two_prs_have_independent_caps(self):
         for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
-            self.record(10, 11, sha)
-        self.assertEqual(self.check(10).returncode, 1)
-        res = self.check(20)
+            self.assertEqual(self.car(300, 319, sha).returncode, 0)
+        self.assertEqual(self.car(300, 319, "ddddddd").returncode, 1)
+        res = self.check(300, 327)
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("0 of 3", res.stdout)
-        self.assertEqual(self.car(10, 11, "ddddddd", repo="vws-console").returncode, 0)
+        self.assertIn("PR vws-console-api#327: 0 of 3", res.stdout)
+        for sha in ("1111111", "2222222", "3333333"):
+            res = self.car(300, 327, sha)
+            self.assertEqual(res.returncode, 0, res.stderr)
+        res = self.car(300, 327, "4444444")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("PR vws-console-api#327 already had 3", res.stderr)
+        self.assertEqual((self.count(300, 319), self.count(300, 327)), (3, 3))
+        self.assertEqual(len(self.rows()), 6)
 
-    def test_same_head_twice_counts_once(self):
+    def test_same_pr_two_shas_accumulate(self):
+        self.assertEqual(self.car(5, 6, "aaaaaaa").returncode, 0)
+        self.assertEqual(self.count(5, 6), 1)
+        self.assertEqual(self.car(5, 6, "bbbbbbb").returncode, 0)
+        self.assertEqual(self.count(5, 6), 2)
+        self.assertIn("2 of 3", self.check(5, 6).stdout)
+
+    def test_retry_same_sha_counts_once(self):
         self.record(5, 6, "aaaaaaa1234")
         res = self.car(5, 6, "aaaaaaa")
         self.assertEqual(res.returncode, 0)
         self.assertIn("already recorded", res.stdout)
-        self.assertEqual(self.count(5), 1)
+        self.assertEqual(self.count(5, 6), 1)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_retry_of_the_head_that_hit_the_cap_is_not_refused(self):
+        for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
+            self.car(5, 6, sha)
+        res = self.car(5, 6, "ccccccc")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("already recorded", res.stdout)
+        self.assertEqual(self.count(5, 6), 3)
+
+    def test_existing_index_rows_keep_working(self):
+        """Rows written by the per-issue version (#403): a capped PR stays capped, a new PR starts at 0."""
+        self.index.write_text(HEADER + "".join(
+            f"{REPO}\t396\t{pr}\t{sha}\n" for pr, sha in ((501, "aaaaaaa"), (502, "bbbbbbb"), (502, "ccccccc"), (502, "ddddddd"))
+        ))
+        self.assertEqual(self.car(396, 502, "eeeeeee").returncode, 1)
+        self.assertEqual(self.count(396, 501), 1)
+        res = self.check(396, 600)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("0 of 3", res.stdout)
+        self.assertEqual(self.car(396, 600, "1234567").returncode, 0)
+        self.assertEqual(self.car(396, 501, "fffffff").returncode, 0)
+
+    def test_issue_column_is_reporting_only(self):
+        """A PR whose body moved to another issue keeps its rounds; the cap never reads the issue."""
+        self.record(10, 11, "aaaaaaa")
+        self.record(10, 11, "bbbbbbb")
+        self.record(12, 11, "ccccccc")
+        res = self.car(12, 11, "ddddddd")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.count(99, 11), 3)
+        res = self.run_script("check", "--out-dir", self.out, "--repo", REPO, "--pr", "11")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        res = self.run_script("count", "--out-dir", self.out, "--repo", REPO, "--pr", "13")
+        self.assertEqual((res.returncode, res.stdout.strip()), (0, "0"), res.stderr)
+
+    def test_different_prs_and_repos_are_independent(self):
+        for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
+            self.record(10, 11, sha)
+        self.assertEqual(self.check(10, 11).returncode, 1)
+        res = self.check(20, 21)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("0 of 3", res.stdout)
+        self.assertEqual(self.car(10, 11, "ddddddd", repo="vws-console").returncode, 0)
 
     def test_cap_is_configurable(self):
         for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
             self.record(7, 8, sha)
-        self.assertEqual(self.check(7, env={"CODEX_ROUND_CAP": "4"}).returncode, 0)
-        self.assertEqual(self.run_script("check", *self.q(7), "--cap", "2").returncode, 1)
+        self.assertEqual(self.check(7, 8, env={"CODEX_ROUND_CAP": "4"}).returncode, 0)
+        self.assertEqual(self.run_script("check", *self.q(7, 8), "--cap", "2").returncode, 1)
 
     def test_release_frees_a_round_only_without_a_review_file(self):
         for sha in ("aaaaaaa", "bbbbbbb", "ccccccc"):
@@ -127,7 +179,7 @@ class CapTest(Base):
         self.assertEqual(res.returncode, 2)
         res = self.run_script("release", "--out-dir", self.out, "--repo", REPO, "--pr", "9", "--sha", "ccccccc")
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.count(9), 2)
+        self.assertEqual(self.count(9, 9), 2)
         self.assertEqual(self.car(9, 9, "ddddddd").returncode, 0)
 
     def test_parallel_check_and_record_never_passes_the_cap(self):
@@ -143,20 +195,24 @@ class CapTest(Base):
         for p in procs:
             p.stdout.close()
             p.stderr.close()
-        self.assertEqual(sorted(codes), [0] * 3 + [1] * (n - 3))
-        self.assertEqual(len(self.rows()), 3, self.rows())
-        self.assertEqual(self.count(70), 3)
+        self.assertEqual(sorted(codes), [0] * 6 + [1] * (n - 6))
+        self.assertEqual(len(self.rows()), 6, self.rows())
+        self.assertEqual((self.count(70, 71), self.count(70, 72)), (3, 3))
 
     def test_invalid_input_is_rejected(self):
         before = self.index.read_text()
         cases = [
-            ["check", *self.q(0)],
-            ["check", "--out-dir", self.out, "--repo", "a/b", "--issue", "1"],
-            ["check", *self.q(7), "--cap", "0"],
+            ["check", *self.q(7, 0)],
+            ["check", "--out-dir", self.out, "--repo", REPO, "--issue", "7"],
+            ["count", "--out-dir", self.out, "--repo", REPO, "--issue", "7"],
+            ["check", "--out-dir", self.out, "--repo", "a/b", "--pr", "1"],
+            ["check", *self.q(7, 8), "--cap", "0"],
+            ["check", *self.q(0, 8)],
             ["record", *self.q(7, "x"), "--sha", "aaaaaaa"],
             ["record", *self.q(7, 8), "--sha", "ZZZZZZZ"],
+            ["record", "--out-dir", self.out, "--repo", REPO, "--pr", "8", "--sha", "aaaaaaa"],
             ["check-and-record", *self.q(7, 8)],
-            ["check", *self.q(7), "--bogus", "1"],
+            ["check", *self.q(7, 8), "--bogus", "1"],
             ["backfill", "--out-dir", self.out, "--map", "nope"],
             ["nope"],
         ]
@@ -170,7 +226,7 @@ class FailClosedTest(Base):
     """A broken index never reads as 0 rounds and never takes a record."""
 
     def assert_refused(self, why):
-        for args in (["check", *self.q(9)], ["count", *self.q(9)], ["check-and-record", *self.q(9, 10), "--sha", "eeeeeee"]):
+        for args in (["check", *self.q(9, 10)], ["count", *self.q(9, 10)], ["check-and-record", *self.q(9, 10), "--sha", "eeeeeee"]):
             with self.subTest(args=args[0]):
                 res = self.run_script(*args)
                 self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
@@ -243,18 +299,20 @@ class BackfillTest(Base):
         self.assertEqual(res.returncode, 2)
         self.assertIn("not in the index", res.stderr)
         self.assertEqual(self.rows(), [])
-        self.assertEqual(self.check(300).returncode, 2)
+        self.assertEqual(self.check(300, 327).returncode, 2)
 
-    def test_backfill_from_pr_body_then_rebuilt_pr_is_refused(self):
+    def test_backfill_from_pr_body_caps_that_pr_and_a_new_pr_starts_at_zero(self):
         self.stub_gh({319: "Rework. Part of #300"})
         res = self.run_script("backfill", "--out-dir", self.out)
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(sorted(self.rows()), [f"{REPO}\t300\t319\t{s}" for s in ("aaaaaaa", "bbbbbbb", "ccccccc")])
         self.assertEqual((self.bin / "gh.log").read_text().count("pr view 319 -R popododo0720/vws-console-api"), 1)
-        res = self.car(300, 327, "ddddddd")
+        res = self.car(300, 319, "ddddddd")
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("already had 3", res.stderr)
-        self.assertEqual(self.car(301, 327, "ddddddd").returncode, 0)
+        self.assertIn("PR vws-console-api#319 already had 3", res.stderr)
+        res = self.car(300, 327, "ddddddd")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("0 of 3", res.stdout)
 
     def test_backfill_explicit_map_and_short_repo_names(self):
         self.review_file(5, "1234567", repo="console")
@@ -263,7 +321,8 @@ class BackfillTest(Base):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("console\t44\t5\t1234567", self.rows())
         self.assertIn("pr view 5 -R popododo0720/vws-console", (self.bin / "gh.log").read_text())
-        self.assertEqual(self.car(300, 327, "ddddddd").returncode, 1)
+        self.assertEqual(self.car(300, 319, "ddddddd").returncode, 1)
+        self.assertEqual(self.car(300, 327, "ddddddd").returncode, 0)
 
     def test_backfill_is_all_or_nothing_and_dry_run_writes_nothing(self):
         self.review_file(8, "1234567")

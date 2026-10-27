@@ -39,6 +39,8 @@ main.
   the number of blocking findings in that saved review for the head being verified; the Verified-by
   line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
   Fix the findings and re-run on the new head until N is 0.
+- Codex review is capped at 3 rounds per PR (unique heads, `scripts/codex-round-count.sh`); a new
+  PR for the same issue starts at 0. This supersedes the per-issue cap of vws-deploy#403 (#579).
 
 ```
 Verified-by: vws-verify
