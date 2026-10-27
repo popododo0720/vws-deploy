@@ -6,7 +6,9 @@ Per Go repo, on its default branch:
            replace, and is not more than MAX_MINOR_LAG minor versions (or any major version) behind the latest tag
   copies   no vws-proto generated code in the tree: nothing under third_party/vws-proto/, no *.pb.go under a
            gen/go/vws/ path, and no other *.pb.go whose header names a vws/ proto source (the
-           `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API)
+           `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API). A file the
+           Contents API returns as encoding "none" (over about 1MB, empty body) is read through the Git
+           Blobs API; a blob that is also encoding "none" or has no base64 body is unreadable.
 Every read that fails, and a truncated tree listing, is drift, never ok.
 """
 import base64
@@ -112,6 +114,39 @@ def copy_issues(paths, read):
     return out
 
 
+def _decode(obj):
+    """Bytes of a Contents or Blobs body, or None when it is not base64.
+
+    encoding "none" is GitHub's answer for a file over about 1MB: content is empty and is not the file.
+    """
+    if not isinstance(obj, dict) or obj.get("encoding") == "none":
+        return None
+    raw = obj.get("content")
+    if not isinstance(raw, str) or obj.get("encoding") not in (None, "base64"):
+        return None
+    try:
+        return base64.b64decode(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def _blob_sha(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) else None
+
+
+def _read(owner, repo, api, shas=None):
+    """read(path) -> bytes or None. encoding "none" is fetched from the Git Blobs API, then unreadable."""
+    def read(path):
+        d = api(f"repos/{owner}/{repo}/contents/{path}")
+        if not isinstance(d, dict) or d.get("encoding") != "none":
+            return _decode(d)
+        sha = _blob_sha(d.get("sha")) or _blob_sha((shas or {}).get(path))
+        if sha is None:
+            return None
+        return _decode(api(f"repos/{owner}/{repo}/git/blobs/{sha}"))
+    return read
+
+
 def proto_tags(owner, api):
     """Tag names of vws-proto (first 100, newest first), or None when unreadable."""
     d = api(f"repos/{owner}/vws-proto/tags?per_page=100")
@@ -120,24 +155,20 @@ def proto_tags(owner, api):
     return [t.get("name") for t in d if isinstance(t, dict) and isinstance(t.get("name"), str)]
 
 
-def _read(owner, repo, api):
-    def read(path):
-        d = api(f"repos/{owner}/{repo}/contents/{path}")
-        if not isinstance(d, dict) or "content" not in d:
-            return None
-        return base64.b64decode(d["content"])
-    return read
-
-
 def proto_cell(owner, repo, latest, tags, api):
     """(issues, ok text) of the vws-proto cell for one Go repo's default branch."""
     t = api(f"repos/{owner}/{repo}/git/trees/main?recursive=1")
     if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
         return ["repo tree unreadable"], ""
     issues = ["repo tree truncated; pb.go copy check incomplete"] if t.get("truncated") else []
-    paths = [e.get("path") for e in t["tree"] if isinstance(e, dict) and e.get("type") == "blob"
-             and isinstance(e.get("path"), str)]
-    read = _read(owner, repo, api)
+    paths, shas = [], {}
+    for e in t["tree"]:
+        if not isinstance(e, dict) or e.get("type") != "blob" or not isinstance(e.get("path"), str):
+            continue
+        paths.append(e["path"])
+        if isinstance(e.get("sha"), str):
+            shas[e["path"]] = e["sha"]
+    read = _read(owner, repo, api, shas)
     used = []
     for path in paths:
         if path.rsplit("/", 1)[-1] != "go.mod" or SKIP_DIRS & set(path.split("/")[:-1]):
