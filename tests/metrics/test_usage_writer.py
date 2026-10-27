@@ -1,7 +1,10 @@
-"""The daily usage writer (vws-deploy#410): metrics.py writes lead_wakes into the daily usage file
-from the lead-wake comments on the wake thread, reads it back, and SUMMARY.md shows it. tokens has no
-deterministic source, so the writer never writes by_agent and tokens stays null, never 0.
+"""The daily usage writer (vws-deploy#410, #543): metrics.py writes lead_wakes into the daily usage file
+from the orchestrator's lead-wake comments on the wake thread, reads it back, and SUMMARY.md shows it.
+A marker from another login is ignored. tokens has no deterministic source (#557), so the writer never
+writes by_agent and tokens stays null, never 0.
 Run: python3 -m unittest discover -s tests/metrics"""
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -13,10 +16,11 @@ from test_runtime import D, NOW, Env, routes
 LEAD = "<!-- vws-orchestrate:lead-wake -->"
 
 
-def gh_comment(cid, issue, created, body):
-    """A comment as the issues/comments API returns it."""
+def gh_comment(cid, issue, created, body, login="popododo0720"):
+    """A comment as the issues/comments API returns it. login is the orchestrator (the box gh login) unless set."""
     return {"id": cid, "html_url": f"https://github.com/popododo0720/vws-deploy/issues/{issue}#issuecomment-{cid}",
-            "created_at": created, "issue_url": f"https://api.github.com/{D}/issues/{issue}", "body": body}
+            "created_at": created, "issue_url": f"https://api.github.com/{D}/issues/{issue}", "body": body,
+            "user": {"login": login}}
 
 
 def lead(cid, created, issue=339):
@@ -30,7 +34,8 @@ def text(path):
 
 def raw_comment(c):
     return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
-            "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"]}
+            "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"],
+            "author": (c.get("user") or {}).get("login") or ""}
 
 
 COMMENTS = [
@@ -39,6 +44,7 @@ COMMENTS = [
     lead(803, "2026-10-19T14:59:59Z"),   # the day before: out
     lead(804, "2026-10-20T03:00:00Z", issue=415),  # not the wake thread: out
     gh_comment(805, 339, "2026-10-20T05:00:00Z", f"quoting {LEAD} not on the first line"),
+    gh_comment(806, 339, "2026-10-20T06:00:00Z", f"{LEAD}\ncopied marker", login="someone"),
 ]
 
 
@@ -59,6 +65,22 @@ class Count(unittest.TestCase):
         r = self.raw()
         del r["repos"]["vws-deploy"]  # archived or not collected: no wake thread to read
         self.assertIsNone(metrics.lead_wakes_from_github(r, dict(CFG, ORCHESTRATE_WAKE_THREAD="339")))
+
+    def test_a_foreign_author_marker_is_ignored(self):
+        r = self.raw()
+        foreign = [c for c in r["repos"]["vws-deploy"]["comments"] if c["id"] == 806]
+        self.assertEqual(len(foreign), 1)
+        self.assertEqual(foreign[0]["author"], "someone")
+        self.assertEqual(metrics.lead_wakes_from_github(r, dict(CFG, ORCHESTRATE_WAKE_THREAD="339")), 2)
+        bare = dict(foreign[0], author="")
+        r["repos"]["vws-deploy"]["comments"].append(bare)
+        self.assertEqual(metrics.lead_wakes_from_github(r, dict(CFG, ORCHESTRATE_WAKE_THREAD="339")), 2,
+                         "a marker with no author is not the orchestrator")
+
+    def test_a_non_numeric_wake_thread_is_not_a_source(self):
+        for bad in ("abc", "3.5", "0", "-1", "vws-deploy#339", " 339"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(metrics.lead_wakes_from_github(self.raw(), dict(CFG, ORCHESTRATE_WAKE_THREAD=bad)))
 
 
 class Write(unittest.TestCase):
@@ -167,6 +189,19 @@ class Runtime(Env):
         fx = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", f"raw-{DAY}.json")
         self.assertEqual(self.run_m("--date", DAY, "--fixture", fx, ORCHESTRATE_WAKE_THREAD="339"), 0)
         self.assertFalse(os.path.exists(self.usage()))
+
+    def test_non_numeric_wake_thread_is_rejected_before_any_work(self):
+        for bad in ("abc", "3.5", "0", "-1", "vws-deploy#339"):
+            with self.subTest(bad=bad):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = self.run_m("--date", DAY, ORCHESTRATE_WAKE_THREAD=bad)
+                self.assertEqual(rc, 2)
+                self.assertIn("ORCHESTRATE_WAKE_THREAD", err.getvalue())
+                self.assertIn(repr(bad), err.getvalue())
+                self.assertEqual(self.calls(), [])
+                self.assertFalse(os.path.exists(os.path.join(self.state, "log", "metrics.jsonl")))
+                self.assertFalse(os.path.exists(self.usage()))
 
 
 if __name__ == "__main__":
