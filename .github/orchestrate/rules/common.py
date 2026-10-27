@@ -92,6 +92,13 @@ OWNER_PART_OF_RE = re.compile(rf"(?im)^\s*Part of\s+{OWNER}/vws-[a-z0-9-]+#[0-9]
 # (guard-agents.sh pr-body) names the same allowed forms and `guard-agents.sh pr-normalize` rewrites them.
 PART_OF_HINT = ("write `Part of #N` (same repo) or `Part of vws-<repo>#N` at the start of a line; the owner/repo "
                 "form `Part of <owner>/<repo>#N` is not read (https://github.com/popododo0720/vws-deploy/issues/504)")
+# The issue a PR names with Closes/Fixes/Resolves: #N (the PR's repo), vws-x#N, or owner/repo#N (vws-deploy#560).
+CLOSING_LINK_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]*"
+    r"(?:[A-Za-z0-9_.-]+/)?"
+    r"((?:vws-[a-z0-9-]+)?#[0-9]+)")
+# Part of owner/repo#N. Rule D skips it, but an open PR that writes it still names the issue.
+PART_OF_OWNER_REPO_REF_RE = re.compile(r"(?im)^\s*Part of\s+[A-Za-z0-9_.-]+/(vws-[a-z0-9-]+#[0-9]+)")
 
 
 # The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
@@ -750,6 +757,38 @@ def grok_link(it):
     """The issue a PR's `Part of #N` / `Part of repo#N` line names, as repo#N, or ""."""
     m = PART_OF_RE.search(it.get("body") or "") if it.get("is_pr") else None
     return "" if not m else (it["repo"] + m.group(1) if m.group(1).startswith("#") else m.group(1))
+
+
+def _issue_ref(repo, ref):
+    """#N is this PR's repo; vws-x#N is that repo."""
+    return repo + ref if ref.startswith("#") else ref
+
+
+def pr_linked_issues(it):
+    """Issue keys (repo#N) an open PR names with Part of, Closes, Fixes or Resolves.
+    Empty when it is not an open PR. A keyword inside a code fence or HTML comment does not count
+    (visible_text). A draft still counts: it is an open PR (vws-deploy#560)."""
+    if not it.get("is_pr") or it.get("state") != "open":
+        return set()
+    keys = set()
+    repo = it["repo"]
+    for raw in (it.get("body") or "", it.get("title") or ""):
+        text = visible_text(raw)
+        for m in PART_OF_RE.finditer(text):
+            keys.add(_issue_ref(repo, m.group(1)))
+        for m in PART_OF_OWNER_REPO_REF_RE.finditer(text):
+            keys.add(m.group(1))
+        for m in CLOSING_LINK_RE.finditer(text):
+            keys.add(_issue_ref(repo, m.group(1)))
+    return keys
+
+
+def open_pr_links(items):
+    """Issue keys an open PR names with Part of, Closes, Fixes or Resolves."""
+    linked = set()
+    for it in items.values():
+        linked |= pr_linked_issues(it)
+    return linked
 
 
 def ac_partial_idle(it, items):

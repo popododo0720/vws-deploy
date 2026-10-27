@@ -16,8 +16,8 @@ from trusted_read import (
 
 from .common import (
     EXCLUSIONS_KEY, INFRA_MAX_RETRIES, active_repos, ci_fail_head, classify_comment, conflict_only, decision,
-    dep_state, find_cycles, head_verdict, iso, num, owned_labels, parse_deps, ready_time, reset_time, rework_prs,
-    scrub, status_keys, status_target, utc, vws_pr_key,
+    dep_state, find_cycles, head_verdict, iso, num, open_pr_links, owned_labels, parse_deps, ready_time,
+    reset_time, rework_prs, scrub, status_keys, status_target, utc, vws_pr_key,
 )
 
 NAME = "deepseek"
@@ -150,6 +150,27 @@ def rework_plan(k, it, items, since):
     return plan
 
 
+def stale_in_review_actions(items, actions, linked, now, cfg, exclusions):
+    """Remove in-review from an open issue that no open PR names, even with no ownership journal.
+    A Done report whose PR is still open keeps the label: that PR may not say Part of yet, and the
+    next tick would add the label back. A pull request's own in-review label is left alone (vws-deploy#560)."""
+    planned = {a["target"] for a in actions if a.get("type") == "remove_label" and a.get("label") == "in-review"}
+    out = []
+    for k in sorted(items):
+        it = items[k]
+        if it.get("state") != "open" or it.get("is_pr") or "in-review" not in it.get("labels", []):
+            continue
+        if k in linked or k in planned:
+            continue
+        hist = dispatch_history(it, now, cfg, exclusions)
+        latest = hist[-1] if hist else None
+        if latest and latest["outcome"] == "review":
+            continue
+        out.append({"type": "remove_label", "target": k, "label": "in-review",
+                    "reason": "no open Part of, Closes or Fixes PR"})
+    return out
+
+
 def triage(snapshot, state, cfg, now):
     """Pure. Returns {"actions", "notes", "queue", "in_flight", "slots_used"} for every open item."""
     actions, notes = [], []
@@ -157,6 +178,8 @@ def triage(snapshot, state, cfg, now):
     items = snapshot["items"]
     exclusions = cfg[EXCLUSIONS_KEY]
     owned = owned_labels(state, items)
+    # Open PRs that name an issue keep its in-review label (vws-deploy#560).
+    linked = open_pr_links(items)
     max_fail = int(num(cfg, "DEEPSEEK_MAX_FAILURES"))
     infra_delay = int(num(cfg, "ORCHESTRATE_INFRA_RETRY_DELAY_MIN")) * 60
     posted = status_keys(snapshot, state)
@@ -177,8 +200,10 @@ def triage(snapshot, state, cfg, now):
             in_flight.append(k)
             slots_used += running
         labels = set(it["labels"])
-        if "grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]:
+        if ("grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]
+                and k not in linked):
             # Moved to grok earlier (or a swap stopped before this label call): DeepSeek review is over.
+            # An open PR that still names the issue keeps in-review (vws-deploy#560).
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
         if "deepseek" not in labels or "ready" not in labels:
             continue
@@ -197,7 +222,7 @@ def triage(snapshot, state, cfg, now):
                             "remove": "deepseek", "add": "" if "grok" in labels else "grok", "comment": not marker,
                             "body": f"Moving this task from DeepSeek to grok after {len(counted)} failed attempts:\n"
                                     f"{lines}\n\n<!-- orchestrate:swap -->"})
-            if "in-review" in labels and k in owned["in-review"]:
+            if "in-review" in labels and k in owned["in-review"] and k not in linked:
                 actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
             continue
         if "grok" in labels:
@@ -240,7 +265,8 @@ def triage(snapshot, state, cfg, now):
             actions.append({"type": "remove_label", "target": k, "label": "blocked", "reason": "dependencies met"})
         if latest and latest["outcome"] == "review" and "in-review" not in labels:
             actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
-        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels and k in owned["in-review"]):
+        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels
+                and k in owned["in-review"] and k not in linked):
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
         if rw["state"]:
             # A FAIL on the PR head replaces the issue-style dispatch with a rework of that PR.
@@ -259,6 +285,8 @@ def triage(snapshot, state, cfg, now):
         if eligible:
             prio = 0 if "priority/blocker" in labels else 2
             queue.append((prio, ready_time(it), it["repo"], it["number"], k, retry, k))
+    # After the owned removals above, so a label already planned is not removed twice (vws-deploy#560).
+    actions += stale_in_review_actions(items, actions, linked, now, cfg, exclusions)
     return {"actions": actions, "notes": notes, "queue": queue, "in_flight": in_flight, "slots_used": slots_used}
 
 
