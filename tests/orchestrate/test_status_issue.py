@@ -60,6 +60,15 @@ class Config(unittest.TestCase):
         cfg = orch.load_config(paths, {"ORCHESTRATE_WAKE_THREAD": "339"})
         self.assertEqual((orch.wake_target(cfg), orch.status_target(cfg)), ("vws-deploy#339", "vws-deploy#415"))
 
+    def test_non_numeric_wake_thread_is_rejected_at_config_load(self):
+        paths = orch.Paths({"ORCHESTRATE_STATE_DIR": "/nonexistent/s", "ORCHESTRATE_CONFIG_DIR": "/nonexistent/c"})
+        for bad in ("0", "-1", "3.5", "vws-deploy#339", "abc", " 339"):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "ORCHESTRATE_WAKE_THREAD must be empty or a positive integer"):
+                    orch.load_config(paths, {"ORCHESTRATE_WAKE_THREAD": bad})
+        cfg = orch.load_config(paths, {"ORCHESTRATE_WAKE_THREAD": ""})
+        self.assertEqual(cfg["ORCHESTRATE_WAKE_THREAD"], "")
+
 
 class Decide(unittest.TestCase):
     def test_wake_goes_to_the_wake_thread_never_the_status_issue(self):

@@ -468,7 +468,9 @@ class Ticks(Env):
                 [("ORCHESTRATE_WAKE_THREAD", b) for b in ("0", "-1", "3.5", "vws-deploy#339", "abc", "415")]:
             with open(self.paths.env_file, "w") as f:
                 f.write("")
+            before = len(self.calls())
             self.assertEqual(self.tick(**{key: bad}), 2, f"{key}={bad!r} is refused")
+            self.assertEqual(len(self.calls()), before, f"{key}={bad!r} does no GitHub work")
         with open(self.paths.env_file, "w") as f:
             f.write("ORCHESTRATE_DEEPSEEK_CAP=0\n")
         self.assertEqual(self.tick(), 2, "ORCHESTRATE_DEEPSEEK_CAP=0 is refused")

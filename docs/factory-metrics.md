@@ -57,8 +57,8 @@ are `.github/drift/repos.tsv` plus `ORCHESTRATE_EXTRA_REPOS`, and archived repos
 | `orchestrator` | ticks, failed ticks, `apply_failed`, `rate_low`, failure alerts and gh read/304/write totals from the orchestrator log. `null` when the log does not reach back to the start of D (`source_gaps`) |
 | `stalls` | open tasks (labelled `ready`, `deepseek`, `grok` or `in-review`, not `blocked`, not parked) and open non-draft PRs on main without `verify-approved` whose `updated_at` is at least `STALL_HOURS` before `snapshot_at`: `[{target, idle_hours}]`. Snapshot only, like `queue_depth` |
 | `parked` | vws-deploy#463. Open issues (not PRs) that wait by design, so they are not stalls: an opt-out label (`do-not-merge`, `hold`, `blocked`) or `needs-human`; or `grok` with no `deepseek`, no assignee and not on `ORCHESTRATE_GROK_ALLOWLIST` (Rule G never assigns them; an assignee holds a Grok slot, so an assigned issue can still stall). Snapshot only, like `stalls`; `null` for a back-filled day. The snapshot keeps each issue's assignee count, never the logins |
-| `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0 |
-| `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the verify-wake thread, `ORCHESTRATE_WAKE_THREAD`). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (the Rule C swap notice `<!-- orchestrate:swap -->` and the grok wake last line `<!-- orchestrate:grok-wake item=... -->`, vws-deploy#378). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input, which metrics.py itself fills from GitHub (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when absent |
+| `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0. No usage source exists yet, so this stays null (vws-deploy#557) |
+| `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the verify-wake thread, `ORCHESTRATE_WAKE_THREAD`). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (the Rule C swap notice `<!-- orchestrate:swap -->` and the grok wake last line `<!-- orchestrate:grok-wake item=... -->`, vws-deploy#378). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input, which metrics.py itself fills from GitHub comments by the orchestrator login only (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when absent |
 | `alerts` | the anomalies found for D (empty on a normal day) |
 | `queue_depth` | open items per label (`ready`, `deepseek`, `grok`, `blocked`, `in-review`, `priority/blocker`) and `verify_backlog` (open non-draft PRs on main without `verify-approved`). A live snapshot taken when the day is computed (`snapshot_at`), so only for yesterday. A back-filled day has `null` |
 
@@ -130,9 +130,12 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
 **Writer (vws-deploy#410).** `metrics.py` writes the file itself, in `run_day`, before it reads it:
 
 - `lead_wakes`: the comments on the wake thread (`ORCHESTRATE_WAKE_THREAD` in vws-deploy) created in D whose
-  first line is `<!-- vws-orchestrate:lead-wake -->`. The orchestrator posts one such comment per lead wake
-  (rule L, see [factory-orchestrator.md](factory-orchestrator.md)) and dr eggbot's routine fires on it. The
-  count comes from the issue comments the run already reads, so it costs no extra gh call.
+  first line is `<!-- vws-orchestrate:lead-wake -->` and whose author is the orchestrator login
+  (`popododo0720`, the box gh login; `trusted_read.own_comment`). A marker posted by any other account,
+  or one with no author, is ignored, so it cannot inflate the count. The orchestrator posts one such
+  comment per lead wake (rule L, see [factory-orchestrator.md](factory-orchestrator.md)) and dr eggbot's
+  routine fires on it. The count comes from the issue comments the run already reads, so it costs no extra
+  gh call.
 - It runs once per day, when the loop's `--if-due` publishes D, and again only on `--date D` or
   `--recompute D`. It writes only for a day that is over, never from `--fixture`, and only when the wake
   thread is set; otherwise `lead_wakes` stays `null` (`metrics_usage_skipped`).
@@ -140,8 +143,8 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
   count writes nothing (`metrics_usage_unchanged`); a new count replaces the old one
   (`metrics_usage_written`). A file that is not a JSON object is left alone (`metrics_usage_refused`).
 - `tokens` has no deterministic source: GitHub has no token counts and no agent writes a usage log the
-  loop can read. The writer never writes `by_agent`, so `tokens` stays `null`, never 0, until such a source
-  exists.
+  loop can read. The writer never writes `by_agent`, so `tokens` stays `null` and `SUMMARY.md` shows `-`,
+  never 0, until a real daily usage source exists (vws-deploy#557).
 - Where it runs: inside the orchestrator loop, wherever `orchestrate-loop.sh` runs with `METRICS_ENABLED=1`
   (since 2026-10-22 the `vws-orchestrate.service` on the deepseek-dev VM; the box loop is disabled). The
   loop auto-updates from `main`, so nothing is installed by hand. The wake thread must be set in the
