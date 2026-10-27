@@ -2,6 +2,8 @@
 from the lead-wake comments on the wake thread, reads it back, and SUMMARY.md shows it. tokens has no
 deterministic source, so the writer never writes by_agent and tokens stays null, never 0.
 Run: python3 -m unittest discover -s tests/metrics"""
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -13,14 +15,16 @@ from test_runtime import D, NOW, Env, routes
 LEAD = "<!-- vws-orchestrate:lead-wake -->"
 
 
-def gh_comment(cid, issue, created, body):
-    """A comment as the issues/comments API returns it."""
+def gh_comment(cid, issue, created, body, login="popododo0720"):
+    """A comment as the issues/comments API returns it (the orchestrator's login by default)."""
     return {"id": cid, "html_url": f"https://github.com/popododo0720/vws-deploy/issues/{issue}#issuecomment-{cid}",
-            "created_at": created, "issue_url": f"https://api.github.com/{D}/issues/{issue}", "body": body}
+            "created_at": created, "issue_url": f"https://api.github.com/{D}/issues/{issue}", "body": body,
+            "user": {"login": login}}
 
 
-def lead(cid, created, issue=339):
-    return gh_comment(cid, issue, created, f"{LEAD}\nvws-orchestrate: lead wake for vws-deploy#7 at `{'a' * 40}`")
+def lead(cid, created, issue=339, login="popododo0720"):
+    return gh_comment(cid, issue, created, f"{LEAD}\nvws-orchestrate: lead wake for vws-deploy#7 at `{'a' * 40}`",
+                      login=login)
 
 
 def text(path):
@@ -30,7 +34,7 @@ def text(path):
 
 def raw_comment(c):
     return {"id": c["id"], "url": c["html_url"], "created_at": c["created_at"],
-            "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"]}
+            "issue": int(c["issue_url"].rsplit("/", 1)[1]), "body": c["body"], "author": c["user"]["login"]}
 
 
 COMMENTS = [
@@ -39,6 +43,7 @@ COMMENTS = [
     lead(803, "2026-10-19T14:59:59Z"),   # the day before: out
     lead(804, "2026-10-20T03:00:00Z", issue=415),  # not the wake thread: out
     gh_comment(805, 339, "2026-10-20T05:00:00Z", f"quoting {LEAD} not on the first line"),
+    lead(806, "2026-10-20T06:00:00Z", login="someone-else"),  # vws-deploy#543: a copied marker by another login: out
 ]
 
 
@@ -59,6 +64,26 @@ class Count(unittest.TestCase):
         r = self.raw()
         del r["repos"]["vws-deploy"]  # archived or not collected: no wake thread to read
         self.assertIsNone(metrics.lead_wakes_from_github(r, dict(CFG, ORCHESTRATE_WAKE_THREAD="339")))
+
+
+    def test_only_the_orchestrator_login_counts(self):
+        # vws-deploy#543: anyone can comment on the public wake thread and copy the marker. Only comments by
+        # the orchestrator's login (trusted_read.OWNER, the box gh login that posts rule L) count.
+        r = raw()
+        r["repos"]["vws-deploy"]["comments"] += [raw_comment(c) for c in (
+            lead(901, "2026-10-20T01:00:00Z"),
+            lead(902, "2026-10-20T02:00:00Z", login="someone-else"),
+            lead(903, "2026-10-20T03:00:00Z", login="PopoDodo0720"))]  # GitHub logins are case-insensitive
+        missing = raw_comment(lead(904, "2026-10-20T04:00:00Z"))
+        del missing["author"]  # no author: fails closed
+        r["repos"]["vws-deploy"]["comments"].append(missing)
+        self.assertEqual(metrics.lead_wakes_from_github(r, dict(CFG, ORCHESTRATE_WAKE_THREAD="339")), 2)
+
+    def test_a_non_numeric_wake_thread_is_no_source(self):
+        # vws-deploy#543: config load refuses it (Runtime below); the pure count never raises on it either.
+        for bad in ("abc", "339x", "0", "-1", "3.5"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(metrics.lead_wakes_from_github(self.raw(), dict(CFG, ORCHESTRATE_WAKE_THREAD=bad)))
 
 
 class Write(unittest.TestCase):
@@ -158,6 +183,17 @@ class Runtime(Env):
         cells = [c.strip() for c in row.strip("|").split("|")]
         self.assertEqual(cells[-2], "-", "the lead_wakes column of the day is a dash")
         self.assertIn("metrics_usage_skipped", self.events())
+
+    def test_non_numeric_wake_thread_is_refused_before_any_read(self):
+        # vws-deploy#543: config load rejects it with a clear error, before any gh call or usage write.
+        for bad in ("abc", "339x", "vws-deploy#339", "3.5", "0"):
+            with self.subTest(bad=bad):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(self.publish(ORCHESTRATE_WAKE_THREAD=bad), 2)
+                self.assertIn("config error: ORCHESTRATE_WAKE_THREAD must be empty or a positive integer", err.getvalue())
+                self.assertEqual(self.calls(), [], "no GitHub read or write")
+                self.assertFalse(os.path.exists(self.usage()))
 
     def test_a_day_not_over_is_not_written(self):
         self.publish(now=orch.utc("2026-10-20T06:00:00Z"), ORCHESTRATE_WAKE_THREAD="339")  # 15:00 KST on D
