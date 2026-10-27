@@ -30,16 +30,73 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # Inlined from .github/gh-api-retry.sh. This job checks out nothing, so it cannot source that file.
+          # Each gh api retries an installation or secondary rate limit, then fails closed.
+          # BEGIN gh-api-retry
+          gh_api_rate_limited() {
+            local file=$1
+            grep -E -q 'API rate limit exceeded|secondary rate limit|abuse detection mechanism|\(HTTP 429\)' "$file" && return 0
+            jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' "$file" >/dev/null 2>&1
+          }
+
+          gh_api_retry() {
+            local attempts=${GH_API_RETRY_ATTEMPTS:-5}
+            local delay=${GH_API_RETRY_DELAY:-5}
+            local cap=${GH_API_RETRY_DELAY_CAP:-40}
+            local n=1 rc out err limited
+            [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
+            [[ $delay =~ ^[0-9]+$ ]] || delay=5
+            [[ $cap =~ ^[1-9][0-9]*$ ]] || cap=40
+            err=$(mktemp)
+            while true; do
+              rc=0
+              limited=0
+              out=$(gh api "$@" 2>"$err") || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                printf '%s\n' "$out" >>"$err"
+              elif printf '%s' "$out" | jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' >/dev/null 2>&1; then
+                printf '%s\n' "$out" >>"$err"
+                rc=1
+                limited=1
+              else
+                # Command substitution dropped the trailing newlines. Put one back when there is a body,
+                # and write nothing when the call succeeded with an empty body. A blank line is a row to
+                # the verify-queue awk (an empty commit-status list would look pending).
+                if [[ -n $out ]]; then
+                  printf '%s\n' "$out"
+                fi
+                rm -f "$err"
+                return 0
+              fi
+              if [[ $limited -eq 0 ]] && gh_api_rate_limited "$err"; then
+                limited=1
+              fi
+              if [[ $limited -eq 0 || $n -ge $attempts ]]; then
+                cat "$err" >&2
+                rm -f "$err"
+                return "$rc"
+              fi
+              echo "gh api: rate limit, retry ${n}/$((attempts - 1)) in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              if [[ $((delay * 2)) -gt $cap ]]; then
+                delay=$cap
+              else
+                delay=$((delay * 2))
+              fi
+            done
+          }
+          # END gh-api-retry
           # vws-deploy#439 class 1: no event-snapshot labels (a re-run replays the push-time ones, and a label
           # added after the push is missing from them). The DELETE is pinned to the pushed head instead: a
           # re-run of an older push writes nothing, because the run for the newer head owns the reset.
-          head=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
+          head=$(gh_api_retry "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
           if [[ $head != "$HEAD_SHA" ]]; then
             echo "head moved to ${head}; the run for that push removes verify-approved"
             exit 0
           fi
           # Safe to re-run: a label that is already gone (HTTP 404) is the wanted state; other errors fail.
-          if out=$(gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+          if out=$(gh_api_retry -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
             echo "verify-approved removed: a new head needs a new verification"
           elif [[ $out == *"HTTP 404"* ]]; then
             echo "verify-approved was already removed"

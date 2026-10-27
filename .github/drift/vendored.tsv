@@ -3,5 +3,5 @@
 # repo's one accepted variant. A repo without check-english.sh is drift except vws-deploy and the archived
 # vws-hypervisor (#423, lead decision B: archived / not needed; VENDORED_REQUIRED); a missing verify-queue.yml is the workflows cell. When vws-deploy changes its own copy, update the "*" row in the same commit:
 # tests/workflows/test_vendored_pin.py (scripts/guard.sh R13) fails until it matches.
-.github/workflows/verify-queue.yml	*	cee05d9a20e585de8566b9ef4b29dbd31f3322e36b89a57e8cf2deeb10a14983	vws-deploy's own file
+.github/workflows/verify-queue.yml	*	251dea46151ad39de53a5c7718bea40537466a96e7417c8376bf509f6c4fbc2b	vws-deploy's own file
 scripts/check-english.sh	*	69e1c3a81248fab8635c2f6fde30ae49b74ce3fa56c7832b58c5464a27b585d8	no copy in vws-deploy; the one copy in all 8 repos that carry it on 2026-10-25 (vws-lib main)

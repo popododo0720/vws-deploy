@@ -43,6 +43,7 @@ on:
       - tests/metrics/**
       - scripts/codex-round-count.sh
       - tests/codex/**
+      - .github/gh-api-retry.sh
       # verify-check imports orchestrate.py; its tests use tests/orchestrate/stub_gh.py (vws-deploy#517 AC4).
       - .github/verify/**
       - tests/verify/**
@@ -62,7 +63,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/drift -v
           python3 -m unittest discover -s tests/workflows -v
-          shellcheck .github/ac/*.sh
+          shellcheck .github/ac/*.sh .github/gh-api-retry.sh
       # vws-deploy#439 class 1: no workflow reads event-snapshot labels or head_commit.committer, and
       # orchestrate.py matches markers only through .github/orchestrate/trusted_read.py.
       - name: Trusted-read lint
