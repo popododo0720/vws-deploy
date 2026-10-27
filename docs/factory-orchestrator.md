@@ -682,7 +682,7 @@ Config keys and defaults:
 - `ORCHESTRATE_MAX_WRITES=5`
 - `ORCHESTRATE_RATE_FLOOR=1000`
 - `ORCHESTRATE_STATUS_ISSUE=415` (the status issue in vws-deploy whose body the orchestrator edits; a positive integer)
-- `ORCHESTRATE_WAKE_THREAD=` (the vws-deploy issue or PR that gets verify-wake and Grok wake comments; empty turns the wake off; never the status issue). `ORCHESTRATE_STATUS_PR` from before vws-deploy#416 is ignored
+- `ORCHESTRATE_WAKE_THREAD=` (the vws-deploy issue or PR that gets verify-wake and Grok wake comments; empty turns the wake off; never the status issue; anything else that is not a positive integer is refused at config load, before a tick). `ORCHESTRATE_STATUS_PR` from before vws-deploy#416 is ignored
 - `ORCHESTRATE_FAILURE_ALERT=apply`
 - `ORCHESTRATE_AUTO_UPDATE=1` (`0` pins the current sha: no fetch, no fast-forward; read by `orchestrate-loop.sh`)
 - `ORCHESTRATE_UPDATE_TIMEOUT=60` (seconds for `git fetch` and the fast-forward; environment only)
