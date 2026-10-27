@@ -177,6 +177,15 @@ class Rule(unittest.TestCase):
         acts, _, _ = plan(snap(merged(n=501, hours_ago=1), merged(n=500, hours_ago=3)))
         self.assertEqual([a["pr"] for a in acts], ["vws-deploy#500", "vws-deploy#501"])
 
+    def test_two_merges_ticking_one_issue_both_survive_decide(self):
+        """vws-deploy#567: decide() dedupes merged actions by action_key; two merged PRs ticking different
+        boxes of one issue in the same tick are two writes, so both ac_tick actions must survive."""
+        s = snap(merged(n=500, body="Part of #7\nAC: 1\n", hours_ago=3),
+                 merged(n=501, body="Part of #7\nAC: 2\n", hours_ago=1))
+        r = orch.decide(s, {"ac_tick_since": ts(48)}, NOW, ON, set())
+        ticks = [(a["target"], a["pr"], a["boxes"]) for a in r["actions"] if a["type"] == "ac_tick"]
+        self.assertEqual(ticks, [("vws-deploy#7", "vws-deploy#500", [1]), ("vws-deploy#7", "vws-deploy#501", [2])])
+
 
 class FakeGh:
     def __init__(self, body=ISSUE, comments=(), state="open", labels=()):
