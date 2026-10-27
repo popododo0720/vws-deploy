@@ -133,9 +133,11 @@ Standard commands: per PR `codex review --base <PR base branch>` (usually `main`
 the number of blocking findings in that saved review for the head being verified; the Verified-by
 line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
 Fix the findings and re-run on the new head until N is 0.
-Codex rounds are capped per issue, not per PR: at most 3 rounds (`CODEX_ROUND_CAP`) across all PRs
-whose body has `Part of #N` or `Closes #N` for that issue, including rebuilt and superseded PRs.
+Codex rounds are capped per PR: at most 3 rounds (`CODEX_ROUND_CAP`) per PR, counted as unique heads
+reviewed; a retry of the same head counts once, and a new PR for the same issue starts at 0
+(vws-deploy#579, which supersedes the per-issue cap of #403).
 `scripts/codex-round-count.sh` keeps the count in `/workspace/handoff/codex/rounds.tsv` (local files
-only) and refuses the 4th round; then split the work or move the rest to issues. It fails closed: a
+only; the issue column is for reporting) and refuses the 4th round on a PR; then split the work or
+move the rest to issues. It fails closed: a
 missing, unreadable or corrupt index, or a review file not in the index, stops the review (exit 2)
 until `init` and `backfill` fix it.
