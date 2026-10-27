@@ -1,0 +1,123 @@
+{
+ "actions": [
+  {
+   "body": "<!-- vws-orchestrate:verify-wake -->\nvws-orchestrate: 3 PRs wait for verify (wake at 3 or after 30 min).\n\n- vws-deploy#400@2deda428df7041cb3f18a1d228cee9b9f6047168 https://github.com/popododo0720/vws-deploy/pull/400 (CI pre-check: green, waited 45m)\n- vws-deploy#401@be041b8cb420c106c1982fec4473bb6dd94d41ca https://github.com/popododo0720/vws-deploy/pull/401 (CI pre-check: green, waited 45m)\n- vws-deploy#402@e8f5aae0ffbd0476950067e806e5318de19e2811 https://github.com/popododo0720/vws-deploy/pull/402 (CI pre-check: green, waited 45m)\n\nRepos scanned: vws-deploy, vws-iam, vws-proto\nIdempotency key: `sha256:5a13af9ecdccb15aecf0f807b04e0856557d8e086a26a93d4f9d602222b5a35c`\nRun id: `20261021T120000Z-501501`",
+   "key": "sha256:5a13af9ecdccb15aecf0f807b04e0856557d8e086a26a93d4f9d602222b5a35c",
+   "reason": "3 PRs need verify, oldest waited 45m",
+   "target": "vws-deploy#339",
+   "type": "wake_verify"
+  },
+  {
+   "allow_assigned": false,
+   "body": "<!-- vws-orchestrate:grok-wake -->\nvws-orchestrate: Grok task vws-proto#3 https://github.com/popododo0720/vws-proto/issues/3\n\nOwner `vws-platform` (repo:vws-proto): please take this issue: one small PR per its acceptance criteria, `Part of #3` in commits and the PR body, no closing keywords.\nGrok slot 1 of 1; this issue holds the slot while it is open with `grok`.\n\nIdempotency key: `sha256:b0ab9df7ce3b7b27bd05229fdf10827dc1a8c6f0c9af5713a6f87e2bf1ae620c`\nRun id: `20261021T120000Z-501501`\n<!-- orchestrate:grok-wake item=vws-proto#3 -->",
+   "item": "vws-proto#3",
+   "key": "sha256:b0ab9df7ce3b7b27bd05229fdf10827dc1a8c6f0c9af5713a6f87e2bf1ae620c",
+   "owner": "vws-platform",
+   "reason": "vws-proto#3: allowlisted ready+grok, Grok slot 1 of 1",
+   "released": [],
+   "target": "vws-deploy#339",
+   "type": "grok_wake",
+   "woken": []
+  },
+  {
+   "body": "<!-- vws-orchestrate:rebuild-wake -->\nvws-orchestrate: rebuild vws-iam#5 https://github.com/popododo0720/vws-iam/pull/5\n\nHead `36b68036c04ce3c8136585667e19bf430d7c76e6` conflicts with main.\nOwner `vws-iam` (the PR's `Agent:` line): please rebuild it on current main with `vws-rebuild-pr` as a new `-vN` branch and PR (no force-push, no update-branch, no merge commits).\n\nIdempotency key: `sha256:10b8d9a888f5d5d5900116fdb7daa1572b2e28baa0459f151f691a3975cd5b0f`\nRun id: `20261021T120000Z-501501`",
+   "head": "36b68036c04ce3c8136585667e19bf430d7c76e6",
+   "item": "vws-iam#5",
+   "key": "sha256:10b8d9a888f5d5d5900116fdb7daa1572b2e28baa0459f151f691a3975cd5b0f",
+   "owner": "vws-iam",
+   "reason": "vws-iam#5 conflicts with main",
+   "target": "vws-deploy#339",
+   "type": "rebuild_wake"
+  },
+  {
+   "body": "<!-- vws-orchestrate:grok-wake -->\nvws-orchestrate: Grok rework vws-deploy#441 https://github.com/popododo0720/vws-deploy/pull/441\n\nHead `7ad1f9a82d4d95b964195bba76a2218b227c1338` has a vws-verify FAIL: https://github.com/popododo0720/vws-deploy/pull/441#pullrequestreview-5625213917\n\n> Result: FAIL\n> - actions.go:137: NotFound continues with an empty ARN. Fix: return NoSuchEntity.\n> - Codex: blocking=1\n\nOwner `vws-platform` (part_of:vws-deploy#395, repo:vws-deploy): please fix the findings on the same branch with a new commit (no force-push, no update-branch, no merge commits), then let verify run on the new head.\n\nIdempotency key: `sha256:c3f19bc1f4acc7c049832c06031b13f96e95c0b8ea890e9e7ab4d9adbeb0872f`\nRun id: `20261021T120000Z-501501`\n<!-- orchestrate:rework head=7ad1f9a82d4d95b964195bba76a2218b227c1338 verdict=5625213917 item=vws-deploy#441 -->",
+   "head": "7ad1f9a82d4d95b964195bba76a2218b227c1338",
+   "item": "vws-deploy#441",
+   "key": "sha256:c3f19bc1f4acc7c049832c06031b13f96e95c0b8ea890e9e7ab4d9adbeb0872f",
+   "owner": "grok",
+   "reason": "vws-deploy#441: verify FAIL on head 7ad1f9a, owner grok",
+   "target": "vws-deploy#339",
+   "type": "grok_rework"
+  },
+  {
+   "body": "<!-- vws-orchestrate:lead-wake -->\nvws-orchestrate: lead wake for vws-deploy#500 at `9ada19d2522b97fbc89f7820bdf7b37e9e529800` https://github.com/popododo0720/vws-deploy/pull/500\n\nReason: verify-approved but conflicts with main.\nNo rule moves this PR head on its own: dr eggbot rebuilds it onto main as a new -vN PR (no force-push) or routes the FAIL to its owner.\n\nIdempotency key: `sha256:183538a6ab8b2a07a03531a5153c329029c5d42e7607e73df4a2a7b1208fca1b`\nRun id: `20261021T120000Z-501501`",
+   "item": "vws-deploy#500",
+   "key": "sha256:183538a6ab8b2a07a03531a5153c329029c5d42e7607e73df4a2a7b1208fca1b",
+   "reason": "vws-deploy#500: verify-approved but conflicts with main",
+   "target": "vws-deploy#339",
+   "type": "lead_wake"
+  }
+ ],
+ "mode": "dry-run",
+ "notes": [
+  {
+   "eligible": false,
+   "head": "2deda42",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "no_verify_approved"
+   ],
+   "target": "vws-deploy#400"
+  },
+  {
+   "eligible": false,
+   "head": "be041b8",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "no_verify_approved"
+   ],
+   "target": "vws-deploy#401"
+  },
+  {
+   "eligible": false,
+   "head": "e8f5aae",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "no_verify_approved"
+   ],
+   "target": "vws-deploy#402"
+  },
+  {
+   "eligible": false,
+   "head": "7ad1f9a",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "no_verify_approved"
+   ],
+   "target": "vws-deploy#441"
+  },
+  {
+   "eligible": false,
+   "head": "9ada19d",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "conflicts",
+    "verify_check_missing",
+    "verify_gate_missing",
+    "required_checks_unreadable"
+   ],
+   "target": "vws-deploy#500"
+  },
+  {
+   "eligible": false,
+   "head": "36b6803",
+   "kind": "merge_check",
+   "main": "not read",
+   "reasons": [
+    "no_verify_approved"
+   ],
+   "target": "vws-iam#5"
+  },
+  {
+   "kind": "ac_tick_start",
+   "since": "2026-10-21T12:00:00Z"
+  }
+ ],
+ "pending_count": 3,
+ "run_id": "20261021T120000Z-501501"
+}

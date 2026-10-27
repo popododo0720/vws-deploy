@@ -1,0 +1,276 @@
+{
+ "deps": {},
+ "items": {
+  "vws-deploy#395": {
+   "base": "",
+   "body": "",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [],
+   "head_sha": "",
+   "is_pr": false,
+   "labels": [
+    "grok",
+    "ready"
+   ],
+   "number": 395,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/issues/395"
+  },
+  "vws-deploy#400": {
+   "base": "main",
+   "body": "",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [
+    {
+     "created_at": "2026-10-21T11:15:00Z",
+     "event": "labeled",
+     "label": {
+      "name": "needs-verify"
+     }
+    }
+   ],
+   "head_sha": "2deda428df7041cb3f18a1d228cee9b9f6047168",
+   "is_pr": true,
+   "labels": [
+    "needs-verify"
+   ],
+   "number": 400,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/pull/400"
+  },
+  "vws-deploy#401": {
+   "base": "main",
+   "body": "",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [
+    {
+     "created_at": "2026-10-21T11:15:00Z",
+     "event": "labeled",
+     "label": {
+      "name": "needs-verify"
+     }
+    }
+   ],
+   "head_sha": "be041b8cb420c106c1982fec4473bb6dd94d41ca",
+   "is_pr": true,
+   "labels": [
+    "needs-verify"
+   ],
+   "number": 401,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/pull/401"
+  },
+  "vws-deploy#402": {
+   "base": "main",
+   "body": "",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [
+    {
+     "created_at": "2026-10-21T11:15:00Z",
+     "event": "labeled",
+     "label": {
+      "name": "needs-verify"
+     }
+    }
+   ],
+   "head_sha": "e8f5aae0ffbd0476950067e806e5318de19e2811",
+   "is_pr": true,
+   "labels": [
+    "needs-verify"
+   ],
+   "number": 402,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/pull/402"
+  },
+  "vws-deploy#441": {
+   "base": "main",
+   "body": "Part of #395",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [],
+   "head_sha": "7ad1f9a82d4d95b964195bba76a2218b227c1338",
+   "is_pr": true,
+   "labels": [],
+   "number": 441,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "reviews": [
+    {
+     "at": "2026-10-21T09:00:00Z",
+     "body": "Result: FAIL\n- actions.go:137: NotFound continues with an empty ARN. Fix: return NoSuchEntity.\n- Codex: blocking=1",
+     "id": 5625213917,
+     "result": "fail",
+     "sha": "7ad1f9a82d4d95b964195bba76a2218b227c1338",
+     "url": "https://github.com/popododo0720/vws-deploy/pull/441#pullrequestreview-5625213917"
+    }
+   ],
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/pull/441"
+  },
+  "vws-deploy#500": {
+   "base": "main",
+   "body": "Part of #397",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [],
+   "head_sha": "9ada19d2522b97fbc89f7820bdf7b37e9e529800",
+   "is_pr": true,
+   "labels": [
+    "verify-approved"
+   ],
+   "merge_info": {
+    "base": "main",
+    "checks": [],
+    "draft": false,
+    "head_sha": "9ada19d2522b97fbc89f7820bdf7b37e9e529800",
+    "mergeable": false,
+    "mergeable_state": "dirty",
+    "merged": false,
+    "state": "open",
+    "statuses": [],
+    "title": "ci: x"
+   },
+   "number": 500,
+   "repo": "vws-deploy",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-deploy/pull/500"
+  },
+  "vws-iam#5": {
+   "base": "main",
+   "body": "Agent: vws-iam",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [],
+   "head_sha": "36b68036c04ce3c8136585667e19bf430d7c76e6",
+   "is_pr": true,
+   "labels": [],
+   "mergeable_state": "dirty",
+   "number": 5,
+   "repo": "vws-iam",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-iam/pull/5"
+  },
+  "vws-proto#3": {
+   "base": "",
+   "body": "",
+   "ci": "ok",
+   "comments": [],
+   "created_at": "2026-10-17T08:00:00Z",
+   "draft": false,
+   "events": [
+    {
+     "created_at": "2026-10-21T02:00:00Z",
+     "event": "labeled",
+     "label": {
+      "name": "ready"
+     }
+    }
+   ],
+   "head_sha": "",
+   "is_pr": false,
+   "labels": [
+    "grok",
+    "ready"
+   ],
+   "number": 3,
+   "repo": "vws-proto",
+   "report_prs": {},
+   "state": "open",
+   "state_reason": null,
+   "url": "https://github.com/popododo0720/vws-proto/issues/3"
+  }
+ },
+ "labels": {
+  "vws-deploy": [
+   "blocked",
+   "deepseek",
+   "grok",
+   "in-review",
+   "ready",
+   "verify-approved"
+  ],
+  "vws-hypervisor": [
+   "blocked",
+   "deepseek",
+   "grok",
+   "in-review",
+   "ready",
+   "verify-approved"
+  ],
+  "vws-iam": [
+   "blocked",
+   "deepseek",
+   "grok",
+   "in-review",
+   "ready",
+   "verify-approved"
+  ],
+  "vws-proto": [
+   "blocked",
+   "deepseek",
+   "grok",
+   "in-review",
+   "ready",
+   "verify-approved"
+  ]
+ },
+ "merge": {},
+ "repos": [
+  {
+   "archived": false,
+   "name": "vws-deploy"
+  },
+  {
+   "archived": false,
+   "name": "vws-iam"
+  },
+  {
+   "archived": false,
+   "name": "vws-proto"
+  },
+  {
+   "archived": true,
+   "name": "vws-hypervisor"
+  }
+ ],
+ "run_id": "20261021T120000Z-abcdef",
+ "status": {
+  "keys": [],
+  "wakes": []
+ }
+}
