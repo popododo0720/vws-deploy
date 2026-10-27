@@ -7,7 +7,8 @@ It fails (exit 1, one `path:line: rule: why` line per finding) when:
   re-run replays it; read the live labels with `gh api repos/.../issues/N/labels`.
 - committer: a workflow reads `head_commit.committer`. Anyone can set a commit's committer; use the
   pusher from the repository activity API (repo-guard-verify-gate.yml).
-- marker-match: .github/orchestrate/orchestrate.py matches a marker outside the trusted-read module
+- marker-match: .github/orchestrate/orchestrate.py or a rule module .github/orchestrate/rules/*.py
+  (vws-deploy#501) matches a marker outside the trusted-read module
   .github/orchestrate/trusted_read.py (an AST check). A marker is a `<!-- vws-orchestrate:`,
   `<!-- orchestrate:` or `<!-- vws-ci-fail` literal or an `Idempotency key: ` literal, a name ending in
   `_MARKER`, a call of a function ending in `_marker`, or a marker regex that trusted_read.py compiles.
@@ -26,6 +27,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ORCHESTRATE = os.path.join(".github", "orchestrate", "orchestrate.py")
+RULES = os.path.join(".github", "orchestrate", "rules")
 TRUSTED = os.path.join(".github", "orchestrate", "trusted_read.py")
 WORKFLOWS = os.path.join(".github", "workflows")
 
@@ -126,9 +128,10 @@ def lint(root):
     except FileNotFoundError:
         res = set()
         findings.append(f"{TRUSTED}:0: trusted-read-missing: the one module that may match markers does not exist")
-    with open(os.path.join(root, ORCHESTRATE), encoding="utf-8") as f:
-        src = f.read()
-    findings += marker_matches(ORCHESTRATE, src, res)
+    rule_files = sorted(os.path.relpath(p, root) for p in glob.glob(os.path.join(root, RULES, "*.py")))
+    for rel in [ORCHESTRATE] + rule_files:
+        with open(os.path.join(root, rel), encoding="utf-8") as f:
+            findings += marker_matches(rel, f.read(), res)
     return findings
 
 
