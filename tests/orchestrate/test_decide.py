@@ -463,7 +463,8 @@ class Labels(unittest.TestCase):
         self.assertEqual(kinds(run(snapshot(t))), [("add_label", "vws-iam#1")])
         merged = ready_task("vws-iam", 1, comments=done, extra=("in-review",), report_prs={self.PR: {"state": "closed", "merged": True}})
         self.assertEqual(kinds(run(snapshot(merged), {"owned_labels": {"in-review": ["vws-iam#1"]}})), [("remove_label", "vws-iam#1")])
-        self.assertEqual(kinds(run(snapshot(merged))), [], "a human-set in-review stays")
+        self.assertEqual(kinds(run(snapshot(merged))), [("remove_label", "vws-iam#1")],
+                         "a closed PR drops in-review even without ownership")
 
 
 if __name__ == "__main__":
@@ -483,13 +484,97 @@ class InReviewOnSwap(unittest.TestCase):
         self.assertEqual([(a["type"], a.get("label") or a.get("remove")) for a in r["actions"]],
                          [("swap_label", "deepseek"), ("remove_label", "in-review")])
 
-    def test_swap_keeps_human_in_review(self):
+    def test_swap_keeps_human_in_review_while_a_pr_is_open(self):
         t = ready_task("vws-iam", 1, comments=self.TWO, extra=("in-review",))
-        self.assertEqual(kinds(run(snapshot(t))), [("swap_label", "vws-iam#1")])
+        pr = item("vws-iam", 9, is_pr=True, body="Part of #1\n")
+        self.assertEqual(kinds(run(snapshot(t, pr))), [("swap_label", "vws-iam#1")])
+
+    def test_swap_clears_unowned_in_review_without_open_pr(self):
+        t = ready_task("vws-iam", 1, comments=self.TWO, extra=("in-review",))
+        r = run(snapshot(t))
+        self.assertEqual([(a["type"], a.get("label") or a.get("remove")) for a in r["actions"]],
+                         [("swap_label", "deepseek"), ("remove_label", "in-review")])
 
     def test_already_swapped_task_loses_owned_in_review(self):
         # A swap that ran before this fix, or stopped before the label call, left in-review behind.
         t = item("vws-iam", 1, labels=("ready", "grok", "in-review"), comments=self.TWO)
         r = run(snapshot(t), self.OWNED)
         self.assertEqual([(a["type"], a["label"]) for a in r["actions"]], [("remove_label", "in-review")])
-        self.assertEqual(kinds(run(snapshot(t))), [], "a human-set in-review stays")
+        self.assertEqual(kinds(run(snapshot(t))), [("remove_label", "vws-iam#1")],
+                         "no open PR: in-review goes even without ownership")
+        pr = item("vws-iam", 9, is_pr=True, body="Part of #1\n")
+        self.assertEqual(kinds(run(snapshot(t, pr))), [], "an open Part of PR keeps a human-set in-review")
+
+
+class StaleInReview(unittest.TestCase):
+    """vws-deploy#560: an open issue loses in-review when no open PR names it, journal or not."""
+
+    def test_link_forms(self):
+        cases = [
+            ("vws-iam", "Part of #1\n", "", {"vws-iam#1"}),
+            ("vws-deploy", "Part of vws-iam#1\n", "", {"vws-iam#1"}),
+            ("vws-deploy", "Part of popododo0720/vws-iam#1\n", "", {"vws-iam#1"}),
+            ("vws-iam", "Closes #1\n", "", {"vws-iam#1"}),
+            ("vws-deploy", "Fixes vws-iam#1\n", "", {"vws-iam#1"}),
+            ("vws-deploy", "Resolves popododo0720/vws-iam#12\n", "", {"vws-iam#12"}),
+            ("vws-iam", "see the notes\n", "Fixes #1", {"vws-iam#1"}),
+            ("vws-iam", "```\nCloses #1\n```\n", "", set()),
+            ("vws-iam", "<!-- Closes #1 -->\n", "", set()),
+            ("vws-iam", "the fix is #1\n", "", set()),
+            ("vws-iam", "Closes #2\n", "", {"vws-iam#2"}),
+        ]
+        for repo, body, title, want in cases:
+            with self.subTest(body=body, title=title):
+                pr = item(repo, 9, is_pr=True, body=body, title=title)
+                self.assertEqual(orch.pr_linked_issues(pr), want)
+        closed = item("vws-iam", 9, is_pr=True, state="closed", body="Part of #1\n")
+        self.assertEqual(orch.pr_linked_issues(closed), set())
+        draft = item("vws-iam", 9, is_pr=True, draft=True, body="Part of #1\n")
+        self.assertEqual(orch.pr_linked_issues(draft), {"vws-iam#1"})
+
+    def test_clears_without_ownership_and_stays_while_a_pr_is_open(self):
+        issue = item("vws-iam", 1, labels=("in-review",))
+        # Restart / missing journal: state has no owned_labels.
+        cleared = run(snapshot(issue), {})
+        self.assertEqual(kinds(cleared), [("remove_label", "vws-iam#1")])
+        self.assertEqual(cleared["actions"][0]["reason"], "no open Part of, Closes or Fixes PR")
+        # The label is already gone: the next tick plans nothing.
+        self.assertEqual(kinds(run(snapshot(item("vws-iam", 1, labels=())))), [])
+        # A closed issue is not touched. A pull request's own label is not this rule.
+        closed = item("vws-iam", 1, labels=("in-review",), state="closed")
+        pr_labeled = item("vws-iam", 9, is_pr=True, labels=("in-review",))
+        self.assertEqual(kinds(run(snapshot(closed, pr_labeled))), [])
+        # An open link keeps the label. A fenced or commented keyword does not. A closed PR does not.
+        keep = [
+            item("vws-iam", 9, is_pr=True, body="Part of #1\n"),
+            item("vws-deploy", 4, is_pr=True, body="Fixes vws-iam#1\n"),
+            item("vws-iam", 8, is_pr=True, draft=True, body="Closes #1\n"),
+        ]
+        for pr in keep:
+            with self.subTest(body=pr["body"], repo=pr["repo"]):
+                self.assertEqual(kinds(run(snapshot(issue, pr))), [])
+        fenced = item("vws-iam", 9, is_pr=True, body="```\nCloses #1\n```\n")
+        commented = item("vws-iam", 9, is_pr=True, body="<!-- Part of #1 -->\n")
+        closed_pr = item("vws-iam", 9, is_pr=True, state="closed", body="Part of #1\n")
+        other = item("vws-iam", 9, is_pr=True, body="Closes #2\n")
+        for pr in (fenced, commented, closed_pr, other):
+            with self.subTest(body=pr["body"], state=pr["state"]):
+                self.assertEqual(kinds(run(snapshot(issue, pr))), [("remove_label", "vws-iam#1")])
+
+    def test_done_report_with_open_pr_keeps_in_review(self):
+        # The report PR is open but not an item with Part of text. Do not drop the label and re-add it.
+        url = "https://github.com/popododo0720/vws-iam/pull/9"
+        done = [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=url)]
+        t = ready_task("vws-iam", 1, comments=done, extra=("in-review",),
+                       report_prs={url: {"state": "open", "merged": False}})
+        self.assertEqual(kinds(run(snapshot(t), {})), [])
+
+    def test_open_part_of_keeps_label_after_the_report_pr_merged(self):
+        url = "https://github.com/popododo0720/vws-iam/pull/8"
+        done = [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=url)]
+        merged = ready_task("vws-iam", 1, comments=done, extra=("in-review",),
+                            report_prs={url: {"state": "closed", "merged": True}})
+        pr = item("vws-deploy", 9, is_pr=True, body="Part of vws-iam#1\n")
+        owned = {"owned_labels": {"in-review": ["vws-iam#1"]}}
+        self.assertEqual(kinds(run(snapshot(merged, pr), owned)), [])
+        self.assertEqual(kinds(run(snapshot(merged, pr), {})), [])
