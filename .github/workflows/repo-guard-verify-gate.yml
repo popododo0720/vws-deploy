@@ -29,6 +29,9 @@ jobs:
   # a PR can edit this file too. The guard script is taken from the caller's base commit, which stops a PR
   # from quietly weakening the script. All bots share one account, so the actor check cannot tell vws-verify
   # from the PR author.
+  # API budget (#573): no verify-approved label is one labels read. With the label, comments,
+  # labeled events and the committer are one GraphQL query, and the pusher is one activity read
+  # that retries a rate limit. Issue events are not walked. The guard script stays the base commit.
   verify-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -55,28 +58,207 @@ jobs:
           GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
         run: |
           set -euo pipefail
-          # Labels as they are now, not the event snapshot (a re-run replays the original event).
-          LABELS=$(gh api "repos/${REPO}/issues/${NUMBER}/labels" --jq '[.[].name] | join(",")')
+          # Inlined from .github/gh-api-retry.sh. This step checks out the caller base, so it cannot source that file.
+          # BEGIN gh-api-retry
+          gh_api_rate_limited() {
+            local file=$1
+            grep -E -q 'API rate limit exceeded|secondary rate limit|abuse detection mechanism|\(HTTP 429\)' "$file" && return 0
+            jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' "$file" >/dev/null 2>&1
+          }
+
+          gh_api_retry() {
+            local attempts=${GH_API_RETRY_ATTEMPTS:-5}
+            local delay=${GH_API_RETRY_DELAY:-5}
+            local cap=${GH_API_RETRY_DELAY_CAP:-40}
+            local n=1 rc out err limited
+            [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
+            [[ $delay =~ ^[0-9]+$ ]] || delay=5
+            [[ $cap =~ ^[1-9][0-9]*$ ]] || cap=40
+            err=$(mktemp)
+            while true; do
+              rc=0
+              limited=0
+              out=$(gh api "$@" 2>"$err") || rc=$?
+              if [[ $rc -ne 0 ]]; then
+                printf '%s\n' "$out" >>"$err"
+              elif printf '%s' "$out" | jq -e '[.errors[]? | select(.type == "RATE_LIMITED")] | length > 0' >/dev/null 2>&1; then
+                printf '%s\n' "$out" >>"$err"
+                rc=1
+                limited=1
+              else
+                # Command substitution dropped the trailing newlines. Put one back when there is a body,
+                # and write nothing when the call succeeded with an empty body. A blank line is a row to
+                # the verify-queue awk (an empty commit-status list would look pending).
+                if [[ -n $out ]]; then
+                  printf '%s\n' "$out"
+                fi
+                rm -f "$err"
+                return 0
+              fi
+              if [[ $limited -eq 0 ]] && gh_api_rate_limited "$err"; then
+                limited=1
+              fi
+              if [[ $limited -eq 0 || $n -ge $attempts ]]; then
+                cat "$err" >&2
+                rm -f "$err"
+                return "$rc"
+              fi
+              echo "gh api: rate limit, retry ${n}/$((attempts - 1)) in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              if [[ $((delay * 2)) -gt $cap ]]; then
+                delay=$cap
+              else
+                delay=$((delay * 2))
+              fi
+            done
+          }
+          # END gh-api-retry
+          # Call budget versus main, which always did five REST reads (labels, paginated comments, paginated
+          # issue events, activity, commit) before it could judge. No verify-approved label: one labels read,
+          # then the guard script fails closed. Comments, issue events, activity and the commit are not read;
+          # the guard rejects a missing label before it looks at any of them. Label present: one GraphQL read
+          # for comments (oldest first), labeled events and the committer, further pages only when that page
+          # does not hold the rest, and one activity read for the pusher. Issue events are not listed. The
+          # pusher is still the activity actor that set this head. A rate limit, including "API rate limit
+          # exceeded for installation" on that activity read, retries with bounded backoff; if the pusher is
+          # still unknown the job exits 1 before the guard script judges the pull request.
+          LABELS=$(gh_api_retry "repos/${REPO}/issues/${NUMBER}/labels" --jq '[.[].name] | join(",")')
           text=$(mktemp)
-          # One "@@comment-by: LOGIN" block per comment, from the API's author field. A body line that
-          # imitates the marker is defanged so a comment cannot claim another author. Control characters are
-          # normalized first (CRLF to LF, any other one to "?"), so "\r@@comment-by:" cannot slip past the defang.
-          gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
-            --jq '.[] | "@@comment-by: \(.user.login)\n\(.body | gsub("\r\n"; "\n")
-              | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"' >"$text"
-          # Who last added the label, from the issue events.
-          GUARD_VERIFY_LABELER=$(gh api --paginate "repos/${REPO}/issues/${NUMBER}/events" \
-            --jq '.[] | select(.event == "labeled" and .label.name == "verify-approved") | .actor.login' | tail -n 1)
-          # The head pusher: the actor of the activity that set the head ref to HEAD_SHA (repository activity
-          # API; push, force push, branch creation...), not the commit's committer field, which anyone can set.
-          # No match fails closed. The committer's linked login stays excluded as well.
-          pusher=$(gh api -X GET "repos/${HEAD_REPO}/activity" -f ref="refs/heads/${HEAD_REF}" -F per_page=100 \
+          if [[ ",${LABELS}," != *",verify-approved,"* ]]; then
+            : >"$text"
+            GUARD_VERIFY_LABELER=
+            GUARD_VERIFY_EXCLUDE="${PR_AUTHOR}"
+            export GUARD_VERIFY_LABELER GUARD_VERIFY_EXCLUDE
+            echo "verify-gate: no verify-approved label; not reading comments, events or activity"
+            scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
+            exit
+          fi
+          owner=${REPO%%/*}
+          rname=${REPO#*/}
+          # GraphQL comments are the issue comments (oldest first). A later page is fetched only when
+          # hasNextPage is set. Labeled events are the newest window, not every issue event.
+          bundle_query='query($owner:String!, $name:String!, $number:Int!, $sha:GitObjectID!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                comments(first:100) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { author { __typename login } body }
+                }
+                timelineItems(last:100, itemTypes:[LABELED_EVENT]) {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { ... on LabeledEvent { actor { __typename login } label { name } } }
+                }
+              }
+              object(oid:$sha) { ... on Commit { committer { user { login } } } }
+            }
+          }
+          # vg-bundle'
+          comments_query='query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                comments(first:100, after:$cursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes { author { __typename login } body }
+                }
+              }
+            }
+          }
+          # vg-comments'
+          labels_query='query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+            repository(owner:$owner, name:$name) {
+              pullRequest(number:$number) {
+                timelineItems(last:100, before:$cursor, itemTypes:[LABELED_EVENT]) {
+                  pageInfo { hasPreviousPage startCursor }
+                  nodes { ... on LabeledEvent { actor { __typename login } label { name } } }
+                }
+              }
+            }
+          }
+          # vg-labels'
+          # GraphQL Bot.login is "vws-verify". REST, GUARD_VERIFY_ACTORS and GUARD_VERIFY_IDENTITY use
+          # "vws-verify[bot]". A User keeps the login GraphQL returned. Normalize before @@comment-by and the labeler.
+          gh_login='def gh_login: if .__typename == "Bot" and ((.login // "") | length) > 0 and ((.login | endswith("[bot]")) | not) then .login + "[bot]" else (.login // "") end;'
+          # Same defang as the previous REST filter: a body line cannot claim another author.
+          comment_jq="${gh_login}"'.data.repository.pullRequest.comments.nodes[]? | "@@comment-by: \(.author | gh_login)\n\((.body // "") | gsub("\r\n"; "\n") | gsub("[\u0000-\u0008\u000b-\u001f\u007f]"; "?") | gsub("(?m)^@@comment-by:"; "@ @comment-by:"))"'
+          vg_ok() {
+            if jq -e '((.errors // []) | length) > 0' >/dev/null <<<"$1"; then
+              echo "verify-gate: GitHub query failed" >&2
+              jq -c '.errors' <<<"$1" >&2
+              exit 1
+            fi
+            jq -e '.data.repository.pullRequest != null' >/dev/null <<<"$1" || {
+              echo "verify-gate: pull request ${NUMBER} could not be read" >&2
+              exit 1
+            }
+          }
+          bundle=$(gh_api_retry graphql -f query="$bundle_query" -f owner="$owner" -f name="$rname" -F number="$NUMBER" -f sha="$HEAD_SHA")
+          vg_ok "$bundle"
+          if jq -e '.data.repository.object == null' >/dev/null <<<"$bundle"; then
+            echo "verify-gate: commit ${HEAD_SHA} could not be read" >&2
+            exit 1
+          fi
+          committer=$(jq -r '.data.repository.object.committer.user.login // ""' <<<"$bundle")
+          # Save labeled events before the comment loop replaces its page.
+          timeline=$(jq -c '.data.repository.pullRequest.timelineItems' <<<"$bundle")
+          [[ $timeline != null && -n $timeline ]] || { echo "verify-gate: labeled events could not be read" >&2; exit 1; }
+          jq -e '.data.repository.pullRequest.comments.nodes != null' >/dev/null <<<"$bundle" || {
+            echo "verify-gate: comments could not be read" >&2
+            exit 1
+          }
+          : >"$text"
+          jq -r "$comment_jq" <<<"$bundle" >>"$text"
+          page=$bundle
+          cpages=1
+          while [[ $(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage' <<<"$page") == true ]]; do
+            cpages=$((cpages + 1))
+            if [[ $cpages -gt 20 ]]; then
+              echo "verify-gate: comment pages exceeded" >&2
+              exit 1
+            fi
+            cursor=$(jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""' <<<"$page")
+            [[ -n $cursor && $cursor != null ]] || { echo "verify-gate: comment page has no cursor" >&2; exit 1; }
+            page=$(gh_api_retry graphql -f query="$comments_query" -f owner="$owner" -f name="$rname" -F number="$NUMBER" -f cursor="$cursor")
+            vg_ok "$page"
+            jq -e '.data.repository.pullRequest.comments.nodes != null' >/dev/null <<<"$page" || {
+              echo "verify-gate: comments could not be read" >&2
+              exit 1
+            }
+            jq -r "$comment_jq" <<<"$page" >>"$text"
+          done
+          labeler=
+          tpages=0
+          while true; do
+            tpages=$((tpages + 1))
+            if [[ $tpages -gt 20 ]]; then
+              echo "verify-gate: labeled-event pages exceeded" >&2
+              exit 1
+            fi
+            count=$(jq -r '[.nodes[]? | select(.label.name == "verify-approved")] | length' <<<"$timeline")
+            if [[ ${count:-0} -gt 0 ]]; then
+              labeler=$(jq -r "${gh_login}"'[.nodes[]? | select(.label.name == "verify-approved")][-1].actor | gh_login' <<<"$timeline")
+              break
+            fi
+            if [[ $(jq -r '.pageInfo.hasPreviousPage' <<<"$timeline") != true ]]; then
+              break
+            fi
+            cursor=$(jq -r '.pageInfo.startCursor // ""' <<<"$timeline")
+            [[ -n $cursor && $cursor != null ]] || { echo "verify-gate: labeled-event page has no cursor" >&2; exit 1; }
+            page=$(gh_api_retry graphql -f query="$labels_query" -f owner="$owner" -f name="$rname" -F number="$NUMBER" -f cursor="$cursor")
+            vg_ok "$page"
+            timeline=$(jq -c '.data.repository.pullRequest.timelineItems' <<<"$page")
+            [[ $timeline != null && -n $timeline ]] || { echo "verify-gate: labeled events could not be read" >&2; exit 1; }
+          done
+          # The head pusher: the actor of the activity that set the head ref to HEAD_SHA, not the commit's
+          # committer field, which anyone can set. No match, and a rate limit that survives the retry budget,
+          # fails closed before the guard script runs. The committer's linked login stays excluded as well.
+          pusher=$(gh_api_retry -X GET "repos/${HEAD_REPO}/activity" -f ref="refs/heads/${HEAD_REF}" -F per_page=100 \
             --jq "[.[] | select(.after == \"${HEAD_SHA}\")][0].actor.login // \"\"")
           if [[ -z $pusher ]]; then
             echo "verify-gate: no push of ${HEAD_SHA} to ${HEAD_REPO} ${HEAD_REF} found; cannot tell who pushed the head" >&2
             exit 1
           fi
-          committer=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.committer.login // ""')
+          GUARD_VERIFY_LABELER=$labeler
           GUARD_VERIFY_EXCLUDE="${PR_AUTHOR},${pusher},${committer}"
           export GUARD_VERIFY_LABELER GUARD_VERIFY_EXCLUDE
           scripts/guard-agents.sh verify-gate "$HEAD_SHA" "$LABELS" "$text"
