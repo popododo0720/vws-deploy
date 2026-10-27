@@ -25,7 +25,9 @@ Rules (one module each in rules/, merged by decide, vws-deploy#501; see docs/fac
      (vws-deploy#545): one wake per ticked-box set, and the assignee may keep the issue
   D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
      is green for the current main head; after a merge the repo is locked until the push CI for the
-     new main head is green (red stops merges there and adds one entry to the status issue body)
+     new main head is green (red stops merges there and adds one entry to the status issue body);
+     a verify-approved head whose newest repo-guard run is a startup_failure gets one PR body touch,
+     and a second startup_failure is reported with needs-human instead (vws-deploy#446)
 
 Status (vws-deploy#416): each apply tick rewrites the BODY of the status issue (ORCHESTRATE_STATUS_ISSUE)
 in place, and only when its content changed; the orchestrator posts no status comments. A failed tick
@@ -320,7 +322,8 @@ ALLOWED = {
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
     # The status issue body (vws-deploy#416), an AC tick or a completed close (#486); Gh.write pins the payload.
-    "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$")],
+    "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$"),
+              re.compile(rf"^{_REPO}/pulls/[0-9]+$")],  # the #446 repo-guard touch only; Gh.write pins the payload
 }
 
 
@@ -482,6 +485,11 @@ class Gh:
             close = not is_status and p == {"state": "closed", "state_reason": "completed"}
             if not (status_edit or tick or close):
                 raise PermissionError("issue edit refused: the status issue body, an AC tick or a completed close only")
+        if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/pulls/[0-9]+", path):
+            # vws-deploy#446: one PR edit only, `before` (the body just read) plus the repo-guard touch line.
+            p = payload if isinstance(payload, dict) else {}
+            if set(p) != {"body"} or not tr.guard_touch_only(before, p.get("body")):
+                raise PermissionError("PR edit refused: the #446 repo-guard touch line only")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -1176,7 +1184,13 @@ def merge_info(gh, repo, number):
             "statuses": [{"context": st.get("context"), "state": st.get("state")} for st in (status or {}).get("statuses", [])],
             # The combined status lists only its first page; more contexts than shown fail closed.
             "statuses_truncated": (status or {}).get("total_count", 0) > len((status or {}).get("statuses", [])),
-            "status_state": (status or {}).get("state")}
+            "status_state": (status or {}).get("state"),
+            # vws-deploy#446: repo-guard runs for the head, from the same read (a startup_failure has no check run).
+            "guard_runs": [{"id": w.get("id", 0), "status": w.get("status"), "conclusion": w.get("conclusion"),
+                            "created_at": w.get("created_at"), "run_attempt": w.get("run_attempt"),
+                            "head_sha": w.get("head_sha")}
+                           for w in (wruns or {}).get("workflow_runs", [])
+                           if w.get("path") == GUARD_WORKFLOW and w.get("event") == "pull_request"]}
 
 
 def pr_files(gh, repo, number):
@@ -1246,7 +1260,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
     grok_repos = [r["name"] for r in snapshot.get("repos", []) if not r.get("archived")]
     grok_posted = []  # Grok wakes this apply already sent (or tried to): they count toward the cap
     for a in result["actions"]:
-        if a["type"] in ("merge", "merge_status") and cfg["ORCHESTRATE_MERGE"] != "apply":
+        if a["type"] in ("merge", "merge_status", "guard_touch") and cfg["ORCHESTRATE_MERGE"] != "apply":
             log("skipped", action=a["type"], target=a["target"], reason=f"ORCHESTRATE_MERGE={cfg['ORCHESTRATE_MERGE']}")
             continue
         if a["type"] in WAKE_TYPES and wake_silence(cfg):
@@ -1265,6 +1279,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason=f"ORCHESTRATE_AC_TICK={cfg.get('ORCHESTRATE_AC_TICK', 'apply')}")
                 continue
             n, failed = apply_ac_tick(a, gh, writes, max_writes, new_state, log)
+            writes, errors = writes + n, errors + failed
+            continue
+        if a["type"] == "guard_touch":
+            n, failed = apply_guard_touch(a, gh, writes, max_writes, new_state, paths, log, now)
             writes, errors = writes + n, errors + failed
             continue
         if a["type"] in ("merge_status", "infra_status"):
@@ -1399,6 +1417,36 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
     return new_state, errors
+
+
+def apply_guard_touch(a, gh, writes, max_writes, new_state, paths, log, now):
+    """One #446 repo-guard touch: the PR is read again at the pinned head, the attempt is journaled before
+    the PATCH (a crash after it still counts as the one touch), and a body that already has the line for
+    this head is not edited again. Returns (writes, errors)."""
+    repo, number = a["target"].split("#")
+    if writes + 1 > max_writes:
+        log("skipped", action=a["type"], target=a["target"], reason=f"write cap {max_writes} reached")
+        return 0, 0
+    try:
+        pr, why = tr.pr_at_head(gh.get, repo, number, a["head"])
+    except (GhError, PermissionError) as e:
+        pr, why = None, f"re-read failed: {scrub(e)}"
+    if not why and tr.guard_touched((pr or {}).get("body"), a["head"]):
+        why = "touch line already in the body"
+    if why:
+        log("skipped", action=a["type"], target=a["target"], reason=why)
+        return 0, 0
+    new_state.setdefault("guard_touches", {})[f"{a['target']}@{a['head']}"] = {"at": now}
+    write_json(paths.state_file, new_state)
+    before = pr.get("body") or ""
+    try:
+        gh.write("PATCH", f"repos/{OWNER}/{repo}/pulls/{number}", {"body": tr.guard_touch_body(before, a["head"])},
+                 before=before)
+    except (GhError, PermissionError) as e:
+        log("apply_failed", action=a["type"], target=a["target"], error=str(e))
+        return 1, 1
+    log("applied", action=a["type"], target=a["target"], reason=a["reason"])
+    return 1, 0
 
 
 def apply_ac_tick(a, gh, writes, max_writes, new_state, log):

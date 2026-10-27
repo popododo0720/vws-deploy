@@ -3,6 +3,8 @@
 At most one per repo per tick, only while main's push CI is green for the current main head; after a merge
 the repo is locked until the push CI for the new main head is green (red stops merges there and adds one
 entry to the status issue body). PRs that touch SERIAL_MERGE_RE paths merge one at a time across repos.
+A verify-approved head whose newest repo-guard run is a startup_failure gets one PR body touch for a fresh
+run; a second startup_failure is reported instead of touched again (vws-deploy#446).
 """
 import hashlib
 import json
@@ -16,17 +18,20 @@ from trusted_read import (
 from .common import (
     MERGEABLE_OK, OPT_OUT_LABELS, PART_OF_HINT, PART_OF_RE, VERIFY_APP_ID, VERIFY_CHECK, active_repos, agent_of,
     decision, dep_state, head_check_reasons, num, owner_repo_part_of, parse_deps, status_keys, status_target,
-    wake_target,
+    utc, wake_target,
 )
 
 NAME = "merge"
-STATE_KEYS = ("merge_locks", "merge_attempts")
+STATE_KEYS = ("merge_locks", "merge_attempts", "guard_touches")
 
 
 # Rule D serial set (vws-deploy#397): PRs touching these merge one at a time across all repos, oldest approval first.
 # vws-deploy#501: the rule modules are what orchestrate.py was, so they stay serial too (rules/*.py, one level).
 SERIAL_MERGE_RE = re.compile(r"^(?:\.github/orchestrate/orchestrate\.py|\.github/orchestrate/rules/[^/]+\.py"
                              r"|\.github/workflows/repo-guard[^/]*\.ya?ml|AGENTS\.md)$")
+# vws-deploy#446: the repo-guard caller and how long a touch waits for the fresh run before it is reported.
+GUARD_WORKFLOW = ".github/workflows/repo-guard.yml"
+GUARD_TOUCH_WAIT = 30 * 60
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
 
 
@@ -101,6 +106,61 @@ def verify_approved_at(info):
     return max((r.get("completed_at") or r.get("started_at") or "" for r in runs), default="")
 
 
+def guard_startup(k, it, touches, now):
+    """vws-deploy#446: what to do about a repo-guard startup_failure on verify-approved PR `it`. Pure.
+    Returns (step, why): "touch" (one PR body edit starts a fresh repo-guard run), "report" (the one touch
+    did not help; never a second touch) or "" (no startup_failure is the newest repo-guard run, or the
+    touched run has not started yet). touches is state["guard_touches"]: {"repo#N@head": {"at": epoch}}."""
+    info, head = it.get("merge_info") or {}, it.get("head_sha")
+    runs = sorted((r for r in info.get("guard_runs", []) if r.get("head_sha") == head),
+                  key=lambda r: (r.get("created_at") or "", r.get("id", 0)))
+    if not runs or runs[-1].get("conclusion") != "startup_failure":
+        return "", ""  # a later run (any outcome, or still running) means repo-guard started again
+    last = runs[-1]
+    rec = touches.get(f"{k}@{head}")
+    if rec is None and not tr.guard_touched(it.get("body"), head):
+        return "touch", f"repo-guard run {last['id']} ended in startup_failure"
+    if rec is None:
+        return "report", f"repo-guard run {last['id']} ended in startup_failure after a touch (state lost)"
+    if utc(last["created_at"]) > rec["at"]:
+        return "report", f"repo-guard run {last['id']} ended in startup_failure again after the touch"
+    if now - rec["at"] >= GUARD_TOUCH_WAIT:
+        return "report", f"no repo-guard run {GUARD_TOUCH_WAIT // 60} min after the touch"
+    return "", "waiting for the repo-guard run the touch started"
+
+
+def guard_status_body(k, head, why, key, run_id):
+    return "\n".join([FAILURE_MARKER, f"vws-orchestrate: repo-guard startup_failure on {k} at `{head}`.", "",
+                      "Kind: repo-guard-startup-failure", f"PR: {k}", f"Head: `{head}`", f"Detail: {why}", "",
+                      "The one automatic touch is used; the PR is labeled needs-human (vws-deploy#446).",
+                      f"Idempotency key: `{key}`", f"Run id: `{run_id}`"])
+
+
+def guard_steps(k, it, reasons, touches, posted, now, cfg, run_id):
+    """Rule D's #446 actions and note for one PR read in a readable repo: (actions, notes)."""
+    if not it.get("merge_info") or set(reasons) & {"draft", "base_not_main", "no_verify_approved", "opted_out"}:
+        return [], []
+    step, why = guard_startup(k, it, touches, now)
+    if not why:
+        return [], []
+    head = it["head_sha"]
+    actions = []
+    notes = [{"kind": "guard_startup_failure", "target": k, "head": head[:7], "step": step or "wait", "detail": why}]
+    if step == "touch":
+        actions.append({"type": "guard_touch", "target": k, "repo": it["repo"], "head": head, "reason": why})
+    elif step == "report":
+        key = status_key("repo-guard startup_failure", k, head)
+        if key not in posted:
+            posted.add(key)
+            actions.append({"type": "merge_status", "target": status_target(cfg), "key": key, "repo": it["repo"],
+                            "reason": f"repo-guard startup_failure on {k} at {head[:7]}: {why}",
+                            "body": guard_status_body(k, head, why, key, run_id)})
+        if "needs-human" not in it["labels"]:
+            actions.append({"type": "add_label", "target": k, "label": "needs-human", "head": head,
+                            "reason": "repo-guard startup_failure after the one touch (vws-deploy#446)"})
+    return actions, notes
+
+
 def decide_merges(snapshot, new_state, now, cfg, repos):
     """Rule D. Updates new_state["merge_locks"] / ["merge_attempts"]; returns (actions, notes). Pure."""
     actions, notes = [], []
@@ -111,10 +171,13 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
     posted = status_keys(snapshot, new_state)
     locks = new_state.setdefault("merge_locks", {})
     attempts = new_state.setdefault("merge_attempts", {})
+    # Only apply_guard_touch creates guard_touches, so a tick without a touch leaves the state as before.
+    touches = new_state.get("guard_touches", {})
     open_heads = {f"{k}@{it.get('head_sha')}" for k, it in items.items() if it["is_pr"] and it["state"] == "open"}
-    for a in list(attempts):
-        if a not in open_heads:
-            del attempts[a]  # the PR merged, closed or moved: its attempts no longer matter
+    for book in (attempts, touches):
+        for a in list(book):
+            if a not in open_heads:
+                del book[a]  # the PR merged, closed or moved: its attempts no longer matter
     timeout = num(cfg, "ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS") * 3600
     rows = []  # (repo, PR item, reasons, main) for every PR in a readable repo; chosen after the loop
 
@@ -195,6 +258,9 @@ def decide_merges(snapshot, new_state, now, cfg, repos):
         for it in prs:
             reasons = merge_reasons(it, ctx, snapshot, repos, cfg, attempts)
             rows.append((repo, it, reasons or list(gate), f"{main_sha[:7]} {main_ci}"))
+            more, why = guard_steps(f"{repo}#{it['number']}", it, reasons, touches, posted, now, cfg, snapshot["run_id"])
+            actions += more
+            notes += why
     # The serial set (vws-deploy#397): at most one merge per tick among PRs that touch orchestrate.py,
     # repo-guard*.yml or AGENTS.md, in any repo; the oldest verify approval goes first.
     serial = sorted((verify_approved_at(it.get("merge_info")) or "~", repo, it["number"])

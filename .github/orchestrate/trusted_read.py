@@ -59,6 +59,33 @@ FAILURE_SECTION_RE = re.compile(rf"^## Failed ticks\n.*?(?=^## |^_Updated |^{re.
                                 re.M | re.S)
 
 
+def guard_touch_marker(sha):
+    """vws-deploy#446: the last line Rule D adds to a verify-approved PR body whose repo-guard run hit
+    startup_failure. The edit starts a fresh run (pull_request edited) and records the one attempt for
+    that head. Anyone who can edit the body can add it; that only skips the retry and reports the PR."""
+    return f"<!-- vws-orchestrate:guard-retrigger head={sha} -->"
+
+
+def guard_touched(body, sha):
+    """True when body already carries the #446 touch line for head sha."""
+    return guard_touch_marker(sha) in (body or "").replace("\r\n", "\n").split("\n")
+
+
+def guard_touch_body(body, sha):
+    """body with the #446 touch line for sha appended (the PATCH payload)."""
+    return (body or "").rstrip() + "\n\n" + guard_touch_marker(sha)
+
+
+def guard_touch_only(before, new):
+    """True when new is exactly before plus the #446 touch line for one 40-hex head that before lacks
+    (Gh.write refuses any other PR edit)."""
+    m = GUARD_TOUCH_RE.search(new or "") if isinstance(new, str) and isinstance(before, str) else None
+    return bool(m) and not guard_touched(before, m.group(1)) and new == guard_touch_body(before, m.group(1))
+
+
+GUARD_TOUCH_RE = re.compile(r"<!-- vws-orchestrate:guard-retrigger head=([0-9a-f]{40}) -->\Z")
+
+
 def ac_tick_marker(pr):
     """The last line of the AC tick comment for merged PR repo#N (vws-deploy#486)."""
     return f"<!-- vws-orchestrate:ac-tick pr={pr} -->"
