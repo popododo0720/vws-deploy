@@ -51,8 +51,8 @@ Cross-repo, in vws-deploy drift-check (present: `.github/drift/proto_drift.py`, 
 - reports each Go repo's required vws-proto version from every `go.mod` (outside `third_party/`, `vendor/` and `testdata/`) next to the latest release tag (the highest `vX.Y.Z` tag on vws-proto; pre-releases are ignored);
 - fails when a consumer is more than 1 minor version behind the latest tag, or on any older major version. With latest v0.5.0, v0.4.x passes and v0.3.x fails. One minor of lag gives each consumer one release cycle to bump in its own PR;
 - fails on a `replace` for vws-proto, a pseudo-version, or a version that is not a vws-proto tag;
-- fails on vws-proto generated code in the tree: anything under `third_party/vws-proto/`, a `*.pb.go` under a `gen/go/vws/` path, or any other `*.pb.go` whose header is `// source: vws/...` (the `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API);
-- fails closed: an unreadable tree, `go.mod` or tag list, and a truncated tree listing, are drift.
+- fails on vws-proto generated code in the tree: anything under `third_party/vws-proto/`, a `*.pb.go` under a `gen/go/vws/` path, or any other `*.pb.go` whose header is `// source: vws/...` (the `rg -l '^// source: vws/' -g '*.pb.go'` check, read through the contents API). A file over about 1MB comes back as `encoding: none` with an empty or missing body; that file is read through the Git Blobs API;
+- fails closed: an unreadable tree, `go.mod` or tag list, and a truncated tree listing, are drift. A Contents or Blobs response with `encoding: none` and an empty or missing body is unreadable, so a large `*.pb.go` whose bytes the API did not return cannot pass the source-header check.
 
 Per consumer, in the repo's own tests: not present, and not planned. No service repo has a test for its `go.mod` vws-proto entry (checked on 2026-10-27 in the five consumers). drift-check is the one place for the rule, so it is not copied into five repos. The cost: a consumer PR that adds a copy is caught by the next daily run, not at the PR.
 
