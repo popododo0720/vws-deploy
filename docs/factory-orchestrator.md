@@ -263,7 +263,10 @@ replaced by this label and Rule A.
 
 The orchestrator owns `needs-verify` and `verify-approved` (rule V, `decide_verify_labels`). `collect`
 reads, for every open non-draft PR into `main`, the head's check runs and commit status and the
-vws-verify reviews (all ETag-cached). It then sets both labels from this table:
+vws-verify reviews (all ETag-cached). Rule A (`ci_verdict`) and rule V (`pr_ci`) skip the same
+by-design checks: `verify-gate`, `gate / verify-gate`, `vws-verify`, and verify-queue's `needs-verify`
+job. That list is `VERIFY_CHECKS` (vws-deploy#502). A PR whose only red checks are those still counts
+as waiting for verify. Rule V then sets both labels from this table:
 
 | The PR's current head | `needs-verify` | `verify-approved` |
 |---|---|---|
