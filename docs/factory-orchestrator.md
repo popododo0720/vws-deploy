@@ -31,9 +31,64 @@ A deterministic script that runs five routine factory steps on GitHub state. It 
 | T, AC tick (vws-deploy#486) | A PR merged into `main` after the rule started, with a `Part of` issue and `AC: <n>` lines, gets box n of that issue ticked with `(evidence: <PR URL> merged <sha>)`. One comment carries the marker. The issue gets `ac-partial` while boxes stay open and is closed as completed when none are left. `ORCHESTRATE_AC_TICK` (`apply` by default, so an unset value applies) switches it; the #415 Now block shows it as `AC tick: <mode>`. See "The AC tick rule" below. |
 | V, verify labels (vws-deploy#487) | `needs-verify` and `verify-approved` follow each open PR's current head in every vws-* repo, with or without `verify-queue.yml`. See "The verify labels rule" below. Runs after every other rule, so it takes the writes left under `ORCHESTRATE_MAX_WRITES`; `ORCHESTRATE_VERIFY_LABELS=off` stops it. |
 
-Code: `.github/orchestrate/orchestrate.py` (Python 3 stdlib), `.github/orchestrate/exclusions.tsv`,
+Code: `.github/orchestrate/orchestrate.py` and `.github/orchestrate/rules/*.py` (Python 3 stdlib; see
+"Code layout" below), `.github/orchestrate/trusted_read.py`, `.github/orchestrate/exclusions.tsv`,
 `.github/orchestrate/box/orchestrate-loop.sh`, `.github/orchestrate/box/orchestrate-ensure.sh`.
 Tests: `tests/orchestrate/` (run by `.github/workflows/drift-check.yml`).
+
+## Code layout (vws-deploy#501)
+
+Each rule is one module, so a rule PR touches its own file and not the others' (before #501 every rule
+PR edited the same `decide()` body in one 3,900-line file and left the rest DIRTY).
+
+| File | Holds |
+| --- | --- |
+| `.github/orchestrate/orchestrate.py` | collect (gh reads, ETag cache), the thin `decide()` dispatcher, apply (writes, write cap), the status issue body, board sync, `tick` and `main` |
+| `.github/orchestrate/rules/__init__.py` | `REGISTRY`, the rule names in decision order (one line per rule), and `RULES`, the loaded modules |
+| `.github/orchestrate/rules/common.py` | helpers and constants that two or more rules (or a rule and orchestrate.py) use; one definition each |
+| `.github/orchestrate/rules/<rule>.py` | one rule: `NAME`, `STATE_KEYS`, optional `ACTIONS_AFTER`, the pure `decide(snapshot, state, cfg, now)` and the helpers only that rule uses |
+| `.github/orchestrate/trusted_read.py` | every marker and marker match (see "Trusted reads" below) |
+
+The rules, in `REGISTRY` order: `owned_labels` (prunes the label-ownership journal), `verify_wake` (A),
+`ci_fail` (CI-failure marker notes), `deepseek` (B and C per item: failures, infra retries,
+dependencies, the dispatch queue), `grok_rework` (B4), `dispatch` (B, the DeepSeek slots), `grok` (G),
+`rebuild` (R), `lead` (L), `merge` (D), `ac_tick` (T), `verify_labels` (V). A rule may import a pure
+helper from another rule (`dispatch` uses `deepseek.triage`, `lead` uses `grok_rework.decide_grok_rework`).
+
+**Decision and merge.** A rule's `decide` returns `common.decision(actions, notes, state, **extra)`: its
+actions and notes in order, updates for its own `STATE_KEYS` and extras that become top-level keys of
+the result (`pending_count` from `verify_wake`, `rebuild` from `rebuild`). It reads only its arguments:
+no gh call, no file, no clock (`now` is passed in). The dispatcher hands every rule its own copy of the
+state and `cfg` with the exclusions under `common.EXCLUSIONS_KEY`, then merges deterministically:
+
+- notes, state updates and extras in `REGISTRY` order; actions in `REGISTRY` order too, except that a
+  rule with `ACTIONS_AFTER = "<rule>"` has its actions right after that rule's (`grok_rework` after
+  `rebuild`: the write cap in apply takes actions in this order);
+- a stable sort on that order, then one action per (type, target, label or key): the first wins;
+- a state key outside the rule's `STATE_KEYS`, or a state or extra key two rules set, is an error.
+
+The call order is not part of the contract: `decide(..., call_order=...)` in tests shuffles it and
+the result stays the same. STOP's wake silence (`suppress_wakes`) runs on the merged list.
+
+`orchestrate.py` loads `rules/` as the package `orchestrate_rules` and re-exports every helper and
+constant from it, so tests, `.github/metrics/metrics.py` and `.github/verify/verify-check.py` keep
+reading them as `orch.<name>`.
+
+**Adding a rule: three files.**
+
+1. `.github/orchestrate/rules/<rule>.py` with `NAME = "<rule>"`, `STATE_KEYS = (...)` (keys no other
+   rule sets; `()` for none) and a pure `decide(snapshot, state, cfg, now)` that returns
+   `decision(...)`. Import shared helpers from `.common`; a helper only this rule needs stays in this
+   file.
+2. One line in `REGISTRY` in `.github/orchestrate/rules/__init__.py`, at the place in the order where
+   its notes and actions belong (later rules get fewer writes under `ORCHESTRATE_MAX_WRITES`).
+3. `tests/orchestrate/rules/test_<rule>.py`: the `RuleContract` checks from `rules_testlib.py` plus the
+   rule's own cases.
+
+Nothing in `orchestrate.py` changes, unless the rule needs a new collect read or a new action type in
+apply. `tests/orchestrate/rules/test_registry.py` proves it with a stub rule. A change to a moved rule's
+behavior re-records `tests/orchestrate/testdata/split-golden/` in the same PR and says why
+(`test_split_golden.py`).
 
 ## STOP and RESUME (vws-deploy#521)
 
@@ -184,8 +239,9 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
   and a forged PASS cannot hide a trusted FAIL. A new dispatch found by the pre-dispatch re-read
   blocks only when its author is trusted.
 - **Trusted reads (vws-deploy#439 AC2, class 1):** `.github/orchestrate/trusted_read.py` holds every
-  marker, marker regex and match of one; orchestrate.py imports it and
-  `.github/drift/trusted_read_lint.py` (run by drift-check) fails on a marker match anywhere else.
+  marker, marker regex and match of one; orchestrate.py and the rule modules import it and
+  `.github/drift/trusted_read_lint.py` (run by drift-check) fails on a marker match anywhere else in
+  `orchestrate.py` or `rules/*.py`.
   - A verify wake, an idempotency key, a key's first time (the Grok wake timeout) and the
     `ac-tick` marker count only from a comment by the orchestrator's own login (`popododo0720`, the
     box gh login). A copy posted by anyone else neither suppresses, backdates nor dedupes a write.
@@ -322,7 +378,7 @@ A PR is eligible only when all of these hold:
 | every `Depends on` is met (same rules as the DeepSeek queue) | `dep_unmet:<ref>` |
 | fewer than `ORCHESTRATE_MERGE_MAX_ATTEMPTS` (2) failed merge attempts for this head | `merge_attempts_exhausted` |
 | the repo is not locked, and main's push CI is green | `repo_locked:<why>`, `main_ci_pending`, `main_ci_none`, `main_ci_red` |
-| serial set (vws-deploy#397): a PR that changes `.github/orchestrate/orchestrate.py`, a `.github/workflows/repo-guard*.yml` or `AGENTS.md` (paths from `pulls/N/files`, read in collect; unread counts as serial) merges only if it is the oldest-approved eligible serial PR across all repos this tick (newest successful `vws-verify` check run on the head); the others wait a tick | `serial_after:<pr>` |
+| serial set (vws-deploy#397): a PR that changes `.github/orchestrate/orchestrate.py`, a rule module `.github/orchestrate/rules/*.py` (one level, `common.py` and `__init__.py` too: they are what orchestrate.py was, vws-deploy#501), a `.github/workflows/repo-guard*.yml` or `AGENTS.md` (paths from `pulls/N/files`, read in collect; unread counts as serial) merges only if it is the oldest-approved eligible serial PR across all repos this tick (newest successful `vws-verify` check run on the head); the others wait a tick | `serial_after:<pr>` |
 | no other PR of the repo is chosen this tick (the serial pick first, then lowest number) | `one_merge_per_repo:<pr>` |
 
 The `Agent:` line of the PR body is copied into the `merged` log event (`agent`, empty when absent).
@@ -450,7 +506,7 @@ DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at
 08:37Z killed vws-proto#51 jobs on the first turn). Those are not task failures.
 
 - **Classification:** a `[deepseek-dev] Failed for <dispatch url>: ...` report is an infra failure
-  when its body matches `INFRA_ERROR_RE` (one multiline constant in `orchestrate.py`):
+  when its body matches `INFRA_ERROR_RE` (one multiline constant in `rules/deepseek.py`):
   - a line `dsh: RATE_LIMIT: <code>:` or `dsh: SERVER: <code>:` (`^dsh: (RATE_LIMIT|SERVER): (\d{3}):`).
     The poller's first line is only `dsh exited with code 1.`; the provider error is the last dsh
     line inside the `Last output` block, for a first-turn death and a mid-job death alike;
@@ -610,7 +666,8 @@ the checkout has afterwards.
   - it has local changes, tracked or untracked (the state dir is excluded if it lies inside the checkout);
   - it has diverged from `origin/main` (a local commit);
   - the candidate fails a syntax check (`bash -n` on the loop and ensure scripts, `compile()` on
-    `orchestrate.py`, `orchestrate-update.py` and `metrics.py`).
+    `orchestrate.py`, `trusted_read.py`, every `rules/*.py` (vws-deploy#501), `orchestrate-update.py` and
+    `metrics.py`).
 
   A fetch or fast-forward failure also raises an alert. Local changes are never touched.
 - **Re-exec:** when the fast-forward changed `.github/orchestrate/box/`, the loop re-execs the new
