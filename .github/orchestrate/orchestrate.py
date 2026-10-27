@@ -21,7 +21,8 @@ Rules (see docs/factory-orchestrator.md):
   G  wake the Grok dev bot with one marker comment on the verify-wake thread (ORCHESTRATE_WAKE_THREAD;
      unset: no Grok wake) for the top ready+grok issue on ORCHESTRATE_GROK_ALLOWLIST (empty: nothing is
      assigned), at most ORCHESTRATE_GROK_CAP (1) at a time and one per repo; a woken issue holds its slot
-     while it stays open with grok
+     while it stays open with grok, except an ac-partial issue with boxes still open and no open PR
+     (vws-deploy#545): one wake per ticked-box set, and the assignee may keep the issue
   D  squash-merge PRs that passed vws-verify, at most one per repo per tick, only while main's push CI
      is green for the current main head; after a merge the repo is locked until the push CI for the
      new main head is green (red stops merges there and adds one entry to the status issue body)
@@ -1901,16 +1902,45 @@ def grok_link(it):
     return "" if not m else (it["repo"] + m.group(1) if m.group(1).startswith("#") else m.group(1))
 
 
+def ac_partial_idle(it, items):
+    """vws-deploy#545: rule T left this issue labeled ac-partial (some acceptance-criteria boxes ticked,
+    some still open) and no open PR names it. The assignee is not working a PR, so the issue does not
+    hold the Grok slot; decide_grok posts one wake for the remaining boxes instead."""
+    if it.get("is_pr") or it.get("state") != "open" or "ac-partial" not in it.get("labels", []):
+        return False
+    boxes = ac_boxes(it.get("body") or "")
+    if not any(b["checked"] for b in boxes) or all(b["checked"] for b in boxes):
+        return False
+    k = f"{it['repo']}#{it['number']}"
+    return not any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k for p in items.values())
+
+
+def ac_partial_key(k, it):
+    """One grok wake per partial slice: sha256 of the issue and the ticked box numbers. Ticking more
+    boxes changes the key; the same boxes never post a second wake."""
+    sig = ",".join(str(b["n"]) for b in ac_boxes(it.get("body") or "") if b["checked"])
+    return "sha256:" + hashlib.sha256(f"grok-wake\n{k}\npartial\n{sig}".encode()).hexdigest()
+
+
+def grok_slot_key(k, it, items, key_times):
+    """(wake key, continuation). A partial-idle issue uses ac_partial_key; anything else uses the
+    ordinary grok_wake_key (vws-deploy#545)."""
+    if not it.get("is_pr") and ac_partial_idle(it, items):
+        return ac_partial_key(k, it), True
+    return grok_wake_key(k, it, key_times), False
+
+
 def grok_held(items):
     """Grok work in flight without a wake key: an open grok item with an assignee, or the issue an open
-    grok PR (draft too) names with `Part of`. Returns the set of held repo#N (the linked issue for a PR)."""
+    grok PR (draft too) names with `Part of`. An ac-partial issue with boxes still open and no open PR
+    is not in flight (vws-deploy#545). Returns the set of held repo#N (the linked issue for a PR)."""
     held = set()
     for k, it in items.items():
         if it["state"] != "open" or "grok" not in it["labels"]:
             continue
         if it["is_pr"] and grok_link(it):
             held.add(grok_link(it))
-        elif it.get("assignees"):
+        elif it.get("assignees") and not ac_partial_idle(it, items):
             held.add(k)
     return held
 
@@ -1979,7 +2009,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         if it["state"] != "open" or "grok" not in labels:
             continue
         unit = grok_link(it) or k  # a PR and the issue it is part of are one Grok task
-        key = grok_wake_key(k, it, key_times)
+        key, _continuing = grok_slot_key(k, it, items, key_times)
         if key in posted:
             kind, details = ("", {}) if now is None else grok_release(
                 k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
@@ -2027,14 +2057,16 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             continue
         busy.add(q[2])
         it = items[q[4]]
-        key = grok_wake_key(q[4], it, key_times)
+        key, continuing = grok_slot_key(q[4], it, items, key_times)
         slot = len(running) + len(actions) + 1
         # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
         # cannot rebuild their reset time from the bare issues list).
         owner, via = grok_bot(it, cfg)
+        why = (f"{q[4]}: ac-partial, remaining acceptance criteria, Grok slot {slot} of {cap}" if continuing
+               else f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}")
         actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
-                        "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
-                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
+                        "allow_assigned": continuing, "woken": sorted(woken), "released": sorted(freed),
+                        "reason": why, "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
     return actions
 
 
@@ -2985,7 +3017,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason="a comment with this key already exists")
                 continue
             why = recheck_grok(gh, a["item"], grok_repos, int(num(cfg, "ORCHESTRATE_GROK_CAP")),
-                               a.get("woken", ()), grok_posted, a.get("released", ()))
+                               a.get("woken", ()), grok_posted, a.get("released", ()),
+                               a.get("allow_assigned", False))
             if why:
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
@@ -3357,18 +3390,21 @@ def publish_status(gh, cfg, snapshot, body, log):
     return 0
 
 
-def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=()):
+def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=(), allow_assigned=False):
     """Rule G, right before a wake is posted. Returns '' when it may go ahead, else why not.
     The issue must still be open, ready+grok, unassigned, without `deepseek` or an opt-out label.
+    allow_assigned (vws-deploy#545) is only the ac-partial continuation: that assignee may stay.
     Then occupancy is rebuilt from a fresh read of the open grok items of every scoped repo: Grok work
-    held now (grok_held: assigned, or named by an open grok PR), the tasks the tick saw as woken that
-    are still open with grok, and the wakes already posted this tick all count toward cap; the issue's
-    own repo must not be busy (grok_busy). A failed read skips the wake (fails closed)."""
+    held now (grok_held: assigned, or named by an open grok PR; an ac-partial idle issue is neither),
+    the tasks the tick saw as woken that are still open with grok, and the wakes already posted this
+    tick all count toward cap; the issue's own repo must not be busy (grok_busy). A failed read skips
+    the wake (fails closed)."""
     repo, number = k.split("#")
     try:
         issue, _ = gh.get(f"repos/{OWNER}/{repo}/issues/{number}")
         names = {lb["name"] for lb in issue.get("labels", [])}
-        if not (issue.get("state") == "open" and {"ready", "grok"} <= names and not issue.get("assignees")
+        assigned_ok = allow_assigned or not issue.get("assignees")
+        if not (issue.get("state") == "open" and {"ready", "grok"} <= names and assigned_ok
                 and not names & ({"deepseek"} | set(OPT_OUT_LABELS))):
             return "the issue changed since collect"
         fresh = {}
