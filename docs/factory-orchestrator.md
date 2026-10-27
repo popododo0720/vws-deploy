@@ -571,7 +571,7 @@ The status lives in the **body** of one pinned issue, vws-deploy#415 (`ORCHESTRA
 orchestrator owns only one block in that body, from the line `<!-- vws-orchestrate:status -->` to the
 line `<!-- /vws-orchestrate:status -->`. Text above and below the block belongs to people: every write
 replaces only the block and keeps the rest byte for byte. Each apply tick renders the block (mode and switches,
-PRs waiting for verify and where wakes go, DeepSeek in flight, PRs waiting for a rebuild (rule R), verify-approved PRs Rule D did not merge and why (#505), merge locks, the last 20 merge and infra
+PRs waiting for verify and where wakes go, DeepSeek in flight, Grok in flight, PRs waiting for a rebuild (rule R), verify-approved PRs Rule D did not merge and why (#505), merge locks, the last 20 merge and infra
 entries, and a "Failed ticks" section during a failure streak) and edits it with one
 `PATCH repos/popododo0720/vws-deploy/issues/415` only when the block's content changed: its
 `_Updated ... by run ..._` line and line endings are ignored when comparing, so a quiet tick writes
@@ -579,6 +579,8 @@ nothing. The read is ETag-cached, so an unchanged issue costs a 304. The edit is
 (at most one per tick); a failed edit fails the tick. Dry-run writes the rendered body to
 `status-body.md` in the state directory instead (the block only). While `ORCHESTRATE_SCOPE` is set, the
 edit is skipped unless the scope is the status issue itself.
+
+**Grok in flight (vws-deploy#532).** The Now block always has the line `Grok in flight: N of CAP`, right after the DeepSeek line, where CAP is `ORCHESTRATE_GROK_CAP`. N and the listed `repo#N` holders are exactly the tasks rule G counts against the cap on that tick (the `grok_in_flight` note): a woken open `grok` issue that has not been freed, an open `grok` issue or PR with any assignee (a person too), and the issue an open `grok` PR names with `Part of`. With no holder it still prints `Grok in flight: 0 of CAP`. The `ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN` timeout (vws-deploy#411) frees only an **unclaimed** wake; a claimed issue keeps its slot, and stays on this line, until its PR merges, every acceptance-criteria box is ticked, it is unassigned, `grok` is removed, or it closes. The line is status only: it does not change the cap, the timeout or which issues are woken.
 
 **Fail closed.** If the current body does not have exactly one block (no start marker, no end marker,
 two blocks, or the end marker before the start marker), the orchestrator writes nothing: the tick logs
