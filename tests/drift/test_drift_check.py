@@ -312,7 +312,8 @@ class MainRulesetCell(unittest.TestCase):
     def run_main(self, detail, rules=None, extra_files=None, kind="proto", api=None):
         files = {".github/workflows/repo-guard.yml": b"x", ".github/workflows/direct-push-watch.yml": b"x",
                  ".github/workflows/verify-queue.yml": b"x",
-                 "AGENTS.md": b"main is protected by the active vws-main ruleset", "QUALITY.md": b"q"}
+                 "AGENTS.md": b"main is protected by the active vws-main ruleset", "QUALITY.md": b"q",
+                 "scripts/check-english.sh": CE_TEXT}
         files.update(extra_files or {})
         files = {k: v for k, v in files.items() if v is not None}
 
@@ -464,6 +465,12 @@ class MainRulesetCell(unittest.TestCase):
     def test_check_english_copy_drift(self):
         rc, _, _, cells = self.run_main(self.OK_DETAIL, extra_files={"scripts/check-english.sh": b"#!/bin/sh\n"})
         self.assertIn("check-english.sh differs from the vws-deploy pin", cells[10])
+        self.assertEqual(rc, dc.DRIFT_EXIT)
+
+    def test_missing_check_english_is_drift(self):
+        # vws-deploy#423: a repo without scripts/check-english.sh is reported, not skipped.
+        rc, _, _, cells = self.run_main(self.OK_DETAIL, extra_files={"scripts/check-english.sh": None})
+        self.assertEqual(cells[10], "no scripts/check-english.sh")
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
     def test_call_to_a_subcommand_the_script_lacks_is_drift(self):
@@ -753,6 +760,7 @@ PENDING = {"vws-lib": FULL_SHA}
 DPW_TEXT = b"name: direct-push-watch\non: push\njobs:\n  direct-push-watch: {runs-on: ubuntu-latest, steps: [{run: x}]}\n"
 # The real file: vendored.tsv pins its sha256, so a stand-in would be copy drift (#439 class 4).
 VQ_TEXT = open(os.path.join(ROOT, ".github", "workflows", "verify-queue.yml"), "rb").read()
+CE_TEXT = open(os.path.join(ROOT, "tests", "drift", "fixtures", "class4", "vws-lib-main-check-english.sh"), "rb").read()
 BYPASS_SHELL = pinned().replace("permissions: {}\n", "permissions: {}\ndefaults: {run: {shell: \"bash -c 'exit 0' {0}\"}}\n", 1)
 AT_MAIN = pinned().replace("@" + SHA, "@main")
 
@@ -1047,7 +1055,7 @@ class MainWithFakeGh(unittest.TestCase):
                 b = t.get(rest[len("contents/"):])
                 return None if b is None else _b64(b)
             return {"contents/scripts/guard-agents.sh": _b64(guard), "contents/AGENTS.md": _b64(b"x"),
-                    "contents/QUALITY.md": _b64(b"x")}.get(rest)
+                    "contents/QUALITY.md": _b64(b"x"), "contents/scripts/check-english.sh": _b64(CE_TEXT)}.get(rest)
 
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: [os.unlink(os.path.join(d, f)) for f in os.listdir(d)] and os.rmdir(d))

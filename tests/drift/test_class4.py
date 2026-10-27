@@ -71,10 +71,22 @@ class VendoredPins(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("check-english.sh differs from the vws-deploy pin", issues[0])
 
-    def test_absent_file_is_not_checked_here(self):
-        # A missing verify-queue.yml is the workflows cell's drift; a repo without check-english.sh is allowed.
-        self.assertEqual(dc.vendored_issues("vws-lib", {}, repo_pins()), ([], []))
-        self.assertEqual(dc.vendored_issues("vws-lib", {VQ: None, CE: None}, repo_pins()), ([], []))
+    def test_absent_verify_queue_is_not_checked_here(self):
+        # A missing verify-queue.yml is the workflows cell's drift, not the vendored cell's.
+        raw = fixture("vws-lib-main-check-english.sh")
+        self.assertEqual(dc.vendored_issues("vws-lib", {CE: raw}, repo_pins()), ([], []))
+        self.assertEqual(dc.vendored_issues("vws-lib", {VQ: None, CE: raw}, repo_pins()), ([], []))
+
+    def test_missing_check_english_is_drift(self):
+        # vws-deploy#423: vws-compute had no scripts/check-english.sh and drift-check said nothing.
+        for got in ({}, {CE: None}):
+            with self.subTest(got=got):
+                self.assertEqual(dc.vendored_issues("vws-compute", got, repo_pins()),
+                                 (["no scripts/check-english.sh"], []))
+
+    def test_vws_deploy_needs_no_check_english_copy(self):
+        # vws-deploy runs the same check as scripts/guard.sh english (R22); it holds the pin, not a copy.
+        self.assertEqual(dc.vendored_issues("vws-deploy", {CE: None}, repo_pins()), ([], []))
 
     def test_accepted_variant_is_a_note_only_for_its_repo(self):
         raw = b"variant\n"
