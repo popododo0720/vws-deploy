@@ -431,6 +431,25 @@ candidate) adds **one** entry per repo and commit to "Recent entries" in the sta
 key (sha256 of kind, repo and commit) is kept in `state.json` and in the body, so there is no retry
 loop. No comment is posted. Entries are skipped while `ORCHESTRATE_SCOPE` is set.
 
+**repo-guard startup_failure (vws-deploy#446).** A `startup_failure` run of `repo-guard.yml` has no
+check runs, so no check rule above names it, but its check suite keeps GitHub at `blocked`. For each
+`verify-approved` candidate (not a draft, on `main`, not opted out) Rule D reads the `pull_request` runs
+of `.github/workflows/repo-guard.yml` on the head from the `actions/runs?head_sha=` answer it already
+reads. When the newest one is a `startup_failure`:
+
+| state | step |
+|---|---|
+| no touch recorded for this head | `guard_touch`: append the line `<!-- vws-orchestrate:guard-retrigger head=<sha> -->` to the PR body (`PATCH pulls/N`; a `pull_request` `edited` event starts a fresh run). A re-run of the failed run is not used: the recorded vws-storage#133 run 39917192133 failed again on attempt 2 |
+| touched, and a newer `startup_failure` run exists, or no newer run `GUARD_TOUCH_WAIT` (30 min) after the touch, or the body has the line but `state.json` has no record | report: one status issue entry (`repo-guard startup_failure on <repo>#<n> at <sha7>`, key sha256 of kind, PR and head) and `needs-human` on the PR; never a second touch |
+| touched, waiting for the run it started | note `guard_startup_failure` with step `wait` |
+
+Any newer repo-guard run (success, failure or still running) ends the rule for that head. The touch is
+journaled in `state.json` (`guard_touches`, `repo#N@head`) before the PATCH, and apply reads the PR
+again and refuses when it moved or the line is already there. The gh wrapper accepts a PR edit only when
+the new body is the body just read plus that one line. The edit changes the body after the vws-verify
+approval, so the AC tick does not read that PR's body after the merge (vws-deploy#499, fail closed).
+The touch needs `ORCHESTRATE_MERGE=apply` like a merge.
+
 **Switches.** Merges need both `ORCHESTRATE_MODE=apply` and `ORCHESTRATE_MERGE=apply`. The default
 `ORCHESTRATE_MERGE=dry-run` plans and logs merges but never calls the merge API, even in apply mode.
 `off` skips rule D and its reads. `ORCHESTRATE_SCOPE=vws-x#N` limits merges to that one PR. The STOP
