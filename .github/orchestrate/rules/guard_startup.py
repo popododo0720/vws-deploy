@@ -9,7 +9,7 @@ import os
 
 import trusted_read as tr
 from .common import (
-    CI_FAIL_CAP, DEFAULTS, OPT_OUT_LABELS, ci_fail_author_ok, ci_fails, decision, iso, utc,
+    CI_FAIL_CAP, DEFAULTS, OPT_OUT_LABELS, ci_fail_author_ok, ci_fails, ci_reset_time, decision, iso, utc,
 )
 
 NAME = "guard_startup"
@@ -21,11 +21,16 @@ GUARD_STARTUP_WAIT = 15 * 60
 
 
 def ci_fail_module():
-    """The #412 marker writer. Loaded on use so a tick that posts no marker does not import it."""
+    """The #412 marker writer. Loaded on use so a tick that posts no marker does not import it.
+    FileNotFoundError when this tree has no .github/ci-fail (an archive install that did not pack it)."""
     mod = getattr(ci_fail_module, "mod", None)
     if mod is None:
-        path = os.path.join(os.path.dirname(__file__), "..", "..", "ci-fail", "ci_fail.py")
-        spec = importlib.util.spec_from_file_location("vws_ci_fail", os.path.abspath(path))
+        path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ci-fail", "ci_fail.py"))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        spec = importlib.util.spec_from_file_location("vws_ci_fail", path)
+        if spec is None or spec.loader is None:
+            raise FileNotFoundError(path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         ci_fail_module.mod = mod
@@ -102,7 +107,14 @@ def guard_report_body(it, run, now):
     labels = list(it.get("labels") or [])
     branch = (it.get("merge_info") or {}).get("head_ref") or ""
     owner, agent, source = cf.resolve_owner(it["repo"], labels, it.get("body") or "", branch)
-    prior = {m["sha"] for m in ci_fails(it)[0] if m["sha"] != it["head_sha"]}
+    # Same n as ci_fail_head: distinct failing heads since the last authorized reset. Markers from
+    # before /orchestrate reset-failures or a needs-human removal do not count (vws-deploy#446).
+    since = ci_reset_time(it, it)
+    prior = []
+    for m in ci_fails(it)[0]:
+        if m["sha"] == it.get("head_sha") or utc(m["at"]) <= since or m["sha"] in prior:
+            continue
+        prior.append(m["sha"])
     n = len(prior) + 1
     wake = n <= CI_FAIL_CAP and owner in ("deepseek", "grok") and "needs-human" not in labels
     stamp = iso(now)
@@ -153,9 +165,14 @@ def decide_guard_startup(items, new_state, now, cfg, notes):
             actions.append({"type": "guard_retry", "target": k, "head": it.get("head_sha") or "", "run": run["id"],
                             "reason": f"repo-guard startup_failure run {run['id']} on {(it.get('head_sha') or '')[:7]}; re-trigger once"})
         else:
+            try:
+                body = guard_report_body(it, run, now)
+            except FileNotFoundError:
+                notes.append({"kind": "guard_report_unavailable", "target": k})
+                continue
             actions.append({"type": "guard_report", "target": k, "head": it.get("head_sha") or "", "run": run["id"],
                             "reason": f"second repo-guard startup_failure on {(it.get('head_sha') or '')[:7]}; #412 marker",
-                            "body": guard_report_body(it, run, now)})
+                            "body": body})
     return actions
 
 

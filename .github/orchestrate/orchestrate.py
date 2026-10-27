@@ -1266,7 +1266,23 @@ def _guard_record(new_state, key, run, now, body_sha=""):
     return rec
 
 
-def apply_guard(a, gh, writes, max_writes, new_state, paths, log, now):
+def guard_preimage_sha(gh, repo, number, pr, body, cfg):
+    """sha256 of body when it is still the body vws-verify approved, else ''.
+    ac_body_trusted is the same check AC tick uses: a pass review of this head, and lastEditedAt before
+    that review. A body edited after the approval is not an exemption (vws-deploy#499). A read error is
+    not an exemption either."""
+    m = {"url": pr.get("html_url") or "", "body": body, "verified_at": "", "body_edited_at": ""}
+    p = {"number": int(number), "head": pr.get("head") or {}}
+    try:
+        ok = ac_body_trusted(gh, repo, p, m, cfg)
+    except (GhError, PermissionError, KeyError, TypeError, AttributeError, ValueError):
+        return ""
+    if not ok:
+        return ""
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def apply_guard(a, gh, writes, max_writes, new_state, paths, log, now, cfg):
     """One guard_retry (body touch) or guard_report (#412 comment). The attempt is journaled before the
     write, and a head that moved writes nothing. Returns (writes made, errors). One GitHub write."""
     if writes >= max_writes:
@@ -1312,8 +1328,14 @@ def apply_guard(a, gh, writes, max_writes, new_state, paths, log, now):
         except ValueError as e:
             log("apply_failed", action="guard_retry", target=a["target"], error=scrub(e))
             return 0, 1
-        # Hash the pre-image only when this call is the one that appends the line. A later call keeps it.
-        body_sha = "" if tr.guard_retry_line(a["head"], a["run"]) in old.split("\n") else hashlib.sha256(old.encode()).hexdigest()
+        # Hash the pre-image only when this call appends the line and that body is still the one
+        # vws-verify approved. A post-approval edit is not stored, so AC tick cannot restore it (#499).
+        body_sha = ""
+        if tr.guard_retry_line(a["head"], a["run"]) not in old.split("\n"):
+            body_sha = guard_preimage_sha(gh, repo, number, pr, old, cfg)
+            if not body_sha:
+                log("guard_retry_untrusted", target=a["target"],
+                    reason="body edited after the vws-verify approval, or the approval could not be read; no AC exemption")
         _guard_record(new_state, key, a["run"], now, body_sha)
         if new == old:
             write_json(paths.state_file, new_state)
@@ -1362,7 +1384,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             writes, errors = writes + n, errors + failed
             continue
         if a["type"] in ("guard_retry", "guard_report"):
-            n, failed = apply_guard(a, gh, writes, max_writes, new_state, paths, log, now)
+            n, failed = apply_guard(a, gh, writes, max_writes, new_state, paths, log, now, cfg)
             writes, errors = writes + n, errors + failed
             continue
         if a["type"] in ("merge_status", "infra_status"):

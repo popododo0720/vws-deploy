@@ -231,15 +231,14 @@ def guard_retry_append(body, sha, run):
 
 
 def guard_retry_preimages(body):
-    """Bodies `guard_retry_append` could have started from, when body ends with exactly one retry line.
+    """Bodies `guard_retry_append` could have started from, when body ends with a retry line.
+    An earlier head's retry line stays in the pre-image, so the next head can append its own.
     Both trailing-newline shapes are returned so a stored hash can match the pre-image byte for byte."""
     body = body or ""
     if not body.endswith("\n"):
         return []
     lines = body[:-1].split("\n")
     if not lines or not GUARD_RETRY_RE.fullmatch(lines[-1]):
-        return []
-    if any(GUARD_RETRY_RE.fullmatch(ln) for ln in lines[:-1]):
         return []
     pre = "\n".join(lines[:-1])
     return [pre, pre + "\n"]
