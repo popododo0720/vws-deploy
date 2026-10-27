@@ -1,0 +1,203 @@
+{
+ "source": "GET repos/popododo0720/<repo>/actions/runs?head_sha=<head>&per_page=100, read 2026-10-27 KST; fields trimmed to what merge_info reads (vws-deploy#446)",
+ "prs": {
+  "vws-storage#133": {
+   "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+   "workflow_runs": {
+    "total_count": 7,
+    "workflow_runs": [
+     {
+      "id": 39928104809,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T08:55:23Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108220220495,
+      "workflow_id": 381772977
+     },
+     {
+      "id": 39928104839,
+      "name": "english",
+      "path": ".github/workflows/english.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T08:55:23Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108220220578,
+      "workflow_id": 385185833
+     },
+     {
+      "id": 39917192133,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "startup_failure",
+      "run_attempt": 2,
+      "created_at": "2026-10-23T07:21:33Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108190706693,
+      "workflow_id": 381772977
+     },
+     {
+      "id": 39909585642,
+      "name": "english",
+      "path": ".github/workflows/english.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:07Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108170015344,
+      "workflow_id": 385185833
+     },
+     {
+      "id": 39909585534,
+      "name": "ci",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:07Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108170015008,
+      "workflow_id": 379548897
+     },
+     {
+      "id": 39909585530,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 2,
+      "created_at": "2026-10-23T06:07:07Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108170014995,
+      "workflow_id": 381772977
+     },
+     {
+      "id": 39909581414,
+      "name": "ci",
+      "path": ".github/workflows/ci.yml",
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:05Z",
+      "head_sha": "d208bce9dc0968b755c64ae2cac265193ea5d8e5",
+      "check_suite_id": 108170003952,
+      "workflow_id": 379548897
+     }
+    ]
+   }
+  },
+  "vws-iam#144": {
+   "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+   "workflow_runs": {
+    "total_count": 7,
+    "workflow_runs": [
+     {
+      "id": 39928108972,
+      "name": "english",
+      "path": ".github/workflows/english.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T08:55:25Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108220230895,
+      "workflow_id": 385183132
+     },
+     {
+      "id": 39928109036,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T08:55:25Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108220231039,
+      "workflow_id": 384058574
+     },
+     {
+      "id": 39917184445,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "startup_failure",
+      "run_attempt": 2,
+      "created_at": "2026-10-23T07:21:28Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108190684150,
+      "workflow_id": 384058574
+     },
+     {
+      "id": 39909580580,
+      "name": "english",
+      "path": ".github/workflows/english.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:04Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108170001733,
+      "workflow_id": 385183132
+     },
+     {
+      "id": 39909580563,
+      "name": "ci",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:04Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108170001685,
+      "workflow_id": 384058554
+     },
+     {
+      "id": 39909580540,
+      "name": "repo-guard",
+      "path": ".github/workflows/repo-guard.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 2,
+      "created_at": "2026-10-23T06:07:04Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108170001629,
+      "workflow_id": 384058574
+     },
+     {
+      "id": 39909574783,
+      "name": "ci",
+      "path": ".github/workflows/ci.yml",
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "run_attempt": 1,
+      "created_at": "2026-10-23T06:07:01Z",
+      "head_sha": "8e6289890bf2c6625d6a26cea35b3120c0376c22",
+      "check_suite_id": 108169987480,
+      "workflow_id": 384058554
+     }
+    ]
+   }
+  }
+ }
+}

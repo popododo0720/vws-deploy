@@ -53,7 +53,7 @@ class Orchestrate(unittest.TestCase):
         self.res = lint.marker_regexes(read(os.path.join(ROOT, ".github", "orchestrate", "trusted_read.py")))
 
     def test_marker_regexes_come_from_the_module(self):
-        self.assertEqual(self.res, {"CI_FAIL_RE", "KEY_RE", "MARKER_KIND_RE", "FAILURE_SECTION_RE"})
+        self.assertEqual(self.res, {"CI_FAIL_RE", "KEY_RE", "MARKER_KIND_RE", "FAILURE_SECTION_RE", "GUARD_TOUCH_RE"})
 
     def test_matches_outside_the_module_fail(self):
         found = lint.marker_matches("orch.py", read(os.path.join(FIX, "orch_marker_outside.py")), self.res)
