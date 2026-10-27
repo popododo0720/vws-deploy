@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Codex review round cap per issue, not per PR (vws-deploy#403).
+# Codex review round cap per PR (vws-deploy#579, which supersedes the per-issue cap of #403).
 # The box skill vws-verify-verdict/codex-review.sh calls this around each review. Counting reads
 # local files only (no network): a sidecar index OUT_DIR/rounds.tsv has a header line and then one
-# line per round, "<repo>\t<issue>\t<pr>\t<sha7>", so a rebuilt or rework PR for the same issue keeps
-# the count. Review file names stay <repo>-<pr>-<sha7>.md (the verify-gate path rule in AGENTS.md).
+# line per round, "<repo>\t<issue>\t<pr>\t<sha7>". The cap counts unique heads per (repo, pr), so a
+# retry of the same head counts once and a new PR for the same issue starts at 0. The issue column
+# is for reporting only. Rows written by the per-issue version need no migration: they already
+# carry the PR. Review file names stay <repo>-<pr>-<sha7>.md (the verify-gate path rule in AGENTS.md).
 # The cap fails closed: a missing, unreadable or corrupt index, or a review file the index does not
 # cover, is exit 2, never "0 rounds used".
 set -euo pipefail
@@ -12,8 +14,8 @@ usage() {
   cat <<'U'
 Usage: codex-round-count.sh init     --out-dir DIR
        codex-round-count.sh backfill --out-dir DIR [--repo REPO] [--map REPO#PR=ISSUE]... [--owner OWNER] [--dry-run]
-       codex-round-count.sh check    --out-dir DIR --repo REPO --issue N [--cap N]
-       codex-round-count.sh count    --out-dir DIR --repo REPO --issue N
+       codex-round-count.sh check    --out-dir DIR --repo REPO --pr N [--issue N] [--cap N]
+       codex-round-count.sh count    --out-dir DIR --repo REPO --pr N [--issue N]
        codex-round-count.sh check-and-record --out-dir DIR --repo REPO --issue N --pr N --sha SHA [--cap N]
        codex-round-count.sh record   --out-dir DIR --repo REPO --issue N --pr N --sha SHA
        codex-round-count.sh release  --out-dir DIR --repo REPO --pr N --sha SHA
@@ -23,8 +25,9 @@ init     creates OUT_DIR/rounds.tsv (one time). Every other index command needs 
 backfill indexes existing OUT_DIR/<repo>-<pr>-<sha7>.md review files with their issue: --map first,
          else "gh pr view PR -R OWNER/vws-NAME" and issue-from-body (OWNER defaults to popododo0720).
          All files must resolve or nothing is written. --dry-run prints the lines only.
-check    exit 0 below the cap, 1 at or past it.
-count    prints the number of rounds for the issue.
+check    exit 0 below the cap, 1 at or past it, for the PR.
+count    prints the number of rounds (unique heads) for the PR.
+--issue  is only written to new rows (record, check-and-record) for reporting; check and count ignore it.
 check-and-record checks and records in one step, under the lock: exit 1 at the cap without a record.
          A head already recorded is a retry: exit 0, no new line.
 record   adds one round without the cap check.
@@ -132,8 +135,9 @@ require_covered() {
   [[ -z $missing ]] || die "review files not in the index:$missing (run backfill)"
 }
 
+# Unique heads for (repo, pr). The issue column is never read: the cap is per PR (#579).
 count_rounds() {
-  awk -F'\t' -v r="$repo" -v i="$issue" 'NR > 1 && $1 == r && $2 == i && !seen[$3 FS $4]++ { n++ } END { print n + 0 }' "$index"
+  awk -F'\t' -v r="$repo" -v p="$pr" 'NR > 1 && $1 == r && $3 == p && !seen[$4]++ { n++ } END { print n + 0 }' "$index"
 }
 
 append() { # append REPO ISSUE PR SHA7
@@ -143,7 +147,7 @@ append() { # append REPO ISSUE PR SHA7
 cap_check() { # sets n; exit 1 at the cap
   n=$(count_rounds) || die "cannot read the index $index"
   if ((n >= cap)); then
-    echo "issue $repo#$issue already had $n Codex rounds (max $cap) across its PRs: split the work or move the rest to issues" >&2
+    echo "PR $repo#$pr already had $n Codex rounds (max $cap): split the work into a new PR or move the rest to issues" >&2
     exit 1
   fi
 }
@@ -156,18 +160,19 @@ case $cmd in
     printf '%s\n' "$header" >"$index" || die "cannot write the index $index"
     echo "created: $index" ;;
   check | count)
-    need repo issue
+    need repo pr
+    [[ -z $issue ]] || need issue
     lock -s; validate; require_covered
     if [[ $cmd == count ]]; then count_rounds; exit 0; fi
     cap_check
-    echo "issue $repo#$issue: $n of $cap Codex rounds used" ;;
+    echo "PR $repo#$pr: $n of $cap Codex rounds used" ;;
   check-and-record | record)
     need repo issue pr sha
     lock -x; validate; require_covered
     if indexed "$repo" "$pr" "$sha"; then echo "already recorded: $repo#$pr $sha"; exit 0; fi
     if [[ $cmd == check-and-record ]]; then
       cap_check
-      echo "issue $repo#$issue: $n of $cap Codex rounds used"
+      echo "PR $repo#$pr: $n of $cap Codex rounds used"
     fi
     append "$repo" "$issue" "$pr" "$sha"
     echo "recorded: $repo issue #$issue PR #$pr $sha" ;;
