@@ -551,6 +551,50 @@ class HeadFail(unittest.TestCase):
         self.assertNotIn("-X POST", calls)
         self.assertIn("verdict review 4", out)
 
+    def test_graphql_bot_review_login_without_suffix_still_blocks(self):
+        # A real GraphQL review author is {__typename: Bot, login: vws-verify}, not vws-verify[bot].
+        fail = {"databaseId": 9, "submittedAt": "2026-10-23T09:00:00Z", "state": "CHANGES_REQUESTED",
+                "commit": {"oid": SHA}, "author": {"__typename": "Bot", "login": "vws-verify"}}
+        pages = json.dumps({
+            "reviews": [{"nodes": [fail], "hasPreviousPage": False}],
+            "comments": [{"nodes": [], "hasPreviousPage": False}],
+        })
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": "", "VQ_PAGES": pages}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("-X POST", calls)
+        self.assertIn("verdict review 9", out)
+
+    def test_graphql_bot_comment_login_without_suffix_still_blocks(self):
+        note = {"databaseId": 8, "createdAt": "2026-10-23T09:00:00Z",
+                "author": {"__typename": "Bot", "login": "vws-verify"}, "authorAssociation": "NONE",
+                "body": verdict("FAIL")}
+        pages = json.dumps({
+            "reviews": [{"nodes": [], "hasPreviousPage": False}],
+            "comments": [{"nodes": [note], "hasPreviousPage": False}],
+        })
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": "", "VQ_PAGES": pages}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("-X POST", calls)
+        self.assertIn("verdict comment 8", out)
+
+    def test_user_login_vws_verify_is_not_treated_as_the_bot(self):
+        human = {"databaseId": 9, "submittedAt": "2026-10-23T09:00:00Z", "state": "CHANGES_REQUESTED",
+                 "commit": {"oid": SHA}, "author": {"__typename": "User", "login": "vws-verify"}}
+        pages = json.dumps({
+            "reviews": [{"nodes": [human], "hasPreviousPage": False}],
+            "comments": [{"nodes": [], "hasPreviousPage": False}],
+        })
+        e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
+             "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "STATUS_TSV": "", "VQ_PAGES": pages}
+        rc, calls, out = Stub(self, GH).run(self.script(), e)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(self.ADD, calls)
+        self.assertNotIn("verdict review", out)
+
     def test_failed_verdict_read_fails_the_job_without_labeling(self):
         e = {"GH_TOKEN": "x", "REPO": "o/r", "EVENT": "workflow_run", "ACTION": "completed", "PRS": "7",
              "HEAD_SHA": SHA, "PR_TSV": pr(), "CHECKS_TSV": "\n".join(GREEN), "READ_FAIL": "gh: Server Error (HTTP 500)"}

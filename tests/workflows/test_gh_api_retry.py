@@ -392,6 +392,40 @@ class VerifyGate(unittest.TestCase):
         self.assertIn("vg-labels", calls)
         self.assertIn("added by 'alice', the PR author or pusher", out)
 
+    def test_graphql_bot_login_is_accepted_as_the_verify_identity(self):
+        # GraphQL returns Bot.login "vws-verify". Actors and the identity are "vws-verify[bot]".
+        scenario = self.approved()
+        scenario["comment_pages"] = [{"nodes": [{
+            "author": {"__typename": "Bot", "login": "vws-verify"},
+            "body": verdict_body(SHA),
+        }]}]
+        scenario["label_pages"] = [{"nodes": [{
+            "actor": {"__typename": "Bot", "login": "vws-verify"},
+            "label": {"name": "verify-approved"},
+        }]}]
+        rc, _, out = self.go(scenario, {
+            "GUARD_VERIFY_ACTORS": "vws-verify[bot]",
+            "GUARD_VERIFY_IDENTITY": "vws-verify[bot]",
+        })
+        self.assertEqual(rc, 0, out)
+
+    def test_user_login_is_not_given_a_bot_suffix(self):
+        scenario = self.approved()
+        scenario["comment_pages"] = [{"nodes": [{
+            "author": {"__typename": "User", "login": "vws-verify"},
+            "body": verdict_body(SHA),
+        }]}]
+        scenario["label_pages"] = [{"nodes": [{
+            "actor": {"__typename": "User", "login": "vws-verify"},
+            "label": {"name": "verify-approved"},
+        }]}]
+        rc, _, out = self.go(scenario, {
+            "GUARD_VERIFY_ACTORS": "vws-verify[bot]",
+            "GUARD_VERIFY_IDENTITY": "vws-verify[bot]",
+        })
+        self.assertNotEqual(rc, 0)
+        self.assertIn("added by 'vws-verify', not by one of", out)
+
     def test_newer_comment_page_replaces_an_older_verdict(self):
         scenario = self.approved()
         scenario["comment_pages"] = [
