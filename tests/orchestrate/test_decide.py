@@ -128,6 +128,25 @@ class RuleA(unittest.TestCase):
         body = "hello\n<!-- vws-orchestrate:verify-wake -->\nIdempotency key: `sha256:" + "a" * 64 + "`"
         self.assertEqual(orch.status_wakes([{"user": {"login": "popododo0720"}, "body": body, "created_at": "2026-10-21T12:00:00Z"}]), [])
 
+    def test_only_verify_gates_stay_in_the_wake(self):
+        # vws-deploy#502, the #546 miss: a needs-verify PR whose red checks are the gates and the
+        # needs-verify job is still in Rule A's pending set and is named in the wake body.
+        runs = {"check_runs": [
+            {"id": 1, "name": "test", "status": "completed", "conclusion": "success"},
+            {"id": 2, "name": "verify-gate", "status": "completed", "conclusion": "failure"},
+            {"id": 3, "name": "gate / verify-gate", "status": "completed", "conclusion": "failure"},
+            {"id": 4, "name": "needs-verify", "status": "completed", "conclusion": "failure"},
+            {"id": 5, "name": "vws-verify", "status": "completed", "conclusion": "failure"},
+        ], "total_count": 5}
+        status = {"statuses": [{"context": "needs-verify", "state": "failure"}]}
+        it = queued(1, 40, ci=orch.ci_verdict(runs, status))[0]
+        self.assertEqual(orch.pr_ci(runs, status)[0], "green")
+        r = run(snapshot(it))
+        self.assertEqual(r["pending_count"], 1)
+        a = self.wake(r)
+        self.assertEqual(len(a), 1)
+        self.assertIn(f"- {it['repo']}#{it['number']}@{it['head_sha']} {it['url']}", a[0]["body"])
+
     def test_body_lists_every_waiting_pr(self):
         many = queued(60, 1)
         a = self.wake(run(snapshot(*many)))[0]

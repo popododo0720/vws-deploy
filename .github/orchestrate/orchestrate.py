@@ -90,9 +90,11 @@ VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s
 # Conflict-only verdicts are a rebuild for eggbot, not a DeepSeek rework.
 CONFLICT_RE = re.compile(r"(?i)conflicts? with main|merge conflict|needs? (?:a )?rebase|rebase onto main")
 MANAGED_LABELS = ("blocked", "in-review")
-# These checks fail by design until vws-verify approves, so they never make a PR "CI failing".
+# These checks fail by design until vws-verify approves, so they never make a PR "CI failing"
+# or "CI red". One set for ci_verdict and pr_ci (vws-deploy#502).
 # "gate / verify-gate": repo-guard.yml calls the gate next to its bare shim (vws-deploy#402).
-VERIFY_CHECKS = {"verify-gate", "gate / verify-gate", "vws-verify"}
+# "needs-verify": verify-queue's own job, which verify-queue.yml also skips.
+VERIFY_CHECKS = {"verify-gate", "gate / verify-gate", "vws-verify", "needs-verify"}
 CI_BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 NEEDS_VERIFY = "needs-verify"  # set by verify-queue.yml while every non-verify check is green (vws-deploy#397)
 # Rule D serial set (vws-deploy#397): PRs touching these merge one at a time across all repos, oldest approval first.
@@ -2447,11 +2449,6 @@ def ci_reads(gh, repo, sha):
     return runs, status
 
 
-# Checks that wait for the verdict, as verify-queue.yml skips them: the gate, its called form (#402), the
-# verifier's own check and verify-queue's job.
-WAIT_CHECKS = VERIFY_CHECKS | {"gate / verify-gate", "needs-verify"}
-
-
 def pr_ci(runs, status):
     """(green | pending | red, vws-verify check failed) for one PR head, as verify-queue.yml decides it: the
     newest run per check name, verify checks excluded; skipped and neutral count as green; no checks at all,
@@ -2463,9 +2460,9 @@ def pr_ci(runs, status):
             latest[r["name"]] = r
     v = latest.get(VERIFY_CHECK)
     verify_failed = bool(v and v.get("status") == "completed" and v.get("conclusion") == "failure")
-    states = {run_state(r) for name, r in latest.items() if name not in WAIT_CHECKS}
+    states = {run_state(r) for name, r in latest.items() if name not in VERIFY_CHECKS}
     for st in (status if isinstance(status, dict) else {}).get("statuses", []):
-        if st.get("context") in WAIT_CHECKS:
+        if st.get("context") in VERIFY_CHECKS:
             continue
         states.add("failed" if st.get("state") in ("failure", "error") else "ok" if st.get("state") == "success" else "pending")
     if "failed" in states:
