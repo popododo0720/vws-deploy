@@ -333,6 +333,14 @@ class Dedupe(unittest.TestCase):
         gh = storage_gh(comments={113: [marker_comment(1, SHA, 1, user="mallory")]})
         self.assertEqual(cf.run(gh, "workflow_run", event(), FULL, NOW)["action"], "post")
 
+    def test_a_marker_by_the_orchestrator_login_is_patched(self):
+        """vws-deploy#446: workflow_run does not fire for startup_failure, so the orchestrator posts that
+        marker. A later real failure updates it instead of posting a second comment."""
+        gh = storage_gh(comments={113: [marker_comment(1, SHA, 1, user="popododo0720")]})
+        self.assertEqual(cf.run(gh, "workflow_run", event(), FULL, NOW)["action"], "patch")
+        self.assertEqual(posts(gh), [])
+        self.assertEqual(len(gh.comments[113]), 1)
+
 
 class Cap(unittest.TestCase):
     def test_third_failure_still_wakes(self):

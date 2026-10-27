@@ -246,13 +246,21 @@ class Queue(unittest.TestCase):
         self.assertEqual(orch.classify_comment(d[0]["body"])[0], "dispatch")
 
     def test_forged_author_is_ignored(self):
-        for author in ("popododo0720", "github-actions", "deepseek-dev[bot]", None):
+        # popododo0720 is the orchestrator's login and is trusted (vws-deploy#446). A lookalike, another
+        # bot, or a missing author is still ignored: anyone else can paste a marker.
+        for author in ("github-actions", "deepseek-dev[bot]", "mallory", None):
             with self.subTest(author=author):
                 pr = ds_pr()
                 pr["comments"].append(ci(40, pr, 1, author=author))
                 r = run(pr)
                 self.assertEqual(reworks(r), [])
                 self.assertEqual([n["comment"] for n in notes(r, "ci_fail_untrusted")], [pr["comments"][0]["url"]])
+
+    def test_orchestrator_login_marker_queues_rework(self):
+        """The second startup_failure marker is posted as popododo0720, and the #412 path acts on it."""
+        pr = ds_pr()
+        pr["comments"].append(ci(40, pr, 1, author="popododo0720"))
+        self.assertEqual([a["target"] for a in reworks(run(pr))], ["vws-iam#253"])
 
     def test_record_contradicting_line_one_never_reworks(self):
         # Line 1 says wake=true n=1; the #420 record (the source of truth) says wake=false n=4.

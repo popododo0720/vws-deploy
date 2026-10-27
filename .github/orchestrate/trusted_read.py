@@ -54,6 +54,10 @@ METRICS_ALERT_MARKER = "<!-- vws-orchestrate:metrics-alert -->"
 # A PR or issue body with this never merges. Anyone who can edit the body can add it; it only holds work back.
 OPT_OUT_MARKER = "<!-- vws-orchestrate:no-merge -->"
 KEY_RE = re.compile(r"^Idempotency key: `(sha256:[0-9a-f]{64})`$", re.M)
+# vws-deploy#446: one HTML comment appended to a verify-approved PR body to fire pull_request edited,
+# which starts a fresh repo-guard run. The line is the record of that one attempt.
+GUARD_RETRY_RE = re.compile(
+    r"<!-- vws-orchestrate:repo-guard-retry sha=([0-9a-f]{40}) run=([1-9][0-9]*) -->")
 MARKER_KIND_RE = re.compile(r"<!-- orchestrate:([a-z-]+)")
 FAILURE_SECTION_RE = re.compile(rf"^## Failed ticks\n.*?(?=^## |^_Updated |^{re.escape(STATUS_END_MARKER)}|\Z)",
                                 re.M | re.S)
@@ -206,6 +210,48 @@ def status_has_key(body, key):
 def failure_match(block):
     """The '## Failed ticks' section match inside a status block, or None."""
     return FAILURE_SECTION_RE.search(block)
+
+
+def guard_retry_line(sha, run):
+    """The one body line that records a repo-guard startup retry for this head and run (vws-deploy#446)."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha or "") or not re.fullmatch(r"[1-9][0-9]*", str(run)):
+        raise ValueError("repo-guard retry line needs a 40-hex head and a positive run id")
+    return f"<!-- vws-orchestrate:repo-guard-retry sha={sha} run={int(run)} -->"
+
+
+def guard_retry_append(body, sha, run):
+    """body plus the retry line, or body unchanged when that exact line is already there."""
+    line = guard_retry_line(sha, run)
+    body = body or ""
+    if line in body.split("\n"):
+        return body
+    if body and not body.endswith("\n"):
+        body += "\n"
+    return body + line + "\n"
+
+
+def guard_retry_preimages(body):
+    """Bodies `guard_retry_append` could have started from, when body ends with a retry line.
+    An earlier head's retry line stays in the pre-image, so the next head can append its own.
+    Both trailing-newline shapes are returned so a stored hash can match the pre-image byte for byte."""
+    body = body or ""
+    if not body.endswith("\n"):
+        return []
+    lines = body[:-1].split("\n")
+    if not lines or not GUARD_RETRY_RE.fullmatch(lines[-1]):
+        return []
+    pre = "\n".join(lines[:-1])
+    return [pre, pre + "\n"]
+
+
+def guard_body_edit(before, body):
+    """True when body is before with exactly one repo-guard retry line appended and no other change."""
+    before, body = before or "", body or ""
+    if body == before or before not in guard_retry_preimages(body):
+        return False
+    line = body[:-1].split("\n")[-1]
+    m = GUARD_RETRY_RE.fullmatch(line)
+    return bool(m) and guard_retry_append(before, m.group(1), m.group(2)) == body
 
 
 # ---------------------------------------------------------------- fresh reads and trusted bodies

@@ -52,7 +52,7 @@ PR edited the same `decide()` body in one 3,900-line file and left the rest DIRT
 The rules, in `REGISTRY` order: `owned_labels` (prunes the label-ownership journal), `verify_wake` (A),
 `ci_fail` (CI-failure marker notes), `deepseek` (B and C per item: failures, infra retries,
 dependencies, the dispatch queue), `grok_rework` (B4), `dispatch` (B, the DeepSeek slots), `grok` (G),
-`rebuild` (R), `lead` (L), `merge` (D), `ac_tick` (T), `verify_labels` (V). A rule may import a pure
+`rebuild` (R), `lead` (L), `merge` (D), `ac_tick` (T), `guard_startup` (S, vws-deploy#446), `verify_labels` (V). A rule may import a pure
 helper from another rule (`dispatch` uses `deepseek.triage`, `lead` uses `grok_rework.decide_grok_rework`).
 
 **Decision and merge.** A rule's `decide` returns `common.decision(actions, notes, state, **extra)`: its
@@ -90,6 +90,32 @@ apply. `tests/orchestrate/rules/test_registry.py` proves it with a stub rule. A 
 behavior re-records `tests/orchestrate/testdata/split-golden/` in the same PR and says why
 (`test_split_golden.py`).
 
+## Repo-guard startup retry (vws-deploy#446)
+
+GitHub does not emit `workflow_run` for `startup_failure`, so ci-fail never sees the run that left
+vws-storage#133 and vws-iam#144 blocked after `verify-approved`. The check suite still blocks the merge.
+`rules/guard_startup.py` reads the `actions/runs?head_sha=` page `collect` already gets for Rule D
+(`merge_info.guard_runs`; `ORCHESTRATE_MERGE=off` collects nothing, so this rule does not fire). A truncated
+page is the note `guard_startup_truncated` and no action. `blocked`, `hold`, `do-not-merge` and the no-merge
+marker skip it. STOP does not: this is a CI repair, not a wake.
+
+- One re-trigger per head. `apply` appends `<!-- vws-orchestrate:repo-guard-retry sha=<head> run=<id> -->`,
+  which fires `pull_request` `edited` and starts a new repo-guard run. The attempt is journaled in
+  `state['guard_retry']` before the PATCH. The sha256 is stored only when that body is still the one
+  vws-verify approved (`ac_body_trusted`: not edited at or after the pass). A body edited after approval
+  is still re-triggered, but the hash is not stored, so AC tick keeps failing closed (#499). A body that
+  already has that line is not patched, and a stored hash is not replaced. A retry line from an earlier
+  head stays in the body; the next head appends its own.
+- A second `startup_failure` (another run id, or the same run still newest after 15 minutes) posts one #412
+  marker via `ci_fail.format_comment` instead of touching the body again. The author is the orchestrator
+  login. ci-fail treats that login like `github-actions[bot]` when it looks for a marker to update, so a
+  later real failure patches the same comment. `n` is 1 plus the distinct head SHAs of trusted markers
+  on this PR since the last `/orchestrate reset-failures` or `needs-human` removal. `owner=grok` still does not wake a Grok dev bot: those routines match only
+  `github-actions[bot]`.
+- AC tick (#486, #499) accepts the body edit only when the stored hash is the pre-image. Any other edit
+  still fails closed. The record stays while the PR is open at that head, and for
+  `ORCHESTRATE_COMMENT_WINDOW_DAYS` after it closes, so a tick after the merge still has the hash.
+
 ## STOP and RESUME (vws-deploy#521)
 
 **STOP is full status-bus silence, even when work is queued.** Bots that ignore a wake still burn a
@@ -106,8 +132,9 @@ overnight), so silence is enforced where the plan is made, not left to the consu
 - `metrics.py` posts no `<!-- vws-orchestrate:metrics-alert -->` comment on the status issue and calls no
   alert webhook; it logs `metrics_suppressed` (`reason`, `alerts`, `days`). The alert stays in
   `pending_alerts` and is posted once by the first metrics run after RESUME.
-- What continues: in-flight tracking, label repairs (rule V), merges if `ORCHESTRATE_MERGE` allows them, and
-  the quiet in-place rewrite of the status issue body, whose `## Now` line shows `wakes off (<reason>)`.
+- What continues: in-flight tracking, label repairs (rule V), the repo-guard startup retry (vws-deploy#446),
+  merges if `ORCHESTRATE_MERGE` allows them, and the quiet in-place rewrite of the status issue body, whose
+  `## Now` line shows `wakes off (<reason>)`.
 - Nothing is recorded as posted, so after RESUME each due wake posts once on the next tick.
 
 `ORCHESTRATE_DISPATCH=off` alone is enough to silence the bus. `ORCHESTRATE_WAKES=off` is the explicit
@@ -241,7 +268,9 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
 - **Trusted reads (vws-deploy#439 AC2, class 1):** `.github/orchestrate/trusted_read.py` holds every
   marker, marker regex and match of one; orchestrate.py and the rule modules import it and
   `.github/drift/trusted_read_lint.py` (run by drift-check) fails on a marker match anywhere else in
-  `orchestrate.py` or `rules/*.py`.
+  `orchestrate.py` or `rules/*.py`. The compiled marker regexes are `CI_FAIL_RE`, `KEY_RE`,
+  `MARKER_KIND_RE`, `FAILURE_SECTION_RE` and `GUARD_RETRY_RE` (the #446 repo-guard retry line).
+  `tests/drift/test_trusted_read_lint.py` pins that set, so a new one is a deliberate change.
   - A verify wake, an idempotency key, a key's first time (the Grok wake timeout) and the
     `ac-tick` marker count only from a comment by the orchestrator's own login (`popododo0720`, the
     box gh login). A copy posted by anyone else neither suppresses, backdates nor dedupes a write.
@@ -811,7 +840,7 @@ install -d -m 0700 /home/box/.local/opt/vws-orchestrate/releases /home/box/.conf
   /home/box/.local/state/vws-orchestrate/log
 REL=/home/box/.local/opt/vws-orchestrate/releases/$SHA
 install -d -m 0700 "$REL"
-git archive --format=tar origin/main .github/orchestrate .github/metrics .github/drift/repos.tsv | tar -x -C "$REL"
+git archive --format=tar origin/main .github/orchestrate .github/ci-fail .github/metrics .github/drift/repos.tsv | tar -x -C "$REL"
 ln -sfn "releases/$SHA" /home/box/.local/opt/vws-orchestrate/current
 printf 'ORCHESTRATE_MODE=dry-run\nORCHESTRATE_INTERVAL=600\n' > /home/box/.config/vws-orchestrate/env
 # one manual dry-run tick, then start the loop

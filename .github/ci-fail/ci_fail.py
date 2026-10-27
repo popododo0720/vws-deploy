@@ -201,9 +201,16 @@ def reset_at(comments, events):
     return t
 
 
+def marker_login(c):
+    """github-actions[bot], or the orchestrator login when it posted the second startup_failure marker
+    (vws-deploy#446). workflow_run does not fire for startup_failure, so that comment is not from the bot;
+    a later real failure still updates it instead of posting a second one. Any other login is ignored."""
+    return ((c.get("user") or {}).get("login") or "") in (BOT, OWNER)
+
+
 def bot_records(comments, repo, pr):
     for c in comments:
-        if (c.get("user") or {}).get("login") == BOT:
+        if marker_login(c):
             rec = parse_comment(c.get("body"))
             if rec and rec["repo"] == repo and rec["pr"] == pr:
                 yield c, rec

@@ -35,6 +35,7 @@ REGISTRY = (
     "lead",           # lead wake (#491)
     "merge",          # D
     "ac_tick",        # T (#486)
+    "guard_startup",  # S (#446): one repo-guard startup_failure re-trigger, then the #412 marker
     "verify_labels",  # V (#487): last, label repairs take the writes left under the cap
 )
 PROTOCOL = ("NAME", "STATE_KEYS", "ACTIONS_AFTER", "decide")

@@ -319,7 +319,7 @@ ALLOWED = {
     "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending)$")],
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
-    # The status issue body (vws-deploy#416), an AC tick or a completed close (#486); Gh.write pins the payload.
+    # The status issue body (vws-deploy#416), an AC tick, a repo-guard retry line (#446) or a completed close (#486); Gh.write pins the payload.
     "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$")],
 }
 
@@ -471,17 +471,21 @@ class Gh:
                     or not re.fullmatch(r"[0-9a-f]{40}", str(p.get("sha", "")))):
                 raise PermissionError("merge refused: squash with a 40-hex head sha only")
         if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/issues/[0-9]+", path):
-            # Three issue edits only: the status issue's body with exactly one managed status block; an AC tick
+            # Four issue edits only: the status issue's body with exactly one managed status block; an AC tick
             # (vws-deploy#486) that changes nothing but unticked criteria boxes of `before`, the body just read;
-            # and a completed close of any other issue.
+            # one appended repo-guard retry line (vws-deploy#446); and a completed close of any other issue.
             p = payload if isinstance(payload, dict) else {}
             body = p.get("body") if set(p) == {"body"} else None
             is_status = bool(self.status_issue) and path == f"repos/{OWNER}/{STATUS_REPO}/issues/{self.status_issue}"
             status_edit = is_status and isinstance(body, str) and not status_unowned(body)
             tick = (not is_status and isinstance(body, str) and isinstance(before, str) and ac_tick_only(before, body))
+            # vws-deploy#446: append one repo-guard retry line. Nothing else in the body may change.
+            retry = (not is_status and isinstance(body, str) and isinstance(before, str) and tr.guard_body_edit(before, body))
             close = not is_status and p == {"state": "closed", "state_reason": "completed"}
-            if not (status_edit or tick or close):
-                raise PermissionError("issue edit refused: the status issue body, an AC tick or a completed close only")
+            if not (status_edit or tick or retry or close):
+                raise PermissionError(
+                    "issue edit refused: the status issue body, an AC tick, a repo-guard retry line "
+                    "or a completed close only")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -976,8 +980,12 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
                 continue
             m = {"pr": k, "url": p.get("html_url") or "", "merged_at": p["merged_at"],
                  "merge_sha": p.get("merge_commit_sha") or "", "body": p.get("body") or "", "issue": "",
+                 "head_sha": (p.get("head") or {}).get("sha") or "",
                  "issue_state": "", "issue_state_reason": "", "issue_body": "", "issue_labels": [], "marker_seen": False,
                  "verified_at": "", "body_edited_at": ""}
+            # A startup retry appends one HTML comment after approval. When that is the whole edit, Part of
+            # and the AC lines are the pre-image the hash names; any other edit still fails closed (#499).
+            restored = guard_retry_restores(m, state)
             ref = PART_OF_RE.search(m["body"])
             if ref:
                 irepo, inum = ref.group(1).split("#")
@@ -987,7 +995,9 @@ def collect_ac(gh, snap, repo_names, state, now, cfg):
                 continue  # decide notes it; nothing to read
             try:
                 if not ac_body_trusted(gh, name, p, m, cfg):
-                    continue  # decide notes ac_unverified / ac_body_edited; the edited body's target is never read
+                    if not (restored and m.get("verified_at")):
+                        continue  # decide notes ac_unverified / ac_body_edited; the edited body's target is never read
+                    m["body_edited_at"] = ""  # the body is the pre-image; lastEditedAt is the retry line only
             except (GhError, PermissionError, KeyError, TypeError, AttributeError, ValueError) as e:
                 m["error"] = scrub(e)
                 continue
@@ -1172,9 +1182,12 @@ def merge_info(gh, repo, number):
                "workflow": workflow.get((r.get("check_suite") or {}).get("id"))}
               for r in (runs or {}).get("check_runs", [])]
     unmapped = sorted({c["name"] for c in checks if c["app_id"] == ACTIONS_APP_ID and not c["workflow"]})
-    return {"head_sha": sha, "state": pr.get("state"), "merged": bool(pr.get("merged")), "draft": bool(pr.get("draft")),
+    return {"head_sha": sha, "head_ref": (pr.get("head") or {}).get("ref") or "",
+            "state": pr.get("state"), "merged": bool(pr.get("merged")), "draft": bool(pr.get("draft")),
             "base": pr["base"]["ref"], "mergeable": pr.get("mergeable"), "mergeable_state": pr.get("mergeable_state"),
             "title": pr.get("title") or "", "checks": checks, "unmapped": unmapped,
+            # None when the runs page is truncated: do not retry on a partial list (vws-deploy#446).
+            "guard_runs": guard_runs_from(wruns or {}),
             "checks_truncated": (runs or {}).get("total_count", 0) > len(checks),
             "statuses": [{"context": st.get("context"), "state": st.get("state")} for st in (status or {}).get("statuses", [])],
             # The combined status lists only its first page; more contexts than shown fail closed.
@@ -1239,6 +1252,106 @@ def collect_merge(gh, snap, repo_names, state):
 
 # ---------------------------------------------------------------- apply
 
+def _guard_record(new_state, key, run, now, body_sha=""):
+    """Journal the attempt before the write. An existing body_sha is kept: it is the pre-image AC tick hashes."""
+    recs = new_state.setdefault("guard_retry", {})
+    prev = recs.get(key) if isinstance(recs.get(key), dict) else {}
+    rec = dict(prev)
+    rec["run"] = run
+    rec.setdefault("at", iso(now))
+    rec.setdefault("reported", False)
+    if body_sha and not rec.get("body_sha"):
+        rec["body_sha"] = body_sha
+    recs[key] = rec
+    return rec
+
+
+def guard_preimage_sha(gh, repo, number, pr, body, cfg):
+    """sha256 of body when it is still the body vws-verify approved, else ''.
+    ac_body_trusted is the same check AC tick uses: a pass review of this head, and lastEditedAt before
+    that review. A body edited after the approval is not an exemption (vws-deploy#499). A read error is
+    not an exemption either."""
+    m = {"url": pr.get("html_url") or "", "body": body, "verified_at": "", "body_edited_at": ""}
+    p = {"number": int(number), "head": pr.get("head") or {}}
+    try:
+        ok = ac_body_trusted(gh, repo, p, m, cfg)
+    except (GhError, PermissionError, KeyError, TypeError, AttributeError, ValueError):
+        return ""
+    if not ok:
+        return ""
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def apply_guard(a, gh, writes, max_writes, new_state, paths, log, now, cfg):
+    """One guard_retry (body touch) or guard_report (#412 comment). The attempt is journaled before the
+    write, and a head that moved writes nothing. Returns (writes made, errors). One GitHub write."""
+    if writes >= max_writes:
+        log("skipped", action=a["type"], target=a["target"], reason=f"write cap {max_writes} reached")
+        return 0, 0
+    repo, number = a["target"].split("#")
+    key = f"{a['target']}@{a['head']}"
+    try:
+        pr, why = tr.pr_at_head(gh.get, repo, int(number), a["head"])
+    except (GhError, PermissionError, ValueError) as e:
+        log("apply_failed", action=a["type"], target=a["target"], error=scrub(e))
+        return 0, 1
+    if why:
+        log("skipped", action=a["type"], target=a["target"], reason=f"PR changed since collect: {why}")
+        return 0, 0
+    method, path, payload, before = "POST", f"repos/{OWNER}/{repo}/issues/{number}/comments", {"body": a.get("body") or ""}, None
+    if a["type"] == "guard_report":
+        try:
+            comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
+        except (GhError, PermissionError) as e:
+            log("apply_failed", action=a["type"], target=a["target"], error=scrub(e))
+            return 0, 1
+        for c in comments if isinstance(comments, list) else []:
+            if not isinstance(c, dict):
+                continue
+            try:
+                rec = comment_record(c)
+            except (KeyError, TypeError):
+                continue  # a comment without the fields a record needs is not a marker
+            parsed = ci_fail_record(rec["body"]) if ci_fail_author_ok(rec) else None
+            if parsed and parsed.get("head_sha") == a["head"]:
+                _guard_record(new_state, key, a["run"], now)
+                new_state["guard_retry"][key]["reported"] = True
+                write_json(paths.state_file, new_state)
+                log("skipped", action="guard_report", target=a["target"], reason="marker already posted")
+                return 0, 0
+        _guard_record(new_state, key, a["run"], now)
+        new_state["guard_retry"][key]["reported"] = True
+    else:
+        old = pr.get("body") or ""
+        try:
+            new = tr.guard_retry_append(old, a["head"], a["run"])
+        except ValueError as e:
+            log("apply_failed", action="guard_retry", target=a["target"], error=scrub(e))
+            return 0, 1
+        # Hash the pre-image only when this call appends the line and that body is still the one
+        # vws-verify approved. A post-approval edit is not stored, so AC tick cannot restore it (#499).
+        body_sha = ""
+        if tr.guard_retry_line(a["head"], a["run"]) not in old.split("\n"):
+            body_sha = guard_preimage_sha(gh, repo, number, pr, old, cfg)
+            if not body_sha:
+                log("guard_retry_untrusted", target=a["target"],
+                    reason="body edited after the vws-verify approval, or the approval could not be read; no AC exemption")
+        _guard_record(new_state, key, a["run"], now, body_sha)
+        if new == old:
+            write_json(paths.state_file, new_state)
+            log("skipped", action="guard_retry", target=a["target"], reason="retry line already on the body")
+            return 0, 0
+        method, path, payload, before = "PATCH", f"repos/{OWNER}/{repo}/issues/{number}", {"body": new}, old
+    write_json(paths.state_file, new_state)  # before the write: a crash still remembers the attempt
+    try:
+        gh.write(method, path, payload, before=before)
+    except (GhError, PermissionError) as e:
+        log("apply_failed", action=a["type"], target=a["target"], error=scrub(e))
+        return 1, 1  # counted: a lost response may have landed
+    log("applied", action=a["type"], target=a["target"], reason=a["reason"])
+    return 1, 0
+
+
 def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
     """Run the planned actions. Returns the state to save (dry-run never calls this)."""
     now = now or time.time()
@@ -1268,6 +1381,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason=f"ORCHESTRATE_AC_TICK={cfg.get('ORCHESTRATE_AC_TICK', 'apply')}")
                 continue
             n, failed = apply_ac_tick(a, gh, writes, max_writes, new_state, log)
+            writes, errors = writes + n, errors + failed
+            continue
+        if a["type"] in ("guard_retry", "guard_report"):
+            n, failed = apply_guard(a, gh, writes, max_writes, new_state, paths, log, now, cfg)
             writes, errors = writes + n, errors + failed
             continue
         if a["type"] in ("merge_status", "infra_status"):
