@@ -129,6 +129,14 @@ OWNER_PART_OF_RE = re.compile(rf"(?im)^\s*Part of\s+{OWNER}/vws-[a-z0-9-]+#[0-9]
 PART_OF_HINT = ("write `Part of #N` (same repo) or `Part of vws-<repo>#N` at the start of a line; the owner/repo "
                 "form `Part of <owner>/<repo>#N` is not read (https://github.com/popododo0720/vws-deploy/issues/504)")
 CLOSING_RE = re.compile(r"(?i)\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b:?\s*([\w.-]+/[\w.-]+)?#[0-9]+")
+# The issue a PR names with Closes/Fixes/Resolves: #N (the PR's repo), vws-x#N, or owner/repo#N.
+# CLOSING_RE only detects one; this captures the reference (vws-deploy#560).
+CLOSING_LINK_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]*"
+    r"(?:[A-Za-z0-9_.-]+/)?"
+    r"((?:vws-[a-z0-9-]+)?#[0-9]+)")
+# Part of owner/repo#N. Rule D skips it, but an open PR that writes it still names the issue.
+PART_OF_OWNER_REPO_REF_RE = re.compile(r"(?im)^\s*Part of\s+[A-Za-z0-9_.-]+/(vws-[a-z0-9-]+#[0-9]+)")
 # The #412 Agent-line spec: an unindented, case-sensitive "Agent: <name>" line; the first one wins.
 AGENT_RE = re.compile(r"^Agent:[ \t]*([a-z0-9][a-z0-9-]{0,38})[ \t]*$", re.M)
 LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?")
@@ -1904,6 +1912,59 @@ def grok_link(it):
     return "" if not m else (it["repo"] + m.group(1) if m.group(1).startswith("#") else m.group(1))
 
 
+def _issue_ref(repo, ref):
+    """#N is this PR's repo; vws-x#N is that repo."""
+    return repo + ref if ref.startswith("#") else ref
+
+
+def pr_linked_issues(it):
+    """Issue keys (repo#N) an open PR names with Part of, Closes, Fixes or Resolves.
+    Empty when it is not an open PR. A keyword inside a code fence or HTML comment does not count
+    (visible_text). A draft still counts: it is an open PR (vws-deploy#560)."""
+    if not it.get("is_pr") or it.get("state") != "open":
+        return set()
+    keys = set()
+    repo = it["repo"]
+    for raw in (it.get("body") or "", it.get("title") or ""):
+        text = visible_text(raw)
+        for m in PART_OF_RE.finditer(text):
+            keys.add(_issue_ref(repo, m.group(1)))
+        for m in PART_OF_OWNER_REPO_REF_RE.finditer(text):
+            keys.add(m.group(1))
+        for m in CLOSING_LINK_RE.finditer(text):
+            keys.add(_issue_ref(repo, m.group(1)))
+    return keys
+
+
+def open_pr_links(items):
+    """Issue keys an open PR names with Part of, Closes, Fixes or Resolves."""
+    linked = set()
+    for it in items.values():
+        linked |= pr_linked_issues(it)
+    return linked
+
+
+def stale_in_review_actions(items, actions, linked, now, cfg, exclusions):
+    """Remove in-review from an open issue that no open PR names, even with no ownership journal.
+    A Done report whose PR is still open keeps the label: that PR may not say Part of yet, and the
+    next tick would add the label back. A pull request's own in-review label is left alone."""
+    planned = {a["target"] for a in actions if a.get("type") == "remove_label" and a.get("label") == "in-review"}
+    out = []
+    for k in sorted(items):
+        it = items[k]
+        if it.get("state") != "open" or it.get("is_pr") or "in-review" not in it.get("labels", []):
+            continue
+        if k in linked or k in planned:
+            continue
+        hist = dispatch_history(it, now, cfg, exclusions)
+        latest = hist[-1] if hist else None
+        if latest and latest["outcome"] == "review":
+            continue
+        out.append({"type": "remove_label", "target": k, "label": "in-review",
+                    "reason": "no open Part of, Closes or Fixes PR"})
+    return out
+
+
 def ac_partial_idle(it, items):
     """vws-deploy#545: rule T left this issue labeled ac-partial (some acceptance-criteria boxes ticked,
     some still open) and no open PR names it. The assignee is not working a PR, so the issue does not
@@ -2268,6 +2329,8 @@ def decide(snapshot, state, now, cfg, exclusions):
                 break
 
     # Rules B and C
+    # Open PRs that name an issue keep its in-review label (vws-deploy#560). Computed once; decide is pure.
+    linked = open_pr_links(items)
     in_flight, queue, slots_used = [], [], 0
     for k in sorted(items):
         it = items[k]
@@ -2282,8 +2345,10 @@ def decide(snapshot, state, now, cfg, exclusions):
             in_flight.append(k)
             slots_used += running
         labels = set(it["labels"])
-        if "grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]:
+        if ("grok" in labels and "deepseek" not in labels and "in-review" in labels and k in owned["in-review"]
+                and k not in linked):
             # Moved to grok earlier (or a swap stopped before this label call): DeepSeek review is over.
+            # An open PR that still names the issue keeps in-review (vws-deploy#560).
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
         if "deepseek" not in labels or "ready" not in labels:
             continue
@@ -2302,7 +2367,7 @@ def decide(snapshot, state, now, cfg, exclusions):
                             "remove": "deepseek", "add": "" if "grok" in labels else "grok", "comment": not marker,
                             "body": f"Moving this task from DeepSeek to grok after {len(counted)} failed attempts:\n"
                                     f"{lines}\n\n<!-- orchestrate:swap -->"})
-            if "in-review" in labels and k in owned["in-review"]:
+            if "in-review" in labels and k in owned["in-review"] and k not in linked:
                 actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": "task moved to grok"})
             continue
         if "grok" in labels:
@@ -2345,7 +2410,8 @@ def decide(snapshot, state, now, cfg, exclusions):
             actions.append({"type": "remove_label", "target": k, "label": "blocked", "reason": "dependencies met"})
         if latest and latest["outcome"] == "review" and "in-review" not in labels:
             actions.append({"type": "add_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest.get('pr')} open"})
-        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels and k in owned["in-review"]):
+        if (latest and latest["outcome"] in ("done", "failed", "infra") and "in-review" in labels
+                and k in owned["in-review"] and k not in linked):
             actions.append({"type": "remove_label", "target": k, "label": "in-review", "reason": f"DeepSeek PR {latest['kind']}"})
         if rw["state"]:
             # A FAIL on the PR head replaces the issue-style dispatch with a rework of that PR.
@@ -2407,6 +2473,8 @@ def decide(snapshot, state, now, cfg, exclusions):
                         "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
                         "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
+    # After the owned removals above, so a label already planned is not removed twice (vws-deploy#560).
+    actions += stale_in_review_actions(items, actions, linked, now, cfg, exclusions)
     new_state["grok_released"] = {}
     actions += decide_grok(snapshot, cfg, set(snapshot.get("status", {}).get("keys", [])), repos, cycles, notes,
                            now, state.get("grok_released", {}), new_state["grok_released"])
