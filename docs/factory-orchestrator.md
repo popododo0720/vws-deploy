@@ -101,13 +101,16 @@ marker skip it. STOP does not: this is a CI repair, not a wake.
 
 - One re-trigger per head. `apply` appends `<!-- vws-orchestrate:repo-guard-retry sha=<head> run=<id> -->`,
   which fires `pull_request` `edited` and starts a new repo-guard run. The attempt is journaled in
-  `state['guard_retry']` before the PATCH, with the sha256 of the body it started from. A body that already
-  has that line is not patched, and the stored hash is not replaced.
+  `state['guard_retry']` before the PATCH. The sha256 is stored only when that body is still the one
+  vws-verify approved (`ac_body_trusted`: not edited at or after the pass). A body edited after approval
+  is still re-triggered, but the hash is not stored, so AC tick keeps failing closed (#499). A body that
+  already has that line is not patched, and a stored hash is not replaced. A retry line from an earlier
+  head stays in the body; the next head appends its own.
 - A second `startup_failure` (another run id, or the same run still newest after 15 minutes) posts one #412
   marker via `ci_fail.format_comment` instead of touching the body again. The author is the orchestrator
   login. ci-fail treats that login like `github-actions[bot]` when it looks for a marker to update, so a
   later real failure patches the same comment. `n` is 1 plus the distinct head SHAs of trusted markers
-  already on this PR. `owner=grok` still does not wake a Grok dev bot: those routines match only
+  on this PR since the last `/orchestrate reset-failures` or `needs-human` removal. `owner=grok` still does not wake a Grok dev bot: those routines match only
   `github-actions[bot]`.
 - AC tick (#486, #499) accepts the body edit only when the stored hash is the pre-image. Any other edit
   still fails closed. The record stays while the PR is open at that head, and for
@@ -837,7 +840,7 @@ install -d -m 0700 /home/box/.local/opt/vws-orchestrate/releases /home/box/.conf
   /home/box/.local/state/vws-orchestrate/log
 REL=/home/box/.local/opt/vws-orchestrate/releases/$SHA
 install -d -m 0700 "$REL"
-git archive --format=tar origin/main .github/orchestrate .github/metrics .github/drift/repos.tsv | tar -x -C "$REL"
+git archive --format=tar origin/main .github/orchestrate .github/ci-fail .github/metrics .github/drift/repos.tsv | tar -x -C "$REL"
 ln -sfn "releases/$SHA" /home/box/.local/opt/vws-orchestrate/current
 printf 'ORCHESTRATE_MODE=dry-run\nORCHESTRATE_INTERVAL=600\n' > /home/box/.config/vws-orchestrate/env
 # one manual dry-run tick, then start the loop
