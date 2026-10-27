@@ -130,18 +130,22 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
 **Writer (vws-deploy#410).** `metrics.py` writes the file itself, in `run_day`, before it reads it:
 
 - `lead_wakes`: the comments on the wake thread (`ORCHESTRATE_WAKE_THREAD` in vws-deploy) created in D whose
-  first line is `<!-- vws-orchestrate:lead-wake -->`. The orchestrator posts one such comment per lead wake
+  first line is `<!-- vws-orchestrate:lead-wake -->` and whose author is the orchestrator's login
+  (`popododo0720`, `trusted_read.own_comment`; vws-deploy#543). The thread is public, so the same marker
+  copied by any other login, or a comment with no author, is not counted. The orchestrator posts one such comment per lead wake
   (rule L, see [factory-orchestrator.md](factory-orchestrator.md)) and dr eggbot's routine fires on it. The
   count comes from the issue comments the run already reads, so it costs no extra gh call.
 - It runs once per day, when the loop's `--if-due` publishes D, and again only on `--date D` or
   `--recompute D`. It writes only for a day that is over, never from `--fixture`, and only when the wake
-  thread is set; otherwise `lead_wakes` stays `null` (`metrics_usage_skipped`).
+  thread is set; otherwise `lead_wakes` stays `null` (`metrics_usage_skipped`). A wake thread that is not a
+  positive integer is refused at config load (`config error: ORCHESTRATE_WAKE_THREAD must be empty or a
+  positive integer`, exit 2) before any GitHub read or file write (vws-deploy#543).
 - It sets `lead_wakes` and keeps every other key, so a `by_agent` written by someone else stays. The same
   count writes nothing (`metrics_usage_unchanged`); a new count replaces the old one
   (`metrics_usage_written`). A file that is not a JSON object is left alone (`metrics_usage_refused`).
 - `tokens` has no deterministic source: GitHub has no token counts and no agent writes a usage log the
-  loop can read. The writer never writes `by_agent`, so `tokens` stays `null`, never 0, until such a source
-  exists.
+  loop can read. The writer never writes `by_agent`, so `tokens` stays `null` (`-`), never 0, until such a
+  source exists. That gap is tracked in vws-deploy#555.
 - Where it runs: inside the orchestrator loop, wherever `orchestrate-loop.sh` runs with `METRICS_ENABLED=1`
   (since 2026-10-22 the `vws-orchestrate.service` on the deepseek-dev VM; the box loop is disabled). The
   loop auto-updates from `main`, so nothing is installed by hand. The wake thread must be set in the
