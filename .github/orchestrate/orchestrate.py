@@ -1886,10 +1886,13 @@ def grok_bot(it, cfg):
     return grok_owners(cfg).get(it["repo"], it["repo"]), f"repo:{it['repo']}"
 
 
-def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
+def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via="", partial=None):
     who = f"Owner `{owner}` ({via})" if owner else "No owner resolved, so the lead (dr eggbot)"
+    what = "this issue" if not partial else (
+        f"the remaining acceptance criteria {', '.join(map(str, partial['open']))} of this issue "
+        f"({partial['pr']} merged and its AC tick left them open)")
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
-                      f"{who}: please take this issue: one small PR per its acceptance criteria, "
+                      f"{who}: please take {what}: one small PR per its acceptance criteria, "
                       f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
                       f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
@@ -1941,6 +1944,26 @@ def grok_wake_key(k, it, key_times):
     return key
 
 
+def grok_partial_key(k, pr, merged_at):
+    """vws-deploy#545: one re-wake per merged slice: the issue, the merged PR and its merge time."""
+    return "sha256:" + hashlib.sha256(f"grok-partial-wake\n{k}\n{pr}\n{int(utc(merged_at))}".encode()).hexdigest()
+
+
+def grok_partial(k, it, items):
+    """vws-deploy#545: the finished slice of a partially ticked Grok issue, as {"pr", "merged_at", "open"},
+    or None. Partial means: under `## Acceptance criteria` at least one box is ticked and at least one is
+    open, a PR whose `Part of` names the issue merged (from the timeline grok_activity read), and no open
+    PR names it (the next slice would be in flight). Unread activity is never partial (fail closed)."""
+    act = it.get("grok_activity")
+    boxes = ac_boxes(it.get("body"))
+    if not act or not any(b["checked"] for b in boxes) or all(b["checked"] for b in boxes):
+        return None
+    merged = sorted((p for p in act.get("prs", []) if p.get("merged_at")), key=lambda p: (utc(p["merged_at"]), p["key"]))
+    if not merged or any(p["is_pr"] and p["state"] == "open" and grok_link(p) == k for p in items.values()):
+        return None
+    return {"pr": merged[-1]["key"], "merged_at": merged[-1]["merged_at"], "open": [b["n"] for b in boxes if not b["checked"]]}
+
+
 def grok_release(k, it, items, woken_at, now, timeout_min):
     """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
     grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
@@ -1972,7 +1995,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
     key_times = snapshot.get("status", {}).get("key_times", {})
     allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
     notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
-    held, queue, woken, freed = grok_held(items), [], set(), []
+    held, queue, woken, freed, partials = grok_held(items), [], set(), [], {}
     for k in sorted(items):
         it = items[k]
         labels = set(it["labels"])
@@ -1980,7 +2003,23 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             continue
         unit = grok_link(it) or k  # a PR and the issue it is part of are one Grok task
         key = grok_wake_key(k, it, key_times)
-        if key in posted:
+        part = None if it["is_pr"] else grok_partial(k, it, items)
+        if part and (key not in posted or not key_times.get(key) or utc(part["merged_at"]) > utc(key_times[key])):
+            # vws-deploy#545 path B: the slice merged after the last wake (or there was none: a manual claim).
+            # Its assignee no longer holds the slot; the issue is re-woken once per merged slice.
+            key = grok_partial_key(k, part["pr"], part["merged_at"])
+            note = {"kind": "grok_ac_partial", "item": k, "pr": part["pr"], "open": part["open"], "key": key}
+            if key not in posted:
+                held.discard(k)
+                part["key"] = key
+                ok = (k in allow and "ready" in labels and not labels & ({"deepseek"} | set(OPT_OUT_LABELS)))
+                notes.append(dict(note, rewake=ok, state="queued" if ok else "released"))
+                if not ok:
+                    continue
+                partials[k] = part
+            else:
+                notes.append(dict(note, rewake=True, state="woken"))
+        if key in posted and k not in partials:
             kind, details = ("", {}) if now is None else grok_release(
                 k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
             if kind:  # done or never claimed: the slot is free, and the same key is never posted again
@@ -1995,7 +2034,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             held.add(unit)  # woken and still open with grok: the slot stays taken
             woken.add(k)
             continue
-        if unit in held or k in held:
+        if (unit in held or k in held) and k not in partials:
             continue
         if (k not in allow or "ready" not in labels or labels & ({"deepseek"} | set(OPT_OUT_LABELS))
                 or (it["is_pr"] and it.get("draft"))):
@@ -2007,7 +2046,8 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             continue
         security = "security" in labels or re.search(r"(?i)\bsecurity\b", it.get("title") or "")
         prio = 0 if "priority/blocker" in labels else 1 if security else 2
-        queue.append((prio, ready_time(it), it["repo"], it["number"], k))
+        # Depth first (vws-deploy#545): a started issue's next slice goes before new work of the same priority.
+        queue.append((prio, 0 if k in partials else 1, ready_time(it), it["repo"], it["number"], k))
     running = sorted(held)
     if running:
         notes.append({"kind": "grok_in_flight", "targets": running})
@@ -2022,19 +2062,24 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
     for q in sorted(queue):
         if len(actions) >= free:
             break
-        if q[2] in busy:
-            notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
+        repo, k = q[3], q[-1]
+        if repo in busy:
+            notes.append({"kind": "repo_busy", "target": k, "repo": repo})
             continue
-        busy.add(q[2])
-        it = items[q[4]]
-        key = grok_wake_key(q[4], it, key_times)
+        busy.add(repo)
+        it = items[k]
+        part = partials.get(k)
+        key = part["key"] if part else grok_wake_key(k, it, key_times)
         slot = len(running) + len(actions) + 1
         # woken: the tasks this tick saw as woken, so the apply-time re-check still counts them (it
         # cannot rebuild their reset time from the bare issues list).
         owner, via = grok_bot(it, cfg)
-        actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
-                        "woken": sorted(woken), "released": sorted(freed), "reason": f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}",
-                        "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
+        extra = {"partial": {"pr": part["pr"], "open": part["open"]}} if part else {}
+        actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": k, "key": key, "owner": owner,
+                        "woken": sorted(woken), "released": sorted(freed), **extra,
+                        "reason": f"{k}: allowlisted ready+grok" + (f", ac-partial after {part['pr']}" if part else "")
+                                  + f", Grok slot {slot} of {cap}",
+                        "body": grok_wake_body(it, k, key, slot, cap, snapshot["run_id"], owner, via, extra.get("partial"))})
     return actions
 
 
@@ -2985,7 +3030,7 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
                     reason="a comment with this key already exists")
                 continue
             why = recheck_grok(gh, a["item"], grok_repos, int(num(cfg, "ORCHESTRATE_GROK_CAP")),
-                               a.get("woken", ()), grok_posted, a.get("released", ()))
+                               a.get("woken", ()), grok_posted, a.get("released", ()), a.get("partial"))
             if why:
                 log("skipped", action="grok_wake", target=a["target"], item=a["item"], reason=why)
                 continue
@@ -3242,6 +3287,21 @@ def merge_skip_line(result):
         "- Verify-approved PRs not merged: none"
 
 
+GROK_PARTIAL_TEXT = {"queued": "re-wake queued", "woken": "re-woken", "released": "slot released, no re-wake"}
+
+
+def grok_line(notes, cfg):
+    """The Now line for Rule G: tasks holding a Grok slot, and each ac-partial issue with its wake path
+    (vws-deploy#545), so a partial tick never reads as a stuck CAP hold."""
+    running = next((n["targets"] for n in notes if n.get("kind") == "grok_in_flight"), [])
+    part = [n for n in notes if n.get("kind") == "grok_ac_partial"]
+    return (f"- Grok in flight: {len(running)} of {int(num(cfg, 'ORCHESTRATE_GROK_CAP'))}"
+            + (": " + ", ".join(running) if running else "")
+            + ("; ac-partial: " + ", ".join(
+                f"{n['item']} ({GROK_PARTIAL_TEXT[n['state']]} for AC {', '.join(map(str, n['open']))} after {n['pr']})"
+                for n in part) if part else ""))
+
+
 def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None):
     """Pure: the status issue body. Only the last line (_Updated ..._) changes from tick to tick without a
     real change, and status_same ignores it, so a quiet tick edits nothing."""
@@ -3261,7 +3321,7 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
              f"- PRs waiting for verify: {result.get('pending_count', 0)} (wake threshold {int(num(cfg, 'VERIFY_WAKE_THRESHOLD'))}; "
              + (f"verify wakes go to {wake})" if wake else "verify wake is off: ORCHESTRATE_WAKE_THREAD is unset)"),
              f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
-             + (": " + ", ".join(in_flight) if in_flight else "")]
+             + (": " + ", ".join(in_flight) if in_flight else ""), grok_line(notes, cfg)]
     rebuild = result.get("rebuild", [])
     lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
         f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
@@ -3357,18 +3417,20 @@ def publish_status(gh, cfg, snapshot, body, log):
     return 0
 
 
-def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=()):
+def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=(), partial=None):
     """Rule G, right before a wake is posted. Returns '' when it may go ahead, else why not.
     The issue must still be open, ready+grok, unassigned, without `deepseek` or an opt-out label.
     Then occupancy is rebuilt from a fresh read of the open grok items of every scoped repo: Grok work
     held now (grok_held: assigned, or named by an open grok PR), the tasks the tick saw as woken that
     are still open with grok, and the wakes already posted this tick all count toward cap; the issue's
-    own repo must not be busy (grok_busy). A failed read skips the wake (fails closed)."""
+    own repo must not be busy (grok_busy). A failed read skips the wake (fails closed). A partial re-wake
+    (vws-deploy#545) may keep its assignee: the finished slice's assignee does not hold the slot, but an open
+    grok PR that names the issue still does."""
     repo, number = k.split("#")
     try:
         issue, _ = gh.get(f"repos/{OWNER}/{repo}/issues/{number}")
         names = {lb["name"] for lb in issue.get("labels", [])}
-        if not (issue.get("state") == "open" and {"ready", "grok"} <= names and not issue.get("assignees")
+        if not (issue.get("state") == "open" and {"ready", "grok"} <= names and (partial or not issue.get("assignees"))
                 and not names & ({"deepseek"} | set(OPT_OUT_LABELS))):
             return "the issue changed since collect"
         fresh = {}
@@ -3382,6 +3444,8 @@ def recheck_grok(gh, k, repos, cap, woken=(), posted=(), released=()):
     except (GhError, PermissionError, KeyError, TypeError) as e:
         return f"re-read failed: {scrub(e)}"
     held = grok_held(fresh) - set(released)  # done or expired at decide time (#411), even if still assigned
+    if partial and not any(i["is_pr"] and grok_link(i) == k for i in fresh.values()):
+        held.discard(k)
     held |= {grok_link(fresh[w]) or w for w in woken if w in fresh and "grok" in fresh[w]["labels"]}
     held |= set(posted)
     unit = (grok_link(fresh[k]) if k in fresh else "") or k
