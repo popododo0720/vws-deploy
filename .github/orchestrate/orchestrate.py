@@ -579,6 +579,20 @@ def comment_distrust(c, cfg):
     return "" if is_trusted_reset_author(login, assoc) else f"{kind[0]}_author_not_trusted"
 
 
+def trusted_comments(k, comments, cfg):
+    """(kept, ignored) for the comment records of item k: vws-deploy#419/#433 drop untrusted resets,
+    dispatches, results, verdicts and markers before decide sees them."""
+    kept, ignored = [], []
+    for c in comments:
+        why = comment_distrust(c, cfg)
+        if why:
+            ignored.append({"target": k, "comment": c["url"], "kind": classify_comment(c["body"])[0],
+                            "author": c.get("author") or "", "association": c.get("assoc") or "", "reason": why})
+        else:
+            kept.append(c)
+    return kept, ignored
+
+
 def pr_key(url):
     m = URL_RE.match(url or "")
     return f"{m.group(2)}#{m.group(3)}" if m and m.group(1) == OWNER else ""
@@ -880,16 +894,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         if labels & {"ready", "deepseek", "grok"}:
             # Candidates get their full comment history (the repo-wide list only covers the window),
             # so old dispatches and failures are never forgotten. Unchanged issues reuse the cached copy.
-            cached = hist_items.get(k)
-            if history_fresh(cached, updated.get(k, {}), now):
-                it["comments"], it["events"] = cached["comments"], cached["events"]
-            else:
-                it["comments"], it["events"] = candidate_history(gh, it)
-                seen = updated.get(k, {}).get("updated_at", "")
-                if seen and now - utc(seen) < 120:
-                    seen = ""  # GitHub stamps whole seconds: a same-second change could hide; re-read next tick
-                hist_items[k] = {"updated_at": seen, "fetched_at": now,
-                                 "comments": it["comments"], "events": it["events"]}
+            it["comments"], it["events"] = item_history(gh, it, updated.get(k, {}), hist_items, now)
             for dep in parse_deps(it["body"], it["repo"])[0]:
                 if dep in snap["items"] or dep in snap["deps"]:
                     continue
@@ -904,15 +909,8 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                     snap["deps"][dep] = {"unreadable": True}
         # vws-deploy#419/#433: untrusted resets, dispatches, results, verdicts and markers are dropped here,
         # so decide never sees them. The cache keeps every comment, so a config change is applied on the next tick.
-        kept = []
-        for c in it["comments"]:
-            why = comment_distrust(c, cfg)
-            if why:
-                snap["ignored_comments"].append({"target": k, "comment": c["url"], "kind": classify_comment(c["body"])[0],
-                                                 "author": c.get("author") or "", "association": c.get("assoc") or "",
-                                                 "reason": why})
-            else:
-                kept.append(c)
+        kept, ignored = trusted_comments(k, it["comments"], cfg)
+        snap["ignored_comments"] += ignored
         it["comments"] = kept
         for c in it["comments"]:
             kind = classify_comment(c["body"])
@@ -960,10 +958,22 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                 it["verify_ci"], it["verify_check_failed"] = pr_ci(runs, status)
         elif it["is_pr"]:
             it["verify_ci"] = "ineligible"  # a draft or another base waits for nothing: both labels come off
+    reworked = set()
     for k, it in sorted(snap["items"].items()):
         for pk in rework_prs(k, it, snap["items"]):
+            reworked.add(pk)
             if "reviews" not in snap["items"][pk]:
                 snap["items"][pk]["reviews"] = verify_reviews(gh, snap["items"][pk], cfg)
+    for pk in sorted(reworked):
+        # An issue-owned rework PR has no label of its own, so it misses the candidate read above. The
+        # rework markers on it need the full history too (vws-deploy#376).
+        pr = snap["items"][pk]
+        if set(pr["labels"]) & {"ready", "deepseek", "grok"}:
+            continue
+        pr["comments"], pr["events"] = item_history(gh, pr, updated.get(pk, {}), hist_items, now)
+        kept, ignored = trusted_comments(pk, pr["comments"], cfg)
+        snap["ignored_comments"] += ignored
+        pr["comments"] = kept
     for k, it in sorted(snap["items"].items()):
         # vws-deploy#457: a FAIL on any open PR's head is routed or logged, so every such PR needs its reviews.
         # ETag-cached; a read error leaves the PR's verdict comments only, never a failed tick.
@@ -973,7 +983,7 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
             except (GhError, PermissionError):
                 it["reviews"] = []
     if history is not None:
-        live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}}
+        live = {k for k, it in snap["items"].items() if set(it["labels"]) & {"ready", "deepseek", "grok"}} | reworked
         for k in list(hist_items):
             if k not in live:
                 del hist_items[k]  # closed or unlabeled: re-read in full if it comes back
@@ -1116,6 +1126,21 @@ def candidate_history(gh, it):
                 for c in gh.get_all(f"repos/{OWNER}/{it['repo']}/issues/{it['number']}/comments?per_page=100")
                 if classify_comment(c.get("body"))]
     return comments, label_events(gh, it)
+
+
+def item_history(gh, it, seen_at, hist_items, now):
+    """The item's full comment history and label events, from the cache when fresh. seen_at is the issue
+    list's {"updated_at"}; a same-second stamp is re-read on the next tick."""
+    k = f"{it['repo']}#{it['number']}"
+    cached = hist_items.get(k)
+    if history_fresh(cached, seen_at, now):
+        return cached["comments"], cached["events"]
+    comments, events = candidate_history(gh, it)
+    seen = seen_at.get("updated_at", "")
+    if seen and now - utc(seen) < 120:
+        seen = ""  # GitHub stamps whole seconds: a same-second change could hide; re-read next tick
+    hist_items[k] = {"updated_at": seen, "fetched_at": now, "comments": comments, "events": events}
+    return comments, events
 
 
 def label_events(gh, it):
