@@ -404,18 +404,35 @@ expect_text "trusted-proxies: not passed by default" "$got" "0"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string 'services.console-api.flags.trusted-proxies=10.0.0.0/8' | grep -c -- '-trusted-proxies=10.0.0.0/8' || true)
 expect_text "trusted-proxies: passed when set" "$got" "1"
 
-# vws-deploy#280: console-api is pinned by services.console-api.imageTag to sha-a003d96, the
-# console-api#156 build (env credentials, S1) that vws-console-api publish.yml pushes as ghcr.io/popododo0720/vws/console-api:sha-<commit>.
-# compute is pinned the same way to sha-07b591c (vws-compute#91, published by vws-compute publish.yml).
+# vws-deploy#280: console-api is pinned by services.console-api.imageTag to sha-c09cba3, the
+# console-api main build that includes #299 (attach state) and #302 (DetachVolume replay). It makes
+# no Kubernetes API call, so it needs no Role. vws-console-api publish.yml pushes
+# ghcr.io/popododo0720/vws/console-api:sha-<commit>.
+# compute is pinned the same way to sha-1b62a87 (vws-compute main 2026-10-22, includes #111 and #93,
+# published by vws-compute publish.yml).
 # Other services keep global.tag / appVersion, and spec.version moves them but not the pinned ones.
 images() {
   helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws "$@" |
     python3 -c 'import sys,yaml; print(sorted(d["metadata"]["name"]+"="+d["spec"]["template"]["spec"]["containers"][0]["image"] for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ("Deployment","StatefulSet") and d["metadata"]["namespace"] == "vws"))'
 }
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
-expect_text "image pin: console-api renders sha-a003d96" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
-expect_text "image pin: compute renders sha-07b591c" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-07b591c'"
+expect_text "image pin: console-api renders sha-c09cba3" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-c09cba3'"
+expect_text "image pin: compute renders sha-1b62a87" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-1b62a87'"
 expect_text "image pin: other services keep appVersion" "$got" "'storage=ghcr.io/popododo0720/vws/storage:0.1.0'"
+got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" | python3 -c '
+import sys, yaml
+names = set()
+for d in yaml.safe_load_all(sys.stdin):
+    if not d:
+        continue
+    if d["kind"] in ("Role", "ClusterRole") and "console-api" in d["metadata"]["name"]:
+        names.add(d["metadata"]["name"])
+    if d["kind"] in ("RoleBinding", "ClusterRoleBinding"):
+        for s in d.get("subjects") or []:
+            if s.get("name") == "console-api":
+                names.add(d["metadata"]["name"])
+print(sorted(names))')
+expect_text "image pin: console-api has no Role or RoleBinding" "$got" "[]"
 # vws-iam#113 published ghcr.io/popododo0720/vws/iam:sha-74a29dc. The default render
 # leaves iam out (enabled false). With iam on, the image is that pin and global.tag does not move it.
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true)
@@ -423,8 +440,8 @@ expect_text "image pin: iam renders sha-74a29dc" "$got" "'iam=ghcr.io/popododo07
 run_vws_real render "${EX}/ha.yaml" "${WORK}/pin.yaml"; expect_rc "image pin: ha example renders" 0
 got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9)
 expect_text "image pin: global.tag moves other services" "$got" "'storage=ghcr.io/popododo0720/vws/storage:9.9.9'"
-expect_text "image pin: global.tag does not move compute" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-07b591c'"
-expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-a003d96'"
+expect_text "image pin: global.tag does not move compute" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-1b62a87'"
+expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-c09cba3'"
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true --set global.tag=9.9.9)
 expect_text "image pin: global.tag does not move iam" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-74a29dc'"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" | python3 -c 'import sys,yaml; print(sum(1 for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ("Deployment","StatefulSet") for c in d["spec"]["template"]["spec"]["containers"] if "command" in c))')

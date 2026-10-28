@@ -86,12 +86,14 @@ services:
   console-api:
     external: true
     # imageTag pins this service's image to one build instead of global.tag / Chart appVersion
-    # (vws-deploy#280). sha-a003d96 is console-api#156 (S1): it reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY
-    # and VWS_SECRET_KEY from env, which this chart now relies on (no credential flags), and it keeps
-    # -console-origins and -trusted-proxies (#137). vws-console-api publish.yml pushed
-    # ghcr.io/popododo0720/vws/console-api:sha-a003d96 (sha256:dbd6ab8a…, revision a003d96) on merge.
+    # (vws-deploy#280). sha-c09cba3 is console-api main on 2026-10-22: #299 makes AttachVolume answer
+    # attaching and DescribeVolumes read the attach from the instance spec, and #302 keeps
+    # DetachVolume replay records across label writes. It reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and
+    # VWS_SECRET_KEY from env, so the chart's flags and env do not change, and it makes no Kubernetes
+    # API call, so it needs no Role. vws-console-api publish.yml pushed
+    # ghcr.io/popododo0720/vws/console-api:sha-c09cba3 (sha256:036dce4c…, revision c09cba3) on merge.
     # spec.version does not move it.
-    imageTag: sha-a003d96
+    imageTag: sha-c09cba3
     # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
     # split them (popododo0720/vws-console-api#95). The schema, check_render.py (R4) and vws render
     # refuse any other count; the chart has no HPA. Change this only with shared session storage.
@@ -123,12 +125,13 @@ services:
       network-addr: network:8080
   compute:
     external: true
-    # imageTag pins compute to one published build (vws-deploy#280 mechanism). sha-07b591c is
-    # vws-compute#91 (07b591c = #89's 99a45e4 plus publish.yml): key pairs go in NoCloud meta-data
-    # public-keys (#83). vws-compute publish.yml pushed ghcr.io/popododo0720/vws/compute:sha-07b591c
-    # (sha256:292268f3…, revision 07b591c) on merge. ko sets the entrypoint /ko-app/vws-compute,
+    # imageTag pins compute to one published build (vws-deploy#280 mechanism). sha-1b62a87 is
+    # vws-compute main on 2026-10-22: it includes 89f2ca3 (#111), which maps attach device names to
+    # valid KubeVirt disk names, and a31223a (#93), which labels image DataSources for authorization.
+    # vws-compute publish.yml pushed ghcr.io/popododo0720/vws/compute:sha-1b62a87
+    # (sha256:a8d7e7aa…, revision 1b62a87) on merge. ko sets the entrypoint /ko-app/vws-compute,
     # user 65532; this chart passes only args, never command. spec.version does not move it.
-    imageTag: sha-07b591c
+    imageTag: sha-1b62a87
     # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
     # scripts/guard.sh config fails when they differ.
     port: 50051
