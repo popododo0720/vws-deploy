@@ -120,6 +120,20 @@ class Rework(unittest.TestCase):
         d = dispatches(run(issue, pr))
         self.assertEqual([(a["target"], a["owner"]) for a in d], [("vws-iam#140", "vws-iam#7")])
 
+    def test_pr_blocked_or_grok_is_not_reworked_for_its_issue(self):
+        for label in ("blocked", "grok"):
+            with self.subTest(label=label):
+                pr = item("vws-iam", 140, labels=(label,), is_pr=True)
+                pr["reviews"] = [review(9, pr, "CHANGES_REQUESTED", 1)]
+                issue = ready_task("vws-iam", 7, 20, comments=[dispatch(1, "vws-iam", 7, 6),
+                                                                 report(2, "vws-iam", 7, 1, "Done", 4, pr=pr["url"])],
+                                   report_prs={pr["url"]: {"state": "open", "merged": False}})
+                items = {"vws-iam#7": issue, "vws-iam#140": pr}
+                self.assertEqual(orch.rework_prs("vws-iam#7", issue, items), [])
+                r = run(issue, pr)
+                self.assertEqual(dispatches(r), [])
+                self.assertFalse([n for n in r["notes"] if n["kind"] == "rework_skipped"])
+
     def test_rework_goes_before_new_tasks(self):
         pr = ds_pr(reviews=[lambda p: review(9, p, "CHANGES_REQUESTED", 1)])
         old = ready_task("vws-deploy", 2, 99)
@@ -215,6 +229,38 @@ class ReworkTick(test_runtime.Env):
         self.assertIn(f"orchestrate:rework head={h2} verdict=3", bodies[0])
         planned = [e for e in self.log() if e["event"] == "planned" and e["action"] == "dispatch"]
         self.assertEqual(len(planned), 2, "decide itself plans no rework for an already reworked head")
+
+
+class IssueOwnedHistory(test_runtime.Env):
+    """A label-less PR owned by an issue reads its full comment history, so an old rework marker is kept."""
+    O = test_runtime.O
+
+    def test_old_rework_marker_of_a_label_less_pr_is_read(self):
+        head = "7" * 40
+        shop = f"{self.O}/vws-iam"
+        issue = {"number": 1, "html_url": f"{U}/vws-iam/issues/1", "state": "open",
+                 "created_at": "2026-10-01T00:00:00Z", "body": "", "labels": [{"name": "ready"}, {"name": "deepseek"}]}
+        pr = {"number": 7, "html_url": f"{U}/vws-iam/pull/7", "state": "open", "created_at": "2026-10-01T00:00:00Z",
+              "body": "Part of #1", "labels": [], "pull_request": {}}
+        r = test_runtime.routes()
+        r[f"{shop}/issues"] = {"body": [issue, pr]}
+        r[f"{shop}/pulls"] = {"body": [{"number": 7, "draft": False, "base": {"ref": "main"}, "head": {"sha": head}}]}
+        r[f"{shop}/issues/7"] = {"body": {"state": "open", "labels": [], "body": "Part of #1"}}
+        r[f"{shop}/pulls/7"] = {"body": {"state": "open", "head": {"sha": head}}}
+        r[f"{shop}/pulls/7/reviews"] = {"body": [{
+            "id": 9, "user": {"login": "vws-verify[bot]", "id": 1}, "state": "CHANGES_REQUESTED", "commit_id": head,
+            "submitted_at": "2026-09-05T00:00:00Z", "html_url": f"{U}/vws-iam/pull/7#r9", "body": "Result: FAIL"}]}
+        old = ("@deepseek-dev please rework this PR: push new commits to this branch\n\n"
+               f"<!-- orchestrate:rework head={head} verdict=9 -->")
+        r[f"{shop}/issues/7/comments"] = {"body": [{
+            "id": 20, "user": {"login": "popododo0720"}, "author_association": "OWNER",
+            "html_url": f"{U}/vws-iam/pull/7#issuecomment-20", "created_at": "2026-09-10T00:00:00Z", "body": old}]}
+        self.set_routes(r)
+        self.tick()
+        planned = [(e["action"], e["target"]) for e in self.log() if e["event"] == "planned"]
+        self.assertNotIn(("dispatch", "vws-iam#7"), planned, "the old rework marker must mark this head done")
+        self.assertTrue(any(c["path"] == f"{shop}/issues/7/comments?per_page=100" for c in self.calls()),
+                        "the issue-owned PR is read in full")
 
 
 if __name__ == "__main__":
