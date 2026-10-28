@@ -278,8 +278,11 @@ def triage(snapshot, state, cfg, now):
                 notes.append({"kind": "rework_skipped", "target": rw["target"], "verdict": (rw["verdict"] or rw["ci"])["url"],
                               "reason": "in flight or blocked" if rw["state"] == "pending" else rw["state"]})
             continue
-        # A running target is never dispatched again, even after a failure reset.
-        eligible = (not running and not blocked and "blocked" not in labels and not (it["is_pr"] and it.get("draft"))
+        # A running target is never dispatched again, even after a failure reset. Nor is an issue an open PR
+        # already names: that PR is the work in progress, and only the rework path above dispatches it
+        # (vws-deploy#586).
+        eligible = (not running and not blocked and "blocked" not in labels and k not in linked
+                    and not (it["is_pr"] and it.get("draft"))
                     and (latest is None or latest["outcome"] in ("failed", "excluded") or latest["at"] <= since
                          or retry > 0))
         if eligible:
