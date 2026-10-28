@@ -23,13 +23,21 @@ type fakeCluster struct {
 	mu       sync.Mutex
 	nodes    []cluster.Node
 	nodesErr error
-	release  chan error
-	crs      [][]byte
+	// nodesStarted and nodesRelease gate a node lookup: when set, Nodes signals on started and
+	// waits for a receive or close on release.
+	nodesStarted chan struct{}
+	nodesRelease chan struct{}
+	release      chan error
+	crs          [][]byte
 	// lines are logged after "installing" (#145).
 	lines []string
 }
 
 func (f *fakeCluster) Nodes(context.Context) ([]cluster.Node, error) {
+	if f.nodesStarted != nil {
+		f.nodesStarted <- struct{}{}
+		<-f.nodesRelease
+	}
 	if f.nodesErr != nil {
 		return nil, f.nodesErr
 	}

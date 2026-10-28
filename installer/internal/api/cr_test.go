@@ -3,8 +3,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func (h *harness) exportCR() map[string]any {
@@ -133,6 +136,54 @@ func TestPostCRWhileInstalling(t *testing.T) {
 	h.waitState("succeeded")
 	status, body = h.do("POST", "/api/v1/cr", cr)
 	h.wantError(status, body, 409, ReasonAlreadyInstalled)
+}
+
+// A blocked node lookup must not hold the server lock: an unrelated request answers while
+// POST /cr waits for the lookup.
+func TestPostCRNodeLookupDoesNotHoldLock(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	body := string(mustJSON(t, h.exportCR()))
+
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	h.cluster.nodesStarted, h.cluster.nodesRelease = started, release
+
+	handler := h.srv.Handler()
+	post := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(t.Context(), "POST", "/api/v1/cr", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+h.token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		post <- rec.Code
+	}()
+	<-started
+
+	get := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/api/v1/state", nil)
+		req.Header.Set("Authorization", "Bearer "+h.token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		get <- rec.Code
+	}()
+	select {
+	case status := <-get:
+		if status != 200 {
+			t.Fatalf("GET /state during node lookup: %d", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GET /state blocked while POST /cr looked up nodes")
+	}
+
+	unblock()
+	if status := <-post; status != 200 {
+		t.Fatalf("POST /cr: %d", status)
+	}
 }
 
 func TestPostCRValidatesBeforeNodeLookup(t *testing.T) {
