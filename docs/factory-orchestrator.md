@@ -234,7 +234,9 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
   (3h). A tick dispatches at most `ORCHESTRATE_DEEPSEEK_CAP` minus the in-flight count, and the write
   cap still applies. Slots count running dispatches, not items. A running target is never dispatched
   again, even after `/orchestrate reset-failures`. A task in review (Done report, PR open) does not
-  hold a slot.
+  hold a slot. An issue an open PR already names (`Part of`, `Closes`, `Fixes` or `Resolves`) is not
+  dispatched either, even after a reset; that PR's FAIL still goes through the rework path, and the
+  slot handout refuses such a queue entry with a `note` of kind `open_pr_linked` (vws-deploy#586).
 - **One task per repo:** dsh runs one task per repo at a time and queues the rest, and a queued task
   could reach the 3h timeout and count as a DeepSeek failure. So a repo with a DeepSeek task in flight
   or picked in the same tick is skipped (a `note` with kind `repo_busy`), and the free slot goes to the
