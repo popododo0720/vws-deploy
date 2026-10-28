@@ -49,7 +49,7 @@ Deviations from candidate A, recorded because the sketch did not survive contact
 
 - We accept downtime for a stateful service during rollout and during the loss of its node, in exchange for a single writer on a ReadWriteOnce volume that reattaches when the node returns.
 - We accept a LoadBalancer where `external` is true, in exchange for an address callers can use without an ingress controller.
-- We accept lockstep image tags from `Chart.appVersion`, in exchange for one version source. Exception: `services.<name>.imageTag` pins one service to one build (console-api `sha-a003d96`, vws-deploy#280; env credentials since console-api#156; compute `sha-07b591c`, vws-compute#91) until every service publishes from the same version.
+- We accept lockstep image tags from `Chart.appVersion`, in exchange for one version source. Exception: `services.<name>.imageTag` pins one service to one build (console-api `sha-c09cba3`, vws-deploy#280, env credentials since console-api#156; compute `sha-1b62a87`, vws-compute main 2026-10-22) until every service publishes from the same version.
 - We accept that `helm lint` prints an icon recommendation, in exchange for shipping no logo file.
 - We accept a Python render check, in exchange for no second manifest compiler.
 
