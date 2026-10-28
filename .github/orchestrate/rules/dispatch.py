@@ -8,7 +8,7 @@ from trusted_read import (
 )
 
 from .common import (
-    CI_FAIL_CAP, INFRA_MAX_RETRIES, decision, num, quote, reset_time, scrub,
+    CI_FAIL_CAP, INFRA_MAX_RETRIES, decision, num, open_pr_links, quote, reset_time, scrub,
 )
 from .deepseek import (
     rework_plan, triage,
@@ -74,11 +74,18 @@ def decide(snapshot, state, cfg, now):
     if cfg.get("ORCHESTRATE_DISPATCH", "on") == "off":
         free = 0  # pause switch: no new dispatches; in-flight tracking and merges carry on, wakes go silent
     picked, seen = 0, set()
+    # The same refusal as triage, at the slot itself: an issue an open PR already names gets no new
+    # dispatch even if it reached the queue (vws-deploy#586). A rework entry (q[0] == 1) is that PR, so it
+    # stays.
+    linked = open_pr_links(items)
     for q in sorted(queue):
         if picked >= free:
             break
         if q[4] in seen:
             continue  # a PR queued by both itself and its issue
+        if q[0] != 1 and q[4] in linked:
+            notes.append({"kind": "open_pr_linked", "target": q[4]})
+            continue
         seen.add(q[4])
         if q[2] in busy:
             notes.append({"kind": "repo_busy", "target": q[4], "repo": q[2]})
