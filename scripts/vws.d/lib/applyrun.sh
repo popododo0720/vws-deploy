@@ -17,14 +17,16 @@ vws_crd_files() {
 vws_crd_current() {
   local have
   have=$(VWS_NAMESPACE='' vws_kubectl get crd -o json 2>/dev/null) || return 1
-  python3 - "$have" "${VWS_ROOT}/charts/vws/crds" <<'PY'
+  # The list can exceed MAX_ARG_STRLEN on a large cluster, so it goes on stdin, not argv (#384).
+  printf '%s' "$have" |
+    python3 -c '
 import json, sys
 from pathlib import Path
 import yaml
 
-have = {item["metadata"]["name"]: item.get("spec") or {} for item in json.loads(sys.argv[1]).get("items") or []}
+have = {item["metadata"]["name"]: item.get("spec") or {} for item in json.load(sys.stdin).get("items") or []}
 want = {}
-for path in sorted(Path(sys.argv[2]).glob("*.yaml")):
+for path in sorted(Path(sys.argv[1]).glob("*.yaml")):
     for doc in yaml.safe_load_all(path.read_text()):
         if doc and doc.get("kind") == "CustomResourceDefinition":
             want[doc["metadata"]["name"]] = doc.get("spec") or {}
@@ -36,7 +38,7 @@ def key(spec):
     ]
 
 sys.exit(0 if want and all(name in have and key(have[name]) == key(spec) for name, spec in want.items()) else 1)
-PY
+' "${VWS_ROOT}/charts/vws/crds"
 }
 
 # vws_apply_crd: server-side apply every charts/vws/crds/*.yaml, then wait for the CRDs to be
