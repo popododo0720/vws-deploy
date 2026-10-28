@@ -207,6 +207,50 @@ class RuleB(unittest.TestCase):
         self.assertEqual(kinds(r), [("dispatch", "vws-iam#2")])
 
 
+class OpenLinkedPR(unittest.TestCase):
+    """vws-deploy#586: an issue an open PR already names is the work in progress, so it is not dispatched."""
+
+    def test_open_linking_pr_blocks_an_empty_history_dispatch(self):
+        issue = ready_task("vws-iam", 1)
+        pr = item("vws-iam", 9, is_pr=True, body="Part of #1\n")
+        self.assertEqual(kinds(run(snapshot(issue, pr))), [])
+        self.assertEqual(kinds(run(snapshot(issue))), [("dispatch", "vws-iam#1")],
+                         "without an open linking PR the issue is still dispatched")
+
+    def test_a_reset_does_not_requeue_while_the_pr_is_open(self):
+        reset = {"id": 9, "created_at": ts(1), "body": "/orchestrate reset-failures provider fixed"}
+        issue = ready_task("vws-iam", 1, comments=[dispatch(1, "vws-iam", 1, 5),
+                                                    report(2, "vws-iam", 1, 1, "Failed", 4), reset])
+        pr = item("vws-iam", 9, is_pr=True, body="Part of #1\n")
+        self.assertEqual(kinds(run(snapshot(issue, pr))), [])
+        self.assertEqual(kinds(run(snapshot(issue))), [("dispatch", "vws-iam#1")],
+                         "a reset still requeues an issue no open PR names")
+
+    def test_only_a_visible_link_in_an_open_pr_counts(self):
+        issue = ready_task("vws-iam", 1)
+        cases = {
+            "closed PR": item("vws-iam", 9, is_pr=True, state="closed", body="Part of #1\n"),
+            "keyword in an HTML comment": item("vws-iam", 9, is_pr=True, body="<!-- Part of #1 -->\n"),
+            "another issue": item("vws-iam", 9, is_pr=True, body="Part of #2\n"),
+        }
+        for name, pr in cases.items():
+            with self.subTest(name):
+                self.assertEqual(kinds(run(snapshot(issue, pr))), [("dispatch", "vws-iam#1")])
+
+    def test_slot_handout_refuses_a_stale_linked_entry(self):
+        # Defense in depth: a queue entry built before the PR opened never gets a slot.
+        rule = next(r for r in orch.rules.RULES if r.NAME == "dispatch")
+        stale = {"actions": [], "notes": [],
+                 "queue": [(2, ts(9), "vws-iam", 1, "vws-iam#1", 0, "vws-iam#1")],
+                 "in_flight": [], "slots_used": 0}
+        snap = snapshot(item("vws-iam", 1, labels=("ready", "deepseek")),
+                        item("vws-iam", 9, is_pr=True, body="Part of #1\n"))
+        with mock.patch.object(rule, "triage", return_value=stale):
+            r = rule.decide(snap, {}, CFG, NOW)
+        self.assertEqual(r["actions"], [])
+        self.assertEqual(r["notes"], [{"kind": "open_pr_linked", "target": "vws-iam#1"}])
+
+
 def with_repo(snap, name):
     snap["repos"].append({"name": name, "archived": False})
     return snap

@@ -120,6 +120,15 @@ class Rework(unittest.TestCase):
         d = dispatches(run(issue, pr))
         self.assertEqual([(a["target"], a["owner"]) for a in d], [("vws-iam#140", "vws-iam#7")])
 
+    def test_open_part_of_pr_is_reworked_not_redispatched(self):
+        # vws-deploy#586: the open PR that names the issue is the work in progress, so its FAIL is
+        # reworked while the issue itself gets no new dispatch.
+        pr = item("vws-iam", 140, is_pr=True, body="Part of #7\n", labels=("deepseek",))
+        pr["reviews"] = [review(9, pr, "CHANGES_REQUESTED", 1)]
+        issue = ready_task("vws-iam", 7, 20)
+        d = dispatches(run(issue, pr))
+        self.assertEqual([(a["target"], a["owner"]) for a in d], [("vws-iam#140", "vws-iam#7")])
+
     def test_pr_blocked_or_grok_is_not_reworked_for_its_issue(self):
         for label in ("blocked", "grok"):
             with self.subTest(label=label):
