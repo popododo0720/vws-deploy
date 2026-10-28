@@ -148,11 +148,13 @@ func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
 	if err := srv.s.editable(); err != nil {
+		srv.mu.Unlock()
 		return err
 	}
 	roles := srv.s.steps[stepIndex("roles")].raw
+	srv.mu.Unlock()
+
 	raws, fields := splitCR(cr, srv.apiVersion, roles)
 	if raws == nil {
 		return fail(ReasonValidationFailed, "the CR is not a VWSCluster", fields...)
@@ -164,13 +166,23 @@ func (srv *Server) postCR(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if srv.s.steps[stepIndex("roles")].status != StepValid {
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if err := srv.s.editable(); err != nil {
+		return err
+	}
+	// The draft may have changed while the node lookup ran: use the roles saved now.
+	ri := stepIndex("roles")
+	if srv.s.steps[ri].status != StepValid {
 		roles, err = json.Marshal(defaultRoles(nodes))
 		if err != nil {
 			return fail(ReasonInternal, "default roles: "+err.Error())
 		}
-		raws["roles"] = roles
+	} else {
+		roles = srv.s.steps[ri].raw
 	}
+	raws["roles"] = roles
 	for i, s := range Steps {
 		srv.s.steps[i] = step{status: StepPending, raw: raws[s.Name]}
 	}
