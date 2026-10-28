@@ -167,6 +167,21 @@ else
 fi
 if grep -q $'^kubectl\tdelete' "$VWS_FAKE_LOG"; then bad "no CRD is deleted" "$(calls)"; else ok "no CRD is deleted"; fi
 
+# #384: a cluster with many CRDs returns a list larger than one argv argument can hold (MAX_ARG_STRLEN,
+# 32 pages: 128 KiB with 4 KiB pages, 2 MiB with 64 KiB pages). vws_crd_current keeps it off argv; on
+# argv the python3 exec fails with E2BIG and apply applies CRDs the cluster already has.
+installer_scenario large-crds
+python3 - "${VWS_FAKE_DIR}/kubectl/get_crd.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["items"][0].setdefault("metadata", {}).setdefault("annotations", {})["vws-test-padding"] = "x" * 3000000
+json.dump(data, open(path, "w"))
+PY
+run_vws_real apply --unattended;                 expect_rc "apply with a CRD list over the argv limit exits 0" 0
+applies=$(grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG")
+if [[ $applies -eq 3 ]]; then ok "a large current CRD list is not applied again"; else bad "large current CRD list" "$applies applies"; fi
+
 # #144: apply -f FILE saves the file as the CR first (vws init --from), then applies; twice is unchanged.
 EX="${VWS_TEST_ROOT}/examples/vwscluster"
 installer_scenario same
