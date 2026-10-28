@@ -138,5 +138,74 @@ class VerifyCheckParity(unittest.TestCase):
                          {"verify-gate", "gate / verify-gate", "vws-verify", "needs-verify"})
 
 
+class CheckIdentity(unittest.TestCase):
+    """vws-deploy#368: a same-named passing job in another workflow must not hide a failing one."""
+
+    @staticmethod
+    def cr(rid, conclusion, suite, workflow, started):
+        return {"id": rid, "name": "test", "app_id": 15368, "status": "completed", "conclusion": conclusion,
+                "check_suite": {"id": suite}, "workflow": workflow, "started_at": started}
+
+    def runs(self, second_workflow):
+        return {"check_runs": [
+            self.cr(1, "failure", 10, ".github/workflows/a.yml@pull_request", "2026-10-28T01:00:00Z"),
+            self.cr(2, "success", 11, second_workflow, "2026-10-28T02:00:00Z")], "total_count": 2}
+
+    def test_failure_in_another_workflow_is_not_hidden(self):
+        runs = self.runs(".github/workflows/b.yml@pull_request")
+        self.assertEqual(orch.ci_verdict(runs, {"statuses": []}), "failing")
+        self.assertEqual(orch.pr_ci(runs, {"statuses": []}), ("red", False))
+
+    def test_rerun_in_the_same_workflow_supersedes(self):
+        runs = self.runs(".github/workflows/a.yml@pull_request")
+        self.assertEqual(orch.ci_verdict(runs, {"statuses": []}), "ok")
+        self.assertEqual(orch.pr_ci(runs, {"statuses": []}), ("green", False))
+
+
+class CiReads(unittest.TestCase):
+    """ci_reads annotates a name collision with the workflow map, and only then pays for the extra GET."""
+
+    SHA = "a" * 40
+
+    class Gh:
+        def __init__(self, checks, fail_map=False):
+            self.calls, self.checks, self.fail_map = [], checks, fail_map
+
+        def get(self, path):
+            self.calls.append(path)
+            if path.endswith("/check-runs?per_page=100"):
+                return {"check_runs": self.checks}, None
+            if path.endswith("/status"):
+                return {"statuses": []}, None
+            if self.fail_map:
+                raise orch.GhError(500, "workflow map read failed")
+            return {"workflow_runs": [{"check_suite_id": 10, "path": ".github/workflows/a.yml", "event": "pull_request"},
+                                      {"check_suite_id": 11, "path": ".github/workflows/b.yml", "event": "pull_request"}]}, None
+
+    @staticmethod
+    def cr(rid, conclusion, suite):
+        return {"id": rid, "name": "test", "status": "completed", "conclusion": conclusion,
+                "app": {"id": 15368}, "check_suite": {"id": suite}, "started_at": f"2026-10-28T0{suite - 9}:00:00Z"}
+
+    def test_collision_maps_suites_to_workflows(self):
+        gh = self.Gh([self.cr(1, "failure", 10), self.cr(2, "success", 11)])
+        runs, _ = orch.ci_reads(gh, "vws-deploy", self.SHA)
+        self.assertEqual([r["workflow"] for r in runs["check_runs"]],
+                         [".github/workflows/a.yml@pull_request", ".github/workflows/b.yml@pull_request"])
+        self.assertEqual(orch.pr_ci(runs, {"statuses": []}), ("red", False))
+        self.assertIn(f"repos/popododo0720/vws-deploy/actions/runs?head_sha={self.SHA}&per_page=100", gh.calls)
+
+    def test_a_single_suite_needs_no_workflow_map(self):
+        gh = self.Gh([self.cr(1, "success", 10)])
+        runs, _ = orch.ci_reads(gh, "vws-deploy", self.SHA)
+        self.assertEqual(len(gh.calls), 2)
+        self.assertNotIn("workflow", runs["check_runs"][0])
+
+    def test_a_failed_workflow_map_keeps_the_failure_blocking(self):
+        gh = self.Gh([self.cr(1, "failure", 10), self.cr(2, "success", 11)], fail_map=True)
+        runs, _ = orch.ci_reads(gh, "vws-deploy", self.SHA)
+        self.assertEqual(orch.pr_ci(runs, {"statuses": []}), ("red", False))
+
+
 if __name__ == "__main__":
     unittest.main()

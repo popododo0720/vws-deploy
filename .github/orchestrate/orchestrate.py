@@ -84,8 +84,8 @@ from orchestrate_rules.common import (  # noqa: E402
     ACTIONS_APP_ID, AC_ISSUE_BOX_RE, AC_TICK_LABELS, DEFAULTS, EXCLUSIONS_KEY, MANAGED_LABELS, MERGEABLE_OK,
     NEEDS_VERIFY, OPT_OUT_LABELS, PART_OF_HINT, PART_OF_RE, STATUS_EVENT_KEY_RE, STATUS_REPO, URL_RE, VERIFY_CHECK,
     ac_boxes, ac_own_ticks, ac_recoverable, ac_tick_body, classify_comment, grok_allowlist, grok_busy, grok_held,
-    grok_link, grok_owners, head_check_reasons, iso, num, parse_ac, parse_deps, rework_prs, run_state, scrub,
-    status_target, utc, vws_pr_key, wake_target,
+    grok_link, grok_owners, head_check_reasons, iso, latest_runs, num, parse_ac, parse_deps, rework_prs, run_order,
+    run_state, scrub, status_target, utc, vws_pr_key, wake_target,
 )
 # Compat: orch.X keeps naming every helper and constant that moved into rules/ (tests, .github/metrics and
 # .github/verify read them through this file). Definitions below this line win.
@@ -748,13 +748,9 @@ def decide(snapshot, state, now, cfg, exclusions, call_order=None):
 # ---------------------------------------------------------------- collect
 
 def ci_verdict(runs, status):
-    """'failing' when the newest run of any non-verify check failed or a commit status failed."""
-    latest = {}
-    for r in (runs or {}).get("check_runs", []):
-        if r.get("name") in VERIFY_CHECKS:
-            continue
-        if r.get("name") not in latest or r.get("id", 0) > latest[r["name"]].get("id", 0):
-            latest[r["name"]] = r
+    """'failing' when the newest run of any non-verify check in any workflow failed or a commit status
+    failed. check_key keeps a same-named job in another workflow from hiding the failed one."""
+    latest = latest_runs([r for r in (runs or {}).get("check_runs", []) if r.get("name") not in VERIFY_CHECKS])
     if any(r.get("conclusion") in CI_BAD_CONCLUSIONS for r in latest.values()):
         return "failing"
     for st in (status or {}).get("statuses", []):
@@ -763,24 +759,49 @@ def ci_verdict(runs, status):
     return "ok"
 
 
+def same_name_suites(check_runs):
+    """True when one (name, app id) pair has check runs in more than one suite: a re-run or another workflow."""
+    suite = {}
+    for r in check_runs or []:
+        sid = (r.get("check_suite") or {}).get("id")
+        if sid is None:
+            continue
+        key = (r.get("name"), r.get("app_id"))
+        if key in suite and suite[key] != sid:
+            return True
+        suite[key] = sid
+    return False
+
+
 def ci_reads(gh, repo, sha):
     runs, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/check-runs?per_page=100")
     status, _ = gh.get(f"repos/{OWNER}/{repo}/commits/{sha}/status")
+    checks = [r for r in (runs or {}).get("check_runs", []) if isinstance(r, dict)]
+    for r in checks:
+        r["app_id"] = (r.get("app") or {}).get("id")
+        r["suite_id"] = (r.get("check_suite") or {}).get("id")
+    if same_name_suites(checks):
+        try:
+            wruns, _ = gh.get(f"repos/{OWNER}/{repo}/actions/runs?head_sha={sha}&per_page=100")
+        except (GhError, PermissionError):
+            wruns = {}  # unmapped suites keep their own key, so a failed run still blocks
+        workflow = {w["check_suite_id"]: f'{w.get("path") or w.get("workflow_id")}@{w.get("event")}'
+                    for w in (wruns or {}).get("workflow_runs", []) if w.get("check_suite_id")}
+        for r in checks:
+            r["workflow"] = workflow.get((r.get("check_suite") or {}).get("id"))
     return runs, status
 
 
 def pr_ci(runs, status):
     """(green | pending | red, vws-verify check failed) for one PR head, as verify-queue.yml decides it: the
-    newest run per check name, verify checks excluded; skipped and neutral count as green; no checks at all,
-    or a truncated page, is pending (never green). Pure."""
+    newest run per workflow and check name, verify checks excluded; skipped and neutral count as green; no
+    checks at all, or a truncated page, is pending (never green). Pure."""
     runs = runs if isinstance(runs, dict) else {}
-    latest = {}
-    for r in runs.get("check_runs", []):
-        if r.get("name") not in latest or r.get("id", 0) > latest[r["name"]].get("id", 0):
-            latest[r["name"]] = r
-    v = latest.get(VERIFY_CHECK)
+    latest = latest_runs(runs.get("check_runs", []))
+    vs = [r for (name, _app, _s), r in latest.items() if name == VERIFY_CHECK]
+    v = max(vs, key=run_order) if vs else None
     verify_failed = bool(v and v.get("status") == "completed" and v.get("conclusion") == "failure")
-    states = {run_state(r) for name, r in latest.items() if name not in VERIFY_CHECKS}
+    states = {run_state(r) for (name, _app, _s), r in latest.items() if name not in VERIFY_CHECKS}
     for st in (status if isinstance(status, dict) else {}).get("statuses", []):
         if st.get("context") in VERIFY_CHECKS:
             continue
