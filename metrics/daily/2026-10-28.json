@@ -1,0 +1,866 @@
+{
+ "alerts": [
+  {
+   "count": 95,
+   "items": [
+    {
+     "idle_hours": 130.7,
+     "target": "vws-compute#34"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-compute#96"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-compute#97"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-compute#109"
+    },
+    {
+     "idle_hours": 99.9,
+     "target": "vws-compute#126"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-conformance#16"
+    },
+    {
+     "idle_hours": 170.1,
+     "target": "vws-conformance#23"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-conformance#28"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-conformance#29"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-conformance#30"
+    },
+    {
+     "idle_hours": 99.9,
+     "target": "vws-conformance#34"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#64"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#65"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#67"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#77"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#80"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#86"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#93"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#99"
+    },
+    {
+     "idle_hours": 130.7,
+     "target": "vws-console#101"
+    }
+   ],
+   "kind": "stall",
+   "threshold_hours": 48
+  }
+ ],
+ "archived_skipped": [
+  "vws-hypervisor"
+ ],
+ "ci": {
+  "by_repo": {
+   "vws-compute": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 7
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 4
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    }
+   },
+   "vws-console-api": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 6
+    },
+    "verify-queue": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    }
+   },
+   "vws-deploy": {
+    "ci": {
+     "failure": 1,
+     "failure_rate": 0.071,
+     "success": 13
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 6
+    },
+    "drift-check": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    },
+    "installer-image": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 8
+    },
+    "installer-publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 6
+    }
+   },
+   "vws-network": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    }
+   },
+   "vws-proto": {
+    "buf": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 2
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 1
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 3
+    }
+   },
+   "vws-storage": {
+    "ci": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 27
+    },
+    "direct-push-watch": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 5
+    },
+    "english": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 18
+    },
+    "publish": {
+     "failure": 0,
+     "failure_rate": 0.0,
+     "success": 4
+    }
+   }
+  },
+  "failure": 1,
+  "failure_rate": 0.008,
+  "separate": {
+   "vws-compute": {
+    "repo-guard": {
+     "failure": 5,
+     "failure_rate": 0.833,
+     "success": 1
+    }
+   },
+   "vws-console-api": {
+    "repo-guard": {
+     "failure": 7,
+     "failure_rate": 1.0,
+     "success": 0
+    }
+   },
+   "vws-deploy": {
+    "repo-guard": {
+     "failure": 15,
+     "failure_rate": 0.714,
+     "success": 6
+    }
+   },
+   "vws-network": {
+    "repo-guard": {
+     "failure": 3,
+     "failure_rate": 0.75,
+     "success": 1
+    }
+   },
+   "vws-proto": {
+    "repo-guard": {
+     "failure": 3,
+     "failure_rate": 0.75,
+     "success": 1
+    }
+   },
+   "vws-storage": {
+    "repo-guard": {
+     "failure": 18,
+     "failure_rate": 0.783,
+     "success": 5
+    }
+   }
+  },
+  "success": 127
+ },
+ "codex": {
+  "blocking_sum": 2,
+  "merged_prs_with_codex": 6,
+  "rounds_declared": 0,
+  "verify_reports": 16
+ },
+ "content_sha256": "sha256:82887dc929f6a2d9f3b6884f5e025f238cbff55bb988bdd9191f307425d52ba6",
+ "day": "2026-10-28",
+ "deepseek": {
+  "by_repo": {
+   "vws-compute": {
+    "dispatched": 2,
+    "done": 2
+   },
+   "vws-console-api": {
+    "dispatched": 2,
+    "done": 2
+   },
+   "vws-deploy": {
+    "dispatched": 7,
+    "done": 8
+   },
+   "vws-network": {
+    "dispatched": 1,
+    "done": 1
+   },
+   "vws-proto": {
+    "dispatched": 1,
+    "done": 1
+   },
+   "vws-storage": {
+    "dispatched": 6,
+    "done": 6
+   }
+  },
+  "dispatched": 19,
+  "dispatched_by_orchestrator": 19,
+  "done": 20,
+  "duplicate_reports": 0,
+  "excluded": 0,
+  "failed": 0,
+  "infra": 0,
+  "timeout": 0
+ },
+ "generated_at": "2026-10-28T15:25:03Z",
+ "grok_swaps": {
+  "by_orchestrator": 1,
+  "labeled": 1
+ },
+ "lead_time_hours": {
+  "all": {
+   "max": 1.29,
+   "median": 0.85,
+   "n": 14,
+   "p90": 1.1
+  },
+  "by_repo": {
+   "vws-compute": {
+    "max": 0.88,
+    "median": 0.88,
+    "n": 1,
+    "p90": 0.88
+   },
+   "vws-deploy": {
+    "max": 1.02,
+    "median": 0.84,
+    "n": 6,
+    "p90": 1.02
+   },
+   "vws-network": {
+    "max": 0.81,
+    "median": 0.81,
+    "n": 1,
+    "p90": 0.81
+   },
+   "vws-proto": {
+    "max": 0.89,
+    "median": 0.89,
+    "n": 1,
+    "p90": 0.89
+   },
+   "vws-storage": {
+    "max": 1.29,
+    "median": 0.64,
+    "n": 5,
+    "p90": 1.29
+   }
+  }
+ },
+ "orchestrator": {
+  "apply_failed": 0,
+  "failed_ticks": 0,
+  "failure_alerts": 0,
+  "gh_get": 27628,
+  "gh_not_modified": 24077,
+  "gh_write": 186,
+  "modes": {
+   "apply": 120
+  },
+  "rate_low": 0,
+  "ticks": 120
+ },
+ "parked": 147,
+ "prs": {
+  "by_agent": {
+   "merged": {
+    "deepseek-dev": 1,
+    "unattributed": 13
+   },
+   "opened": {
+    "deepseek-dev": 1,
+    "unattributed": 21
+   }
+  },
+  "closed_unmerged": {
+   "vws-compute": 2,
+   "vws-deploy": 3,
+   "vws-network": 1,
+   "vws-storage": 2
+  },
+  "merged": {
+   "vws-compute": {
+    "unattributed": 1
+   },
+   "vws-deploy": {
+    "unattributed": 6
+   },
+   "vws-network": {
+    "unattributed": 1
+   },
+   "vws-proto": {
+    "unattributed": 1
+   },
+   "vws-storage": {
+    "deepseek-dev": 1,
+    "unattributed": 4
+   }
+  },
+  "opened": {
+   "vws-compute": {
+    "unattributed": 3
+   },
+   "vws-console-api": {
+    "unattributed": 1
+   },
+   "vws-deploy": {
+    "unattributed": 9
+   },
+   "vws-network": {
+    "unattributed": 1
+   },
+   "vws-proto": {
+    "unattributed": 1
+   },
+   "vws-storage": {
+    "deepseek-dev": 1,
+    "unattributed": 6
+   }
+  },
+  "totals": {
+   "closed_unmerged": 8,
+   "merged": 14,
+   "opened": 22
+  }
+ },
+ "queue_depth": {
+  "blocked": 2,
+  "deepseek": 88,
+  "grok": 148,
+  "in-review": 1,
+  "priority/blocker": 0,
+  "ready": 1,
+  "verify_backlog": 16
+ },
+ "release": "dev",
+ "repos": [
+  "vws-compute",
+  "vws-conformance",
+  "vws-console",
+  "vws-console-api",
+  "vws-deploy",
+  "vws-iam",
+  "vws-lib",
+  "vws-network",
+  "vws-proto",
+  "vws-storage"
+ ],
+ "schema": 1,
+ "snapshot_at": "2026-10-28T15:25:03Z",
+ "source_gaps": [
+  "no token-usage input for this day"
+ ],
+ "stalls": [
+  {
+   "idle_hours": 130.7,
+   "target": "vws-compute#34"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-compute#96"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-compute#97"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-compute#109"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-compute#126"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-conformance#16"
+  },
+  {
+   "idle_hours": 170.1,
+   "target": "vws-conformance#23"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-conformance#28"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-conformance#29"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-conformance#30"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-conformance#34"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#64"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#65"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#67"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#77"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#80"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#86"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#93"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#99"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#101"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console#102"
+  },
+  {
+   "idle_hours": 93.2,
+   "target": "vws-console#105"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-console#107"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#33"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#92"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#94"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#170"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#172"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#178"
+  },
+  {
+   "idle_hours": 129.1,
+   "target": "vws-console-api#182"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#184"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#187"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#192"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#193"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#197"
+  },
+  {
+   "idle_hours": 128.2,
+   "target": "vws-console-api#202"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#209"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#212"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#215"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#222"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#232"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#233"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#234"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#235"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#243"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#244"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#246"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#247"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#250"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#251"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#270"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#271"
+  },
+  {
+   "idle_hours": 128.2,
+   "target": "vws-console-api#272"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#283"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#289"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-console-api#301"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-console-api#370"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#62"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#189"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#193"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#202"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#212"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-deploy#246"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#276"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#279"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#305"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#320"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#323"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#325"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#357"
+  },
+  {
+   "idle_hours": 130.8,
+   "target": "vws-deploy#377"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-iam#111"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-iam#119"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-iam#120"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-iam#130"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-iam#132"
+  },
+  {
+   "idle_hours": 93.6,
+   "target": "vws-iam#145"
+  },
+  {
+   "idle_hours": 100.0,
+   "target": "vws-iam#147"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-lib#19"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-lib#26"
+  },
+  {
+   "idle_hours": 100.0,
+   "target": "vws-lib#50"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-network#116"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-network#122"
+  },
+  {
+   "idle_hours": 93.4,
+   "target": "vws-network#127"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-network#129"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-proto#15"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-proto#36"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-proto#52"
+  },
+  {
+   "idle_hours": 92.7,
+   "target": "vws-proto#62"
+  },
+  {
+   "idle_hours": 100.0,
+   "target": "vws-proto#64"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-storage#36"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-storage#96"
+  },
+  {
+   "idle_hours": 130.7,
+   "target": "vws-storage#119"
+  },
+  {
+   "idle_hours": 93.6,
+   "target": "vws-storage#136"
+  },
+  {
+   "idle_hours": 99.9,
+   "target": "vws-storage#140"
+  }
+ ],
+ "timezone": "Asia/Seoul (UTC+9)",
+ "tokens": null,
+ "verify": {
+  "approved_labels": 14,
+  "failure": 0,
+  "first_pass": 14,
+  "first_pass_n": 14,
+  "first_pass_rate": 1.0,
+  "pass_rate": 1.0,
+  "runs": 14,
+  "success": 14
+ },
+ "wakes": {
+  "dispatches": {
+   "deepseek": 19,
+   "grok": 3
+  },
+  "lead_wakes": 1,
+  "rework_dispatches": 2,
+  "verify_wake_comments": 8
+ },
+ "window_utc": [
+  "2026-10-27T15:00:00Z",
+  "2026-10-28T15:00:00Z"
+ ]
+}
