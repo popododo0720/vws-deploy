@@ -307,13 +307,23 @@ class Queue(unittest.TestCase):
                 r = run(pr)
                 self.assertEqual(reworks(r), [])
                 self.assertEqual([n["reason"] for n in notes(r, "ci_fail_skipped")], [name])
-        for label in ("needs-human", "blocked"):
-            with self.subTest(label):
-                pr = ds_pr(extra=(label,))
-                pr["comments"].append(ci(40, pr, 1))
-                r = run(pr)
-                self.assertEqual(reworks(r), [])
-                self.assertEqual([n["reason"] for n in notes(r, "ci_fail_skipped")], [label])
+        pr = ds_pr(extra=("needs-human",))
+        pr["comments"].append(ci(40, pr, 1))
+        r = run(pr)
+        self.assertEqual(reworks(r), [])
+        self.assertEqual([n["reason"] for n in notes(r, "ci_fail_skipped")], ["needs-human"])
+        # A blocked PR is not a rework target at all, so there is no skip note (vws-deploy#376).
+        blocked = ds_pr(extra=("blocked",))
+        blocked["comments"].append(ci(40, blocked, 1))
+        self.assertEqual(reworks(run(blocked)), [])
+        self.assertEqual(notes(run(blocked), "ci_fail_skipped"), [])
+        # blocked on the issue still skips its PR with a note.
+        issue = ready_task("vws-iam", 251, 20, extra=("blocked",))
+        open_pr = item("vws-iam", 253, is_pr=True, body="Part of #251")
+        open_pr["comments"].append(ci(40, open_pr, 1))
+        r = run(issue, open_pr)
+        self.assertEqual(reworks(r), [])
+        self.assertEqual([n["reason"] for n in notes(r, "ci_fail_skipped")], ["blocked"])
 
     def test_cap_recomputed_from_comments(self):
         pr = ds_pr()
