@@ -627,16 +627,22 @@ def head_verdict(pr):
 def rework_prs(k, it, items):
     """Open PRs a ready+deepseek item owns: the item itself when it is a PR, else the open vws PRs its
     DeepSeek reports named, then (vws-deploy#457) open PRs whose `Part of` names it and whose owner
-    resolves to deepseek. A PR that is itself a ready+deepseek item is reworked on its own."""
+    resolves to deepseek. A PR that is itself a ready+deepseek item is reworked on its own. A PR labeled
+    `blocked` or `grok` is not reworked, even when its issue is eligible (vws-deploy#376)."""
+    def target(pk):
+        p = items.get(pk) or {}
+        return (p.get("is_pr") and p.get("state") == "open"
+                and not ({"blocked", "grok"} & set(p.get("labels") or [])))
+
     if not {"ready", "deepseek"} <= set(it["labels"]) or "grok" in it["labels"]:
         return []
     if it["is_pr"]:
-        return [k]
+        return [k] if target(k) else []
     keys = [vws_pr_key(u) for u, p in sorted(it.get("report_prs", {}).items()) if p.get("state") == "open"]
-    out = [pk for pk in keys if pk and items.get(pk, {}).get("is_pr") and items[pk]["state"] == "open"]
+    out = [pk for pk in keys if pk and target(pk)]
     for pk in sorted(items):
         p = items[pk]
-        if (pk not in out and p["is_pr"] and p["state"] == "open" and grok_link(p) == k
+        if (pk not in out and target(pk) and grok_link(p) == k
                 and not {"ready", "deepseek"} <= set(p["labels"]) and pr_owner(p, items)[0] == "deepseek"):
             out.append(pk)
     return out
