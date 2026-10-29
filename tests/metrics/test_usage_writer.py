@@ -1,7 +1,7 @@
-"""The daily usage writer (vws-deploy#410, #543): metrics.py writes lead_wakes into the daily usage file
-from the orchestrator's lead-wake comments on the wake thread, reads it back, and SUMMARY.md shows it.
-A marker from another login is ignored. tokens has no deterministic source (#557), so the writer never
-writes by_agent and tokens stays null, never 0.
+"""The daily usage writer (vws-deploy#410, #543, #557): metrics.py writes lead_wakes into the daily usage
+file from the orchestrator's lead-wake comments on the wake thread, and DeepSeek's by_agent counts from
+the poller's dsh job output, reads both back, and SUMMARY.md shows them. A marker from another login is
+ignored. A day without that source leaves tokens null, never 0.
 Run: python3 -m unittest discover -s tests/metrics"""
 import contextlib
 import io
@@ -83,6 +83,61 @@ class Count(unittest.TestCase):
                 self.assertIsNone(metrics.lead_wakes_from_github(self.raw(), dict(CFG, ORCHESTRATE_WAKE_THREAD=bad)))
 
 
+class DeepseekUsage(unittest.TestCase):
+    """The poller's dsh job output is the DeepSeek daily token source (vws-deploy#557)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = self.tmp.name
+        self.start, self.end = metrics.kst_day_window(DAY)
+
+    def job(self, job_id, *records):
+        path = os.path.join(self.dir, job_id + ".dsh.out")
+        with open(path, "w") as f:
+            for record in records:
+                f.write(record if isinstance(record, str) else json.dumps(record))
+                f.write("\n")
+        return path
+
+    @staticmethod
+    def step(total):
+        return {"type": "status", "phase": "step_end",
+                "usage": {"inputTokens": total, "outputTokens": 0, "totalTokens": total}}
+
+    def test_sums_the_steps_of_jobs_started_in_the_kst_day(self):
+        self.job("20261020-000000-vws-deploy-1-ic1", self.step(10), self.step(5))
+        self.job("20261020-145959-vws-deploy-2-ic2", self.step(7))
+        self.job("20261019-145959-vws-deploy-3-ic3", self.step(1000))  # 23:59:59 KST the day before
+        self.job("20261020-150000-vws-deploy-4-ic4", self.step(1000))  # 00:00 KST the next day
+        self.assertEqual(metrics.read_dsh_usage(self.dir, self.start, self.end), {"deepseek": 22})
+
+    def test_no_source_is_none_never_zero(self):
+        self.assertIsNone(metrics.read_dsh_usage(os.path.join(self.dir, "missing"), self.start, self.end))
+        self.assertIsNone(metrics.read_dsh_usage("", self.start, self.end))
+        self.assertIsNone(metrics.read_dsh_usage(self.dir, self.start, self.end), "no job in the day")
+        self.job("20261020-000000-vws-deploy-1-ic1", {"type": "session", "sessionId": "s"})
+        self.assertIsNone(metrics.read_dsh_usage(self.dir, self.start, self.end), "no step_end measured")
+
+    def test_a_measured_zero_is_a_real_zero(self):
+        self.job("20261020-000000-vws-deploy-1-ic1", self.step(0))
+        self.assertEqual(metrics.read_dsh_usage(self.dir, self.start, self.end), {"deepseek": 0})
+
+    def test_an_unreadable_job_file_is_no_source(self):
+        os.makedirs(os.path.join(self.dir, "20261020-000000-vws-deploy-1-ic1.dsh.out"))
+        self.assertIsNone(metrics.read_dsh_usage(self.dir, self.start, self.end))
+
+    def test_ignores_error_lines_and_records_outside_step_end(self):
+        self.job("20261020-000000-vws-deploy-1-ic1",
+                 "dsh: RATE_LIMIT: 429",
+                 {"type": "session", "sessionId": "s"},
+                 {"type": "status", "phase": "turn_start", "turn": 1},
+                 {"type": "status", "phase": "step_end", "usage": {"totalTokens": 9}},
+                 "[1, 2]",
+                 {"type": "status", "phase": "step_end", "usage": {"totalTokens": True}})
+        self.assertEqual(metrics.read_dsh_usage(self.dir, self.start, self.end), {"deepseek": 9})
+
+
 class Write(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -100,11 +155,26 @@ class Write(unittest.TestCase):
         self.assertIsNone(metrics.read_tokens(self.path), "no by_agent: tokens stay null, never 0")
         self.assertEqual(metrics.read_lead_wakes(self.path), 3)
 
+    def test_by_agent_is_written_and_read_back(self):
+        self.assertTrue(metrics.write_usage(self.path, 3, {"deepseek": 15}))
+        self.assertEqual(self.read(), {"lead_wakes": 3, "by_agent": {"deepseek": 15}})
+        self.assertEqual(metrics.read_tokens(self.path), {"total": 15, "by_agent": {"deepseek": 15}})
+
+    def test_by_agent_alone_writes_the_file(self):
+        self.assertTrue(metrics.write_usage(self.path, None, {"deepseek": 15}))
+        self.assertEqual(self.read(), {"by_agent": {"deepseek": 15}})
+        self.assertIsNone(metrics.read_lead_wakes(self.path))
+
     def test_rerun_is_idempotent(self):
-        metrics.write_usage(self.path, 3)
+        metrics.write_usage(self.path, 3, {"deepseek": 15})
         before = (text(self.path), os.stat(self.path).st_mtime_ns)
-        self.assertFalse(metrics.write_usage(self.path, 3))
+        self.assertFalse(metrics.write_usage(self.path, 3, {"deepseek": 15}))
         self.assertEqual((text(self.path), os.stat(self.path).st_mtime_ns), before)
+
+    def test_a_missing_token_source_keeps_the_existing_by_agent(self):
+        metrics.write_usage(self.path, 3, {"deepseek": 15})
+        self.assertTrue(metrics.write_usage(self.path, 4, None))
+        self.assertEqual(self.read(), {"lead_wakes": 4, "by_agent": {"deepseek": 15}})
 
     def test_keeps_by_agent_from_another_writer(self):
         os.makedirs(os.path.dirname(self.path))
@@ -159,6 +229,26 @@ class Runtime(Env):
         md = self.summary_md()
         self.assertIn("lead wakes: 2 (1 days with input); tokens per merged PR: - (0 days with input).", md)
         self.assertIn("metrics_usage_written", self.events())
+
+    def test_a_dsh_job_supplies_the_token_total(self):
+        jobs = os.path.join(self.tmp, "jobs")
+        os.makedirs(jobs)
+        with open(os.path.join(jobs, "20261020-000000-vws-deploy-7-ic7.dsh.out"), "w") as f:
+            f.write(json.dumps({"type": "status", "phase": "step_end", "usage": {"totalTokens": 15}}) + "\n")
+        self.assertEqual(self.publish(ORCHESTRATE_WAKE_THREAD="339", METRICS_DSH_JOB_DIR=jobs), 0)
+        with open(self.usage()) as f:
+            self.assertEqual(json.load(f), {"lead_wakes": 2, "by_agent": {"deepseek": 15}})
+        d = self.daily()
+        self.assertEqual(d["tokens"], {"total": 15, "by_agent": {"deepseek": 15}})
+        self.assertNotIn("no token-usage input for this day", d["source_gaps"])
+        md = self.summary_md()
+        cols = [c.strip() for c in next(line for line in md.splitlines()
+                                        if line.startswith("| day |")).strip("|").split("|")]
+        row = [c.strip() for c in next(line for line in md.splitlines()
+                                       if line.startswith(f"| {DAY} |")).strip("|").split("|")]
+        self.assertEqual(row[cols.index("tokens")], "15", "the tokens column is the day total, not a dash")
+        self.assertIn("(1 days with input)", md)
+        self.assertEqual([e for e in self.log() if e["event"] == "metrics_usage_written"][-1]["tokens"], 15)
 
     def test_rerun_rewrites_nothing(self):
         self.publish(ORCHESTRATE_WAKE_THREAD="339")
