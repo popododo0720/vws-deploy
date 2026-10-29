@@ -22,9 +22,17 @@ def check(cid, name, sha, conclusion="success", app=15368, status="completed"):
     return {"id": cid, "name": name, "app_id": app, "status": status, "conclusion": conclusion, "head_sha": sha}
 
 
+GATE_SUITE = 5005
+
+
 def green_checks(sha):
     return [check(1, "lint", sha), check(2, "pr-hygiene", sha), check(3, "verify-reset", sha, "skipped"),
-            check(4, "vws-verify", sha, app=5313004), check(5, "verify-gate", sha)]
+            check(4, "vws-verify", sha, app=5313004), gate(5, sha)]
+
+
+def gate(cid, sha, conclusion="success", wf=".github/workflows/repo-guard.yml@pull_request", **kw):
+    """A verify-gate run whose check suite maps to the workflow file wf (path@event), as merge_info records it."""
+    return dict(check(cid, "verify-gate", sha, conclusion, **kw), workflow=wf)
 
 
 def candidate(repo="vws-deploy", number=500, labels=("verify-approved",), body="Part of #346\n\nAgent: vws-platform",
@@ -174,7 +182,8 @@ class Eligibility(unittest.TestCase):
             ("verify-gate from another app", no_gate + [check(9, "verify-gate", sha, app=1)], "verify_gate_missing"),
             ("verify-gate on an older head", no_gate + [check(9, "verify-gate", "f" * 40)], "verify_gate_missing"),
             ("verify-gate failed in another workflow", [dict(c, suite_id=1) for c in green_checks(sha)]
-             + [dict(check(9, "verify-gate", sha, "failure"), suite_id=2)], "verify_gate_failure"),
+             + [dict(gate(9, sha, "failure", wf=".github/workflows/other.yml@pull_request"), suite_id=2)],
+             "verify_gate_failure"),
         ]
         for name, checks, want in cases:
             with self.subTest(name):
@@ -183,6 +192,35 @@ class Eligibility(unittest.TestCase):
                 self.assertIn(want, reasons(r, "vws-deploy#500"))
         r = run(snap(candidate(), merge=unrequired))
         self.assertEqual(merges(r), ["vws-deploy#500"], "verify-gate success and everything else OK merges")
+
+    def test_verify_gate_tied_to_repo_guard_workflow(self):
+        # vws-deploy#402: a verify-gate job a PR adds in a workflow file of its own is not the gate. A passing run
+        # must come from .github/workflows/repo-guard.yml; the Actions app id alone is not enough.
+        sha = candidate()["head_sha"]
+        no_gate = [c for c in green_checks(sha) if c["name"] != "verify-gate"]
+        cases = [
+            ("only a PR-added workflow", no_gate + [gate(9, sha, wf=".github/workflows/evil.yml@pull_request")]),
+            ("same file name in another directory", no_gate + [gate(9, sha, wf="x/.github/workflows/repo-guard.yml@pull_request")]),
+            ("repo-guard.yml as a prefix", no_gate + [gate(9, sha, wf=".github/workflows/repo-guard.yml.evil@pull_request")]),
+            ("suite not mapped to a workflow", no_gate + [check(9, "verify-gate", sha)]),
+        ]
+        for name, checks in cases:
+            with self.subTest(name):
+                for required in (REQUIRED, [q for q in REQUIRED if q["context"] != "verify-gate"]):
+                    r = run(snap(candidate(info={"checks": checks}), merge={"vws-deploy": ctx(required=required)}))
+                    self.assertEqual(merges(r), [], name)
+                    self.assertIn("verify_gate_not_repo_guard", reasons(r, "vws-deploy#500"))
+        # A failing PR-added gate next to the real one still blocks (every Actions verify-gate run must pass).
+        checks = green_checks(sha) + [dict(gate(9, sha, "failure", wf=".github/workflows/evil.yml@pull_request"), suite_id=2)]
+        r = run(snap(candidate(info={"checks": checks})))
+        self.assertEqual(merges(r), [])
+        self.assertIn("verify_gate_failure", reasons(r, "vws-deploy#500"))
+        self.assertNotIn("verify_gate_not_repo_guard", reasons(r, "vws-deploy#500"))
+        # The real gate on either event of repo-guard.yml merges.
+        for wf in (".github/workflows/repo-guard.yml@pull_request", ".github/workflows/repo-guard.yml@pull_request_target"):
+            with self.subTest(wf):
+                r = run(snap(candidate(info={"checks": no_gate + [gate(9, sha, wf=wf)]})))
+                self.assertEqual(merges(r), ["vws-deploy#500"], wf)
         self.assertEqual(reasons(r, "vws-deploy#500"), [])
 
     def test_status_cannot_stand_in_for_an_app_bound_check(self):
@@ -206,7 +244,7 @@ class Eligibility(unittest.TestCase):
 
     def test_rerun_and_skipped_helpers_are_fine(self):
         sha = candidate()["head_sha"]
-        checks = green_checks(sha) + [check(0, "verify-gate", sha, "failure"), check(6, "verify-rerun", sha, "skipped")]
+        checks = green_checks(sha) + [gate(0, sha, "failure"), check(6, "verify-rerun", sha, "skipped")]
         self.assertEqual(merges(run(snap(candidate(info={"checks": checks})))), ["vws-deploy#500"],
                          "an older failed verify-gate run is superseded by the newer success")
 
@@ -227,7 +265,7 @@ class Eligibility(unittest.TestCase):
     def test_actions_rerun_in_new_suite_same_workflow(self):
         # An Actions re-run gets a new check suite; the same workflow makes the newest run decide.
         sha = candidate()["head_sha"]
-        wf = ".github/workflows/verify-gate.yml"
+        wf = ".github/workflows/repo-guard.yml@pull_request"
         old = dict(check(10, "verify-gate", sha, "failure"), suite_id=1, workflow=wf, started_at="2026-10-22T01:00:00Z")
         new = dict(check(11, "verify-gate", sha), suite_id=2, workflow=wf, started_at="2026-10-22T02:00:00Z")
         base = [c for c in green_checks(sha) if c["name"] != "verify-gate"]
@@ -463,7 +501,13 @@ def routes(labels=("verify-approved",), head="1" * 40):
                                                    title="ci: change", labels=issue["labels"], body=issue["body"])}
     runs = [{"id": c["id"], "name": c["name"], "app": {"id": c["app_id"]}, "status": c["status"],
              "conclusion": c["conclusion"], "head_sha": c["head_sha"]} for c in green_checks(head)]
+    for x in runs:
+        if x["name"] == "verify-gate":  # its suite maps to repo-guard.yml (vws-deploy#402)
+            x["check_suite"] = {"id": GATE_SUITE}
     r[f"{O}/vws-deploy/commits/{head}/check-runs"] = {"body": {"total_count": len(runs), "check_runs": runs}}
+    r[f"{O}/vws-deploy/actions/runs?head_sha={head}&per_page=100"] = {"body": {"total_count": 1, "workflow_runs": [
+        {"id": 2, "workflow_id": 8, "check_suite_id": GATE_SUITE, "path": ".github/workflows/repo-guard.yml",
+         "event": "pull_request", "status": "completed", "conclusion": "success"}]}}
     r[f"{O}/vws-deploy/commits/{head}/status"] = {"body": {"statuses": []}}
     # vws-verify's PASS on the head, behind verify-approved (vws-deploy#487 keeps the label only with it).
     if "verify-approved" in labels:
