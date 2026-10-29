@@ -54,7 +54,8 @@ class Env(unittest.TestCase):
         self.calls_file = os.path.join(self.tmp, "calls.jsonl")
         self.state = os.path.join(self.tmp, "state")
         self.env = {"ORCHESTRATE_STATE_DIR": self.state, "ORCHESTRATE_CONFIG_DIR": os.path.join(self.tmp, "config"),
-                    "ORCHESTRATE_EXTRA_REPOS": ""}
+                    "ORCHESTRATE_EXTRA_REPOS": "",
+                    "METRICS_DSH_JOB_DIR": os.path.join(self.tmp, "no-dsh-jobs")}
         patch = mock.patch.dict(os.environ, {"PATH": self.bin + os.pathsep + os.environ["PATH"],
                                              "STUB_ROUTES": self.routes_file, "STUB_LOG": self.calls_file,
                                              "GH_TOKEN": "ghp_should_never_be_used_123"})

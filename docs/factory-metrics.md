@@ -57,7 +57,7 @@ are `.github/drift/repos.tsv` plus `ORCHESTRATE_EXTRA_REPOS`, and archived repos
 | `orchestrator` | ticks, failed ticks, `apply_failed`, `rate_low`, failure alerts and gh read/304/write totals from the orchestrator log. `null` when the log does not reach back to the start of D (`source_gaps`) |
 | `stalls` | open tasks (labelled `ready`, `deepseek`, `grok` or `in-review`, not `blocked`, not parked) and open non-draft PRs on main without `verify-approved` whose `updated_at` is at least `STALL_HOURS` before `snapshot_at`: `[{target, idle_hours}]`. Snapshot only, like `queue_depth` |
 | `parked` | vws-deploy#463. Open issues (not PRs) that wait by design, so they are not stalls: an opt-out label (`do-not-merge`, `hold`, `blocked`) or `needs-human`; or `grok` with no `deepseek`, no assignee and not on `ORCHESTRATE_GROK_ALLOWLIST` (Rule G never assigns them; an assignee holds a Grok slot, so an assigned issue can still stall). Snapshot only, like `stalls`; `null` for a back-filled day. The snapshot keeps each issue's assignee count, never the logins |
-| `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0. No usage source exists yet, so this stays null (vws-deploy#557) |
+| `tokens` | `{total, by_agent}` from the daily usage input (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when there is none, never 0. `by_agent` comes from the DeepSeek poller's dsh job output (vws-deploy#557) |
 | `wakes` | vws-deploy#400. `verify_wake_comments`: comments created in D whose first line is `<!-- vws-orchestrate:verify-wake -->` (the verify-wake thread, `ORCHESTRATE_WAKE_THREAD`). `dispatches.deepseek`: the same number as `deepseek.dispatched` (comments starting with `@deepseek-dev`, reworks included). `dispatches.grok`: comments created in D that carry an orchestrator marker in `GROK_DISPATCH_MARKERS` (the Rule C swap notice `<!-- orchestrate:swap -->` and the grok wake last line `<!-- orchestrate:grok-wake item=... -->`, vws-deploy#378). `rework_dispatches`: comments created in D with `<!-- orchestrate:rework head=`. `lead_wakes`: from the daily usage input, which metrics.py itself fills from GitHub comments by the orchestrator login only (see [Daily usage input](#daily-usage-input)); `null` and a `source_gaps` entry when absent |
 | `alerts` | the anomalies found for D (empty on a normal day) |
 | `queue_depth` | open items per label (`ready`, `deepseek`, `grok`, `blocked`, `in-review`, `priority/blocker`) and `verify_backlog` (open non-draft PRs on main without `verify-approved`). A live snapshot taken when the day is computed (`snapshot_at`), so only for yesterday. A back-filled day has `null` |
@@ -94,7 +94,7 @@ The thresholds are constants at the top of `metrics.py`, each tested at and just
 | `ci_failure_rate` | `ci` failure / (success + failure) | rate rule below |
 | `deepseek_failure_rate` | (failed + timeout) / (done + failed + timeout) | rate rule below |
 | `grok_escalation_rate` | `grok` labels added / DeepSeek dispatches | rate rule below |
-| `token_spike` | the day's tokens are at least `TOKEN_SPIKE_RATIO = 3.0` times the median of the baseline days with token data, and at least `TOKEN_MIN_DAILY = 1000000` | `BASELINE_MIN_DAYS` |
+| `token_spike` | the day's DeepSeek tokens are at least `TOKEN_SPIKE_RATIO = 3.0` times the median of the baseline days with token data, and at least `TOKEN_MIN_DAILY = 1000000` | `BASELINE_MIN_DAYS` |
 
 Rate rule: the baseline is the pooled rate over the `BASELINE_DAYS = 7` days before D (never later
 days). It needs at least `BASELINE_MIN_DAYS = 3` such days and at least `RATE_MIN_EVENTS = 5` events
@@ -107,15 +107,15 @@ file), the day is still published but no alert comment is posted and the webhook
 `metrics_suppressed` and keeps the alert in `pending_alerts`. The first run after RESUME posts every held
 alert once, oldest day first. See [STOP and RESUME](factory-orchestrator.md#stop-and-resume-vws-deploy521).
 
-**Token-usage input.** See [Daily usage input](#daily-usage-input). Without it, `tokens` is `null`
-and no token alert is raised.
+**Token-usage input.** See [Daily usage input](#daily-usage-input). Without the DeepSeek job output,
+`tokens` is `null` and no token alert is raised.
 
 ### Daily usage input
 
 GitHub has no token counts and does not see the lead's wakes, so both come from one optional file
 per KST day: `$METRICS_TOKEN_DIR/YYYY-MM-DD.json` (default
-`metrics-input/tokens/YYYY-MM-DD.json` under the state directory, `ORCHESTRATE_STATE_DIR`). Whoever runs an agent
-can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
+`metrics-input/tokens/YYYY-MM-DD.json` under the state directory, `ORCHESTRATE_STATE_DIR`). `metrics.py`
+fills the fields that have a source before it reads the file; a later write needs `--recompute D`.
 
 ```json
 {"by_agent": {"<agent>": <tokens>}, "lead_wakes": <wakes>}
@@ -127,7 +127,7 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
   invalid: `null`, never 0.
 - Each key is read on its own: a file with only `lead_wakes` leaves `tokens` `null`.
 
-**Writer (vws-deploy#410).** `metrics.py` writes the file itself, in `run_day`, before it reads it:
+**Writer (vws-deploy#410, #557).** `metrics.py` writes the file itself, in `run_day`, before it reads it:
 
 - `lead_wakes`: the comments on the wake thread (`ORCHESTRATE_WAKE_THREAD` in vws-deploy) created in D whose
   first line is `<!-- vws-orchestrate:lead-wake -->` and whose author is the orchestrator login
@@ -136,23 +136,39 @@ can write it before `METRICS_TIME` on D+1 (a later write needs `--recompute D`).
   comment per lead wake (rule L, see [factory-orchestrator.md](factory-orchestrator.md)) and dr eggbot's
   routine fires on it. The count comes from the issue comments the run already reads, so it costs no extra
   gh call.
+- `by_agent`: the DeepSeek jobs of D, from the poller's dsh job output (below). `deepseek` is the only
+  agent with a deterministic usage source, so `tokens.total` is DeepSeek tokens only. Other agents are
+  absent from `by_agent`, not 0.
 - It runs once per day, when the loop's `--if-due` publishes D, and again only on `--date D` or
-  `--recompute D`. It writes only for a day that is over, never from `--fixture`, and only when the wake
-  thread is set; otherwise `lead_wakes` stays `null` (`metrics_usage_skipped`).
-- It sets `lead_wakes` and keeps every other key, so a `by_agent` written by someone else stays. The same
-  count writes nothing (`metrics_usage_unchanged`); a new count replaces the old one
-  (`metrics_usage_written`). A file that is not a JSON object is left alone (`metrics_usage_refused`).
-- `tokens` has no deterministic source: GitHub has no token counts and no agent writes a usage log the
-  loop can read. The writer never writes `by_agent`, so `tokens` stays `null` and `SUMMARY.md` shows `-`,
-  never 0, until a real daily usage source exists (vws-deploy#557).
+  `--recompute D`. It writes only for a day that is over, never from `--fixture`. A day with neither a
+  lead-wake source nor DeepSeek job output writes nothing (`metrics_usage_skipped`).
+- It sets the keys that have a source and keeps every other key, so a `by_agent` written by someone else
+  stays. The same values write nothing (`metrics_usage_unchanged`); a changed value replaces the old one
+  (`metrics_usage_written`, with the token total in the event). A file that is not a JSON object is left
+  alone (`metrics_usage_refused`).
+- `tokens` stays `null` and `SUMMARY.md` shows `-`, never 0, when there is no source for the day: the
+  job directory is unset or absent, no job started in D, or a job file cannot be read. Job output with
+  no `step_end` record is also `null` (no measurement). A recorded step with 0 tokens is a real 0.
 - Where it runs: inside the orchestrator loop, wherever `orchestrate-loop.sh` runs with `METRICS_ENABLED=1`
   (since 2026-10-22 the `vws-orchestrate.service` on the deepseek-dev VM; the box loop is disabled). The
   loop auto-updates from `main`, so nothing is installed by hand. The wake thread must be set in the
   loop's env file (`ORCHESTRATE_WAKE_THREAD=339`), as rule A and the lead wake already need.
 
+**DeepSeek job usage (vws-deploy#557).** The poller writes one `.dsh.out` file per job under its
+`DSM_LOG_DIR/jobs` directory, which the loop reads as `METRICS_DSH_JOB_DIR` (default
+`/root/work/logs/jobs`). The poller and the loop run on the same deepseek-dev VM. The file is JSON lines;
+each `{"type": "status", "phase": "step_end"}` line carries that step's `usage.totalTokens`. The job id
+starts with the job's UTC start time (`YYYYMMDD-HHMMSS-...`), so a job belongs to one KST day, the day of
+its start. `metrics.py` sums the `step_end` totals of the jobs that start in D and writes
+`{"by_agent": {"deepseek": <sum>}}`. It reads local files only: no gh call, no new process and no bot
+poll. A missing directory, a job file that cannot be read, or no `step_end` record leaves `tokens`
+`null`; it never becomes 0 for a day without a measurement. A job that started in D and is still running
+when the day is computed contributes the steps it has written so far; `--recompute D` after it ends
+replaces the day with the full count.
+
 `SUMMARY.md` adds, for the last 7 and 28 days, the verify wakes, DeepSeek and grok dispatches,
-reworks and lead wakes, and tokens per merged PR (the sum of `tokens.total` over the days with token
-input, divided by the PRs merged on those days). A total over no day with input is `-`, never 0;
+reworks and lead wakes, and tokens per merged PR (the sum of the DeepSeek `tokens.total` over the days
+with token input, divided by the PRs merged on those days). A total over no day with input is `-`, never 0;
 this holds for every 7/28-day total, including a window with no daily file. When only some days in
 the window have a `wakes` block (days written before vws-deploy#400 have none), the verify-wake,
 grok-dispatch and rework totals are followed by `(N days with data)`.
@@ -229,7 +245,9 @@ Env file keys (`/home/box/.config/vws-orchestrate/env`):
 - `METRICS_TIME=00:20`;
 - `METRICS_BACKFILL_DAYS=7`;
 - `METRICS_MAX_GETS=1500`;
-- `METRICS_TOKEN_DIR` (optional daily usage input; `metrics.py` writes `lead_wakes` there).
+- `METRICS_DSH_JOB_DIR=/root/work/logs/jobs` (the DeepSeek poller's dsh job output; `metrics.py` writes
+  `by_agent` from it);
+- `METRICS_TOKEN_DIR` (optional daily usage input; `metrics.py` writes `lead_wakes` and `by_agent` there).
 
 `ORCHESTRATE_RATE_FLOOR`, `ORCHESTRATE_EXTRA_REPOS`, `ORCHESTRATE_STATUS_ISSUE`, `DEEPSEEK_TIMEOUT_HOURS`,
 `ORCHESTRATE_WAKES`, `ORCHESTRATE_DISPATCH` and the `STOP` file are shared with the orchestrator.
