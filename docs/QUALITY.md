@@ -71,7 +71,9 @@ The gate records that a verdict was posted. It cannot prove who judged it.
   vws-deploy `repo-guard-<job>.yml` files, but a PR can still edit the caller and its pin;
   drift-check flags that on open PR heads and the default branch, after the push, also in
   repos still on the full copy and in any other workflow file
-  (docs/design/repo-guard-reusable.md). The `vws-main` ruleset requires a pull request and
+  (docs/design/repo-guard-reusable.md). The orchestrator's merge rule counts a `verify-gate`
+  run only when its check suite belongs to `.github/workflows/repo-guard.yml`, so a
+  `verify-gate` job a PR adds in another workflow file cannot stand in for the gate (#402). The `vws-main` ruleset requires a pull request and
   the `verify-gate` check, with no bypass actors, but it cannot judge a workflow the PR
   changes. The remaining control is a person reviewing the `.github/` and `scripts/` diff.
 - **Bypass actors are visible only to an admin.** The scheduled drift check runs with
