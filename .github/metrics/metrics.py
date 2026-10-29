@@ -57,6 +57,7 @@ FAIL_EXIT, REFUSE_EXIT = 4, 5
 VERIFY_APP_ID = 5313004  # the vws-verify GitHub App; its check run is named vws-verify
 GENERATOR_TRAILER = "Metrics-Generator: vws-metrics"
 DAILY_SUBJECT_RE = re.compile(r"^metrics: daily [0-9]{4}-[0-9]{2}-[0-9]{2}$")
+DSH_JOB_RE = re.compile(r"^([0-9]{8})-([0-9]{6})-.*\.dsh\.out$")  # the poller's job id starts with its UTC start
 INIT_SUBJECT = "metrics: start the factory-metrics branch"
 AGENT_RE = re.compile(r"(?im)^Agent:[ \t]*([A-Za-z0-9._-]{1,40})[ \t]*$")
 CODEX_ROUNDS_RE = re.compile(r"(?i)Codex review, ([0-9]+) rounds?")
@@ -92,6 +93,7 @@ DEFAULTS = {
     "METRICS_TIME": "00:20",
     "METRICS_BACKFILL_DAYS": "7",
     "METRICS_MAX_GETS": "1500",
+    "METRICS_DSH_JOB_DIR": "/root/work/logs/jobs",
 }
 
 # ---------------------------------------------------------------- allowlist
@@ -689,6 +691,45 @@ def alert_webhook(environ, log, summary, comment_url, opener=None, sleep=None):
     return False
 
 
+def read_dsh_usage(job_dir, start, end):
+    """DeepSeek token usage from the poller's dsh job output for the UTC window [start, end)
+    (vws-deploy#557). Each <job id>.dsh.out line is one JSON event; a step_end event carries that step's
+    usage, and the job id starts with the poller's UTC start time, which puts the whole job in one KST day.
+    Returns the by_agent mapping read_tokens accepts. None when the directory is unset or absent, no job
+    started in the window, no step_end was recorded, or a job file cannot be read: no source, so never 0."""
+    if not job_dir or not os.path.isdir(job_dir):
+        return None
+    total, jobs, steps = 0, 0, 0
+    for path in sorted(glob.glob(os.path.join(job_dir, "*.dsh.out"))):
+        m = DSH_JOB_RE.match(os.path.basename(path))
+        if not m:
+            continue
+        try:
+            started = dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        if not start <= started.timestamp() < end:
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type") != "status" or rec.get("phase") != "step_end":
+                        continue
+                    usage = rec.get("usage")
+                    n = usage.get("totalTokens") if isinstance(usage, dict) else None
+                    if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+                        total += n
+                        steps += 1
+        except OSError:
+            return None
+        jobs += 1
+    return {"deepseek": total} if jobs and steps else None
+
+
 def read_tokens(path):
     """Optional token-usage input: {"by_agent": {"<agent>": <int tokens>}}. None when absent or invalid."""
     data = orch.read_json(path, None)
@@ -726,13 +767,12 @@ def lead_wakes_from_github(raw, cfg):
                and c["body"].split("\n", 1)[0].strip() == orch.LEAD_WAKE_MARKER and orch.tr.own_comment(c))
 
 
-def write_usage(path, lead_wakes):
-    """The daily usage writer (vws-deploy#410): set "lead_wakes" in the usage file, keeping every other key
-    (by_agent belongs to whoever reports tokens; this writer has no token source and never writes it,
-    so tokens stay null, never 0, until #557).
-    Returns True when the file changed, False when nothing was written (no value, or the same value: a rerun
-    writes nothing), None when the existing file is not a JSON object (left alone)."""
-    if lead_wakes is None:
+def write_usage(path, lead_wakes, by_agent=None):
+    """The daily usage writer (vws-deploy#410, #557): set "lead_wakes" and/or "by_agent" in the usage file,
+    keeping every other key. A value that is None has no source today, so the existing key is kept and is
+    never replaced by 0. Returns True when the file changed, False when nothing was written (no value, or the
+    same value: a rerun writes nothing), None when the existing file is not a JSON object (left alone)."""
+    if lead_wakes is None and by_agent is None:
         return False
     try:
         with open(path, encoding="utf-8") as f:
@@ -743,9 +783,15 @@ def write_usage(path, lead_wakes):
         return None
     if not isinstance(data, dict):
         return None
-    if data.get("lead_wakes") == lead_wakes and type(data["lead_wakes"]) is int:
+    changed = False
+    if lead_wakes is not None and (data.get("lead_wakes") != lead_wakes or type(data["lead_wakes"]) is not int):
+        data["lead_wakes"] = lead_wakes
+        changed = True
+    if by_agent is not None and data.get("by_agent") != by_agent:
+        data["by_agent"] = by_agent
+        changed = True
+    if not changed:
         return False
-    data["lead_wakes"] = lead_wakes
     orch.write_json(path, data)
     return True
 
@@ -944,16 +990,19 @@ def run_day(ctx, gh, log, args, day, now, recompute=False):
     exclusions = orch.load_exclusions(os.path.join(HERE, "..", "orchestrate", "exclusions.tsv"))
     usage = os.path.join(ctx.token_dir, f"{day}.json")
     if not args.fixture:
-        # The daily usage writer (vws-deploy#410): lead_wakes from GitHub, once the day is over. A fixture
-        # never writes it, and a day still running would get a partial count.
+        # The daily usage writer (vws-deploy#410, #557): lead_wakes from GitHub and DeepSeek tokens from the
+        # poller's dsh job output, once the day is over. A fixture never writes it, and a day still running
+        # would get a partial count.
         lead = lead_wakes_from_github(raw, cfg) if now >= end else None
-        if lead is None:
-            log("metrics_usage_skipped", day=day, reason="day not over" if now < end else "ORCHESTRATE_WAKE_THREAD unset "
-                "or vws-deploy not collected: lead_wakes stays null")
+        by_agent = read_dsh_usage(cfg["METRICS_DSH_JOB_DIR"], start, end) if now >= end else None
+        if lead is None and by_agent is None:
+            log("metrics_usage_skipped", day=day, reason="day not over" if now < end else
+                "no lead-wake source and no DeepSeek job usage: lead_wakes and tokens stay null")
         else:
-            changed = write_usage(usage, lead)
+            changed = write_usage(usage, lead, by_agent)
             event = {True: "metrics_usage_written", False: "metrics_usage_unchanged"}.get(changed, "metrics_usage_refused")
-            log(event, day=day, path=usage, lead_wakes=lead)
+            log(event, day=day, path=usage, lead_wakes=lead,
+                tokens=None if by_agent is None else sum(by_agent.values()))
     doc = compute(raw, recs, covered, cfg, exclusions, snapshot_at=orch.iso(now) if snap else None,
                   tokens=read_tokens(usage), lead_wakes=read_lead_wakes(usage))
     # History: the published files in apply mode, the local dry-run copies otherwise.
