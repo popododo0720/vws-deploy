@@ -610,6 +610,15 @@ class StaleInReview(unittest.TestCase):
                        report_prs={url: {"state": "open", "merged": False}})
         self.assertEqual(kinds(run(snapshot(t), {})), [])
 
+    def test_done_report_keeps_in_review_after_a_newer_dispatch(self):
+        # The Done PR is still open, so a later dispatch does not make the label stale.
+        url = "https://github.com/popododo0720/vws-iam/pull/9"
+        done = [dispatch(1, "vws-iam", 1, 20), report(2, "vws-iam", 1, 1, "Done", 19, pr=url),
+                dispatch(3, "vws-iam", 1, 1)]
+        t = ready_task("vws-iam", 1, comments=done, extra=("in-review",),
+                       report_prs={url: {"state": "open", "merged": False}})
+        self.assertEqual(kinds(run(snapshot(t), {})), [])
+
     def test_open_part_of_keeps_label_after_the_report_pr_merged(self):
         url = "https://github.com/popododo0720/vws-iam/pull/8"
         done = [dispatch(1, "vws-iam", 1, 9), report(2, "vws-iam", 1, 1, "Done", 8, pr=url)]
