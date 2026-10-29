@@ -153,7 +153,9 @@ def rework_plan(k, it, items, since):
 def stale_in_review_actions(items, actions, linked, now, cfg, exclusions):
     """Remove in-review from an open issue that no open PR names, even with no ownership journal.
     A Done report whose PR is still open keeps the label: that PR may not say Part of yet, and the
-    next tick would add the label back. A pull request's own in-review label is left alone (vws-deploy#560)."""
+    next tick would add the label back. Any such report counts, not only the latest dispatch, because
+    a later dispatch does not close the earlier PR. A pull request's own in-review label is left alone
+    (vws-deploy#560)."""
     planned = {a["target"] for a in actions if a.get("type") == "remove_label" and a.get("label") == "in-review"}
     out = []
     for k in sorted(items):
@@ -163,8 +165,7 @@ def stale_in_review_actions(items, actions, linked, now, cfg, exclusions):
         if k in linked or k in planned:
             continue
         hist = dispatch_history(it, now, cfg, exclusions)
-        latest = hist[-1] if hist else None
-        if latest and latest["outcome"] == "review":
+        if any(h["outcome"] == "review" for h in hist):
             continue
         out.append({"type": "remove_label", "target": k, "label": "in-review",
                     "reason": "no open Part of, Closes or Fixes PR"})
