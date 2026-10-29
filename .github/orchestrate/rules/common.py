@@ -81,6 +81,9 @@ CHECK_OK = {"success", "neutral", "skipped"}
 OPT_OUT_LABELS = ("do-not-merge", "hold", "blocked")
 # repo-guard / verify-gate must pass on the head by name, even when main's protection does not list it.
 GATE_CHECK = "verify-gate"
+# ...and one passing run must come from this workflow file (vws-deploy#402): the GitHub Actions app id alone
+# would also accept a verify-gate job that a PR adds in a workflow file of its own.
+GATE_WORKFLOW = ".github/workflows/repo-guard.yml"
 # GitHub's own verdict (REST mergeable_state = GraphQL mergeStateStatus) must be clean: it already counts
 # main's protection and rulesets, which the PAT cannot read (vws-deploy#408). Anything else never merges.
 MERGEABLE_OK = {"clean"}
@@ -387,6 +390,11 @@ def run_state(r):
     return "ok" if r.get("conclusion") in CHECK_OK else "failed"
 
 
+def gate_from_repo_guard(r):
+    """True when the run's check suite maps to GATE_WORKFLOW (key "<path>@<event>"). An unmapped suite fails closed."""
+    return (r.get("workflow") or "").rpartition("@")[0] == GATE_WORKFLOW
+
+
 def head_check_reasons(info, required):
     """Why the PR head's checks do not allow a merge ([] = they do). Pure.
     info: {"head_sha", "checks": [{"id", "name", "app_id", "suite_id", "status", "conclusion", "head_sha"}],
@@ -404,7 +412,9 @@ def head_check_reasons(info, required):
     bad_gates = [r for r in gates if r.get("status") != "completed" or r.get("conclusion") != "success"]
     if not gates:
         reasons.append("verify_gate_missing")
-    elif bad_gates:
+    elif not [r for r in gates if gate_from_repo_guard(r)]:
+        reasons.append("verify_gate_not_repo_guard")
+    if gates and bad_gates:
         g = max(bad_gates, key=run_order)
         reasons.append("verify_gate_pending" if g.get("status") != "completed" else f"verify_gate_{g.get('conclusion')}")
     if info.get("checks_truncated"):
