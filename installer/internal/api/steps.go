@@ -299,7 +299,11 @@ var storageDrivers = []StorageOption{
 }
 
 func storageOptions([]cluster.Node) any {
-	return map[string]any{"drivers": storageDrivers, "volumeTypes": EBSVolumeTypes, "volumeModes": []string{"Block", "Filesystem"}}
+	return map[string]any{
+		"drivers":     storageDrivers,
+		"volumeTypes": EBSVolumeTypes,
+		"volumeModes": []string{"Block", "Filesystem"},
+	}
 }
 
 func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
@@ -341,7 +345,10 @@ func checkVolumeTypes(v Storage) []FieldError {
 		return nil
 	}
 	if v.Driver == "nfs" {
-		return []FieldError{{Field: "spec.storage.volumeTypes", Code: "unsupported", Message: "not for driver nfs; nfs serves every type from vws-nfs"}}
+		return []FieldError{{
+			Field: "spec.storage.volumeTypes", Code: "unsupported",
+			Message: "not for driver nfs; nfs serves every type from vws-nfs",
+		}}
 	}
 	keys := make([]string, 0, len(v.VolumeTypes))
 	for k := range v.VolumeTypes {

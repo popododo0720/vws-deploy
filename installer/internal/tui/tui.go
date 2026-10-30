@@ -339,7 +339,7 @@ func askVolumeTypes(t *TUI, names []string) (map[string]any, error) {
 	}
 	if !slices.Contains([]string{"yes", "y"}, strings.ToLower(answer)) {
 		t.printf("  EBS volume types: not mapped (spec.storage.volumeTypes left out)\n")
-		return nil, nil
+		return map[string]any{}, nil
 	}
 	types := map[string]any{}
 	for _, name := range names {

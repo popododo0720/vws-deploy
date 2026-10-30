@@ -156,7 +156,8 @@ func TestWizardLeavesVolumeTypesOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "EBS volume types: not mapped") || len(fc.crs) != 1 || strings.Contains(string(fc.crs[0]), "volumeTypes") {
+	if !strings.Contains(out, "EBS volume types: not mapped") || len(fc.crs) != 1 ||
+		strings.Contains(string(fc.crs[0]), "volumeTypes") {
 		t.Fatalf("skipping the mapping changed the CR %s:\n%s", fc.crs, out)
 	}
 }
