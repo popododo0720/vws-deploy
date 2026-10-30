@@ -376,8 +376,8 @@ run_vws_real render "${EX}/ha.yaml"; expect_rc "a missing output argument exits 
 # every profile, and the CR, the chart schema and check_render.py refuse any other count.
 for profile in single-node small ha; do
   got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/profiles/${profile}.yaml" --set services.network.flags.pool=198.18.0.0/24 |
-    python3 -c 'import sys,yaml; print([d["spec"]["replicas"] for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api"])')
-  expect_text "console-api: ${profile} renders one replica" "$got" "[1]"
+    python3 -c 'import sys,yaml; print([(d["spec"]["replicas"], d["spec"].get("strategy")) for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api"])')
+  expect_text "console-api: ${profile} renders one replica that is replaced, not surged" "$got" "[(1, {'type': 'Recreate'})]"
 done
 python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); d["spec"]["services"]["console-api"]["replicas"]=4; yaml.safe_dump(d,sys.stdout)' "${EX}/ha.yaml" >"${WORK}/ca4.yaml"
 run_vws_real render "${WORK}/ca4.yaml" "${WORK}/x.yaml";  expect_rc "console-api: a CR with replicas 4 exits 2" 2
@@ -398,6 +398,8 @@ import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 two = [dict(d, spec=dict(d["spec"], replicas=2)) if d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api" else d for d in docs]
 yaml.safe_dump_all(two, open(sys.argv[1] + ".two", "w"))
+rolling = [dict(d, spec=dict(d["spec"], strategy={"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}})) if d["kind"] == "Deployment" and d["metadata"]["name"] == "console-api" else d for d in docs]
+yaml.safe_dump_all(rolling, open(sys.argv[1] + ".rolling", "w"))
 hpa = {"apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler", "metadata": {"name": "console-api", "namespace": "vws"},
        "spec": {"scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "console-api"}, "maxReplicas": 3}}
 yaml.safe_dump_all(docs + [hpa], open(sys.argv[1] + ".hpa", "w"))
@@ -405,6 +407,8 @@ PY
 cp "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/ca-values.yaml"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.two" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1 || true)
 expect_text "console-api: check_render refuses two replicas" "$out" "R4: Deployment console-api must have exactly one replica: sessions are held in memory"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.rolling" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1 || true)
+expect_text "console-api: check_render refuses maxSurge 1" "$out" "R4: Deployment console-api must use Recreate, not two pods at once"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml.hpa" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1 || true)
 expect_text "console-api: check_render refuses an HPA" "$out" "R10: kind HorizontalPodAutoscaler is not a control-plane object"
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/ca.yaml" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/ca-values.yaml" 2>&1) && ok "console-api: the default render passes check_render" || bad "default render" "$out"

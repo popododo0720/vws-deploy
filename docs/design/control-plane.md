@@ -24,9 +24,13 @@ Publish work from a branch. `git push origin main` is refused by `.githooks/pre-
 
 The public control-plane type is `charts/vws/values.schema.json`. Callers set `global.registry`, `global.storageClass`, and a map of services. Each service may set `port`, `replicas`, `cpu`, `memory`, `state.size`, `external`, and `startupSeconds`. Workload kind, probes, disruption budgets, restart policy, image tags, and volume retention are derived. Volume-claim labels are only the stable selector, because claim templates cannot change on upgrade. The startup probe's failure threshold covers the full `startupSeconds` window. A service name cannot end in `-agent` or `-peers`.
 
-`charts/vws/templates/control-plane.yaml` is the only document emitter. It ranges the services map. `templates/_helpers.tpl` owns the pod body, including probes and `restartPolicy: Always`. A service with `state` becomes a StatefulSet (`replicas` maximum 1, `podManagementPolicy: Parallel`, `persistentVolumeClaimRetentionPolicy` Retain, ReadWriteOnce claim mounted at `/var/lib/vws`). A service without `state` becomes a Deployment with at least two replicas and `maxUnavailable: 0`. Every workload gets a PodDisruptionBudget with `maxUnavailable: 1`. The schema rejects unknown fields, an agent-shaped service name, a second replica on a volume, and a single replica on a stateless service.
+`charts/vws/templates/control-plane.yaml` is the only document emitter. It ranges the services map. `templates/_helpers.tpl` owns the pod body, including probes and `restartPolicy: Always`. A service with `state` becomes a StatefulSet (`replicas` maximum 1, `podManagementPolicy: Parallel`, `persistentVolumeClaimRetentionPolicy` Retain, ReadWriteOnce claim mounted at `/var/lib/vws`). A service without `state` becomes a Deployment with at least two replicas and `maxUnavailable: 0`, except a service with one replica, which uses `Recreate` so a rollout never runs two pods. Every workload gets a PodDisruptionBudget with `maxUnavailable: 1`. The schema rejects unknown fields, an agent-shaped service name, a second replica on a volume, and a single replica on a stateless service.
 
 Interface depth: the caller adds a key. The chart hides the object bundle and the recovery policy. There is no second manifest path and no per-service template to copy.
+
+## One-replica rollout
+
+console-api is the only service the schema allows a single replica. A RollingUpdate with `maxSurge: 1` would run the old and new pod together, and the in-memory sessions would split. The renderer derives `strategy: Recreate` from `replicas: 1`, so the old pod is gone before the new one starts (#279). Rejected: `maxSurge: 0` with `maxUnavailable: 1` (same downtime, two fields to keep right) and a caller-set `strategy` field (a wider values surface for one service).
 
 ## Synthesis decision
 

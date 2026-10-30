@@ -173,10 +173,15 @@ spec:
     matchLabels:
       {{- include "vws.selector" $ctx | nindent 6 }}
   strategy:
+    {{- if eq (int $replicas) 1 }}
+    {{- /* maxSurge 1 on one replica runs two pods and splits console-api sessions (#279). */}}
+    type: Recreate
+    {{- else }}
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+    {{- end }}
   template:
     {{- include "vws.podTemplate" $ctx | nindent 4 }}
 {{- end }}

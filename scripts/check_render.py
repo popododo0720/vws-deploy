@@ -723,14 +723,18 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             if peers is None or (peers.get("spec") or {}).get("clusterIP") != "None":
                 errors.append(f"R4: StatefulSet {name} needs a headless peers Service")
         else:
+            strategy = wspec.get("strategy") or {}
             if name in SINGLE_REPLICA:
                 if wspec.get("replicas") != 1:
                     errors.append(f"R4: Deployment {name} must have exactly one replica: {SINGLE_REPLICA[name]}")
-            elif wspec.get("replicas", 0) < 2:
-                errors.append(f"R4: Deployment {name} needs at least two replicas")
-            rolling = (wspec.get("strategy") or {}).get("rollingUpdate") or {}
-            if rolling.get("maxUnavailable") != 0:
-                errors.append(f"R4: Deployment {name} must keep a ready pod during rollout")
+                if strategy.get("type") != "Recreate" or "rollingUpdate" in strategy:
+                    errors.append(f"R4: Deployment {name} must use Recreate, not two pods at once: {SINGLE_REPLICA[name]}")
+            else:
+                if wspec.get("replicas", 0) < 2:
+                    errors.append(f"R4: Deployment {name} needs at least two replicas")
+                rolling = strategy.get("rollingUpdate") or {}
+                if rolling.get("maxUnavailable") != 0:
+                    errors.append(f"R4: Deployment {name} must keep a ready pod during rollout")
             if any(mount.get("name") == "state" for mount in container.get("volumeMounts") or []):
                 errors.append(f"R4: Deployment {name} must not mount a state volume")
     return errors
@@ -764,6 +768,18 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         _first(broken, "Deployment")["spec"]["template"]["spec"]["hostNetwork"] = True
         if not check(broken, values, release):
             return ["R10: hostNetwork did not fail"]
+        broken = copy.deepcopy(docs)
+        single = next(
+            (doc for doc in broken if doc.get("kind") == "Deployment" and doc["metadata"]["name"] in SINGLE_REPLICA),
+            None,
+        )
+        if single is not None:
+            single["spec"]["strategy"] = {
+                "type": "RollingUpdate",
+                "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+            }
+            if not check(broken, values, release):
+                return ["R4: a single-replica Deployment with maxSurge 1 did not fail"]
 
     stateful_doc = _first(docs, "StatefulSet")
     if stateful_doc is not None:

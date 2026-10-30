@@ -95,8 +95,10 @@ services:
     # spec.version does not move it.
     imageTag: sha-c09cba3
     # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
-    # split them (popododo0720/vws-console-api#95). The schema, check_render.py (R4) and vws render
-    # refuse any other count; the chart has no HPA. Change this only with shared session storage.
+    # split them (popododo0720/vws-console-api#95). A one-replica Deployment is rendered with
+    # strategy Recreate, so a rollout stops the old pod before the new one starts. The schema,
+    # check_render.py (R4) and vws render refuse any other count; the chart has no HPA. Change this
+    # only with shared session storage.
     replicas: 1
     # apiCredentials: env VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and VWS_SECRET_KEY from secretKeyRef of
     # existingSecret (keys console-token, access-key, secret-key) in the release namespace. No
