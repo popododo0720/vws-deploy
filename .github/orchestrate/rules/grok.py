@@ -14,7 +14,7 @@ from trusted_read import (
 )
 
 from .common import (
-    OPT_OUT_LABELS, ac_boxes, ac_partial_idle, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held,
+    OPT_OUT_LABELS, ac_boxes, ac_partial_slice, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held, grok_open_pr,
     grok_link, num, parse_deps, ready_time, reset_time, utc, wake_target,
 )
 
@@ -62,9 +62,11 @@ def ac_partial_key(k, it):
 
 
 def grok_slot_key(k, it, items, key_times):
-    """(wake key, continuation). A partial-idle issue uses ac_partial_key; anything else uses the
-    ordinary grok_wake_key (vws-deploy#545)."""
-    if not it.get("is_pr") and ac_partial_idle(it, items):
+    """(wake key, continuation). An ac-partial issue with boxes still open uses ac_partial_key, also
+    after the woken assignee opens a PR for it: falling back to grok_wake_key there let an older merged
+    PR release the slot while the new PR was still open (vws-deploy#545); anything else uses the
+    ordinary grok_wake_key."""
+    if ac_partial_slice(it):
         return ac_partial_key(k, it), True
     return grok_wake_key(k, it, key_times), False
 
@@ -73,9 +75,12 @@ def grok_release(k, it, items, woken_at, now, timeout_min):
     """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
     grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
     its body is ticked. grok_wake_expired: nothing claimed it (no assignee; no comment, assignment or linked
-    PR after the wake) within timeout_min of the wake. An unread timeline or wake time keeps the slot."""
+    PR after the wake) within timeout_min of the wake. An unread timeline or wake time, or an open PR whose
+    `Part of` names it, keeps the slot."""
     act = it.get("grok_activity")
     if act is None or not woken_at:
+        return "", {}
+    if grok_open_pr(k, items):  # a linked PR still open is work in flight, whatever merged before it
         return "", {}
     t0 = utc(woken_at)
     merged = [p for p in act.get("prs", []) if p.get("merged_at") and utc(p["merged_at"]) > t0]

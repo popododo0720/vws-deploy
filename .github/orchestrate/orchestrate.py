@@ -1794,7 +1794,8 @@ def status_body(snapshot, result, cfg, state, mode, now, failure="", deploy=None
              f"- DeepSeek in flight: {len(in_flight)} of {int(num(cfg, 'ORCHESTRATE_DEEPSEEK_CAP'))}"
              + (": " + ", ".join(in_flight) if in_flight else ""),
              f"- Grok in flight: {len(grok_held_now)} of {int(num(cfg, 'ORCHESTRATE_GROK_CAP'))}"
-             + (": " + ", ".join(grok_held_now) if grok_held_now else "")]
+             + (": " + ", ".join(grok_held_now) if grok_held_now else ""),
+             "- In-flight counts are as of plan time, before this tick's wakes"]
     rebuild = result.get("rebuild", [])
     lines.append(f"- PRs waiting for a rebuild: {len(rebuild)}" + (": " + ", ".join(
         f"{p['target']} ({p['owner'] or 'no Agent: line'}, {p['why']})" for p in rebuild) if rebuild else ""))
