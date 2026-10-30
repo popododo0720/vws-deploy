@@ -9,8 +9,10 @@ import test_runtime
 from orch_testlib import CFG, NOW, U, dispatch, item, orch, report, snapshot
 
 
-def pr(repo, number, body="", title="", hours=100, **kw):
-    return item(repo, number, is_pr=True, body=body, title=title, created_hours_ago=hours, **kw)
+def pr(repo, number, body="", title="", hours=100, author="popododo0720", assoc="OWNER", **kw):
+    it = item(repo, number, is_pr=True, body=body, title=title, created_hours_ago=hours, **kw)
+    it["author"], it["author_assoc"] = author, assoc
+    return it
 
 
 def run(*items, cfg=CFG):
@@ -24,7 +26,7 @@ def closes(r):
 class Rule(unittest.TestCase):
     def test_new_pr_naming_its_source_closes_the_old_pr(self):
         old = pr("vws-iam", 255, body="Part of #171\n")
-        new = pr("vws-iam", 264, body="Part of #171\n\nRework of #255 onto current main `26d4b36`.\n", hours=90)
+        new = pr("vws-iam", 264, body="Part of #171\n\nRework of #255.\n", hours=90)
         r = run(old, new)
         [a] = closes(r)
         self.assertEqual((a["target"], a["source"], a["via"]), ("vws-iam#255", "vws-iam#264", "body"))
@@ -65,13 +67,14 @@ class Rule(unittest.TestCase):
 
     def test_only_the_named_source_is_closed(self):
         old = pr("vws-iam", 255, body="Part of #171\n")
-        newer = pr("vws-iam", 264, body="Rework of #255 onto current main.\n", hours=90)
+        newer = pr("vws-iam", 264, body="Rework of #255.\n", hours=90)
         unrelated = pr("vws-iam", 300, body="Part of #171\n", hours=80)
         self.assertEqual([a["target"] for a in closes(run(old, newer, unrelated))], ["vws-iam#255"])
 
     def test_every_reference_form_vws_verify_reads(self):
-        forms = {"-v2 of #10": 10, "rebuilt of #11": 11, "rebuild of #12": 12, "rework of #13": 13,
-                 "reworked from #14": 14, "supersedes #15": 15, "replaces #16": 16}
+        self.assertEqual(orch.superseded_numbers("ci: rebuild -v2 of #10", ""), [10])
+        forms = {"rebuilt of #11": 11, "rebuild of #12": 12, "rework of #13": 13,
+                 "supersedes #15": 15, "replaces #16": 16}
         self.assertEqual(orch.superseded_numbers("", "\n".join(forms)), sorted(forms.values()))
         self.assertEqual(orch.superseded_numbers("", "Rework of vws-iam#255"), [])
         self.assertEqual(orch.superseded_numbers("", "Part of #171"), [])
@@ -82,23 +85,46 @@ class Rule(unittest.TestCase):
                 self.assertEqual(orch.superseded_numbers("", body), [])
         self.assertEqual(orch.superseded_numbers("", "rework of #255\n"), [255])
 
+    def test_prose_that_mentions_a_pr_is_not_a_claim(self):
+        # vws-verify verdict r1: "This replaces #412's hard-coded list; #412 stays open for AC3." must not
+        # close #412. Only a claim line alone counts, so a title "-vN of #M" is the one in-line form.
+        for body in ("This replaces #412's hard-coded list; #412 stays open for AC3.\n",
+                     "Rework of #255 onto current main.\n", "supersedes #15 for context\n",
+                     "see -v2 of #10\n", "Part of #171\n\nRework of #255 onto main\n"):
+            with self.subTest(body=body):
+                self.assertEqual(orch.superseded_numbers("", body), [])
+        self.assertEqual(orch.superseded_numbers("ci: mention #412 in prose", ""), [])
+
     def test_a_source_that_is_not_an_open_pr_is_never_touched(self):
         issue = item("vws-iam", 255, body="Part of #171\n")
         cases = {
             "missing": [pr("vws-iam", 255, state="closed")],
             "not a PR": [issue],
-            "draft target": [pr("vws-iam", 255, draft=True)],
-            "newer PR closed": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255\n", state="closed")],
-            "newer PR draft": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255\n", draft=True)],
-            "newer PR other base": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255\n", base="release")],
-            "self reference": [pr("vws-iam", 255, body="Rework of #255\n")],
-            "cross repo": [pr("vws-deploy", 255), pr("vws-iam", 264, body="Rework of vws-deploy#255\n")],
-            "older names newer": [pr("vws-iam", 255, body="Rework of #264\n"),
+            "draft target": [pr("vws-iam", 255, draft=True),
+                             pr("vws-iam", 264, body="Rework of #255.\n", hours=90)],
+            "wake thread": [pr("vws-deploy", 339), pr("vws-deploy", 340, body="Rework of #339.\n", hours=90)],
+            "status issue": [pr("vws-deploy", 415), pr("vws-deploy", 416, body="Rework of #415.\n", hours=90)],
+            "newer PR closed": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255.\n", state="closed")],
+            "newer PR draft": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255.\n", draft=True)],
+            "newer PR other base": [pr("vws-iam", 255), pr("vws-iam", 264, body="Rework of #255.\n", base="release")],
+            "self reference": [pr("vws-iam", 255, body="Rework of #255.\n")],
+            "cross repo": [pr("vws-deploy", 255), pr("vws-iam", 264, body="Rework of vws-deploy#255.\n")],
+            "older names newer": [pr("vws-iam", 255, body="Rework of #264.\n"),
                                   pr("vws-iam", 264, body="Part of #171\n", hours=90)],
         }
         for why, items in cases.items():
             with self.subTest(why):
                 self.assertEqual(closes(run(*items)), [])
+
+    def test_an_untrusted_author_cannot_claim_or_close(self):
+        # The repos are public: a fork PR body saying "Rework of #255" must not close the live PR.
+        for author, assoc in (("someone", "NONE"), ("someone", "CONTRIBUTOR"), ("", "")):
+            with self.subTest(author=author, assoc=assoc):
+                old = pr("vws-iam", 255, body="Part of #171\n")
+                new = pr("vws-iam", 264, body="Rework of #255.\n", hours=90, author=author, assoc=assoc)
+                self.assertEqual(closes(run(old, new)), [])
+                titled = pr("vws-iam", 264, title="feat: -v2 of #255", hours=90, author=author, assoc=assoc)
+                self.assertEqual(closes(run(old, titled)), [])
 
     def test_cross_references_close_only_the_older_pr(self):
         a = pr("vws-iam", 255, body="Rework of #264\n")
@@ -115,31 +141,44 @@ class Rule(unittest.TestCase):
 
 class Recheck(unittest.TestCase):
     class G:
-        def __init__(self, old, source):
-            self.old, self.source = old, source
+        def __init__(self, old, source, target="255"):
+            self.old, self.source, self.target = old, source, target
 
         def get(self, path):
-            return (self.old if path.endswith("/pulls/255") else self.source), False
+            return (self.old if path.endswith(f"/pulls/{self.target}") else self.source), False
 
     def test_still_the_source(self):
-        g = self.G({"state": "open"}, {"state": "open", "title": "feat: x", "body": "Rework of #255\n"})
-        self.assertTrue(orch.recheck_superseded(g, "vws-iam#255", "vws-iam#264"))
+        g = self.G({"state": "open"}, {"state": "open", "title": "feat: x", "body": "Rework of #255.\n",
+                                       "user": {"login": "popododo0720"}, "author_association": "OWNER"})
+        self.assertTrue(orch.recheck_superseded(g, "vws-iam#255", "vws-iam#264", "body", CFG))
         # A report link was trusted at collect: only the two PR states are re-read.
-        self.assertTrue(orch.recheck_superseded(g, "vws-iam#255", "vws-iam#264", "report"))
+        self.assertTrue(orch.recheck_superseded(g, "vws-iam#255", "vws-iam#264", "report", CFG))
 
     def test_a_changed_pr_skips_the_close(self):
         target = {"state": "open"}
-        source = {"state": "open", "title": "feat: x", "body": "Rework of #255\n"}
+        source = {"state": "open", "title": "feat: x", "body": "Rework of #255.\n",
+                  "user": {"login": "popododo0720"}, "author_association": "OWNER"}
         cases = {
             "target closed": (dict(target, state="closed"), source),
             "target merged": (dict(target, merged=True), source),
+            "target draft": (dict(target, draft=True), source),
             "source closed": (target, dict(source, state="closed")),
             "source merged": (target, dict(source, merged=True)),
             "claim dropped": (target, dict(source, body="Part of #171\n")),
+            "claim in prose": (target, dict(source, body="This replaces #255's list.\n")),
+            "source untrusted": (target, dict(source, user={"login": "someone"}, author_association="NONE")),
         }
         for why, (old, src) in cases.items():
             with self.subTest(why):
-                self.assertFalse(orch.recheck_superseded(self.G(old, src), "vws-iam#255", "vws-iam#264"))
+                self.assertFalse(orch.recheck_superseded(self.G(old, src), "vws-iam#255", "vws-iam#264", "body", CFG))
+
+    def test_a_factory_thread_is_never_closed(self):
+        source = {"state": "open", "title": "feat: x", "body": "Rework of #339.\nRebuild of #415.\n",
+                  "user": {"login": "popododo0720"}, "author_association": "OWNER"}
+        for target, number in ((orch.wake_target(CFG), "339"), (orch.status_target(CFG), "415")):
+            with self.subTest(target=target):
+                g = self.G({"state": "open"}, source, target=number)
+                self.assertFalse(orch.recheck_superseded(g, target, "vws-deploy#340", "body", CFG))
 
 
 class SupersededTick(test_runtime.Env):
@@ -149,10 +188,11 @@ class SupersededTick(test_runtime.Env):
     def issue(self, number, body, head):
         return {"number": number, "html_url": f"{U}/vws-iam/pull/{number}", "state": "open",
                 "created_at": "2026-10-01T00:00:00Z", "body": body, "title": f"feat: {number}",
+                "user": {"login": "popododo0720"}, "author_association": "OWNER",
                 "labels": [], "pull_request": {}, "updated_at": orch.iso(NOW - 3600)}
 
     def setup_route(self):
-        old, new = self.issue(255, "Part of #171\n", "1" * 40), self.issue(264, "Rework of #255\n", "2" * 40)
+        old, new = self.issue(255, "Part of #171\n", "1" * 40), self.issue(264, "Rework of #255.\n", "2" * 40)
         r = test_runtime.routes()
         r[f"{self.O}/vws-deploy/issues"] = {"body": []}
         r[f"{self.O}/vws-deploy/pulls"] = {"body": []}
@@ -163,6 +203,7 @@ class SupersededTick(test_runtime.Env):
         for n, body, head in ((255, old["body"], "1" * 40), (264, new["body"], "2" * 40)):
             r[f"{self.O}/vws-iam/pulls/{n}"] = {"body": {
                 "number": n, "state": "open", "merged": False, "title": f"feat: {n}", "body": body,
+                "user": {"login": "popododo0720"}, "author_association": "OWNER",
                 "head": {"sha": head}}}
             r[f"{self.O}/vws-iam/commits/{head}/check-runs"] = {"body": {"total_count": 0, "check_runs": []}}
             r[f"{self.O}/vws-iam/commits/{head}/status"] = {"body": {"state": "success", "statuses": []}}
