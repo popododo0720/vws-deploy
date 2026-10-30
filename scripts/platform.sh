@@ -25,12 +25,19 @@ fetch "https://github.com/kubevirt/containerized-data-importer/releases/download
 fetch "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
   "$MULTUS_SHA256" .cache/platform/multus.yaml
 
+# Upstream's thick manifest points at the moving snapshot-thick tag even on a release tag, so a
+# reboot can pull a different build (#202). Pin the release tag and its image digest.
+multus_image="multus-cni:${MULTUS_VERSION}-thick@${MULTUS_IMAGE_DIGEST}"
 # Upstream thick daemonset limits kube-multus to 50Mi; it is OOMKilled while a rebooted node starts
 # all its pods at once (#88). Request 100Mi, limit 300Mi, and fail if upstream changed.
-sed -e '0,/memory: "50Mi"/s//memory: "100Mi"/' -e '0,/memory: "50Mi"/s//memory: "300Mi"/' \
+sed -e "s|multus-cni:snapshot-thick|${multus_image}|g" \
+  -e '0,/memory: "50Mi"/s//memory: "100Mi"/' -e '0,/memory: "50Mi"/s//memory: "300Mi"/' \
   .cache/platform/multus.yaml > "$out/10-multus.yaml"
 grep -q 'memory: "300Mi"' "$out/10-multus.yaml" && grep -q 'memory: "100Mi"' "$out/10-multus.yaml" \
   || { echo "platform: multus memory patch did not apply" >&2; exit 1; }
+[[ $(grep -c -F "$multus_image" "$out/10-multus.yaml") == 2 ]] \
+  && ! grep -q 'multus-cni:snapshot-thick' "$out/10-multus.yaml" \
+  || { echo "platform: multus image pin did not apply" >&2; exit 1; }
 helm template kube-ovn oci://ghcr.io/kubeovn/charts/kube-ovn --version "$KUBEOVN_VERSION" \
   --namespace kube-system -f platform/kube-ovn.values.yaml > "$out/20-kube-ovn.yaml"
 helm template rook-ceph rook-ceph --repo https://charts.rook.io/release --version "$ROOK_VERSION" \
