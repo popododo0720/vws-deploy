@@ -362,6 +362,8 @@ def render(cr):
         raise Invalid("spec.storage.volumeMode: only for driver existing; rook-ceph is Block, nfs is Filesystem")
     if storage.get("nfs") and driver != "nfs":
         raise Invalid("spec.storage.nfs: only for driver nfs")
+    if storage.get("volumeTypes") and driver == "nfs":
+        raise Invalid("spec.storage.volumeTypes: not for driver nfs; nfs serves every type from vws-nfs (vws-deploy#391)")
     cls, mode = None, "Block"
     if driver == "existing":
         cls = storage.get("storageClass", "")

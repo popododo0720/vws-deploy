@@ -73,6 +73,101 @@ spec:
                       description: volumeMode of new volumes when driver is existing. Block (default), or Filesystem for a provisioner without block volumes (needs CDI). nfs is always Filesystem.
                       type: string
                       enum: [Block, Filesystem]
+                    volumeTypes:
+                      description: Backend of each EBS volume type (vws-deploy#391, vws-storage#123). storageClass is required; volumeMode and volumeSnapshotClass, when omitted or empty, fall back to the storage defaults. An unmapped type is refused by vws-storage. Not for driver nfs. vws apply checks that every named class exists.
+                      type: object
+                      properties:
+                        standard:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        gp2:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        gp3:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        io1:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        io2:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        st1:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                        sc1:
+                          type: object
+                          required: [storageClass]
+                          properties:
+                            storageClass:
+                              type: string
+                              pattern: '^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
+                            volumeMode:
+                              type: string
+                              enum: [Block, Filesystem]
+                            volumeSnapshotClass:
+                              type: string
+                              pattern: '^$|^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$'
                     nfs:
                       description: The NFS export when driver is nfs. It must already exist and be mountable from every node.
                       type: object
