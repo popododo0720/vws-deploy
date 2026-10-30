@@ -370,7 +370,11 @@ python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); d["spec"]["ser
 run_vws_real render "${WORK}/ca4.yaml" "${WORK}/x.yaml";  expect_rc "console-api: a CR with replicas 4 exits 2" 2
 expect_text "console-api: the CR error says why" "$ERR" "sessions in memory"
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console-api.replicas=2 >/dev/null 2>"${WORK}/ca.err"; then
-  bad "console-api: schema refuses 2" "rendered"; else expect_text "console-api: the schema refuses 2" "$(cat "${WORK}/ca.err")" "services.console-api.replicas"; fi
+  bad "console-api: schema refuses 2" "rendered"
+else
+  # Helm 3 names the field services.console-api.replicas; Helm 4 names it /services/console-api/replicas.
+  expect_text "console-api: the schema refuses 2" "$(tr '/' '.' <"${WORK}/ca.err")" "services.console-api.replicas"
+fi
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console-api.autoscaling.enabled=true >/dev/null 2>&1; then
   bad "console-api: schema refuses autoscaling" "rendered"; else ok "console-api: the schema refuses an autoscaling value"; fi
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set services.console.replicas=1 >/dev/null 2>&1; then
