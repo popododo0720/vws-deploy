@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"slices"
+	"sort"
 
 	"github.com/popododo0720/vws-deploy/installer/internal/cluster"
 )
@@ -256,7 +258,24 @@ type Storage struct {
 	VolumeMode   string          `json:"volumeMode,omitempty"`
 	NFS          *NFS            `json:"nfs,omitempty"`
 	S3           json.RawMessage `json:"s3,omitempty"`
+	// VolumeTypes is spec.storage.volumeTypes: the backend of each EBS volume type (#391). A type
+	// that is not a key is unmapped.
+	VolumeTypes map[string]VolumeType `json:"volumeTypes,omitempty"`
 }
+
+// VolumeType is spec.storage.volumeTypes.<type>. An empty volumeMode or volumeSnapshotClass takes
+// the storage default.
+type VolumeType struct {
+	StorageClass        string `json:"storageClass"`
+	VolumeMode          string `json:"volumeMode,omitempty"`
+	VolumeSnapshotClass string `json:"volumeSnapshotClass,omitempty"`
+}
+
+// EBSVolumeTypes are the keys spec.storage.volumeTypes accepts, in the order the wizard shows them.
+var EBSVolumeTypes = []string{"standard", "gp2", "gp3", "io1", "io2", "st1", "sc1"}
+
+// dns1123 is the CRD pattern for a StorageClass or VolumeSnapshotClass name.
+var dns1123 = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
 
 // NFS is spec.storage.nfs.
 type NFS struct {
@@ -279,7 +298,9 @@ var storageDrivers = []StorageOption{
 	{Driver: "local", Disabled: true, Reason: "Coming soon (popododo0720/vws-storage#71)"},
 }
 
-func storageOptions([]cluster.Node) any { return map[string]any{"drivers": storageDrivers} }
+func storageOptions([]cluster.Node) any {
+	return map[string]any{"drivers": storageDrivers, "volumeTypes": EBSVolumeTypes, "volumeModes": []string{"Block", "Filesystem"}}
+}
 
 func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
 	var v Storage
@@ -310,7 +331,44 @@ func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
 	if v.VolumeMode != "" && v.VolumeMode != "Block" && v.VolumeMode != "Filesystem" {
 		out = append(out, FieldError{Field: "spec.storage.volumeMode", Code: "unsupported", Message: "Block or Filesystem"})
 	}
-	return v, out
+	return v, append(out, checkVolumeTypes(v)...)
+}
+
+// checkVolumeTypes applies the CRD rules of spec.storage.volumeTypes, so the wizard reports a bad
+// mapping on its step instead of at install. Whether the classes exist is checked by vws apply.
+func checkVolumeTypes(v Storage) []FieldError {
+	if len(v.VolumeTypes) == 0 {
+		return nil
+	}
+	if v.Driver == "nfs" {
+		return []FieldError{{Field: "spec.storage.volumeTypes", Code: "unsupported", Message: "not for driver nfs; nfs serves every type from vws-nfs"}}
+	}
+	keys := make([]string, 0, len(v.VolumeTypes))
+	for k := range v.VolumeTypes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []FieldError
+	for _, k := range keys {
+		vt, field := v.VolumeTypes[k], "spec.storage.volumeTypes."+k
+		if !slices.Contains(EBSVolumeTypes, k) {
+			out = append(out, FieldError{Field: field, Code: "unsupported", Message: "unknown EBS volume type " + k})
+			continue
+		}
+		switch {
+		case vt.StorageClass == "":
+			out = append(out, required(field+".storageClass"))
+		case !dns1123.MatchString(vt.StorageClass):
+			out = append(out, FieldError{Field: field + ".storageClass", Code: "invalid", Message: "not a DNS-1123 name"})
+		}
+		if vt.VolumeMode != "" && vt.VolumeMode != "Block" && vt.VolumeMode != "Filesystem" {
+			out = append(out, FieldError{Field: field + ".volumeMode", Code: "unsupported", Message: "Block or Filesystem"})
+		}
+		if vt.VolumeSnapshotClass != "" && !dns1123.MatchString(vt.VolumeSnapshotClass) {
+			out = append(out, FieldError{Field: field + ".volumeSnapshotClass", Code: "invalid", Message: "not a DNS-1123 name"})
+		}
+	}
+	return out
 }
 
 // decodeEIP needs the saved network step: the pool lives on spec.network.nodes.external and must be

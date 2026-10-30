@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -70,12 +71,13 @@ var nodes = []cluster.Node{
 }
 
 // answers for: roles, management nic/cidr/vlan/mtu, tunnel skip, storage public skip,
-// external nic/cidr/vlan/mtu/gateway, storage driver, eip, profile, confirm.
+// external nic/cidr/vlan/mtu/gateway, storage driver, volume types skip, eip, profile, confirm.
 const happy = "\n" +
 	"ens3\n10.0.0.0/24\n\n\n" +
 	"\n" +
 	"\n" +
 	"ens8\n198.18.0.0/24\n\n\n198.18.0.1\n" +
+	"\n" +
 	"\n" +
 	"198.18.0.128/25\n" +
 	"\n" +
@@ -104,6 +106,58 @@ func TestWizardInstalls(t *testing.T) {
 	}
 	if len(fc.crs) != 1 || !strings.Contains(string(fc.crs[0]), `"profile":"small"`) || !strings.Contains(string(fc.crs[0]), `"driver":"rook-ceph"`) {
 		t.Fatalf("installed CR %s", fc.crs)
+	}
+}
+
+// The storage step maps EBS volume types (#391): an empty StorageClass leaves a type unmapped, the
+// TUI names every unmapped type, and the installed CR carries only the mapped ones.
+func TestWizardMapsVolumeTypes(t *testing.T) {
+	fc := &fakeCluster{nodes: nodes}
+	c, _ := serve(t, fc, nil)
+	// yes, standard and gp2 unmapped, gp3 mapped with mode and snapshot class, io1 mapped with
+	// defaults, io2/st1/sc1 unmapped.
+	types := "yes\n" + "\n\n" + "ceph-block\nBlock\nceph-snap\n" + "fast-rbd\n\n\n" + "\n\n\n"
+	input := strings.Replace(happy, "198.18.0.1\n\n\n", "198.18.0.1\n\n"+types, 1)
+	out, err := run(t, c, input)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"gp3      ceph-block", "io1      fast-rbd", "standard unmapped", "sc1      unmapped"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if len(fc.crs) != 1 {
+		t.Fatalf("installed %d CRs", len(fc.crs))
+	}
+	var cr struct {
+		Spec struct {
+			Storage struct {
+				VolumeTypes map[string]map[string]string `json:"volumeTypes"`
+			} `json:"storage"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(fc.crs[0], &cr); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]map[string]string{
+		"gp3": {"storageClass": "ceph-block", "volumeMode": "Block", "volumeSnapshotClass": "ceph-snap"},
+		"io1": {"storageClass": "fast-rbd"},
+	}
+	if !reflect.DeepEqual(cr.Spec.Storage.VolumeTypes, want) {
+		t.Fatalf("volumeTypes %v, want %v", cr.Spec.Storage.VolumeTypes, want)
+	}
+}
+
+func TestWizardLeavesVolumeTypesOut(t *testing.T) {
+	fc := &fakeCluster{nodes: nodes}
+	c, _ := serve(t, fc, nil)
+	out, err := run(t, c, happy)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "EBS volume types: not mapped") || len(fc.crs) != 1 || strings.Contains(string(fc.crs[0]), "volumeTypes") {
+		t.Fatalf("skipping the mapping changed the CR %s:\n%s", fc.crs, out)
 	}
 }
 

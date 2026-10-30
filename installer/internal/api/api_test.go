@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -546,6 +547,13 @@ func TestValidation(t *testing.T) {
 		{"storage", map[string]any{"driver": "local"}, "spec.storage.driver", "not_available"},
 		{"storage", map[string]any{"driver": "existing"}, "spec.storage.storageClass", "required"},
 		{"storage", map[string]any{"driver": "nfs", "nfs": map[string]any{"server": "nfs.example.invalid"}}, "spec.storage.nfs.share", "required"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"gp4": map[string]any{"storageClass": "fast"}}}, "spec.storage.volumeTypes.gp4", "unsupported"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"gp3": map[string]any{"volumeMode": "Block"}}}, "spec.storage.volumeTypes.gp3.storageClass", "required"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"gp3": map[string]any{"storageClass": "Fast"}}}, "spec.storage.volumeTypes.gp3.storageClass", "invalid"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"io2": map[string]any{"storageClass": "fast", "volumeMode": "Raw"}}}, "spec.storage.volumeTypes.io2.volumeMode", "unsupported"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"io2": map[string]any{"storageClass": "fast", "volumeSnapshotClass": "snap_1"}}}, "spec.storage.volumeTypes.io2.volumeSnapshotClass", "invalid"},
+		{"storage", map[string]any{"driver": "rook-ceph", "volumeTypes": map[string]any{"gp3": map[string]any{"storageClass": "fast", "iops": 3000}}}, "value", "invalid"},
+		{"storage", map[string]any{"driver": "nfs", "nfs": map[string]any{"server": "nas", "share": "/e"}, "volumeTypes": map[string]any{"gp3": map[string]any{"storageClass": "fast"}}}, "spec.storage.volumeTypes", "unsupported"},
 		{"eip", "", "spec.network.nodes.external.eipPool", "required"},
 		{"eip", "10.1.0.0/24", "spec.network.nodes.external.eipPool", "invalid"},
 		{"profile", "huge", "spec.profile", "unsupported"},
@@ -568,6 +576,32 @@ func TestValidation(t *testing.T) {
 	drivers := body["options"].(map[string]any)["drivers"].([]any)
 	if d := drivers[3].(map[string]any); d["driver"] != "minio" || d["disabled"] != true || !strings.Contains(d["reason"].(string), "Coming soon") {
 		t.Fatalf("minio option %v", d)
+	}
+	if got := body["options"].(map[string]any)["volumeTypes"]; !reflect.DeepEqual(got, []any{"standard", "gp2", "gp3", "io1", "io2", "st1", "sc1"}) {
+		t.Fatalf("volume type options %v", got)
+	}
+}
+
+// A valid per-type mapping (#391) is kept as sent, unmapped types stay absent, and the summary CR
+// carries it under spec.storage.volumeTypes.
+func TestStorageVolumeTypesReachTheCR(t *testing.T) {
+	h := newHarness(t, nil)
+	h.login()
+	h.fill()
+	value := map[string]any{"driver": "existing", "storageClass": "ceph-block", "volumeTypes": map[string]any{
+		"gp3": map[string]any{"storageClass": "ceph-block", "volumeMode": "Block", "volumeSnapshotClass": "ceph-snap"},
+		"sc1": map[string]any{"storageClass": "cold.nfs", "volumeMode": "Filesystem"},
+	}}
+	if status, body := h.do("PUT", "/api/v1/steps/storage", map[string]any{"value": value}); status != 200 {
+		t.Fatalf("PUT storage %d %v", status, body)
+	}
+	status, body := h.do("GET", "/api/v1/summary", nil)
+	if status != 200 {
+		t.Fatalf("summary %d %v", status, body)
+	}
+	got := body["cr"].(map[string]any)["spec"].(map[string]any)["storage"].(map[string]any)["volumeTypes"]
+	if !reflect.DeepEqual(got, value["volumeTypes"]) {
+		t.Fatalf("volumeTypes %v, want %v", got, value["volumeTypes"])
 	}
 }
 
