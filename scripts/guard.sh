@@ -411,6 +411,91 @@ cmd_recovery() {
   rm -f "$rendered"
 }
 
+# The negative half of R24: one production render per placeholder must fail and name its key.
+placeholder_case() {
+  local tmp=$1 name=$2 path=$3 value=$4 expect="$3: $4 is a placeholder"
+  python3 - "$tmp/site.yaml" "$path" "$value" > "$tmp/case.yaml" <<'PY'
+import sys
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1]))
+parts = sys.argv[2].split(".")
+node = values
+for part in parts[:-1]:
+    node = node.setdefault(part, {})
+node[parts[-1]] = sys.argv[3]
+yaml.safe_dump(values, sys.stdout)
+PY
+  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/case.yaml" > "$tmp/case.render.yaml"
+  if python3 scripts/check_render.py --profile production "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" > "$tmp/out" 2>&1; then
+    die "R24: production accepted ${name}"
+  fi
+  grep -Fq -- "$expect" "$tmp/out" || { cat "$tmp/out" >&2; die "R24: ${name} did not name ${expect}"; }
+}
+
+cmd_placeholders() {
+  local profile=production tmp
+  local -a files=()
+  while (($#)); do
+    case "$1" in
+      --profile) (($# >= 2)) || die "R24: --profile needs a value"; profile=$2; shift 2 ;;
+      --profile=*) profile=${1#*=}; shift ;;
+      *) files+=("$1"); shift ;;
+    esac
+  done
+  tmp=$(mktemp -d)
+  if ((${#files[@]})); then
+    local -a value_flags=()
+    local file
+    for file in "${files[@]}"; do value_flags+=(-f "$file"); done
+    helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" "${value_flags[@]}" > "$tmp/input.render.yaml"
+    python3 scripts/check_render.py --profile "$profile" "$tmp/input.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "${files[@]}" \
+      || { rm -rf "$tmp"; die "R24: the ${profile} render has a placeholder"; }
+    rm -rf "$tmp"
+    return
+  fi
+  cat > "$tmp/site.yaml" <<'EOF'
+services:
+  network:
+    flags:
+      pool: 10.20.0.0/24
+  console-api:
+    flags:
+      console-origins: https://console.vws.internal
+EOF
+  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/site.yaml" > "$tmp/site.render.yaml"
+  python3 scripts/check_render.py --profile production "$tmp/site.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/site.yaml" \
+    || { rm -rf "$tmp"; die "R24: production rejected the site values"; }
+
+  placeholder_case "$tmp" "RFC 5737 192.0.2.0/24" services.network.flags.pool 192.0.2.0/24
+  placeholder_case "$tmp" "an address in 192.0.2.0/24" services.network.flags.pool 192.0.2.17
+  placeholder_case "$tmp" "RFC 5737 198.51.100.0/24" services.network.flags.pool 198.51.100.0/24
+  placeholder_case "$tmp" "an address in 198.51.100.0/24" services.network.flags.pool 198.51.100.42
+  placeholder_case "$tmp" "RFC 5737 203.0.113.0/24" services.network.flags.pool 203.0.113.0/24
+  placeholder_case "$tmp" "an address in 203.0.113.0/24" services.network.flags.pool 203.0.113.9
+  placeholder_case "$tmp" "RFC 3849 2001:db8::/32" services.network.flags.pool 2001:db8::/32
+  placeholder_case "$tmp" "an address in 2001:db8::/32" services.network.flags.pool 2001:db8::1
+  placeholder_case "$tmp" "the reserved domain example.com" services.console-api.flags.console-origins https://example.com
+  placeholder_case "$tmp" "the reserved domain example.org" services.console-api.flags.console-origins https://example.org
+  placeholder_case "$tmp" "the reserved domain example.net" services.console-api.flags.console-origins https://example.net
+  placeholder_case "$tmp" "the reserved TLD .example" services.console-api.flags.console-origins https://app.example
+  placeholder_case "$tmp" "the reserved TLD .invalid" services.console-api.flags.console-origins https://console.example.invalid
+  placeholder_case "$tmp" "the reserved TLD .test" services.console-api.flags.console-origins https://app.test
+  placeholder_case "$tmp" "the reserved TLD .localhost" services.console-api.flags.console-origins https://app.localhost
+  placeholder_case "$tmp" "the display string CHANGE_ME" services.network.flags.pool CHANGE_ME
+  placeholder_case "$tmp" "the display string changeme" services.network.flags.pool changeme
+  placeholder_case "$tmp" "the display string TODO" services.network.flags.pool TODO
+  placeholder_case "$tmp" "an angle-bracket placeholder" services.network.flags.pool '<site pool>'
+
+  # The same placeholder stays legal in a development or lab render (AC3).
+  python3 scripts/check_render.py "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
+    || { rm -rf "$tmp"; die "R24: the default development render rejected a placeholder"; }
+  python3 scripts/check_render.py --profile dev "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
+    || { rm -rf "$tmp"; die "R24: the development profile rejected a placeholder"; }
+
+  rm -rf "$tmp"
+}
+
 cmd_cursor() {
   [[ ! -e .cursor ]] || die "R9: .cursor/ does not belong in this repo"
   if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts charts 2>/dev/null \
@@ -1257,6 +1342,7 @@ cmd_all() {
   cmd_hooks
   cmd_docs
   cmd_recovery
+  cmd_placeholders
   cmd_english
   if [[ -n ${VWS_BASE_REF:-} ]]; then
     cmd_commits "origin/${VWS_BASE_REF}"
@@ -1267,7 +1353,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|english|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|commits|commit-msg|all>
 EOF
 }
 
@@ -1291,6 +1377,7 @@ case "$command_name" in
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
   recovery) cmd_recovery ;;
+  placeholders) cmd_placeholders "$@" ;;
   english) cmd_english ;;
   commits) cmd_commits "$@" ;;
   commit-msg) cmd_commit_msg "$@" ;;
