@@ -158,6 +158,26 @@ vws_check_storage() {
   fi
 }
 
+# vws_check_volume_types CR_JSON: every StorageClass and VolumeSnapshotClass that spec.storage.volumeTypes
+# names exists (vws-deploy#391). The CRD checks the names; only the cluster knows whether they exist.
+vws_check_volume_types() {
+  local cr=$1 classes snaps missing
+  jq -e '(.spec.storage.volumeTypes // {}) | length > 0' <<<"$cr" >/dev/null || return 0
+  classes=$(vws_kubectl get storageclass -o json 2>/dev/null) || vws_die_env "cannot list StorageClasses"
+  snaps=$(vws_kubectl get volumesnapshotclass -o json 2>/dev/null || echo '{"items":[]}')
+  missing=$(jq -r --argjson sc "$classes" --argjson vs "$snaps" '
+    [$sc.items[].metadata.name] as $s | [$vs.items[].metadata.name] as $v |
+    [.spec.storage.volumeTypes | to_entries[] | .key as $t | .value |
+      (.storageClass as $c | select($s | index([$c]) | not) | "\($t): StorageClass \($c)"),
+      ((.volumeSnapshotClass // "") as $c | select($c != "" and ($v | index([$c]) | not)) | "\($t): VolumeSnapshotClass \($c)")]
+    | join(", ")' <<<"$cr")
+  if [[ -z $missing ]]; then
+    vws_emit OK volume-types "every class in spec.storage.volumeTypes exists"
+  else
+    vws_emit FAIL volume-types "missing ${missing}"
+  fi
+}
+
 # Groups whose CRDs the bundle installs.
 VWS_BUNDLE_GROUPS=(kubevirt.io cdi.kubevirt.io kubeovn.io k8s.cni.cncf.io snapshot.storage.k8s.io)
 
