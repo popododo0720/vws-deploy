@@ -88,6 +88,7 @@ from orchestrate_rules.common import (  # noqa: E402
     run_state, scrub, status_target, utc, vws_pr_key, wake_target,
 )
 from orchestrate_rules.hold_release import HOLD_LABEL, held_for, held_for_trusted  # noqa: E402
+from orchestrate_rules.superseded import superseded_numbers  # noqa: E402
 # Compat: orch.X keeps naming every helper and constant that moved into rules/ (tests, .github/metrics and
 # .github/verify read them through this file). Definitions below this line win.
 globals().update(rules.exports())
@@ -320,8 +321,9 @@ ALLOWED = {
     "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending|hold)$")],  # hold: rule H only (#501)
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
-    # The status issue body (vws-deploy#416), an AC tick, a repo-guard retry line (#446) or a completed close (#486); Gh.write pins the payload.
-    "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$")],
+    # The status issue body (vws-deploy#416), an AC tick, a repo-guard retry line (#446), a completed close
+    # (#486), or rule Z's close of a superseded PR (#377); Gh.write pins the payload.
+    "PATCH": [re.compile(rf"^{_REPO}/issues/[0-9]+$"), re.compile(rf"^{_REPO}/pulls/[0-9]+$")],
 }
 
 
@@ -501,6 +503,10 @@ class Gh:
                 raise PermissionError(
                     "issue edit refused: the status issue body, an AC tick, a repo-guard retry line "
                     "or a completed close only")
+        if method == "PATCH" and re.fullmatch(rf"repos/{OWNER}/[^/]+/pulls/[0-9]+", path):
+            # Rule Z only (vws-deploy#377): close a superseded PR. Nothing else about the PR may change.
+            if payload != {"state": "closed"}:
+                raise PermissionError("PR edit refused: a close with state closed only")
         args = ["gh", "api", "-i", "--method", method, path]
         stdin = None
         if payload is not None:
@@ -1485,6 +1491,10 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             calls.append(("DELETE", f"{base}/labels/{a['label']}", None))
         elif a["type"] == "merge":
             calls.append(("PUT", f"repos/{OWNER}/{repo}/pulls/{number}/merge", a["payload"]))
+        elif a["type"] == "close_pr":
+            if recheck_key(gh, repo, number, a["key"]):
+                calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
+            calls.append(("PATCH", f"repos/{OWNER}/{repo}/pulls/{number}", {"state": "closed"}))
         label = a.get("add") or a.get("label")
         if label and label not in snapshot["labels"].get(repo, []):
             log("skipped", action=a["type"], target=a["target"], reason=f"label {label} does not exist on {repo}")
@@ -1502,6 +1512,11 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "lead_wake" and not recheck_key(gh, repo, number, a["key"]):
             log("skipped", action="lead_wake", target=a["target"], item=a["item"],
                 reason="a comment with this key already exists")
+            continue
+        if a["type"] == "close_pr" and not recheck_superseded(gh, a["target"], a["source"], a.get("via", "body"),
+                                                             cfg):
+            log("skipped", action="close_pr", target=a["target"],
+                reason="the source or target changed since collect")
             continue
         if a["type"] == "grok_wake":
             if not recheck_key(gh, repo, number, a["key"]):
@@ -1688,6 +1703,30 @@ def recheck_rebuild(gh, k, head):
 def recheck_wake(gh, repo, number, key):
     comments = gh.get_all(f"repos/{OWNER}/{repo}/issues/{number}/comments?per_page=100")
     return key not in {w["key"] for w in status_wakes(comments)}
+
+
+def recheck_superseded(gh, target, source, via="body", cfg=None):
+    """Rule Z (vws-deploy#377), right before the close: True while the target is still an open non-draft PR
+    that is not the status issue or the verify-wake thread, and the source is still open by an author
+    trusted to write the claim and, for a body claim, still names the target. A closed or draft PR, a
+    dropped claim, an untrusted author, or a factory thread writes nothing. A report link was trusted at
+    collect; only the two PR states are re-read. A read error propagates, so the tick fails and is retried."""
+    cfg = cfg or DEFAULTS
+    if target in (status_target(cfg), wake_target(cfg)):
+        return False
+    trepo, tnum = target.split("#")
+    srepo, snum = source.split("#")
+    old, _ = gh.get(f"repos/{OWNER}/{trepo}/pulls/{tnum}")
+    if not isinstance(old, dict) or old.get("state") != "open" or old.get("merged") or old.get("draft"):
+        return False
+    src, _ = gh.get(f"repos/{OWNER}/{srepo}/pulls/{snum}")
+    if not isinstance(src, dict) or src.get("state") != "open" or src.get("merged"):
+        return False
+    if via == "report":
+        return True
+    login = (src.get("user") or {}).get("login") or ""
+    return (is_trusted_reset_author(login, src.get("author_association") or "")
+            and int(tnum) in superseded_numbers(src.get("title") or "", src.get("body") or ""))
 
 
 def add_status_event(state, a, now):
