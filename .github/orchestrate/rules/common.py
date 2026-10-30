@@ -819,13 +819,20 @@ def ac_partial_idle(it, items):
     """vws-deploy#545: rule T left this issue labeled ac-partial (some acceptance-criteria boxes ticked,
     some still open) and no open PR names it. The assignee is not working a PR, so the issue does not
     hold the Grok slot; decide_grok posts one wake for the remaining boxes instead."""
+    return ac_partial_slice(it) and not grok_open_pr(f"{it['repo']}#{it['number']}", items)
+
+
+def ac_partial_slice(it):
+    """An open issue labeled ac-partial with some acceptance-criteria boxes ticked and some still open."""
     if it.get("is_pr") or it.get("state") != "open" or "ac-partial" not in it.get("labels", []):
         return False
     boxes = ac_boxes(it.get("body") or "")
-    if not any(b["checked"] for b in boxes) or all(b["checked"] for b in boxes):
-        return False
-    k = f"{it['repo']}#{it['number']}"
-    return not any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k for p in items.values())
+    return any(b["checked"] for b in boxes) and not all(b["checked"] for b in boxes)
+
+
+def grok_open_pr(k, items):
+    """An open PR whose `Part of` names issue k."""
+    return any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k for p in items.values())
 
 
 def grok_held(items):
