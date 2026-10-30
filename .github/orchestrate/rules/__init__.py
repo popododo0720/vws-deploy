@@ -33,6 +33,7 @@ REGISTRY = (
     "grok",           # G
     "rebuild",        # R
     "lead",           # lead wake (#491)
+    "hold_release",   # H (#501): a Held for: hold whose PR is no longer open loses hold
     "merge",          # D
     "ac_tick",        # T (#486)
     "guard_startup",  # S (#446): one repo-guard startup_failure re-trigger, then the #412 marker
