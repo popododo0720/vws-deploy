@@ -275,6 +275,7 @@ func askStorage(t *TUI, r stepResult) (any, error) {
 			Disabled bool   `json:"disabled"`
 			Reason   string `json:"reason"`
 		} `json:"drivers"`
+		VolumeTypes []string `json:"volumeTypes"`
 	}
 	if err := decodeJSON("storage options", r.Options, &opts); err != nil {
 		return nil, err
@@ -316,7 +317,65 @@ func askStorage(t *TUI, r stepResult) (any, error) {
 		}
 		v["nfs"] = map[string]string{"server": server, "share": share}
 	}
+	if driver != "nfs" && len(opts.VolumeTypes) > 0 {
+		types, err := askVolumeTypes(t, opts.VolumeTypes)
+		if err != nil {
+			return nil, err
+		}
+		if len(types) > 0 {
+			v["volumeTypes"] = types
+		}
+	}
 	return v, nil
+}
+
+// askVolumeTypes asks for the backend of each EBS volume type (spec.storage.volumeTypes, #391).
+// An empty StorageClass leaves the type unmapped; the mapping is printed with every unmapped type
+// named, so the gap is visible before the summary.
+func askVolumeTypes(t *TUI, names []string) (map[string]any, error) {
+	answer, err := t.ask("map EBS volume types to StorageClasses? (yes/no)", "no")
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains([]string{"yes", "y"}, strings.ToLower(answer)) {
+		t.printf("  EBS volume types: not mapped (spec.storage.volumeTypes left out)\n")
+		return map[string]any{}, nil
+	}
+	types := map[string]any{}
+	for _, name := range names {
+		class, err := t.ask(name+" StorageClass (empty = unmapped)", "")
+		if err != nil {
+			return nil, err
+		}
+		if class == "" {
+			continue
+		}
+		vt := map[string]string{"storageClass": class}
+		mode, err := t.ask(name+" volumeMode (Block, Filesystem; empty = storage default)", "")
+		if err != nil {
+			return nil, err
+		}
+		if mode != "" {
+			vt["volumeMode"] = mode
+		}
+		snap, err := t.ask(name+" VolumeSnapshotClass (empty = storage default)", "")
+		if err != nil {
+			return nil, err
+		}
+		if snap != "" {
+			vt["volumeSnapshotClass"] = snap
+		}
+		types[name] = vt
+	}
+	t.printf("  EBS volume types:\n")
+	for _, name := range names {
+		if vt, ok := types[name].(map[string]string); ok {
+			t.printf("    %-8s %s\n", name, vt["storageClass"])
+		} else {
+			t.printf("    %-8s unmapped (vws-storage refuses volumes of this type)\n", name)
+		}
+	}
+	return types, nil
 }
 
 func askEIP(t *TUI, _ stepResult) (any, error) {
