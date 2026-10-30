@@ -1513,7 +1513,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("skipped", action="lead_wake", target=a["target"], item=a["item"],
                 reason="a comment with this key already exists")
             continue
-        if a["type"] == "close_pr" and not recheck_superseded(gh, a["target"], a["source"], a.get("via", "body")):
+        if a["type"] == "close_pr" and not recheck_superseded(gh, a["target"], a["source"], a.get("via", "body"),
+                                                             cfg):
             log("skipped", action="close_pr", target=a["target"],
                 reason="the source or target changed since collect")
             continue
@@ -1704,20 +1705,28 @@ def recheck_wake(gh, repo, number, key):
     return key not in {w["key"] for w in status_wakes(comments)}
 
 
-def recheck_superseded(gh, target, source, via="body"):
-    """Rule Z (vws-deploy#377), right before the close: True while the source PR is still open and, for a
-    body reference, still names the target, and the target is still open. A closed PR, a dropped body
-    claim, or an already closed target writes nothing. A report link was trusted at collect; only the two
-    PR states are re-read. A read error propagates, so the tick fails and is retried."""
+def recheck_superseded(gh, target, source, via="body", cfg=None):
+    """Rule Z (vws-deploy#377), right before the close: True while the target is still an open non-draft PR
+    that is not the status issue or the verify-wake thread, and the source is still open by an author
+    trusted to write the claim and, for a body claim, still names the target. A closed or draft PR, a
+    dropped claim, an untrusted author, or a factory thread writes nothing. A report link was trusted at
+    collect; only the two PR states are re-read. A read error propagates, so the tick fails and is retried."""
+    cfg = cfg or DEFAULTS
+    if target in (status_target(cfg), wake_target(cfg)):
+        return False
     trepo, tnum = target.split("#")
     srepo, snum = source.split("#")
     old, _ = gh.get(f"repos/{OWNER}/{trepo}/pulls/{tnum}")
-    if not isinstance(old, dict) or old.get("state") != "open" or old.get("merged"):
+    if not isinstance(old, dict) or old.get("state") != "open" or old.get("merged") or old.get("draft"):
         return False
     src, _ = gh.get(f"repos/{OWNER}/{srepo}/pulls/{snum}")
     if not isinstance(src, dict) or src.get("state") != "open" or src.get("merged"):
         return False
-    return via == "report" or int(tnum) in superseded_numbers(src.get("title") or "", src.get("body") or "")
+    if via == "report":
+        return True
+    login = (src.get("user") or {}).get("login") or ""
+    return (is_trusted_reset_author(login, src.get("author_association") or "")
+            and int(tnum) in superseded_numbers(src.get("title") or "", src.get("body") or ""))
 
 
 def add_status_event(state, a, now):
