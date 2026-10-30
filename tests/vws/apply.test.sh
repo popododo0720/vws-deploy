@@ -62,6 +62,21 @@ run_vws_real apply;                              expect_rc "a failing preflight 
 expect_text "a failing preflight says so" "$OUT" "preflight failed"
 assert_no_changes "a failing preflight changes nothing"
 
+# spec.storage.volumeTypes names classes the cluster must have; the chart is not touched without them (#391).
+installer_scenario volume-types
+cr_set() { jq "$1" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json" && mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"; }
+cr_set '.spec.storage.volumeTypes = {gp3: {storageClass: "ceph-block", volumeSnapshotClass: "ceph-block"}}'
+installer_template
+run_vws_real apply;                              expect_rc "mapped classes that exist: apply exits 0" 0
+expect_text "existing mapped classes are OK" "$OUT" "every class in spec.storage.volumeTypes exists"
+cr_set '.spec.storage.volumeTypes = {gp3: {storageClass: "fast-ssd"}, io2: {storageClass: "ceph-block", volumeSnapshotClass: "io-snap"}}'
+installer_template
+reset_log
+run_vws_real apply;                              expect_rc "a missing mapped class exits 1" 1
+expect_text "a missing StorageClass is named" "$OUT" "gp3: StorageClass fast-ssd"
+expect_text "a missing VolumeSnapshotClass is named" "$OUT" "io2: VolumeSnapshotClass io-snap"
+if ! grep -q 'upgrade --install vws' "$VWS_FAKE_LOG"; then ok "a missing mapped class runs no helm upgrade"; else bad "missing class helm" "$(calls)"; fi
+
 installer_scenario description-cap
 run_vws_real apply;                              expect_rc "a short spec: apply exits 0" 0
 expect_text "a short spec is recorded in full" "$(calls)" '--description vws-spec:{'

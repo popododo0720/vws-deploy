@@ -110,6 +110,26 @@ for case in \
   storage_cr "${case%%|*}" "${case#*|}"; expect_rc "invalid storage: ${case%%|*} exits 2" 2
 done
 
+# spec.storage.volumeTypes: the backend of each EBS volume type (vws-deploy#391). Types may be unmapped.
+storage_cr volume-types 's["volumeTypes"] = {"gp2": {"storageClass": "fast-rbd"}, "gp3": {"storageClass": "ceph-block", "volumeMode": "Block", "volumeSnapshotClass": "ceph-block"}, "sc1": {"storageClass": "cold.nfs", "volumeMode": "Filesystem", "volumeSnapshotClass": ""}}'
+expect_rc "a partial volume type mapping renders" 0
+storage_cr volume-types-all 's["volumeTypes"] = {t: {"storageClass": "fast-rbd"} for t in ("standard", "gp2", "gp3", "io1", "io2", "st1", "sc1")}'
+expect_rc "a mapping of all seven types renders" 0
+storage_cr volume-types-rook 's.clear(); s.update(driver="rook-ceph", volumeTypes={"io2": {"storageClass": "ceph-block", "volumeMode": "Block"}})'
+expect_rc "a mapping with driver rook-ceph renders" 0
+for case in \
+  'vt-unknown-type|s["volumeTypes"] = {"gp4": {"storageClass": "fast-rbd"}}' \
+  'vt-no-class|s["volumeTypes"] = {"gp3": {"volumeMode": "Block"}}' \
+  'vt-empty-class|s["volumeTypes"] = {"gp3": {"storageClass": ""}}' \
+  'vt-upper-class|s["volumeTypes"] = {"gp3": {"storageClass": "Fast"}}' \
+  'vt-bad-mode|s["volumeTypes"] = {"gp3": {"storageClass": "fast-rbd", "volumeMode": "Raw"}}' \
+  'vt-bad-snapshot-class|s["volumeTypes"] = {"gp3": {"storageClass": "fast-rbd", "volumeSnapshotClass": "snap_1"}}' \
+  'vt-unknown-field|s["volumeTypes"] = {"gp3": {"storageClass": "fast-rbd", "iops": 3000}}' \
+  'vt-not-an-object|s["volumeTypes"] = {"gp3": "fast-rbd"}' \
+  'vt-on-nfs|s.clear(); s.update(driver="nfs", nfs={"server": "nas", "share": "/e"}, volumeTypes={"gp3": {"storageClass": "fast-rbd"}})'; do
+  storage_cr "${case%%|*}" "${case#*|}"; expect_rc "invalid volume types: ${case%%|*} exits 2" 2
+done
+
 # spec.network.nodes and spec.network.direct (vws-deploy#125). nodes.external gives the pool, so the
 # CR drops the pool of ha.yaml.
 net_cr() {
