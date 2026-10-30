@@ -117,6 +117,19 @@ storage_cr volume-types-all 's["volumeTypes"] = {t: {"storageClass": "fast-rbd"}
 expect_rc "a mapping of all seven types renders" 0
 storage_cr volume-types-rook 's.clear(); s.update(driver="rook-ceph", volumeTypes={"io2": {"storageClass": "ceph-block", "volumeMode": "Block"}})'
 expect_rc "a mapping with driver rook-ceph renders" 0
+# The mapping reaches vws-storage as one -kube-volume-type per mapped type, in EBS order, empty trailing
+# fields left out so vws-storage falls back to -kube-volume-mode and -kube-snapshot-class (vws-storage#123).
+if storage_values volume-types 'v["repeatedFlags"] == {"kube-volume-type": ["gp2=fast-rbd", "gp3=ceph-block/Block/ceph-block", "sc1=cold.nfs/Filesystem"]}'; then
+  ok "volumeTypes become -kube-volume-type values"; else bad "volumeTypes flags" "$(cat "${WORK}/volume-types.out")"; fi
+if storage_values volume-types "${DV} in v['rbac']"; then ok "a Filesystem volume type adds datavolumes to the storage RBAC"; else bad "volumeTypes rbac" "$(cat "${WORK}/volume-types.out")"; fi
+if storage_values volume-types-rook 'v["repeatedFlags"] == {"kube-volume-type": ["io2=ceph-block/Block"]} and "rbac" not in v'; then
+  ok "a Block-only mapping adds no RBAC rule"; else bad "rook volumeTypes" "$(cat "${WORK}/volume-types-rook.out")"; fi
+if storage_values volume-types-all '[i.split("=")[0] for i in v["repeatedFlags"]["kube-volume-type"]] == ["standard", "gp2", "gp3", "io1", "io2", "st1", "sc1"]'; then
+  ok "all seven types render in EBS order"; else bad "volumeTypes order" "$(cat "${WORK}/volume-types-all.out")"; fi
+args=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/volume-types.out" | grep -e '- -kube-volume-type=' || true)
+if [ "$args" = "$(printf '%s\n' '            - -kube-volume-type=gp2=fast-rbd' '            - -kube-volume-type=gp3=ceph-block/Block/ceph-block' '            - -kube-volume-type=sc1=cold.nfs/Filesystem')" ]; then
+  ok "the chart gives vws-storage one -kube-volume-type arg per type"; else bad "chart kube-volume-type args" "$args"; fi
+if ! grep -q 'kube-volume-type' "${WORK}/small.yaml"; then ok "without volumeTypes no -kube-volume-type renders"; else bad "no volumeTypes" "$(cat "${WORK}/small.yaml")"; fi
 for case in \
   'vt-unknown-type|s["volumeTypes"] = {"gp4": {"storageClass": "fast-rbd"}}' \
   'vt-no-class|s["volumeTypes"] = {"gp3": {"volumeMode": "Block"}}' \
