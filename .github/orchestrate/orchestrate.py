@@ -87,6 +87,7 @@ from orchestrate_rules.common import (  # noqa: E402
     grok_link, grok_owners, head_check_reasons, iso, latest_runs, num, parse_ac, parse_deps, rework_prs, run_order,
     run_state, scrub, status_target, utc, vws_pr_key, wake_target,
 )
+from orchestrate_rules.hold_release import HOLD_LABEL, held_for, held_for_trusted  # noqa: E402
 # Compat: orch.X keeps naming every helper and constant that moved into rules/ (tests, .github/metrics and
 # .github/verify read them through this file). Definitions below this line win.
 globals().update(rules.exports())
@@ -316,7 +317,7 @@ ALLOWED = {
         re.compile(r"^rate_limit$"),
     ],
     "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
-    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending)$")],
+    "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending|hold)$")],  # hold: rule H only (#501)
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
     # The status issue body (vws-deploy#416), an AC tick, a repo-guard retry line (#446) or a completed close (#486); Gh.write pins the payload.
@@ -882,6 +883,8 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
                 "labels": sorted(lb["name"] for lb in i.get("labels", [])), "body": i.get("body") or "",
                 "title": i.get("title") or "", "assignees": sorted(a["login"] for a in i.get("assignees") or []),
                 "node_id": i.get("node_id", ""),
+                # Rule H (vws-deploy#501): who wrote the body, from the same list read.
+                "author": (i.get("user") or {}).get("login") or "", "author_assoc": i.get("author_association") or "",
                 "draft": bool(p and p.get("draft")), "base": p["base"]["ref"] if p else "",
                 "head_sha": p["head"]["sha"] if p else "", "comments": [], "events": [], "report_prs": {},
             }
@@ -1412,6 +1415,19 @@ def apply_guard(a, gh, writes, max_writes, new_state, paths, log, now, cfg):
     return 1, 0
 
 
+def hold_recheck(pr, repo, target):
+    """Rule H (vws-deploy#501): '' when the PR read right before the write still has `hold`, the same one
+    `Held for:` target and a trusted author; else why the release is skipped."""
+    labels = {lb.get("name") for lb in pr.get("labels") or [] if isinstance(lb, dict)}
+    if HOLD_LABEL not in labels:
+        return "hold label gone"
+    if not target or held_for(pr.get("body"), repo) != (target, ""):
+        return "hold Held for: line changed"
+    if not held_for_trusted((pr.get("user") or {}).get("login") or "", pr.get("author_association") or ""):
+        return "hold author not trusted"
+    return ""
+
+
 def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
     """Run the planned actions. Returns the state to save (dry-run never calls this)."""
     now = now or time.time()
@@ -1511,7 +1527,9 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             # vws-deploy#439 class 1: a PR label decided on one head is written only while the PR is still
             # open at that head (read again right before the write); the next tick decides the new head.
             try:
-                why = tr.pr_at_head(gh.get, repo, number, a["head"])[1]
+                fresh, why = tr.pr_at_head(gh.get, repo, number, a["head"])
+                if not why and a["label"] == "hold":
+                    why = hold_recheck(fresh, repo, a.get("held_for", ""))
             except (GhError, PermissionError) as e:
                 why = f"re-read failed: {scrub(e)}"
             if why:
@@ -1575,6 +1593,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
             log("grok_rework_posted", target=a["target"], item=a["item"], key=a["key"])
         if a["type"] == "lead_wake":
             log("lead_wake_posted", target=a["target"], item=a["item"], key=a["key"])
+        if a["type"] == "remove_label" and a["label"] == "hold":
+            log("hold_released", target=a["target"], held_for=a.get("held_for", ""), reason=a["reason"])
         if a["type"] == "grok_wake":
             log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
