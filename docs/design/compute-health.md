@@ -68,4 +68,6 @@ case for a service without `healthPort` that uses an HTTP probe.
 - `scripts/guard.sh config` default-render assertions and the four rejected inputs.
 
 Unverified: a real kubelet passing these probes and a Prometheus scraping the annotations. This
-repo does not apply to a cluster, and no Prometheus runs in it.
+repo does not apply to a cluster, and no Prometheus runs in it. The `metrics` port rides the
+compute Service, which is `external: true`, so whether the LoadBalancer publishes 8081 is also
+unverified; the chart adds no NetworkPolicy for compute.
