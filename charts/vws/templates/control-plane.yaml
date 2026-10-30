@@ -43,6 +43,10 @@ metadata:
 {{- $stateful := hasKey $spec "state" }}
 {{- $replicas := $spec.replicas | default (ternary 1 2 $stateful) }}
 {{- $port := int ($spec.port | default 8080) }}
+{{- $healthPort := int ($spec.healthPort | default 0) }}
+{{- if and $healthPort (eq $healthPort $port) }}
+  {{- fail (printf "R15: services.%s.healthPort must differ from port %d" $name $port) }}
+{{- end }}
 {{- $external := $spec.external | default false }}
 {{- $cpu := $spec.cpu | default "100m" }}
 {{- $memory := $spec.memory | default "256Mi" }}
@@ -74,7 +78,7 @@ renamed service, release namespace or port moves with it. */}}
   {{- $targetSecret := required (printf "services.%s.apiClient.service %s has no apiCredentials.existingSecret" $name .service) (($target.apiCredentials | default dict).existingSecret) }}
   {{- $apiClient = dict "url" (printf "http://%s.%s.svc:%d" .service $.Release.Namespace (int ($target.port | default 8080))) "secret" $targetSecret }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -105,6 +109,11 @@ spec:
       port: {{ int $extra.port }}
       targetPort: {{ int $extra.port }}
 {{- end }}
+{{- if $healthPort }}
+    - name: metrics
+      port: {{ $healthPort }}
+      targetPort: metrics
+{{- end }}
 {{- if $stateful }}
 ---
 apiVersion: v1
@@ -123,6 +132,11 @@ spec:
     - name: http
       port: {{ $port }}
       targetPort: http
+{{- if $healthPort }}
+    - name: metrics
+      port: {{ $healthPort }}
+      targetPort: metrics
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet

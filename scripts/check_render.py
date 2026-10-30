@@ -310,10 +310,13 @@ def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
     extra, extra_errors = extra_ports(name, spec)
     errors.extend(extra_errors)
     primary = int(spec.get("port", 8080))
+    health = int(spec["healthPort"]) if spec.get("healthPort") else 0
     want = [{"name": "http", "port": primary, "targetPort": "http"}]
     want.extend(
         {"name": item["name"], "port": item["port"], "targetPort": item["port"]} for item in extra
     )
+    if health:
+        want.append({"name": "metrics", "port": health, "targetPort": "metrics"})
     service = by_kind.get("Service", {}).get(name)
     if service is not None:
         got = port_view((service.get("spec") or {}).get("ports") or [])
@@ -322,6 +325,8 @@ def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
     if "state" in spec and spec.get("state") is not None:
         peers = by_kind.get("Service", {}).get(f"{name}-peers")
         peer_want = [{"name": "http", "port": primary, "targetPort": "http"}]
+        if health:
+            peer_want.append({"name": "metrics", "port": health, "targetPort": "metrics"})
         if peers is not None:
             got = port_view((peers.get("spec") or {}).get("ports") or [])
             if got != peer_want:
@@ -330,20 +335,34 @@ def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
 
 
 def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
-    """The listen flag, the service port, the container port and every probe name one port."""
+    """The listen flag, the http port and every probe name one port; healthPort carries the rest."""
     errors: list[str] = []
     port = int(spec.get("port", 8080))
+    health = int(spec["healthPort"]) if spec.get("healthPort") else 0
     listen = (spec.get("flags") or {}).get("listen")
     if listen is not None:
         host, _, number = str(listen).rpartition(":")
         if host != "0.0.0.0" or not number.isdigit() or int(number) != port:
             errors.append(f"R15: {name} -listen={listen} must be 0.0.0.0:{port}, the service port")
     ports = [p for p in container.get("ports") or []]
-    if [p.get("containerPort") for p in ports] != [port]:
-        errors.append(f"R15: {name} containerPort {[p.get('containerPort') for p in ports]} must be only {port}")
+    want_ports = [port] + ([health] if health else [])
+    if [p.get("containerPort") for p in ports] != want_ports:
+        errors.append(f"R15: {name} containerPort {[p.get('containerPort') for p in ports]} must be {want_ports}")
     named = {p.get("name"): p.get("containerPort") for p in ports}
     for kind in ("startupProbe", "livenessProbe", "readinessProbe"):
         probe = container.get(kind) or {}
+        if health:
+            target = probe.get("httpGet")
+            if target is None:
+                errors.append(f"R15: {name} {kind} must be httpGet on the health port")
+                continue
+            want_path = "/readyz" if kind == "readinessProbe" else "/healthz"
+            if target.get("path") != want_path:
+                errors.append(f"R15: {name} {kind} path {target.get('path')} must be {want_path}")
+            number = named.get(target.get("port"), target.get("port"))
+            if number != health:
+                errors.append(f"R15: {name} {kind} port {target.get('port')} is not the health port {health}")
+            continue
         if "httpGet" in probe or "exec" in probe:
             errors.append(f"R15: {name} {kind} must be tcpSocket or grpc, not HTTP or exec")
             continue
@@ -375,6 +394,39 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
             errors.append(f"R11: {name} readiness gets cluster-scoped {group}/{resource} but has no ClusterRole get on it")
         if any(set(r["verbs"]) - {"get"} for r in rules):
             errors.append(f"R11: {name} needs only get on {group}/{resource}")
+    return errors
+
+
+def check_health(name: str, spec: dict, template: dict, container: dict) -> list[str]:
+    """healthPort: the env, the metrics port and the scrape annotations come from one value (#212)."""
+    errors: list[str] = []
+    health = spec.get("healthPort")
+    env = {e.get("name"): e for e in container.get("env") or []}
+    annotations = (template.get("metadata") or {}).get("annotations") or {}
+    if not health:
+        if "VWS_HEALTH_ADDR" in env:
+            errors.append(f"R15: {name} gets VWS_HEALTH_ADDR that values do not ask for")
+        if any(key.startswith("prometheus.io/") for key in annotations):
+            errors.append(f"R15: {name} gets scrape annotations that values do not ask for")
+        return errors
+    number = int(health)
+    if number < 1024 or number > 65535:
+        errors.append(f"R15: {name} healthPort {number} is outside 1024..65535")
+    port = int(spec.get("port", 8080))
+    if number == port:
+        errors.append(f"R15: {name} healthPort {number} must differ from port {port}")
+    entry = env.get("VWS_HEALTH_ADDR") or {}
+    want = f"0.0.0.0:{number}"
+    if entry.get("value") != want or "valueFrom" in entry:
+        errors.append(f"R15: {name} env VWS_HEALTH_ADDR must be {want}")
+    want_annotations = {
+        "prometheus.io/scrape": "true",
+        "prometheus.io/port": str(number),
+        "prometheus.io/path": "/metrics",
+    }
+    for key, value in want_annotations.items():
+        if annotations.get(key) != value:
+            errors.append(f"R15: {name} annotation {key} must be {value}")
     return errors
 
 
@@ -682,6 +734,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
         errors.extend(check_service_ports(name, spec, by_kind))
+        errors.extend(check_health(name, spec, wspec["template"], container))
         errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
@@ -948,12 +1001,15 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 broken_values["services"][ns_flag[0]]["flags"][ns_flag[1]] = {"namespace": others[0]}
                 if not any("no Role there" in err for err in check(docs, broken_values, release)):
                     return ["R14: a namespace flag without a Role in that namespace did not fail"]
-    # One port: -listen, containerPort and the probes. Probes are tcpSocket or grpc, never HTTP.
+    # One port: -listen, containerPort and the probes. Probes are tcpSocket or grpc, never HTTP,
+    # except a service's healthPort, which has its own httpGet probes.
     target = next(
         (
             n
             for n, spec in values["services"].items()
-            if service_rendered(spec) and (spec or {}).get("flags", {}).get("listen")
+            if service_rendered(spec)
+            and (spec or {}).get("flags", {}).get("listen")
+            and not (spec or {}).get("healthPort")
         ),
         None,
     )
@@ -982,6 +1038,74 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][target]["flags"]["listen"] = "127.0.0.1:%d" % int(values["services"][target].get("port", 8080))
         if not check(docs, broken_values, release):
             return ["R15: a -listen on 127.0.0.1 did not fail"]
+    # healthPort: the HTTP probes, the env address, the metrics port and the scrape annotations
+    # come from that one value (#212). Break each and check it fails.
+    health_name = next(
+        (
+            n
+            for n, spec in values["services"].items()
+            if service_rendered(spec) and (spec or {}).get("healthPort")
+        ),
+        None,
+    )
+    if health_name is not None:
+        def health_mutate(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == health_name:
+                    change(doc["spec"]["template"], doc["spec"]["template"]["spec"]["containers"][0])
+            return broken
+
+        def ready_tcp(template, container):
+            container["readinessProbe"].pop("httpGet")
+            container["readinessProbe"]["tcpSocket"] = {"port": "metrics"}
+
+        def live_path(template, container):
+            container["livenessProbe"]["httpGet"]["path"] = "/readyz"
+
+        def wrong_addr(template, container):
+            next(e for e in container["env"] if e["name"] == "VWS_HEALTH_ADDR")["value"] = "0.0.0.0:9"
+
+        def no_addr(template, container):
+            container["env"].remove(next(e for e in container["env"] if e["name"] == "VWS_HEALTH_ADDR"))
+
+        def no_annotation(template, container):
+            template["metadata"]["annotations"].pop("prometheus.io/port")
+
+        def no_metrics_port(template, container):
+            container["ports"] = [p for p in container["ports"] if p["name"] != "metrics"]
+
+        changes = (
+            ("a tcpSocket readiness", ready_tcp),
+            ("a liveness path that is not /healthz", live_path),
+            ("a literal health address", wrong_addr),
+            ("no health address", no_addr),
+            ("a missing scrape annotation", no_annotation),
+            ("no metrics container port", no_metrics_port),
+        )
+        for label, change in changes:
+            if not check(health_mutate(change), values, release):
+                return [f"R15: {label} did not fail"]
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") == "Service" and doc["metadata"]["name"] == health_name:
+                doc["spec"]["ports"] = [p for p in doc["spec"]["ports"] if p["name"] != "metrics"]
+        if not check(broken, values, release):
+            return ["R15: a missing metrics Service port did not fail"]
+        peers = f"{health_name}-peers"
+        if any(d.get("kind") == "Service" and d["metadata"]["name"] == peers for d in docs):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "Service" and doc["metadata"]["name"] == peers:
+                    doc["spec"]["ports"] = [p for p in doc["spec"]["ports"] if p["name"] != "metrics"]
+            if not check(broken, values, release):
+                return ["R15: a missing metrics port on the peers Service did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][health_name]["healthPort"] = int(
+            broken_values["services"][health_name].get("port", 8080)
+        )
+        if not check(docs, broken_values, release):
+            return ["R15: healthPort equal to port did not fail"]
     # gRPC health names and the readiness ClusterRole (vws-storage#39), when rendered.
     for hname, hspec in values["services"].items():
         if not service_rendered(hspec):
