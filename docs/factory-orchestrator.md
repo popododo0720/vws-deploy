@@ -52,7 +52,7 @@ PR edited the same `decide()` body in one 3,900-line file and left the rest DIRT
 The rules, in `REGISTRY` order: `owned_labels` (prunes the label-ownership journal), `verify_wake` (A),
 `ci_fail` (CI-failure marker notes), `deepseek` (B and C per item: failures, infra retries,
 dependencies, the dispatch queue), `grok_rework` (B4), `dispatch` (B, the DeepSeek slots), `grok` (G),
-`rebuild` (R), `lead` (L), `merge` (D), `ac_tick` (T), `guard_startup` (S, vws-deploy#446), `verify_labels` (V). A rule may import a pure
+`rebuild` (R), `lead` (L), `hold_release` (H, below), `merge` (D), `ac_tick` (T), `guard_startup` (S, vws-deploy#446), `verify_labels` (V). A rule may import a pure
 helper from another rule (`dispatch` uses `deepseek.triage`, `lead` uses `grok_rework.decide_grok_rework`).
 
 **Decision and merge.** A rule's `decide` returns `common.decision(actions, notes, state, **extra)`: its
@@ -396,6 +396,36 @@ as waiting for verify. Rule V then sets both labels from this table:
 Retiring `verify-queue.yml` (deleting it from vws-deploy and vws-console-api, closing the copy PRs, and
 dropping it from the drift `WORKFLOWS` list) is a follow-up of vws-deploy#487 once this rule runs live.
 
+## Rule H: serial-merge hold release (vws-deploy#501)
+
+A serial-merge hold parks a PR until another PR lands. It is an open PR labeled `hold` whose body has
+exactly one line `Held for: #N` (same repo) or `Held for: vws-<repo>#N`, and it must name an open PR. Each
+tick `rules/hold_release.py` resolves the target from the open issues and PRs collect already read (an
+active repo's open items are all in the snapshot), with no extra read:
+
+| target | result |
+|---|---|
+| an open PR (draft too) | the hold stays, nothing logged |
+| not in the snapshot of an active repo (merged, closed, or no such number) | `hold` comes off, note `hold_release` reason `target_not_open` |
+| an open issue | `hold` comes off, note `hold_release` reason `target_not_a_pr` |
+| in an archived or uncollected repo | the hold stays, note `hold_ref_unresolved` |
+
+- A `hold` with no `Held for:` line is a human hold and is never touched; nor is a `hold` on an issue.
+- More than one `Held for:` line, a value that is not `#N` or `vws-<repo>#N` (the owner/repo form too), or
+  the held PR itself keeps the hold (note `hold_ref_invalid`).
+- Trust (vws-deploy#439 class 1): the repos are public and a PR author can edit its body, so the line
+  counts only when the PR author (issue list `user` and `author_association`) is the repo owner or an
+  `OWNER`, `MEMBER` or `COLLABORATOR`. Everyone who can edit such a body could remove the label by hand.
+  Any other author keeps the hold (note `hold_ref_untrusted`).
+- Nothing while `ORCHESTRATE_MERGE=off`: a hold only matters for merges.
+- The removal is a `remove_label` pinned to the head it was decided on. `apply` reads `pulls/N` again
+  right before the DELETE and skips (`PR changed since collect: ...`) unless the PR is still open at that
+  head, still has `hold`, the same one `Held for:` target, and a trusted author. It counts toward
+  `ORCHESTRATE_MAX_WRITES` and `ORCHESTRATE_SCOPE` like every label write, a 404 "Label does not exist" is
+  done, and a written release logs `hold_released` (`target`, `held_for`, `reason`). Rule D sees the PR
+  without `hold` on the next tick. The note does not tell a merged target from a closed one: that would
+  need a read the decision does not otherwise use.
+
 ## Rule D: serialized merges (vws-deploy#346)
 
 A GitHub merge queue needs an organization-owned repo, and the vws repos are user-owned, so the
@@ -409,7 +439,7 @@ A PR is eligible only when all of these hold:
 |---|---|
 | not a draft, base `main` | `draft`, `base_not_main` (stacked PRs never merge) |
 | label `verify-approved` | `no_verify_approved` |
-| not opted out: no `do-not-merge`, `hold` or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status issue or the verify-wake thread | `opted_out` |
+| not opted out: no `do-not-merge`, `hold` (rule H releases a `Held for:` hold) or `blocked` label, no `<!-- vws-orchestrate:no-merge -->` in the body, not the status issue or the verify-wake thread | `opted_out` |
 | the newest `vws-verify` check run from the vws-verify App (id 5313004) on the **current head** is success | `verify_check_missing`, `verify_check_<conclusion>` |
 | a `verify-gate` check run from GitHub Actions (app id 15368) on the **current head**, at least one of them from a check suite of the workflow file `.github/workflows/repo-guard.yml` (either event; an unmapped suite does not count, vws-deploy#402), and every such run is success, even when `main`'s protection does not require it. The app id alone would accept a `verify-gate` job that a PR adds in a workflow file of its own | `verify_gate_missing`, `verify_gate_not_repo_guard`, `verify_gate_pending`, `verify_gate_<conclusion>` |
 | every required check of `main`'s rulesets and classic branch protection (bound to its app id) is success on the head, so a skipped or neutral required check never merges. One exception (vws-deploy#505): a `skipped` run passes when another run of the same name and app (another workflow or event key) concluded `success` on the head, because a workflow on both `pull_request` and `pull_request_target` skips its `pull_request`-only job on the other event; a failure, a pending run or a `neutral` still blocks, and `verify-gate` keeps its own stricter rule above. The classic list comes from the `protection` field of `branches/main`, never the protection API (the PAT gets 403 there, #408) | `required_missing:<name>`, `required_pending:<name>`, `required_<conclusion>:<name>`, `required_checks_unreadable` |
@@ -619,7 +649,7 @@ board is overwritten on the next sync. Design: vws-deploy#347.
     check runs, combined status, `rate_limit`; for rule D also `branches/main`,
     `rules/branches/main`, push Actions runs for one main commit, and `compare/<sha>...<sha>`;
   - POST: issue comments and issue labels;
-  - DELETE: only the labels `blocked`, `in-review`, `deepseek`, for rule V `needs-verify`, `verify-approved`, and for rule T `ac-partial`, `ac-pending`;
+  - DELETE: only the labels `blocked`, `in-review`, `deepseek`, for rule V `needs-verify`, `verify-approved`, for rule T `ac-partial`, `ac-pending`, and for rule H `hold` (a `Held for:` hold only);
   - PATCH: the status issue body; for rule T an issue body that only ticks criteria boxes, and a completed close;
   - PUT: only `pulls/N/merge` with `merge_method` squash and a 40-hex `sha` (rule D).
 - **Conditional reads:** reads send `If-None-Match`. A 304 is served from
