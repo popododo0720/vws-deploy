@@ -32,6 +32,7 @@ REGISTRY = (
     "dispatch",       # B: hand out the DeepSeek slots
     "grok",           # G
     "rebuild",        # R
+    "superseded",     # Z (#377): close a PR a newer rework or rebuild PR names as its source
     "lead",           # lead wake (#491)
     "hold_release",   # H (#501): a Held for: hold whose PR is no longer open loses hold
     "merge",          # D
