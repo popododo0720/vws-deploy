@@ -31,6 +31,8 @@ SECRET_NAME = re.compile(r"(?i)(passw|token|secret|credential|private|apikey|api
 NFS_CLASS = "vws-nfs"
 # vws-storage#73 README: Filesystem mode creates, reads and deletes CDI DataVolumes in the VM namespace.
 DATAVOLUME_RULE = {"namespace": "vms", "apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes"], "verbs": ["get", "list", "create", "delete"]}
+# The EBS volume types, in the order vws-storage documents them (vws-storage#123).
+VOLUME_TYPES = ("standard", "gp2", "gp3", "io1", "io2", "st1", "sc1")
 REFERENCE_NAMES = {"secrets", "secretName", "existingSecret"}
 
 
@@ -175,6 +177,30 @@ def excluded(items, net, path):
             raise Invalid(f"{path}[{i}]: {item} is not an ascending range inside {net}")
         out.append((a, b))
     return out
+
+
+def volume_type_flags(volume_types, services, base):
+    """spec.storage.volumeTypes -> one vws-storage -kube-volume-type=TYPE=CLASS[/MODE[/SNAPSHOTCLASS]] per
+    mapped type (vws-deploy#391, vws-storage#123). Empty trailing fields are left out, so vws-storage uses its
+    -kube-volume-mode and -kube-snapshot-class for them. A Filesystem type needs the datavolumes rule (#73)."""
+    if not volume_types:
+        return
+    items = []
+    for name in VOLUME_TYPES:
+        mapping = volume_types.get(name)
+        if mapping is None:
+            continue
+        fields = [mapping["storageClass"], mapping.get("volumeMode") or "", mapping.get("volumeSnapshotClass") or ""]
+        while fields[-1] == "":
+            fields.pop()
+        items.append(f"{name}=" + "/".join(fields))
+    storage_svc = services.setdefault("storage", {})
+    storage_svc.setdefault("repeatedFlags", {})["kube-volume-type"] = items
+    if any((m or {}).get("volumeMode") == "Filesystem" for m in volume_types.values()):
+        rbac = storage_svc.get("rbac") or copy.deepcopy(base["services"]["storage"]["rbac"])
+        if DATAVOLUME_RULE not in rbac:
+            rbac = rbac + [DATAVOLUME_RULE]
+        storage_svc["rbac"] = rbac
 
 
 def check_network(network):
@@ -384,6 +410,7 @@ def render(cr):
         storage_svc = services.setdefault("storage", {})
         storage_svc.setdefault("flags", {})["kube-volume-mode"] = "Filesystem"
         storage_svc["rbac"] = copy.deepcopy(base["services"]["storage"]["rbac"]) + [DATAVOLUME_RULE]
+    volume_type_flags(storage.get("volumeTypes") or {}, services, base)
     if driver == "nfs":
         # csi-driver-nfs takes no snapshots of a plain export: an empty class disables CreateSnapshot.
         services["storage"]["flags"]["kube-snapshot-class"] = ""

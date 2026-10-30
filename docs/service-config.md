@@ -24,6 +24,7 @@ services:
 - A flag value is a string, a boolean, an integer or `{namespace: <key>}`. `release` is a reserved key meaning the release namespace.
 - The `namespace` of an `rbac` rule is the same kind of key. If the key is not in `namespaces`, the render fails.
 - `pendingFlags` are flags the service image does not accept yet. They are added to `flags` only when `global.pendingFlags: true`.
+- `repeatedFlags` maps a flag name to a list of strings: the flag is given once per item, in list order, after `flags`, such as vws-storage `-kube-volume-type` (#391). An item has no whitespace, a list is not empty and has no duplicates, and a name must not also be in `flags`.
 - The chart creates the namespaces used by rules (except the release one) and annotates them with `helm.sh/resource-policy: keep`.
 
 ## Keys and flags per service

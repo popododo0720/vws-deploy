@@ -228,6 +228,22 @@
         "pendingFlags": {
           "$ref": "#/definitions/flags"
         },
+        "repeatedFlags": {
+          "type": "object",
+          "description": "Flags given once per list item, after flags, such as vws-storage -kube-volume-type (vws-deploy#391). A name must not also be in flags.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\s]+$"
+            }
+          }
+        },
         "grpcReadinessService": {
           "type": "string",
           "pattern": "^[A-Za-z][A-Za-z0-9_.]*$"

@@ -729,6 +729,12 @@ YAML
     'services: {network: {flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
     'services: {network: {kubeconfigSecret: x, flags: {kubeconfig: rel, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
     'services: {network: {flags: {kube-x: [a]}}}' \
+    'services: {storage: {repeatedFlags: {kube-volume-type: []}}}' \
+    'services: {storage: {repeatedFlags: {kube-volume-type: gp3=a}}}' \
+    'services: {storage: {repeatedFlags: {kube-volume-type: ["gp3=a b"]}}}' \
+    'services: {storage: {repeatedFlags: {kube-volume-type: [gp3=a, gp3=a]}}}' \
+    'services: {storage: {repeatedFlags: {Kube-X: [a]}}}' \
+    'services: {storage: {flags: {kube-volume-type: gp3=a}, repeatedFlags: {kube-volume-type: [gp3=b]}}}' \
     'services: {storage: {s3: {rgw: {enabled: true}}}}' \
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", existingSecret: ""}}}}' \
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", accessKey: x}}}}' \
@@ -1026,6 +1032,15 @@ cmd_profiles() {
     grep -q -e "- ${want}\$" "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not render ${want}"
   done
   grep -q -e 'name: lab-rgw' "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not reference existingSecret"
+  # spec.storage.volumeTypes reaches vws-storage as one -kube-volume-type arg per mapped type (#391).
+  sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    volumeTypes:\n      gp3: {storageClass: fast-rbd, volumeSnapshotClass: snap}\n      sc1: {storageClass: cold, volumeMode: Filesystem}/' \
+    examples/vwscluster/small.yaml > "$tmp/vt.cr.in.yaml"
+  scripts/vws render "$tmp/vt.cr.in.yaml" "$tmp/vt.values.yaml" >/dev/null || die "R19: vws render fails on a CR with volumeTypes"
+  helm template vws charts/vws --namespace vws -f "$tmp/vt.values.yaml" > "$tmp/vt.cr.yaml"
+  python3 scripts/check_render.py "$tmp/vt.cr.yaml" charts/vws/values.yaml vws "$tmp/vt.values.yaml" || die "R19: check_render rejects a CR with volumeTypes"
+  for want in -kube-volume-type=gp3=fast-rbd//snap -kube-volume-type=sc1=cold/Filesystem; do
+    grep -q -e "- ${want}\$" "$tmp/vt.cr.yaml" || die "R19: a CR with volumeTypes does not render ${want}"
+  done
   # Ceph overlays, rendered by scripts/platform.sh.
   for profile in single-node ha; do
     [[ -f build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml ]] || die "R19: run scripts/platform.sh first"
