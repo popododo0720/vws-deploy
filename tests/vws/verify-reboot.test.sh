@@ -54,7 +54,7 @@ if jq -e '[.podCounts[]] | add == 3000' "${WORK}/snap-big.json" >/dev/null 2>&1;
 expect_text "the krbd check still runs" "$OUT" "OK    krbd  no RBD volume attached"
 
 # A list that cannot be read makes the snapshot fail (3) without a file, so nobody reboots unchecked.
-for resource in pods volumeattachments; do
+for resource in pods volumeattachments virtualmachineinstances; do
   scenario "unreadable-${resource}"
   rm "${VWS_FAKE_DIR}/kubectl/get_${resource}.json"
   run_vws_real verify-reboot --snapshot "${WORK}/snap-${resource}.json"; expect_rc "unreadable ${resource} exits 3" 3
@@ -62,6 +62,54 @@ for resource in pods volumeattachments; do
   expect_text "unreadable ${resource} says do not reboot" "$ERR" "do not reboot"
   if [[ ! -e ${WORK}/snap-${resource}.json ]]; then ok "unreadable ${resource} leaves no snapshot"; else bad "snapshot left" "${resource}"; fi
 done
+
+# #189: kubectl drain refuses a pod with no controller, so --snapshot must fail on it.
+scenario unmanaged-pod
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a"'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-unmanaged.json"; expect_rc "a controller-less pod on a node exits 1" 1
+expect_text "the controller-less pod is named" "$OUT" "FAIL  drain  vws/compute-0 on node-a has no controller"
+expect_text "the controller-less pod offers the allow flag" "$OUT" "--allow-unmanaged-pod vws/compute-0"
+if [[ ! -e ${WORK}/snap-unmanaged.json ]]; then ok "a controller-less pod leaves no snapshot"; else bad "snapshot left" "unmanaged"; fi
+run_vws_real verify-reboot --snapshot "${WORK}/snap-unmanaged.json" --allow-unmanaged-pod vws/compute-0; expect_rc "an allowlisted controller-less pod exits 0" 0
+
+scenario managed-pod
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].metadata.ownerReferences = [{"kind": "StatefulSet", "name": "compute"}]'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-managed.json"; expect_rc "a pod with an ownerReference exits 0" 0
+
+scenario finished-pod
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].status.phase = "Succeeded"'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-finished.json"; expect_rc "a finished controller-less pod exits 0" 0
+
+scenario unscheduled-pod
+run_vws_real verify-reboot --snapshot "${WORK}/snap-unscheduled.json"; expect_rc "a controller-less pod with no nodeName exits 0" 0
+if [[ $OUT != *"FAIL  drain"* ]]; then ok "an unscheduled controller-less pod is not a FAIL"; else bad "unscheduled pod failed" "$OUT"; fi
+
+scenario bad-unmanaged-pod
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a"'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-bad-unmanaged.json" --allow-unmanaged-pod compute-0; expect_rc "--allow-unmanaged-pod without a namespace exits 2" 2
+VWS_VERIFY_ALLOW_UNMANAGED_PODS=vws/compute-0 run_vws_real verify-reboot --snapshot "${WORK}/snap-bad-unmanaged.json"; expect_rc "the environment cannot allow a controller-less pod" 1
+
+# #189: draining a node restarts a VMI that has no evictionStrategy instead of live-migrating it.
+scenario vmi-no-strategy
+edit_json get_virtualmachineinstances.json 'del(.items[0].spec.evictionStrategy)'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-vmi.json"; expect_rc "a VMI without an evictionStrategy exits 1" 1
+expect_text "the VMI without an evictionStrategy is named" "$OUT" "FAIL  eviction  vws-vms/vm-a on node-a has no evictionStrategy"
+expect_text "the VMI offers the allow flag" "$OUT" "--allow-vm-restart vws-vms/vm-a"
+if [[ ! -e ${WORK}/snap-vmi.json ]]; then ok "a VMI without an evictionStrategy leaves no snapshot"; else bad "snapshot left" "vmi"; fi
+run_vws_real verify-reboot --snapshot "${WORK}/snap-vmi.json" --allow-vm-restart vws-vms/vm-a; expect_rc "an allowlisted VMI restart exits 0" 0
+
+scenario vmi-none
+edit_json get_virtualmachineinstances.json '.items[0].spec.evictionStrategy = "None"'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-vmi-none.json"; expect_rc "a VMI with evictionStrategy None exits 1" 1
+
+scenario vmi-unscheduled
+edit_json get_virtualmachineinstances.json 'del(.items[0].spec.evictionStrategy) | del(.items[0].status.nodeName)'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-vmi-unscheduled.json"; expect_rc "a VMI with no nodeName and no evictionStrategy exits 0" 0
+
+scenario bad-vm-restart
+edit_json get_virtualmachineinstances.json 'del(.items[0].spec.evictionStrategy)'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-bad-vm.json" --allow-vm-restart vm-a; expect_rc "--allow-vm-restart without a namespace exits 2" 2
+VWS_VERIFY_ALLOW_VM_RESTARTS=vws-vms/vm-a run_vws_real verify-reboot --snapshot "${WORK}/snap-bad-vm.json"; expect_rc "the environment cannot allow a VMI restart" 1
 
 # #150: the drain gate. A reboot goes ahead only when the node is cordoned and has no RBD attachment.
 drain_case() { # NAME UNSCHEDULABLE ATTACHED WANT_RC TEXT
