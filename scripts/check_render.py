@@ -30,6 +30,27 @@ ALLOWED_KINDS = {
 }
 
 
+# R24: a production render refuses the placeholder values that development and lab values keep.
+# The list is the documentation IPv4 ranges (RFC 5737), the documentation IPv6 range (RFC 3849),
+# the reserved domains (RFC 2606), and display strings such as CHANGE_ME. One function holds the
+# list; it takes values and rendered docs, so a caller needs no profile key in values.
+DOCUMENTATION_NETWORKS = tuple(
+    ipaddress.ip_network(text)
+    for text in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32")
+)
+RESERVED_DOMAIN = re.compile(
+    r"(?<![\w-])(?:(?:[a-z0-9-]+\.)*example\.(?:com|org|net)"
+    r"|(?:[a-z0-9-]+\.)+(?:example|invalid|test|localhost))(?![\w.-])"
+)
+IPV4_CANDIDATE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
+IPV6_CANDIDATE = re.compile(
+    r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}(?:/\d{1,3})?(?![0-9A-Fa-f:])"
+)
+DISPLAY_PLACEHOLDER = re.compile(r"(?i)(?<![a-z0-9])(change_me|changeme|todo)(?![a-z0-9])")
+ANGLE_PLACEHOLDER = re.compile(r"<[^<>]+>")
+PLACEHOLDER_PROFILE = "production"
+
+
 # Resources a ClusterRole rule may name. Everything else is namespaced and needs a rule with a
 # namespace. The kubeovn.io entries are the CRDs of the pinned bundle that VWS writes; their
 # scope is Cluster in the rendered Kube-OVN CRDs.
@@ -1411,15 +1432,95 @@ def deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
+def placeholder_reason(text: str) -> str:
+    for pattern in (IPV4_CANDIDATE, IPV6_CANDIDATE):
+        for candidate in pattern.findall(text):
+            try:
+                network = ipaddress.ip_network(candidate, strict=False)
+            except ValueError:
+                continue
+            if any(
+                network.version == doc.version and network.subnet_of(doc)
+                for doc in DOCUMENTATION_NETWORKS
+            ):
+                return "documentation address range (RFC 5737/RFC 3849)"
+    if RESERVED_DOMAIN.search(text.lower()):
+        return "reserved domain (RFC 2606)"
+    if DISPLAY_PLACEHOLDER.search(text):
+        return "display placeholder"
+    if ANGLE_PLACEHOLDER.search(text):
+        return "display placeholder"
+    return ""
+
+
+def placeholder_errors(values: dict, docs: list[dict]) -> list[str]:
+    """The placeholder values a production render refuses, with their key path."""
+    errors: list[str] = []
+
+    def inspect(text: str, path: str) -> None:
+        reason = placeholder_reason(text)
+        if reason:
+            errors.append(f"R24: {path}: {text} is a placeholder ({reason})")
+
+    def walk(value, path: str) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+        elif isinstance(value, str):
+            inspect(value, path)
+
+    walk(values, "")
+    for doc in docs:
+        if doc.get("kind") not in ("Deployment", "StatefulSet"):
+            continue
+        name = doc.get("metadata", {}).get("name", "workload")
+        pod = (((doc.get("spec") or {}).get("template") or {}).get("spec") or {})
+        for container in pod.get("containers") or []:
+            for arg in container.get("args") or []:
+                key, _, value = str(arg).partition("=")
+                inspect(value, f"{name} args {key}")
+    return list(dict.fromkeys(errors))
+
+
+def split_profile(argv: list[str]) -> tuple[str, list[str], str]:
+    profile = ""
+    args: list[str] = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--profile":
+            if index + 1 >= len(argv):
+                return "", [], "--profile needs a value"
+            profile = argv[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--profile="):
+            profile = arg.split("=", 1)[1]
+            index += 1
+            continue
+        args.append(arg)
+        index += 1
+    return profile or "dev", args, ""
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) < 4:
-        print("usage: check_render.py RENDERED.yaml VALUES.yaml RELEASE [OVERRIDE.yaml...]", file=sys.stderr)
+    profile, args, error = split_profile(argv[1:])
+    if error:
+        print(f"check_render: {error}", file=sys.stderr)
         return 2
-    docs = load_docs(Path(argv[1]).read_text())
-    values = yaml.safe_load(Path(argv[2]).read_text())
-    for override in argv[4:]:
+    if len(args) < 3:
+        print("usage: check_render.py [--profile PROFILE] RENDERED.yaml VALUES.yaml RELEASE [OVERRIDE.yaml...]", file=sys.stderr)
+        return 2
+    docs = load_docs(Path(args[0]).read_text())
+    values = yaml.safe_load(Path(args[1]).read_text())
+    for override in args[3:]:
         values = deep_merge(values, yaml.safe_load(Path(override).read_text()))
-    errors = self_test(docs, values, argv[3])
+    errors = self_test(docs, values, args[2])
+    if profile == PLACEHOLDER_PROFILE:
+        errors += placeholder_errors(values, docs)
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0
