@@ -8,7 +8,7 @@ Versions and the sha256 of downloaded files live only in `scripts/versions.env`.
 
 | Component | Variable | How it is installed |
 | --- | --- | --- |
-| Multus | `MULTUS_VERSION` | Upstream thick daemonset manifest. Only the `kube-multus` memory is changed, to request 100Mi and limit 300Mi (the upstream 50Mi was OOMKilled on node reboots, #88) |
+| Multus | `MULTUS_VERSION` | Upstream thick daemonset manifest. The image is rewritten to the pinned release tag and digest because the upstream manifest points at the moving `snapshot-thick` tag (#202). The `kube-multus` memory is changed to request 100Mi and limit 300Mi (the upstream 50Mi was OOMKilled on node reboots, #88) |
 | Kube-OVN | `KUBEOVN_VERSION` | Helm chart `kube-ovn`, values `platform/kube-ovn.values.yaml` |
 | Rook operator | `ROOK_VERSION` | Helm chart `rook-ceph`, values `platform/rook-ceph.values.yaml` |
 | Rook Ceph cluster | `ROOK_VERSION` | Helm chart `rook-ceph-cluster`, values `platform/rook-ceph-cluster.values.yaml` |
