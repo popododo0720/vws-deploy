@@ -134,9 +134,17 @@ services:
     # (sha256:a8d7e7aa…, revision 1b62a87) on merge. ko sets the entrypoint /ko-app/vws-compute,
     # user 65532; this chart passes only args, never command. spec.version does not move it.
     imageTag: sha-1b62a87
-    # port is the container port, the probe port and, through flags.listen, the gRPC listen port.
+    # port is the container port and, through flags.listen, the gRPC listen port.
     # scripts/guard.sh config fails when they differ.
     port: 50051
+    # healthPort is the second, HTTP listener of vws-compute. The chart sets env
+    # VWS_HEALTH_ADDR=0.0.0.0:<healthPort>, names the container and Service port metrics, and
+    # probes /healthz (startup and liveness) and /readyz (readiness) there. vws-compute
+    # internal/obs (1cb732f, in image sha-1b62a87) serves those paths and /metrics, and /readyz
+    # follows the same verdict as grpc.health.v1, so a dependency outage marks the pod unready
+    # instead of restarting it. The pod carries prometheus.io scrape annotations on this port;
+    # the chart renders no ServiceMonitor because it installs no Prometheus operator (#212).
+    healthPort: 8081
     # The KubeVirt agent and its flags are on vws-compute main (vws-compute#23, #44); the image
     # default -hypervisor=fake keeps no VM anywhere (#121). -storage is the vws-storage address
     # CreateInstance checks volumes against; empty answers DEPENDENCY_MISSING (cmd/vws-compute/config.go).

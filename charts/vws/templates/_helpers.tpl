@@ -149,14 +149,20 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- end -}}
 
 {{/*
-Probes of every service. global.probe picks the check: tcp (default) opens the container port,
-grpc calls grpc.health.v1 on it and needs the service to implement that. A service with
-grpcReadinessService gets grpc probes on its own (always, #110): liveness and
-startup ask the empty service name, readiness asks grpcReadinessService. No HTTP probes: the
-services speak gRPC and have no /healthz. The port is the service port from values.
+Probes of every service. A service with healthPort gets httpGet probes on its metrics port:
+/healthz for startup and liveness, /readyz for readiness. Otherwise global.probe picks the check:
+tcp (default) opens the container port, grpc calls grpc.health.v1 on it and needs the service to
+implement that. A service with grpcReadinessService gets grpc probes on its own (always, #110):
+liveness and startup ask the empty service name, readiness asks grpcReadinessService. Only a
+service with healthPort gets an HTTP probe; the others speak gRPC and have no /healthz. The port
+is the service port from values.
 */}}
 {{- define "vws.probe" -}}
-{{- if or (eq .root.Values.global.probe "grpc") .grpcReady }}
+{{- if .healthPort }}
+httpGet:
+  path: {{ .path }}
+  port: metrics
+{{- else if or (eq .root.Values.global.probe "grpc") .grpcReady }}
 grpc:
   port: {{ .port }}
   {{- if and .readiness .grpcReady }}
@@ -170,17 +176,17 @@ tcpSocket:
 
 {{- define "vws.probes" -}}
 startupProbe:
-  {{- include "vws.probe" . | nindent 2 }}
+  {{- include "vws.probe" (merge (dict "path" "/healthz") .) | nindent 2 }}
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: {{ .threshold }}
 livenessProbe:
-  {{- include "vws.probe" . | nindent 2 }}
+  {{- include "vws.probe" (merge (dict "path" "/healthz") .) | nindent 2 }}
   periodSeconds: 10
   timeoutSeconds: 2
   failureThreshold: 3
 readinessProbe:
-  {{- include "vws.probe" (merge (dict "readiness" true) .) | nindent 2 }}
+  {{- include "vws.probe" (merge (dict "path" "/readyz" "readiness" true) .) | nindent 2 }}
   periodSeconds: 5
   timeoutSeconds: 2
   failureThreshold: 2
@@ -190,6 +196,12 @@ readinessProbe:
 metadata:
   labels:
     {{- include "vws.labels" . | nindent 4 }}
+  {{- if .healthPort }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .healthPort | quote }}
+    prometheus.io/path: /metrics
+  {{- end }}
 spec:
   restartPolicy: Always
   serviceAccountName: {{ .name }}
@@ -222,9 +234,17 @@ spec:
       ports:
         - name: http
           containerPort: {{ .port }}
+        {{- if .healthPort }}
+        - name: metrics
+          containerPort: {{ .healthPort }}
+        {{- end }}
       env:
         - name: VWS_SERVICE_NAME
           value: {{ .name | quote }}
+        {{- if .healthPort }}
+        - name: VWS_HEALTH_ADDR
+          value: {{ printf "0.0.0.0:%d" (int .healthPort) | quote }}
+        {{- end }}
         {{- with .portEnv }}
         - name: {{ . }}
           value: {{ $.port | quote }}
