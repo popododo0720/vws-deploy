@@ -99,6 +99,29 @@ class PartialRewake(unittest.TestCase):
                 self.assertEqual(woke(r), [])
                 self.assertIn("vws-iam#1", in_flight(r))
 
+    def test_open_pr_after_partial_wake_keeps_the_slot(self):
+        # Live over-release (console-api#324, deploy#391): an older PR merged after the original wake,
+        # the partial wake went out, then Grok opened a new PR. The open PR flipped ac_partial_idle off,
+        # the slot key fell back to the original wake key, and its merged PR read as grok_task_done.
+        part = orch.ac_partial_key("vws-iam#1", partial())
+        act = {"comments": [ts(1)], "assigned": [ts(1)],
+               "prs": [{"key": "vws-iam#539", "merged_at": ts(2)}, {"key": "vws-iam#20", "merged_at": ""}]}
+        pr = item("vws-iam", 20, is_pr=True, labels=("grok",), body="Part of #1\n")
+        r = run(snap(partial(activity=act), pr, keys=(part,)))
+        self.assertEqual([n for n in r["notes"] if n.get("kind") == "grok_task_done"], [])
+        self.assertEqual(woke(r), [])
+        self.assertIn("vws-iam#1", in_flight(r))
+
+    def test_release_keeps_the_slot_while_a_linked_pr_is_open(self):
+        it = partial(activity={"comments": [], "assigned": [], "prs": [{"key": "vws-iam#539", "merged_at": ts(2)}]})
+        pr = item("vws-iam", 20, is_pr=True, labels=("grok",), body="Part of #1\n")
+        items = {"vws-iam#1": it, "vws-iam#20": pr}
+        self.assertEqual(orch.grok_release("vws-iam#1", it, items, ts(3), NOW, 60), ("", {}))
+        it["body"] = DONE
+        self.assertEqual(orch.grok_release("vws-iam#1", it, items, ts(3), NOW, 60), ("", {}))
+        del items["vws-iam#20"]
+        self.assertEqual(orch.grok_release("vws-iam#1", it, items, ts(3), NOW, 60)[0], "grok_task_done")
+
     def test_assigned_without_a_partial_tick_still_holds(self):
         # No ac-partial, and a checkbox outside the acceptance-criteria heading, are not a slice.
         outside = "- [x] note\n- [ ] other\n"
