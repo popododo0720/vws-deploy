@@ -578,8 +578,28 @@ ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-com
 sys.exit(0 if ok else 1)
 PY
 
-  ! grep -q -e 'httpGet' "$tmp/default.yaml" || die "R15: a service probe is HTTP; the services have no /healthz"
+  grep -q -e 'name: VWS_HEALTH_ADDR' "$tmp/default.yaml" || die "R15: compute has no VWS_HEALTH_ADDR (#212)"
+  grep -q -e 'path: /readyz' "$tmp/default.yaml" || die "R15: compute readiness does not use /readyz (#212)"
+  grep -q -e 'prometheus.io/scrape: "true"' "$tmp/default.yaml" || die "R15: compute has no metrics scrape target (#212)"
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
+  python3 - "$tmp/default.yaml" charts/vws/values.yaml <<'PY' || die "R15: HTTP probes must match the services with healthPort (#212)"
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+values = yaml.safe_load(open(sys.argv[2]))
+health = {
+    name
+    for name, spec in values["services"].items()
+    if isinstance(spec, dict) and spec.get("enabled", True) is not False and spec.get("healthPort")
+}
+http = {
+    d["metadata"]["name"]
+    for d in docs
+    if d.get("kind") in ("Deployment", "StatefulSet")
+    for c in d["spec"]["template"]["spec"]["containers"]
+    if any("httpGet" in c.get(k, {}) for k in ("startupProbe", "livenessProbe", "readinessProbe"))
+}
+sys.exit(0 if http == health else 1)
+PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
   python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
   grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
@@ -741,6 +761,10 @@ YAML
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: abcdefghij123456789}}}}' \
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: Acme}}}}' \
     'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: -acme}}}}' \
+    'services: {compute: {healthPort: 80}}' \
+    'services: {compute: {healthPort: "8081"}}' \
+    'services: {compute: {healthPort: 50051}}' \
+    'services: {compute: {healthPort: 8081, healthzPath: /livez}}' \
     'global: {probe: http}'; do
     printf '%s\n' "$bad" > "$tmp/bad.yaml"
     if helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
