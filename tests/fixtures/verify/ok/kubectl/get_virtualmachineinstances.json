@@ -1,0 +1,16 @@
+{
+ "items": [
+  {
+   "metadata": {
+    "namespace": "vws-vms",
+    "name": "vm-a"
+   },
+   "spec": {
+    "evictionStrategy": "LiveMigrate"
+   },
+   "status": {
+    "nodeName": "node-a"
+   }
+  }
+ ]
+}

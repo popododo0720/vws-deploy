@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # summary: record the state before a reboot and check recovery after it (read only, never reboots)
-# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
+# Sourced by scripts/vws. Usage: vws verify-reboot --snapshot FILE [--allow-unmanaged-pod NS/NAME]... [--allow-vm-restart NS/NAME]... | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]
 # #43 section 8. --snapshot writes counts and names only: services ready/desired, pod counts per
 # namespace, stateful PVC names and phase, ConfigMap key counts, runStrategy Always VMs, node names
 # and boot IDs, restartCount per container of the release's pods. No pod UID, no data, no Secret.
+# It exits 1 and writes no file when a pod on a node declares no controller or a VMI on a node has
+# no spec.evictionStrategy, unless --allow-unmanaged-pod or --allow-vm-restart names it (#189).
 # --check passes the gates in boot order, each with its time: api, nodes, cni, csi, bundle, services.
 # A gate that cannot pass (a node gone, Ceph HEALTH_ERR, an operator Failed, a service without a
 # workload) exits 1; a gate still waiting at --timeout exits 3. Either way the blocked gate is the
@@ -18,6 +20,8 @@ VWS_VERIFY_RESTARTS=${VWS_VERIFY_RESTARTS:-3}
 VWS_VERIFY_INTERVAL=${VWS_VERIFY_INTERVAL:-10}
 VWS_VERIFY_SELECTOR=app.kubernetes.io/part-of=vws
 VWS_VERIFY_ALLOW_HEALTH_CHECKS=
+VWS_VERIFY_ALLOW_UNMANAGED_PODS=
+VWS_VERIFY_ALLOW_VM_RESTARTS=
 VWS_VERIFY_CEPH_HEALTH_FILE=
 VWS_VERIFY_SKIP_CEPH=
 
@@ -41,7 +45,9 @@ vws_verify_snapshot() {
   vws_verify_save "${dir}/pvc" pvc -n "$release"
   vws_verify_save "${dir}/cm" configmaps -n "$release" -l "$VWS_VERIFY_SELECTOR"
   vws_verify_save "${dir}/vm" virtualmachines -A
+  vws_verify_save "${dir}/vmi" virtualmachineinstances -A
   vws_verify_save "${dir}/va" volumeattachments
+  vws_verify_drainable "${dir}/pods" "${dir}/vmi" || vws_verify_exit 1
   umask 077
   if ! jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ns "$release" \
     --slurpfile nodes "${dir}/nodes" --slurpfile pods "${dir}/pods" --slurpfile w "${dir}/w" \
@@ -80,6 +86,37 @@ vws_verify_infra() {
   else
     vws_emit OK infra "KubeVirt infra pods can run on ${count%% *} nodes (${count#* } placement)"
   fi
+}
+
+# vws_verify_drainable PODS_FILE VMIS_FILE: issue #189. kubectl drain refuses a pod with no
+# controller (ownerReferences), and a VMI with no spec.evictionStrategy is shut down and restarted
+# elsewhere instead of live-migrated. One FAIL per offending object; returns 1 when it emitted one,
+# so --snapshot writes no file. A list that cannot be read is 3, never a silent pass.
+vws_verify_drainable() { # PODS_FILE VMIS_FILE
+  local bad found=0 name message
+  bad=$(jq -rn --arg pods_allow "${VWS_VERIFY_ALLOW_UNMANAGED_PODS:-}" \
+    --arg vmis_allow "${VWS_VERIFY_ALLOW_VM_RESTARTS:-}" \
+    --slurpfile pods "$1" --slurpfile vmis "$2" '
+      ($pods_allow | split(",") | map(select(. != ""))) as $okp
+      | ($vmis_allow | split(",") | map(select(. != ""))) as $okv
+      | ($pods[0].items[]
+          | select(.spec.nodeName != null and ((.metadata.ownerReferences // []) | length) == 0)
+          | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+          | "\(.metadata.namespace)/\(.metadata.name)" as $id
+          | select($okp | index($id) | not)
+          | "drain\t\($id) on \(.spec.nodeName) has no controller: kubectl drain refuses to delete it; delete it or pass --allow-unmanaged-pod \($id) to accept it"),
+        ($vmis[0].items[]
+          | select(.status.nodeName != null)
+          | select((.spec.evictionStrategy // "") == "" or .spec.evictionStrategy == "None")
+          | "\(.metadata.namespace)/\(.metadata.name)" as $id
+          | select($okv | index($id) | not)
+          | "eviction\t\($id) on \(.status.nodeName) has no evictionStrategy: drain shuts it down and restarts it elsewhere instead of live-migrating; set evictionStrategy LiveMigrate on its VirtualMachine or pass --allow-vm-restart \($id) to accept a restart")') ||
+    vws_die_env "snapshot failed: cannot read pods or virtualmachineinstances; do not reboot"
+  while IFS=$'\t' read -r name message && [[ -n $name ]]; do
+    vws_emit FAIL "$name" "$message"
+    found=1
+  done <<<"$bad"
+  return "$found"
 }
 
 # vws_verify_save FILE RESOURCE [ARGS...]: the list as JSON in FILE, or exit 3.
@@ -297,14 +334,18 @@ vws_verify_check() {
 }
 
 vws_cmd_main() {
-  VWS_VERIFY_ALLOW_HEALTH_CHECKS='' VWS_VERIFY_CEPH_HEALTH_FILE='' VWS_VERIFY_SKIP_CEPH=''
-  local snapshot='' check='' drained='' timeout='' seconds release usage="usage: vws verify-reboot --snapshot FILE | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]"
+  VWS_VERIFY_ALLOW_HEALTH_CHECKS='' VWS_VERIFY_ALLOW_UNMANAGED_PODS='' VWS_VERIFY_ALLOW_VM_RESTARTS='' VWS_VERIFY_CEPH_HEALTH_FILE='' VWS_VERIFY_SKIP_CEPH=''
+  local snapshot='' check='' drained='' timeout='' seconds release usage="usage: vws verify-reboot --snapshot FILE [--allow-unmanaged-pod NS/NAME]... [--allow-vm-restart NS/NAME]... | --drained NODE [--timeout 5m] | --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]"
   while (($#)); do
     case $1 in
       --snapshot) (($# >= 2)) || vws_usage "--snapshot needs a file"; snapshot=$2; shift 2 ;;
       --check) (($# >= 2)) || vws_usage "--check needs a file"; check=$2; shift 2 ;;
       --allow-health-check) (($# >= 2)) && [[ $2 =~ ^[A-Z0-9_]+$ ]] || vws_usage "--allow-health-check needs a Ceph health check code such as AUTH_INSECURE_KEYS_ALLOWED"
         VWS_VERIFY_ALLOW_HEALTH_CHECKS+="${VWS_VERIFY_ALLOW_HEALTH_CHECKS:+,}$2"; shift 2 ;;
+      --allow-unmanaged-pod) (($# >= 2)) && [[ $2 =~ ^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9.-]*$ ]] || vws_usage "--allow-unmanaged-pod needs NAMESPACE/NAME"
+        VWS_VERIFY_ALLOW_UNMANAGED_PODS+="${VWS_VERIFY_ALLOW_UNMANAGED_PODS:+,}$2"; shift 2 ;;
+      --allow-vm-restart) (($# >= 2)) && [[ $2 =~ ^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9.-]*$ ]] || vws_usage "--allow-vm-restart needs NAMESPACE/NAME"
+        VWS_VERIFY_ALLOW_VM_RESTARTS+="${VWS_VERIFY_ALLOW_VM_RESTARTS:+,}$2"; shift 2 ;;
       --ceph-health-file) (($# >= 2)) || vws_usage "--ceph-health-file needs a file"; VWS_VERIFY_CEPH_HEALTH_FILE=$2; shift 2 ;;
       --skip-ceph-gate) VWS_VERIFY_SKIP_CEPH=1; shift ;;
       --drained) (($# >= 2)) || vws_usage "--drained needs a node"; drained=$2; shift 2 ;;
