@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/vws/run.sh: the total covers every suite, so an injected FAIL in any suite is counted and fails the run.
+# A suite that prints no summary and a run that finds no suites fail too.
 set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -44,6 +45,25 @@ suite a-pass 'ok one; exit 3'
 run_runner
 expect_rc "a suite that dies before its summary: exit 1" 1
 expect_text "a suite that dies before its summary counts" "$OUT" "1 failed in 2 suites"
+
+# A suite that exits 0 without a summary is named and counts as failed.
+suite a-pass 'ok one; ok two'
+run_runner
+expect_rc "a suite that exits 0 without its summary: exit 1" 1
+expect_text "a suite that exits 0 without its summary is named" "$OUT" "no summary: ${suites}/a-pass.test.sh"
+expect_text "a suite that exits 0 without its summary counts" "$OUT" "total: 1 cases, 1 failed in 2 suites"
+
+# No suites at all is a failure, so a typo in VWS_TEST_DIR cannot pass.
+empty="${WORK}/empty"
+mkdir -p "$empty"
+set +e
+OUT=$(VWS_TEST_DIR="$empty" bash "$RUNNER" 2>&1)
+RC=$?
+set -e
+ERR=$OUT
+expect_rc "no suites found: exit 1" 1
+expect_text "no suites found names the directory" "$OUT" "no suites found in ${empty}"
+expect_text "no suites found has no total of zero failures" "$OUT" "total: 0 cases, 1 failed in 0 suites"
 
 # Control: the runner from before this fix prints only per-suite lines; its last count line says 0 failed.
 old="${WORK}/old"
