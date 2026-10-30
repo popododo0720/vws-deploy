@@ -1,6 +1,6 @@
 # Service configuration (flags) and namespaces
 
-The chart passes service configuration through one structure in `charts/vws/values.yaml`. It uses flags only, no environment variables. The design is vws-deploy#30 and #32. The values schema (`values.schema.json`) enforces the format.
+The chart passes service configuration through one structure in `charts/vws/values.yaml`. It uses flags, plus the listener env keys (`portEnv`, `healthPort`) and Secret references. The design is vws-deploy#30 and #32. The values schema (`values.schema.json`) enforces the format.
 
 ## Values structure
 
@@ -31,7 +31,7 @@ services:
 
 The evidence comes from reading `cmd/*/main.go` on origin/main of each service repository (compute `df28dbd`, storage `77450d5`, network `890dbaf`). Line numbers refer to those commits.
 
-| Service | values key (`services.<name>.flags`) | Argument | Default | Code |
+| Service | values key | Argument or env | Default | Code |
 | --- | --- | --- | --- | --- |
 | storage | `block-backend: kube` | `-block-backend=kube` | `fake` is the code default | `cmd/vws-storage/main.go:44` |
 | storage | `kube-namespace: {namespace: vms}` | `-kube-namespace=<vms>` | shared by PVCs and snapshots | `main.go:47` |
@@ -53,6 +53,7 @@ The evidence comes from reading `cmd/*/main.go` on origin/main of each service r
 | network | `kube-vm-namespace: {namespace: vms}` | `-kube-vm-namespace=<vms>` | code default is empty. When an address attaches to an instance, it creates the OvnFip with that VMI's interface IP. The chart always passes it and adds a VMI get/list/watch Role in the same namespace | vws-network `ac269d0` (#87) `main.go:42` |
 | network | `kube-snat` | `-kube-snat=true` | off. Needs an external subnet | `main.go:28` |
 | iam | `enabled: false`, `replicas: 2`, `imageTag: sha-74a29dc`, `listen: 0.0.0.0:9095`, `namespace: {namespace: release}`, `kekSecret`, `allowFrom`, `rbac` | `-listen=…`, `-namespace=<release namespace>` (the kube store, #369), env `VWS_IAM_KEK`/`VWS_IAM_KEK_ID` (secretKeyRef), NetworkPolicy on numeric TCP port 9095 | left out of the default render. `imageTag` is `sha-74a29dc` (digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`, vws-iam#113, go1.26.9). An anonymous manifest request returned HTTP 200 on 2026-10-16 (`docs/iam-install.md`). Two replicas share the kube store in the release namespace (#369, `docs/iam-install.md`). The binary's `-listen` default is `127.0.0.1:9095`. `-health-listen` stays `127.0.0.1:9096` and is not passed | vws-iam `-listen` / `-health-listen` / `-namespace` |
+| compute | `healthPort: 8081` | env `VWS_HEALTH_ADDR=0.0.0.0:8081` (the default of `-http`), plus `-listen=0.0.0.0:50051` | unset serves no health listener. `-http` itself is not passed | vws-compute `internal/obs` (1cb732f) `cmd/vws-compute/config.go` |
 | network | `vm-mtu` | `-vm-mtu=<MTU>` | code default 9001, 68–9001. `vws render` always writes it from `spec.network.vmMTU` (#236, `docs/vm-mtu.md`). It becomes the VPC Subnet's `spec.mtu` and the DHCP `mtu` option | vws-network main (#93, #94) `main.go:28` |
 
 - The schema requires `kube-external-subnet` and `kube-nad-namespace` when `kubeconfig` is set, and `kube-external-subnet` when `kube-snat` is set (vws-deploy#30). Rendering with a missing value is refused.
@@ -62,12 +63,13 @@ The evidence comes from reading `cmd/*/main.go` on origin/main of each service r
 ## Ports and probes (vws-deploy#39)
 
 - A service's `-listen` default is `127.0.0.1`, which is unreachable from outside the pod (compute `main.go:33`, storage `main.go:40`, network `main.go:22`). All three services pass `flags.listen: 0.0.0.0:<port>` in values. The default ports equal the service code's default ports (compute 50051, storage 7400, network 8080).
-- A service's single `port` key is the reference for the container port, the probe port and the `-listen` port. If the three differ, `scripts/guard.sh config` (R15) fails.
-- Probes are not HTTP. The services' non-vendor Go code has no `healthz`, `readyz` or `grpc_health` (as of the three commits above; this is only evidence of absence). The default is `tcpSocket`. This check only guarantees the port is open, not dependencies such as DB or cluster access.
+- A service's single `port` key is the reference for the `http` container and Service port and the `-listen` port. A service with `healthPort` gets a second, HTTP listener on that port; its probe port and `metrics` Service port are `healthPort`, which must differ from `port`. `scripts/guard.sh config` (R15) fails when a rendered port or probe differs from the values.
+- Probes are not HTTP, except a service with `healthPort`. The services' non-vendor Go code has no `healthz`, `readyz` or `grpc_health` (as of the three commits above; this is only evidence of absence), except compute, whose `internal/obs` serves `/healthz`, `/readyz` and `/metrics` (#212). Every other service defaults to `tcpSocket`. This check only guarantees the port is open, not dependencies such as DB or cluster access. For compute the HTTP check goes further: `/readyz` follows the same readiness verdict as `grpc.health.v1`.
 - **Switching to gRPC probes**: once the service image implements `grpc.health.v1`, change only the one line `global.probe: grpc`. The render switches to a `grpc: {port: <port>}` probe under the same port check. Turning it on before the implementation makes the probe fail. The implementation has been requested from the services separately.
-- **storage gRPC health (vws-storage#39, #69)**: `services.storage.grpcReadinessService: vws.storage.v1.Ready` (`ReadyService` in `internal/health/health.go:22`). A service with this key always gets gRPC probes (#110; the gate was removed after vws-storage#39 merged): startup and liveness use the empty service name (they look only at the process and do not restart on cluster failures), readiness uses `vws.storage.v1.Ready` (engine, store and kube checks). storage `grpc.health.v1` was confirmed SERVING on vws-test (#51). compute and network stay on tcpSocket. `-listen` is already `0.0.0.0:7400` (the #39 default `127.0.0.1:7400` is unreachable for probes, `cmd/vws-storage/main.go:42`). `-health-period` (default 10s) and `-health-timeout` (default 3s, `:57-58`) use their defaults and are not passed. A real kubelet gRPC probe passing needs checking on T1.
-- **Measured (vws-test, #89).** Checked with images built from main. console and console-api :8080 return 404 for `/healthz`, `/readyz` and `/metrics`. compute :50051 and network :8080 return Unimplemented for `grpc.health.v1`; storage :7400 returns `SERVING`. No service has `/metrics`. So `global.probe: grpc` cannot be turned on yet (the compute and network probes would fail), and 7 pods were Ready with tcpSocket probes.
-- Needs checking: whether probes pass on real pods (T1 or above), whether ports opened on `0.0.0.0` need a NetworkPolicy, and whether the same `8080` tcp check is enough for console and console-api (this PR did not read the console repo).
+- **storage gRPC health (vws-storage#39, #69)**: `services.storage.grpcReadinessService: vws.storage.v1.Ready` (`ReadyService` in `internal/health/health.go:22`). A service with this key always gets gRPC probes (#110; the gate was removed after vws-storage#39 merged): startup and liveness use the empty service name (they look only at the process and do not restart on cluster failures), readiness uses `vws.storage.v1.Ready` (engine, store and kube checks). storage `grpc.health.v1` was confirmed SERVING on vws-test (#51). compute now uses its health listener and network stays on tcpSocket. `-listen` is already `0.0.0.0:7400` (the #39 default `127.0.0.1:7400` is unreachable for probes, `cmd/vws-storage/main.go:42`). `-health-period` (default 10s) and `-health-timeout` (default 3s, `:57-58`) use their defaults and are not passed. A real kubelet gRPC probe passing needs checking on T1.
+- **compute health listener (vws-deploy#212).** `services.compute.healthPort: 8081` renders env `VWS_HEALTH_ADDR=0.0.0.0:8081`, container and `metrics` Service ports on 8081, httpGet probes (`/healthz` for startup and liveness, `/readyz` for readiness) and the pod annotations `prometheus.io/scrape: "true"`, `prometheus.io/port: "8081"` and `prometheus.io/path: /metrics`. vws-compute `internal/obs` (1cb732f, in image `sha-1b62a87`) serves all three paths; `/healthz` looks only at the process, and `/readyz` follows the readiness verdict, so a dependency outage marks the pod unready instead of restarting it. The chart renders no ServiceMonitor: it installs no Prometheus operator, and a ServiceMonitor is not one of the control-plane kinds `scripts/check_render.py` allows. The design record is `docs/design/compute-health.md`.
+- **Measured (vws-test, #89).** Checked with images built from main. console and console-api :8080 return 404 for `/healthz`, `/readyz` and `/metrics`. compute :50051 and network :8080 return Unimplemented for `grpc.health.v1`; storage :7400 returns `SERVING`. At that time no service had `/metrics`. So `global.probe: grpc` could not be turned on then (the compute and network probes would fail), and 7 pods were Ready with tcpSocket probes.
+- Needs checking: whether probes pass on real pods (T1 or above), whether ports opened on `0.0.0.0` need a NetworkPolicy, whether `/readyz` reports ready on a real cluster with the KubeVirt and storage dependencies, and whether the same `8080` tcp check is enough for console and console-api (this PR did not read the console repo).
 
 ## network kubeconfig (vws-deploy#40, stopgap)
 
@@ -103,7 +105,7 @@ With `-backend=grpc`, vws-console-api does not start unless its three credential
 ## Needs checking
 
 - **compute's KubeVirt flags are in the default render (#121).** vws-compute main (`62d90e7`) accepts `-hypervisor`, `-vm-namespace`, `-image-namespace` and `-storage`. They used to be `pendingFlags`, but no service uses `pendingFlags` now. Volume boot was confirmed with these four flags on vws-test T1 (#51).
-- This chart does not use compute's environment variable fallbacks (`VWS_VM_NAMESPACE` and others). It passes flags only.
+- Except for the health listener's `VWS_HEALTH_ADDR` (#212), this chart does not use compute's environment variable fallbacks (`VWS_VM_NAMESPACE` and others). It passes flags.
 - The services were not started on a real cluster with the rendered arguments (static render checks only).
 
 ## Why namespaces are kept
