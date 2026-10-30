@@ -15,7 +15,8 @@ Call with (dict "root" $ "key" "vms").
 {{- end -}}
 
 {{/*
-Container args of one service: flags, plus pendingFlags when global.pendingFlags is true.
+Container args of one service: flags, plus pendingFlags when global.pendingFlags is true, then
+one arg per item of each repeatedFlags list.
 A flag value is a scalar or {namespace: <key>}.
 Call with (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPort).
 */}}
@@ -64,6 +65,16 @@ spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV
     {{- $value = int64 $value }}
   {{- end }}
   {{- $args = append $args (printf "-%s=%v" $key $value) }}
+{{- end }}
+{{- /* repeatedFlags: a flag given once per list item, in list order, after flags (vws-deploy#391). */}}
+{{- $repeated := .spec.repeatedFlags | default dict }}
+{{- range $key := keys $repeated | sortAlpha }}
+  {{- if hasKey $flags $key }}
+    {{- fail (printf "R14: -%s is in both flags and repeatedFlags" $key) }}
+  {{- end }}
+  {{- range $item := index $repeated $key }}
+    {{- $args = append $args (printf "-%s=%s" $key $item) }}
+  {{- end }}
 {{- end }}
 {{- toJson $args }}
 {{- end -}}

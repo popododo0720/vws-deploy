@@ -7,6 +7,7 @@ a rule with a namespace becomes a Role and RoleBinding in that namespace, a rule
 A rule's namespace is a key of values namespaces ("release" is the release namespace). Every such
 namespace except the release one is rendered once and kept on uninstall.
 flags -> container args, one -name=value each; pendingFlags are added only when global.pendingFlags is true.
+repeatedFlags -> one -name=item arg per list item, after flags (a flag such as -kube-volume-type given once per value).
 Image is <global.registry>/<name>:<tag>, written once below. tag is the service's imageTag, else
 global.tag, else Chart.appVersion (vws-deploy#280).
 */}}

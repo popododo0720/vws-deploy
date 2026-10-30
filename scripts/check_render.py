@@ -194,6 +194,11 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         elif isinstance(value, bool):
             value = str(value).lower()
         args.append(f"-{key}={value}")
+    # repeatedFlags: one arg per list item, after flags (vws-deploy#391).
+    for key, items in sorted((spec.get("repeatedFlags") or {}).items()):
+        if key in flags:
+            errors.append(f"R14: -{key} is in both flags and repeatedFlags")
+        args.extend(f"-{key}={item}" for item in items)
     return args, errors
 
 
