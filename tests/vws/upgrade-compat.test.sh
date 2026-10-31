@@ -82,7 +82,7 @@ run_vws_real apply --unattended
 expect_rc "the 0.1.0 record upgrades" 0
 expect_text "the missing chart CRDs are applied" "$OUT" "OK    crd"
 iam_docs=$(grep -c 'group: iam\.' "${VWS_FAKE_LOG}.stdin" || true)
-if ((iam_docs >= 11)); then ok "the iam CRDs are applied"; else bad "iam CRDs applied" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+if ((iam_docs >= 13)); then ok "the iam CRDs are applied"; else bad "iam CRDs applied" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
 wait_line=$(grep -n $'^kubectl\twait.*condition=Established crd --all' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
 cr_line=$(grep -n -E $'^kubectl\tget\t.*vwsclusters vws' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
 if [[ -n $wait_line && -n $cr_line ]] && ((wait_line < cr_line)); then

@@ -740,4 +740,29 @@ PY
 run_vws_real render "${WORK}/iam-r2.yaml" "${WORK}/iam-r2.values.yaml"; expect_rc "iam: a CR with replicas 2 exits 0" 0
 expect_text "iam: the CR replicas reach the values" "$(cat "${WORK}/iam-r2.values.yaml")" "replicas: 2"
 
+# iam CRD and RBAC sync (#243): the chart copy of vws-iam deploy/crds/iam.yaml and the iam Role
+# must name the same kinds, so every store resource the binary writes exists and is allowed.
+# vws-iam main deploy/crds/iam.yaml has 13 CRDs, ending with iamgroupmembershiplocks and iamfidodevices.
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true >"${WORK}/iam-rbac.out"
+got=$(python3 - "${VWS_TEST_ROOT}/charts/vws/crds/iam.yaml" "${WORK}/iam-rbac.out" <<'PY'
+import sys, yaml
+crds = sorted(d["spec"]["names"]["plural"] for d in yaml.safe_load_all(open(sys.argv[1])) if d)
+docs = [d for d in yaml.safe_load_all(open(sys.argv[2])) if d]
+rules = [r for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "vws-iam"
+         for r in d["rules"] if "iam.vws.popododo0720.io" in r.get("apiGroups", [])]
+allowed = sorted({res for r in rules for res in r["resources"]})
+verbs = sorted({v for r in rules for v in r["verbs"]})
+print("iam-crd-count", len(crds))
+print("iam-crd-has-locks", "iamgroupmembershiplocks" in crds)
+print("iam-crd-has-fido", "iamfidodevices" in crds)
+print("iam-rbac-matches-crds", allowed == crds, sorted(set(crds) ^ set(allowed)))
+print("iam-rbac-verbs", verbs)
+PY
+)
+expect_text "iam sync: the chart has the 13 vws-iam CRDs" "$got" "iam-crd-count 13"
+expect_text "iam sync: iamgroupmembershiplocks CRD present" "$got" "iam-crd-has-locks True"
+expect_text "iam sync: iamfidodevices CRD present" "$got" "iam-crd-has-fido True"
+expect_text "iam sync: the iam Role covers exactly the iam CRDs" "$got" "iam-rbac-matches-crds True []"
+expect_text "iam sync: the iam Role verbs stay get/list/create/update/delete" "$got" "iam-rbac-verbs ['create', 'delete', 'get', 'list', 'update']"
+
 finish_tests
