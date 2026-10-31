@@ -684,7 +684,9 @@ PY
 
   grep -q -e 'name: VWS_HEALTH_ADDR' "$tmp/default.yaml" || die "R15: compute has no VWS_HEALTH_ADDR (#212)"
   grep -q -e 'path: /readyz' "$tmp/default.yaml" || die "R15: compute readiness does not use /readyz (#212)"
-  grep -q -e 'prometheus.io/scrape: "true"' "$tmp/default.yaml" || die "R15: compute has no metrics scrape target (#212)"
+  if grep -q -e 'prometheus.io/' "$tmp/default.yaml"; then
+    die "R15: compute still carries scrape annotations (#635)"
+  fi
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
   python3 - "$tmp/default.yaml" charts/vws/values.yaml <<'PY' || die "R15: HTTP probes must match the services with healthPort (#212)"
 import sys, yaml
