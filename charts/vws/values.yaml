@@ -54,11 +54,11 @@ services:
       namespace: {namespace: release}
     # The calls of vws-iam internal/store/kubestore (uncached client, CAS on resourceVersion): get,
     # list, create, update and delete of its own resources, no watch, patch or status subresource.
-    # Same list as vws-iam deploy/rbac/role.yaml.
+    # Same list as vws-iam main deploy/rbac/role.yaml (#243); render.test.sh checks it against crds/iam.yaml.
     rbac:
     - namespace: release
       apiGroups: [iam.vws.popododo0720.io]
-      resources: [iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters]
+      resources: [iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters, iamgroupmembershiplocks, iamfidodevices]
       verbs: [get, list, create, update, delete]
     # imageTag pins iam to one published build (vws-deploy#280 mechanism). sha-74a29dc is
     # vws-iam#113. vws-iam publish.yml pushed
