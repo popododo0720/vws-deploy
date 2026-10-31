@@ -505,8 +505,27 @@ cmd_cursor() {
   grep -q 'Do not use Cursor cloud agents' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
 }
 
+# multus_digest_check FILE: fail unless FILE pins MULTUS_IMAGE_DIGEST as sha256:<64 lowercase hex>
+# (vws-deploy#626). The pin is handed to kubelet unchanged, so a bad form must fail here, not at pull time.
+multus_digest_check() {
+  local digest
+  digest=$(sed -n 's/^MULTUS_IMAGE_DIGEST=//p' "$1")
+  [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "R12: MULTUS_IMAGE_DIGEST in $1 must match ^sha256:[0-9a-f]{64}\$; got '${digest}'"
+}
+
 cmd_bundle() {
-  local name version hits
+  local name version hits tmp
+  multus_digest_check scripts/versions.env
+  # The pin is input: an empty or malformed value must fail, and the call above must pass on the current pin.
+  tmp=$(mktemp -d)
+  sed 's/^MULTUS_IMAGE_DIGEST=.*/MULTUS_IMAGE_DIGEST=/' scripts/versions.env > "$tmp/empty.env"
+  sed 's/^MULTUS_IMAGE_DIGEST=.*/MULTUS_IMAGE_DIGEST=sha256:abc/' scripts/versions.env > "$tmp/short.env"
+  for digest in empty short; do
+    ! (multus_digest_check "$tmp/${digest}.env") 2>/dev/null \
+      || { rm -rf "$tmp"; die "R12: a ${digest} MULTUS_IMAGE_DIGEST was accepted"; }
+  done
+  rm -rf "$tmp"
   for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK CSI_DRIVER_NFS K3S; do
     version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
     [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
