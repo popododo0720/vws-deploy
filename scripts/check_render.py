@@ -419,16 +419,20 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
 
 
 def check_health(name: str, spec: dict, template: dict, container: dict) -> list[str]:
-    """healthPort: the env, the metrics port and the scrape annotations come from one value (#212)."""
+    """healthPort: the env, the metrics port and the probes come from one value (#212).
+
+    No service serves /metrics: vws-compute#156 removed compute's endpoint and sends metrics over
+    OTLP, so a scrape annotation would point at a path that returns 404 (#635).
+    """
     errors: list[str] = []
     health = spec.get("healthPort")
     env = {e.get("name"): e for e in container.get("env") or []}
     annotations = (template.get("metadata") or {}).get("annotations") or {}
+    if any(key.startswith("prometheus.io/") for key in annotations):
+        errors.append(f"R15: {name} has scrape annotations but serves no /metrics (#635)")
     if not health:
         if "VWS_HEALTH_ADDR" in env:
             errors.append(f"R15: {name} gets VWS_HEALTH_ADDR that values do not ask for")
-        if any(key.startswith("prometheus.io/") for key in annotations):
-            errors.append(f"R15: {name} gets scrape annotations that values do not ask for")
         return errors
     number = int(health)
     if number < 1024 or number > 65535:
@@ -440,14 +444,6 @@ def check_health(name: str, spec: dict, template: dict, container: dict) -> list
     want = f"0.0.0.0:{number}"
     if entry.get("value") != want or "valueFrom" in entry:
         errors.append(f"R15: {name} env VWS_HEALTH_ADDR must be {want}")
-    want_annotations = {
-        "prometheus.io/scrape": "true",
-        "prometheus.io/port": str(number),
-        "prometheus.io/path": "/metrics",
-    }
-    for key, value in want_annotations.items():
-        if annotations.get(key) != value:
-            errors.append(f"R15: {name} annotation {key} must be {value}")
     return errors
 
 
@@ -1059,8 +1055,8 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][target]["flags"]["listen"] = "127.0.0.1:%d" % int(values["services"][target].get("port", 8080))
         if not check(docs, broken_values, release):
             return ["R15: a -listen on 127.0.0.1 did not fail"]
-    # healthPort: the HTTP probes, the env address, the metrics port and the scrape annotations
-    # come from that one value (#212). Break each and check it fails.
+    # healthPort: the HTTP probes, the env address and the metrics port come from that one value
+    # (#212). No service serves /metrics (#635). Break each and check it fails.
     health_name = next(
         (
             n
@@ -1090,8 +1086,13 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         def no_addr(template, container):
             container["env"].remove(next(e for e in container["env"] if e["name"] == "VWS_HEALTH_ADDR"))
 
-        def no_annotation(template, container):
-            template["metadata"]["annotations"].pop("prometheus.io/port")
+        def scrape_annotations(template, container):
+            number = next(p["containerPort"] for p in container["ports"] if p["name"] == "metrics")
+            template["metadata"]["annotations"] = {
+                "prometheus.io/scrape": "true",
+                "prometheus.io/port": str(number),
+                "prometheus.io/path": "/metrics",
+            }
 
         def no_metrics_port(template, container):
             container["ports"] = [p for p in container["ports"] if p["name"] != "metrics"]
@@ -1101,7 +1102,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             ("a liveness path that is not /healthz", live_path),
             ("a literal health address", wrong_addr),
             ("no health address", no_addr),
-            ("a missing scrape annotation", no_annotation),
+            ("scrape annotations for a service with no /metrics", scrape_annotations),
             ("no metrics container port", no_metrics_port),
         )
         for label, change in changes:

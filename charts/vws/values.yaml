@@ -139,11 +139,12 @@ services:
     port: 50051
     # healthPort is the second, HTTP listener of vws-compute. The chart sets env
     # VWS_HEALTH_ADDR=0.0.0.0:<healthPort>, names the container and Service port metrics, and
-    # probes /healthz (startup and liveness) and /readyz (readiness) there. vws-compute
-    # internal/obs (1cb732f, in image sha-1b62a87) serves those paths and /metrics, and /readyz
-    # follows the same verdict as grpc.health.v1, so a dependency outage marks the pod unready
-    # instead of restarting it. The pod carries prometheus.io scrape annotations on this port;
-    # the chart renders no ServiceMonitor because it installs no Prometheus operator (#212).
+    # probes /healthz (startup and liveness) and /readyz (readiness) there. vws-compute#156
+    # (ff1252d) replaced internal/obs with vws-lib obs.Setup, which serves those paths only and
+    # sends metrics over OTLP; the older image sha-1b62a87 still serves /metrics too. The chart
+    # renders no scrape annotations: /metrics is gone from the current compute build, and no
+    # OTLP endpoint is rendered yet (#217). /readyz follows the same verdict as
+    # grpc.health.v1, so a dependency outage marks the pod unready instead of restarting it.
     healthPort: 8081
     # The KubeVirt agent and its flags are on vws-compute main (vws-compute#23, #44); the image
     # default -hypervisor=fake keeps no VM anywhere (#121). -storage is the vws-storage address

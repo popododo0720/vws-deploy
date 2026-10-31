@@ -149,8 +149,8 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace 
 {{- end -}}
 
 {{/*
-Probes of every service. A service with healthPort gets httpGet probes on its metrics port:
-/healthz for startup and liveness, /readyz for readiness. Otherwise global.probe picks the check:
+Probes of every service. A service with healthPort gets httpGet probes on its `metrics` port
+(the health listener): /healthz for startup and liveness, /readyz for readiness. Otherwise global.probe picks the check:
 tcp (default) opens the container port, grpc calls grpc.health.v1 on it and needs the service to
 implement that. A service with grpcReadinessService gets grpc probes on its own (always, #110):
 liveness and startup ask the empty service name, readiness asks grpcReadinessService. Only a
@@ -196,12 +196,6 @@ readinessProbe:
 metadata:
   labels:
     {{- include "vws.labels" . | nindent 4 }}
-  {{- if .healthPort }}
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: {{ .healthPort | quote }}
-    prometheus.io/path: /metrics
-  {{- end }}
 spec:
   restartPolicy: Always
   serviceAccountName: {{ .name }}
