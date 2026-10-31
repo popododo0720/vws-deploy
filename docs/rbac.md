@@ -64,9 +64,10 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 
 | Call | Resource | Verbs | Namespace |
 | --- | --- | --- | --- |
-| `Get`, `List` (two call sites), `Create`, `Update` (CAS on resourceVersion), `Delete` | `iam.vws.popododo0720.io` iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters | get, list, create, update, delete | the store namespace `-namespace` (the release namespace in values, `release`) |
+| `Get`, `List` (two call sites), `Create`, `Update` (CAS on resourceVersion), `Delete` | `iam.vws.popododo0720.io` iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters, iamgroupmembershiplocks, iamfidodevices | get, list, create, update, delete | the store namespace `-namespace` (the release namespace in values, `release`) |
 
-- Read from vws-iam `iam-110-durable-store` (main plus vws-iam#110); the store code and `deploy/rbac/role.yaml` are the same on vws-iam main and at the pinned `74a29dc`.
+- `charts/vws/crds/iam.yaml` is a byte copy of vws-iam main `deploy/crds/iam.yaml` at `caf768e` (13 CRDs), and the resource list equals vws-iam main `deploy/rbac/role.yaml`. `tests/vws/render.test.sh` fails if the rendered `vws-iam` Role and the chart CRDs name different kinds (#243).
+- The pinned image `74a29dc` predates `iamgroupmembershiplocks` (vws-iam#136) and `iamfidodevices` (vws-iam#168), so it does not touch them yet. The CRDs and grants are installed ahead so moving the pin needs no RBAC or CRD change.
 - The client is uncached (no informer), so no watch. No patch, no status subresource, no Secrets: the KEK comes by secretKeyRef env.
 - Like every service with `rbac`, the chart also renders the `iam-leader` Lease Role. vws-iam does not use leader election.
 

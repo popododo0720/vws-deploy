@@ -758,8 +758,8 @@ got_crds = sorted(d["metadata"]["name"] for d in docs if d.get("kind") == "Custo
                   and d["spec"]["group"] == group)
 if not want_crds or got_crds != want_crds:
     errors.append(f"IAM CRDs rendered {got_crds}, want those of {crd_file}")
-if len(plurals) != 11:
-    errors.append(f"want the 11 vws-iam kube store resources, got {plurals}")
+if len(plurals) != 13:
+    errors.append(f"want the 13 vws-iam kube store resources, got {plurals}")
 deploy = one("Deployment", "iam")
 if deploy is None or one("StatefulSet", "iam") is not None:
     errors.append("iam must be one Deployment and no StatefulSet")
