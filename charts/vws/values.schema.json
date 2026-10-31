@@ -182,7 +182,7 @@
           "type": "integer",
           "minimum": 1024,
           "maximum": 65535,
-          "description": "Second HTTP listener for /healthz, /readyz and /metrics. Renders VWS_HEALTH_ADDR, a metrics container and Service port, httpGet probes and Prometheus scrape annotations (vws-deploy#212). It must differ from port."
+          "description": "Second HTTP listener for /healthz and /readyz. Renders VWS_HEALTH_ADDR, a metrics container and Service port, and httpGet probes (vws-deploy#212). It must differ from port."
         },
         "replicas": {
           "type": "integer",
