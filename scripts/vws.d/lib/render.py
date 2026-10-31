@@ -29,8 +29,6 @@ SECRET_NAME = re.compile(r"(?i)(passw|token|secret|credential|private|apikey|api
 # spec.storage.driver nfs (vws-storage#72): the StorageClass name the storage service uses. The class
 # itself (provisioner nfs.csi.k8s.io, server and share from the CR) belongs to the platform bundle.
 NFS_CLASS = "vws-nfs"
-# vws-storage#73 README: Filesystem mode creates, reads and deletes CDI DataVolumes in the VM namespace.
-DATAVOLUME_RULE = {"namespace": "vms", "apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes"], "verbs": ["get", "list", "create", "delete"]}
 # The EBS volume types, in the order vws-storage documents them (vws-storage#123).
 VOLUME_TYPES = ("standard", "gp2", "gp3", "io1", "io2", "st1", "sc1")
 REFERENCE_NAMES = {"secrets", "secretName", "existingSecret"}
@@ -179,10 +177,28 @@ def excluded(items, net, path):
     return out
 
 
+def add_datavolume_list(services, base):
+    """vws-storage#73: Filesystem mode lists CDI DataVolumes in the VM namespace. Add list to the
+    datavolumes rule values.yaml already grants, so the Role has one rule for the resource."""
+    storage_svc = services.setdefault("storage", {})
+    rbac = storage_svc.get("rbac") or copy.deepcopy(base["services"]["storage"]["rbac"])
+    rule = next(
+        (rule for rule in rbac
+         if rule.get("namespace") == "vms" and "cdi.kubevirt.io" in rule.get("apiGroups", [])
+         and "datavolumes" in rule.get("resources", [])),
+        None,
+    )
+    if rule is None:
+        raise KeyError("services.storage.rbac: no datavolumes rule in the vms namespace")
+    if "list" not in rule["verbs"]:
+        rule["verbs"].insert(rule["verbs"].index("get") + 1, "list")
+    storage_svc["rbac"] = rbac
+
+
 def volume_type_flags(volume_types, services, base):
     """spec.storage.volumeTypes -> one vws-storage -kube-volume-type=TYPE=CLASS[/MODE[/SNAPSHOTCLASS]] per
     mapped type (vws-deploy#391, vws-storage#123). Empty trailing fields are left out, so vws-storage uses its
-    -kube-volume-mode and -kube-snapshot-class for them. A Filesystem type needs the datavolumes rule (#73)."""
+    -kube-volume-mode and -kube-snapshot-class for them. A Filesystem type needs the datavolumes list rule (#73)."""
     if not volume_types:
         return
     items = []
@@ -197,10 +213,7 @@ def volume_type_flags(volume_types, services, base):
     storage_svc = services.setdefault("storage", {})
     storage_svc.setdefault("repeatedFlags", {})["kube-volume-type"] = items
     if any((m or {}).get("volumeMode") == "Filesystem" for m in volume_types.values()):
-        rbac = storage_svc.get("rbac") or copy.deepcopy(base["services"]["storage"]["rbac"])
-        if DATAVOLUME_RULE not in rbac:
-            rbac = rbac + [DATAVOLUME_RULE]
-        storage_svc["rbac"] = rbac
+        add_datavolume_list(services, base)
 
 
 def check_network(network):
@@ -409,7 +422,7 @@ def render(cr):
         # vws-storage#73: a Filesystem volume is a CDI blank DataVolume (CDI writes disk.img).
         storage_svc = services.setdefault("storage", {})
         storage_svc.setdefault("flags", {})["kube-volume-mode"] = "Filesystem"
-        storage_svc["rbac"] = copy.deepcopy(base["services"]["storage"]["rbac"]) + [DATAVOLUME_RULE]
+        add_datavolume_list(services, base)
     volume_type_flags(storage.get("volumeTypes") or {}, services, base)
     if driver == "nfs":
         # csi-driver-nfs takes no snapshots of a plain export: an empty class disables CreateSnapshot.
