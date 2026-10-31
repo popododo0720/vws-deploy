@@ -91,10 +91,21 @@ for d in yaml.safe_load_all(sys.stdin):
     if d and d["kind"] == "Role" and d["metadata"]["name"].endswith("-storage") and d["metadata"]["namespace"] in ("vws-vms", "vws-images"):
         print(d["metadata"]["namespace"], [(r["apiGroups"], r["resources"], r["verbs"]) for r in d["rules"]])'
 }
+storage_datavolumes() { # CHART_YAML -> "COUNT [[verbs], ...]" for the datavolumes rules in the storage Role in vws-vms
+  printf '%s\n' "$1" | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Role" and d["metadata"]["namespace"] == "vws-vms" and d["metadata"]["name"].endswith("-storage"):
+        rules = [r["verbs"] for r in d["rules"] if r["apiGroups"] == ["cdi.kubevirt.io"] and r["resources"] == ["datavolumes"]]
+        print(len(rules), rules)'
+}
 for out in small nfs existing-fs; do
   src="${WORK}/${out}.out"; [ "$out" = small ] && src="${WORK}/small.yaml"
-  roles=$(storage_roles "$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "$src")")
-  expect_text "${out}: storage gets DataVolume get/create/delete in the VM namespace" "$roles" "(['cdi.kubevirt.io'], ['datavolumes'], ['get', 'create', 'delete'])"
+  chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "$src")
+  roles=$(storage_roles "$chart")
+  want="1 [['get', 'list', 'create', 'delete']]"
+  [ "$out" = small ] && want="1 [['get', 'create', 'delete']]"
+  expect_text "${out}: storage has one datavolumes rule with the verbs its paths need" "$(storage_datavolumes "$chart")" "$want"
   expect_text "${out}: storage gets DataSource get in the images namespace" "$roles" "(['cdi.kubevirt.io'], ['datasources'], ['get'])"
   expect_text "${out}: storage gets datavolumes/source create in the images namespace" "$roles" "(['cdi.kubevirt.io'], ['datavolumes/source'], ['create'])"
 done
@@ -122,6 +133,8 @@ expect_rc "a mapping with driver rook-ceph renders" 0
 if storage_values volume-types 'v["repeatedFlags"] == {"kube-volume-type": ["gp2=fast-rbd", "gp3=ceph-block/Block/ceph-block", "sc1=cold.nfs/Filesystem"]}'; then
   ok "volumeTypes become -kube-volume-type values"; else bad "volumeTypes flags" "$(cat "${WORK}/volume-types.out")"; fi
 if storage_values volume-types "${DV} in v['rbac']"; then ok "a Filesystem volume type adds datavolumes to the storage RBAC"; else bad "volumeTypes rbac" "$(cat "${WORK}/volume-types.out")"; fi
+chart=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/volume-types.out")
+expect_text "a Filesystem volume type keeps one datavolumes rule" "$(storage_datavolumes "$chart")" "1 [['get', 'list', 'create', 'delete']]"
 if storage_values volume-types-rook 'v["repeatedFlags"] == {"kube-volume-type": ["io2=ceph-block/Block"]} and "rbac" not in v'; then
   ok "a Block-only mapping adds no RBAC rule"; else bad "rook volumeTypes" "$(cat "${WORK}/volume-types-rook.out")"; fi
 if storage_values volume-types-all '[i.split("=")[0] for i in v["repeatedFlags"]["kube-volume-type"]] == ["standard", "gp2", "gp3", "io1", "io2", "st1", "sc1"]'; then
