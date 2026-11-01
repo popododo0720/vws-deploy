@@ -394,8 +394,32 @@
    "verify_backlog": 15,
    "verify_pass_rate": 0.867,
    "verify_wakes": 29
+  },
+  {
+   "alerts": [
+    "stall",
+    "grok_escalation_rate"
+   ],
+   "ci_failure_rate": 0.01,
+   "day": "2026-11-01",
+   "deepseek_dispatched": 6,
+   "deepseek_done": 7,
+   "deepseek_failed": 1,
+   "deepseek_timeout": 0,
+   "grok_dispatches": 20,
+   "grok_swaps": 15,
+   "lead_time_median_h": 0.93,
+   "lead_wakes": 0,
+   "prs_merged": 26,
+   "prs_opened": 25,
+   "rework_dispatches": 5,
+   "stalls": 141,
+   "tokens": 64499789,
+   "verify_backlog": 12,
+   "verify_pass_rate": 0.824,
+   "verify_wakes": 18
   }
  ],
  "schema": 1,
- "through": "2026-10-31"
+ "through": "2026-11-01"
 }
