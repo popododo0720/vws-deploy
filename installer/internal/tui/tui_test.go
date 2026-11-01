@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,12 +50,24 @@ func apiVersion(t *testing.T) string {
 // pinned to the test certificate.
 func serve(t *testing.T, fc *fakeCluster, pf api.Preflight) (*client.Client, *api.Server) {
 	t.Helper()
+	return serveCreds(t, fc, pf, nil)
+}
+
+// serveCreds is serve with a credential store (#146); nil hands no password out.
+func serveCreds(
+	t *testing.T, fc *fakeCluster, pf api.Preflight, creds cluster.Credentials,
+) (*client.Client, *api.Server) {
+	t.Helper()
 	var code string
 	auth, err := api.NewAuth(time.Now, func(c string) error { code = c; return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := api.New(api.Config{Auth: auth, Cluster: fc, Preflight: pf, APIVersion: apiVersion(t)})
+	cfg := api.Config{Auth: auth, Cluster: fc, Preflight: pf, APIVersion: apiVersion(t)}
+	if creds != nil {
+		cfg.Credentials = creds
+	}
+	srv := api.New(cfg)
 	hs := httptest.NewTLSServer(srv.Handler())
 	t.Cleanup(func() { srv.Wait(); hs.Close() })
 	sum := sha256.Sum256(hs.Certificate().Raw)
@@ -99,7 +112,11 @@ func TestWizardInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"NIC ens3 mtu 1500 on node1,node2", "minio: Coming soon", "local: Coming soon", "== summary ==", `"eipPool": "198.18.0.128/25"`, "installed. console: https://console.example.invalid", "vws-deploy#146"} {
+	for _, want := range []string{
+		"NIC ens3 mtu 1500 on node1,node2", "minio: Coming soon", "local: Coming soon", "== summary ==",
+		`"eipPool": "198.18.0.128/25"`, "installed. console: https://console.example.invalid",
+		"hands out no initial admin password",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -335,5 +352,135 @@ func TestAttachmentReportsBadNumber(t *testing.T) {
 				t.Fatalf("error %v, value %#v\nout:\n%s", err, got, out.String())
 			}
 		})
+	}
+}
+
+// credStore stands in for Secret vws-initial-admin. loadFails makes that many Loads fail first.
+type credStore struct {
+	mu             sync.Mutex
+	user, password string
+	consumed       bool
+	loadFails      int
+	loads          int
+}
+
+func (f *credStore) Store(_ context.Context, user, pw string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.password != "" {
+		return cluster.ErrCredentialExists
+	}
+	f.user, f.password = user, pw
+	return nil
+}
+
+func (f *credStore) Load(context.Context) (string, string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loads++
+	if f.loads <= f.loadFails {
+		return "", "", false, errors.New("apiserver unavailable")
+	}
+	return f.user, f.password, f.consumed, nil
+}
+
+func (f *credStore) MarkConsumed(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.consumed = true
+	return nil
+}
+
+func (f *credStore) secret() (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.password, f.consumed
+}
+
+// After the install the TUI fetches the password once from the real API, shows it on the
+// terminal with a shown-once notice, and the server then refuses a second hand-out with 410.
+func TestWizardHandsOutCredentialOnce(t *testing.T) {
+	cs := &credStore{}
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
+	out, err := run(t, c, happy)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	pw, consumed := cs.secret()
+	if len(pw) != api.PasswordLength || !consumed {
+		t.Fatalf("secret password %d chars, consumed %v", len(pw), consumed)
+	}
+	for _, want := range []string{
+		"(shown once)", "user:     admin", "password: " + pw, "Secret vws-initial-admin", "vws installer finish",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, pw) != 1 {
+		t.Fatalf("password shown %d times:\n%s", strings.Count(out, pw), out)
+	}
+	var apiErr *client.Error
+	err = c.Do(context.Background(), http.MethodPost, "/result/credential", nil, nil)
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusGone {
+		t.Fatalf("second hand-out: %v", err)
+	}
+}
+
+// A Secret that was already consumed (another client took the hand-out) gives 410; the TUI
+// points to the Secret, shows no password, and the install still counts as done.
+func TestWizardCredentialConsumed(t *testing.T) {
+	cs := &credStore{user: "admin", password: "already-taken-password-0", consumed: true}
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
+	out, err := run(t, c, happy)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "already handed out; it is in Secret vws-initial-admin") ||
+		strings.Contains(out, "already-taken-password-0") || strings.Contains(out, "shown once") {
+		t.Fatalf("output:\n%s", out)
+	}
+}
+
+// A 500 from the hand-out (the Secret could not be read) is retried; the password is shown once.
+func TestWizardCredentialRetries500(t *testing.T) {
+	cs := &credStore{loadFails: 2}
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
+	out, err := run(t, c, happy)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	pw, _ := cs.secret()
+	if strings.Count(out, "retrying") != 2 || strings.Count(out, pw) != 1 ||
+		strings.Contains(out, "apiserver unavailable") {
+		t.Fatalf("output:\n%s", out)
+	}
+}
+
+// A 500 that does not clear stops after a bounded number of attempts and names the Secret.
+func TestWizardCredentialGivesUp(t *testing.T) {
+	cs := &credStore{loadFails: 100}
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
+	out, err := run(t, c, happy)
+	if err == nil || !strings.Contains(err.Error(), "4 attempts failed") ||
+		!strings.Contains(err.Error(), "vws-initial-admin") {
+		t.Fatalf("err %v\n%s", err, out)
+	}
+	if cs.loads != 4 {
+		t.Fatalf("loads %d", cs.loads)
+	}
+}
+
+// A 409 (no succeeded install) is an error, not a retry.
+func TestCredentialConflictIsError(t *testing.T) {
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, &credStore{})
+	var out bytes.Buffer
+	tu := New(c, strings.NewReader(""), &out)
+	tu.Poll = time.Millisecond
+	err := tu.credential(context.Background())
+	var apiErr *client.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusConflict ||
+		strings.Contains(out.String(), "retrying") {
+		t.Fatalf("err %v\n%s", err, out.String())
 	}
 }
