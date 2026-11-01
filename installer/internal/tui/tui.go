@@ -132,11 +132,21 @@ func (t *TUI) preflight(r stepResult) {
 		if c.Status == "pass" {
 			continue
 		}
-		t.printf("  [%s/%s] %s %s %s\n", c.Severity, c.Status, c.ID, c.Node, c.Message)
+		t.printf("  [%s/%s] %s %s %s\n", c.Severity, statusLabel(c.Status), c.ID, c.Node, c.Message)
 		if c.Hint != "" {
 			t.printf("      hint: %s\n", c.Hint)
 		}
 	}
+}
+
+// statusLabel is how a preflight status reads on the terminal. "unknown" means the check could
+// not run (no input data), so it reads CANNOT VERIFY and never looks like a pass (#205). The API
+// value stays "unknown".
+func statusLabel(s string) string {
+	if s == "unknown" {
+		return "CANNOT VERIFY"
+	}
+	return s
 }
 
 func decodeJSON(what string, raw json.RawMessage, dst any) error {
@@ -409,7 +419,7 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 	}
 	t.printf("\n== summary ==\n%s\n", b)
 	for _, w := range sum.Warnings {
-		t.printf("  warning [%s/%s] %s %s\n", w.Severity, w.Status, w.ID, w.Message)
+		t.printf("  warning [%s/%s] %s %s\n", w.Severity, statusLabel(w.Status), w.ID, w.Message)
 	}
 	answer, err := t.ask("install this? (yes/no)", "no")
 	if err != nil {
