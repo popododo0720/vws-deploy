@@ -437,8 +437,13 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 		switch res.State {
 		case "succeeded", "finished":
 			t.printf("\ninstalled. console: %s, admin user: %s\n", res.ConsoleURL, res.AdminUser)
-			if !res.CredentialAvailable {
-				t.printf("the initial password is not handed out yet (vws-deploy#146)\n")
+			switch {
+			case res.CredentialAvailable:
+				return t.credential(ctx)
+			case res.State == "finished":
+				t.printf("the initial admin password was already handed out; it is in Secret %s\n", initialAdminSecret)
+			default:
+				t.printf("this installer hands out no initial admin password\n")
 			}
 			return nil
 		case "failed":
@@ -451,5 +456,59 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(t.Poll):
 		}
+	}
+}
+
+// initialAdminSecret is the Secret that keeps the initial admin password (#146).
+const initialAdminSecret = "vws-initial-admin"
+
+// credentialAttempts bounds the retries of POST /result/credential on a 5xx or transport error.
+const credentialAttempts = 4
+
+// credential fetches the initial admin password once (POST /result/credential, #146) and prints
+// it to the terminal only: never to a log or a file. It runs before `vws installer finish` is
+// suggested, because finish removes the rights that read the Secret. A 5xx or transport error is
+// retried with backoff (the server marks the Secret before it answers, so a retry cannot hand out
+// a second copy); 410 credential_consumed points to the Secret; 409 is returned as an error.
+func (t *TUI) credential(ctx context.Context) error {
+	var cred struct {
+		AdminUser string `json:"adminUser"`
+		Password  string `json:"password"`
+	}
+	wait := t.Poll
+	for attempt := 1; ; attempt++ {
+		err := t.C.Do(ctx, http.MethodPost, "/result/credential", nil, &cred)
+		var apiErr *client.Error
+		switch {
+		case err == nil:
+			if cred.AdminUser == "" || cred.Password == "" {
+				return errors.New("initial admin credential: empty answer")
+			}
+			t.printf("\n== initial admin credential (shown once) ==\n")
+			t.printf("  user:     %s\n  password: %s\n", cred.AdminUser, cred.Password)
+			t.printf("  store it now: the installer shows it only this once and never logs it or writes it to a file.\n")
+			t.printf("  It is also kept in Secret %s.\n", initialAdminSecret)
+			t.printf("then run `vws installer finish`\n")
+			return nil
+		case errors.As(err, &apiErr) && apiErr.Status == http.StatusGone:
+			t.printf("the initial admin password was already handed out; it is in Secret %s\n", initialAdminSecret)
+			return nil
+		case errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict:
+			return fmt.Errorf("initial admin credential: the install is not in a state that hands it out: %w", err)
+		case errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError:
+			return fmt.Errorf("initial admin credential: %w", err)
+		case ctx.Err() != nil:
+			return fmt.Errorf("initial admin credential: %w", ctx.Err())
+		case attempt >= credentialAttempts:
+			return fmt.Errorf("initial admin credential: %d attempts failed; it is in Secret %s: %w",
+				attempt, initialAdminSecret, err)
+		}
+		t.printf("  initial admin credential: %v; retrying\n", err)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("initial admin credential: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+		wait *= 2
 	}
 }
