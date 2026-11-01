@@ -215,6 +215,34 @@ func TestWizardShowsPreflight(t *testing.T) {
 	}
 }
 
+func TestWizardShowsUnknownAsCannotVerify(t *testing.T) {
+	pf := func(_ context.Context, step string, _ any, _ []cluster.Node) []api.Check {
+		if step == "network" {
+			return []api.Check{{
+				ID: "nic.links", Severity: "warning", Status: "unknown", Node: "node2",
+				Message: "NICs and MTUs are not verified: no links for this node",
+			}}
+		}
+		return nil
+	}
+	c, _ := serve(t, &fakeCluster{nodes: nodes}, pf)
+	out, err := run(t, c, happy)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"[warning/CANNOT VERIFY] nic.links node2 NICs and MTUs",
+		"warning [warning/CANNOT VERIFY] nic.links NICs and MTUs",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "/unknown]") {
+		t.Fatalf("unknown is shown as a raw status:\n%s", out)
+	}
+}
+
 func TestDeclineInstallsNothing(t *testing.T) {
 	fc := &fakeCluster{nodes: nodes}
 	c, _ := serve(t, fc, nil)
