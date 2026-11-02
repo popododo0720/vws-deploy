@@ -688,14 +688,14 @@ PY
     die "R15: compute still carries scrape annotations (#635)"
   fi
   grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
-  python3 - "$tmp/default.yaml" charts/vws/values.yaml <<'PY' || die "R15: HTTP probes must match the services with healthPort (#212)"
+  python3 - "$tmp/default.yaml" charts/vws/values.yaml <<'PY' || die "R15: HTTP probes must match the services with healthPort (#212) or httpProbes (#612)"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 values = yaml.safe_load(open(sys.argv[2]))
 health = {
     name
     for name, spec in values["services"].items()
-    if isinstance(spec, dict) and spec.get("enabled", True) is not False and spec.get("healthPort")
+    if isinstance(spec, dict) and spec.get("enabled", True) is not False and (spec.get("healthPort") or spec.get("httpProbes"))
 }
 http = {
     d["metadata"]["name"]
@@ -705,6 +705,16 @@ http = {
     if any("httpGet" in c.get(k, {}) for k in ("startupProbe", "livenessProbe", "readinessProbe"))
 }
 sys.exit(0 if http == health else 1)
+PY
+  python3 - "$tmp/default.yaml" <<'PY' || die "R15: console probes are not httpGet /healthz and /readyz on port http (#612)"
+import sys, yaml
+want = {"startupProbe": "/healthz", "livenessProbe": "/healthz", "readinessProbe": "/readyz"}
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get("kind") == "Deployment" and d["metadata"]["name"] == "console":
+        c = d["spec"]["template"]["spec"]["containers"][0]
+        got = {k: (c.get(k) or {}).get("httpGet") or {} for k in want}
+        sys.exit(0 if all(got[k].get("path") == p and got[k].get("port") == "http" for k, p in want.items()) else 1)
+sys.exit(1)
 PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
   python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
