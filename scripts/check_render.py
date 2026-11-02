@@ -640,27 +640,56 @@ def check_kek(name: str, spec: dict, container: dict) -> list[str]:
     return errors
 
 
-def check_network_policy(name: str, spec: dict, by_kind: dict, release: str) -> list[str]:
-    """allowFrom: one NetworkPolicy selects the service and admits only those services' pods (#243)."""
+def check_network_policy(name: str, spec: dict, by_kind: dict, release: str, values: dict, nsmap: dict) -> list[str]:
+    """One NetworkPolicy per service with allowFrom or scrapeMetrics (#243, #620).
+
+    allowFrom: the listener rule admits only those services' pods on the service port.
+    scrapeMetrics: one more rule admits only global.metricsScraper pods, in that namespace, on
+    healthPort; without allowFrom the listener rule has no from (every source) on the service port
+    and its extra ports, so the policy narrows nothing but /metrics.
+    """
     allow = spec.get("allowFrom")
+    scrape = bool(spec.get("scrapeMetrics"))
     policy = by_kind.get("NetworkPolicy", {}).get(name)
-    if not allow:
-        return [f"R10: NetworkPolicy {name} without allowFrom in values"] if policy else []
+    if not allow and not scrape:
+        return [f"R10: NetworkPolicy {name} without allowFrom or scrapeMetrics in values"] if policy else []
     if policy is None:
-        return [f"R10: {name} has allowFrom but no NetworkPolicy"]
+        return [f"R10: {name} has allowFrom or scrapeMetrics but no NetworkPolicy"]
     pspec = policy.get("spec") or {}
     want_pod = {"app.kubernetes.io/name": name, "app.kubernetes.io/instance": release}
-    got = sorted((p.get("podSelector") or {}).get("matchLabels", {}).get("app.kubernetes.io/name", "")
-                 for rule in pspec.get("ingress") or [] for p in rule.get("from") or [])
     rules = pspec.get("ingress") or []
     errors: list[str] = []
-    if ((pspec.get("podSelector") or {}).get("matchLabels") != want_pod or pspec.get("policyTypes") != ["Ingress"]
-            or len(rules) != 1 or got != sorted(allow) or "" in got):
-        errors.append(f"R10: NetworkPolicy {name} must select {name} and admit only {sorted(allow)}")
+    if (pspec.get("podSelector") or {}).get("matchLabels") != want_pod or pspec.get("policyTypes") != ["Ingress"]:
+        errors.append(f"R10: NetworkPolicy {name} must select {name} for Ingress")
+    if len(rules) != 1 + scrape:
+        return errors + [f"R10: NetworkPolicy {name} must have {1 + scrape} ingress rules, got {len(rules)}"]
+    listener, metrics = rules[0], (rules[1] if scrape else None)
     want_port = int(spec.get("port", 8080))
-    got_ports = [entry.get("port") for rule in rules for entry in rule.get("ports") or []]
-    if got_ports != [want_port]:
-        errors.append(f"R10: NetworkPolicy {name} port {got_ports!r} must be the numeric service port {want_port}")
+    if allow:
+        got = sorted((p.get("podSelector") or {}).get("matchLabels", {}).get("app.kubernetes.io/name", "")
+                     for p in listener.get("from") or [])
+        if got != sorted(allow) or "" in got or any(set(p) != {"podSelector"} for p in listener.get("from") or []):
+            errors.append(f"R10: NetworkPolicy {name} must select {name} and admit only {sorted(allow)}")
+        want_ports = [want_port]
+    else:
+        if "from" in listener:
+            errors.append(f"R10: NetworkPolicy {name} listener rule must not narrow sources without allowFrom")
+        service = by_kind.get("Service", {}).get(name) or {}
+        want_ports = [p.get("port") for p in (service.get("spec") or {}).get("ports") or [] if p.get("name") != "metrics"]
+    got_ports = [entry.get("port") for entry in listener.get("ports") or []]
+    if got_ports != want_ports:
+        errors.append(f"R10: NetworkPolicy {name} port {got_ports!r} must be the numeric service port {want_ports[0] if len(want_ports) == 1 else want_ports}")
+    if metrics is not None:
+        scraper = (values.get("global") or {}).get("metricsScraper") or {}
+        want_from = [{
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": nsmap.get(scraper.get("namespace"))}},
+            "podSelector": {"matchLabels": scraper.get("podLabels")},
+        }]
+        if not scraper.get("podLabels") or nsmap.get(scraper.get("namespace")) is None or metrics.get("from") != want_from:
+            errors.append(f"R10: NetworkPolicy {name} must admit /metrics only from global.metricsScraper")
+        health = [entry.get("port") for entry in metrics.get("ports") or []]
+        if health != [int(spec.get("healthPort") or 0)]:
+            errors.append(f"R10: NetworkPolicy {name} metrics port {health!r} must be healthPort {spec.get('healthPort')}")
     for rule in rules:
         for entry in rule.get("ports") or []:
             if "endPort" in entry:
@@ -785,7 +814,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_api(name, spec, container, values, release_ns))
         errors.extend(check_port_env(name, spec, container))
         errors.extend(check_kek(name, spec, container))
-        errors.extend(check_network_policy(name, spec, by_kind, release))
+        errors.extend(check_network_policy(name, spec, by_kind, release, values, nsmap))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -1455,6 +1484,33 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             broken = [d for d in docs if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == svc)]
             if not check(broken, values, release):
                 return [f"R10: {svc} without its NetworkPolicy did not fail"]
+        if spec.get("scrapeMetrics"):
+            # The metrics rule is the last one; each break must fail (#620).
+            for label, change in (
+                ("admitting /metrics from every pod of the scraper namespace", lambda rule: rule["from"][0].pop("podSelector")),
+                ("admitting /metrics from every namespace", lambda rule: rule["from"][0].pop("namespaceSelector")),
+                ("admitting /metrics from every source", lambda rule: rule.pop("from")),
+                ("on the wrong metrics port", lambda rule: rule.update(ports=[{"port": int(spec.get("port", 8080))}])),
+            ):
+                broken = copy.deepcopy(docs)
+                for doc in broken:
+                    if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                        change(doc["spec"]["ingress"][-1])
+                if not check(broken, values, release):
+                    return [f"R10: {svc} NetworkPolicy {label} did not fail"]
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                    doc["spec"]["ingress"].pop()
+            if not check(broken, values, release):
+                return [f"R10: {svc} NetworkPolicy without the metrics rule did not fail"]
+            if not spec.get("allowFrom"):
+                broken = copy.deepcopy(docs)
+                for doc in broken:
+                    if doc.get("kind") == "NetworkPolicy" and doc["metadata"]["name"] == svc:
+                        doc["spec"]["ingress"][0]["from"] = [{"podSelector": {}}]
+                if not check(broken, values, release):
+                    return [f"R10: {svc} NetworkPolicy narrowing the listener without allowFrom did not fail"]
 
     broken = copy.deepcopy(docs)
     for doc in broken:

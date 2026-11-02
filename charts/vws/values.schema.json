@@ -51,6 +51,34 @@
             "soft",
             "hard"
           ]
+        },
+        "metricsScraper": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "namespace",
+            "podLabels"
+          ],
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9]*$",
+              "description": "Key of namespaces where the Prometheus scraper runs."
+            },
+            "podLabels": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {
+                "pattern": "^([a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$"
+              },
+              "description": "Labels of the scraper pods. Only those pods in that namespace reach a scrapeMetrics service's health listener."
+            }
+          },
+          "description": "The only pods that may reach /metrics on a service with scrapeMetrics (vws-deploy#620)."
         }
       }
     },
@@ -346,6 +374,10 @@
             "pattern": "^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$"
           },
           "description": "A NetworkPolicy admits only pods of these services, on the service port."
+        },
+        "scrapeMetrics": {
+          "type": "boolean",
+          "description": "The NetworkPolicy admits the health listener (healthPort, which serves /metrics) only from global.metricsScraper. Needs healthPort (vws-deploy#620)."
         }
       },
       "allOf": [
