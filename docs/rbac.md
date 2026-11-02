@@ -1,6 +1,6 @@
 # Why each service has its rights (RBAC)
 
-Each service's `rbac` in `charts/vws/values.yaml` allows only the Kubernetes API calls the service code actually makes. A rule with a `namespace` renders as a Role in that namespace, a rule without one as a ClusterRole, and a ClusterRole may hold only cluster-scoped resources (`CLUSTER_SCOPED` in `scripts/check_render.py`). What follows comes from reading the code on `origin/main` of each service repository. It was not checked with `kubectl auth can-i` on a real cluster (needs checking, T1 or above).
+Each service's `rbac` in `charts/vws/values.yaml` allows only the Kubernetes API calls the service code actually makes. A rule with a `namespace` renders as a Role in that namespace, a rule without one as a ClusterRole, and a ClusterRole may hold only cluster-scoped resources (`CLUSTER_SCOPED` in `scripts/check_render.py`). A rule may add `resourceNames` to limit it to named objects (#614). `scripts/check_render.py` refuses `resourceNames` on a rule with `create`, because RBAC cannot limit create by name. What follows comes from reading the code on `origin/main` of each service repository. It was not checked with `kubectl auth can-i` on a real cluster (needs checking, T1 or above).
 
 Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`, vws-network `890dbaf`. A rule's `namespace` is a key of `namespaces` in `values.yaml` (`release` is the release namespace), and the name lives only there. The service flag table is in `docs/service-config.md`.
 

@@ -161,6 +161,17 @@
         "namespace": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]*$"
+        },
+        "resourceNames": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Narrows the rule to these object names (vws-deploy#614). RBAC cannot limit create by name, so scripts/check_render.py refuses resourceNames on a rule with create.",
+          "items": {
+            "type": "string",
+            "maxLength": 253,
+            "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+          }
         }
       }
     },

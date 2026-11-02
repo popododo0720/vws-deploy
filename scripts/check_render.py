@@ -120,6 +120,17 @@ def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns
                         " add a namespace to the rule or list it in CLUSTER_SCOPED"
                     )
 
+    # RBAC ignores resourceNames for create (the name is not known at authorization time), so a named
+    # rule with create grants create on every name. Split create into its own unnamed rule (#614).
+    for rule in spec["rbac"]:
+        if rule.get("resourceNames") and "create" in rule["verbs"]:
+            for group in rule["apiGroups"]:
+                for resource in rule["resources"]:
+                    errors.append(
+                        f"R11: {name} narrows create on {group or 'core'}/{resource} with resourceNames,"
+                        " which RBAC does not enforce for create; put create in a rule without resourceNames"
+                    )
+
     expected = [("Role", lease_role), ("RoleBinding", lease_binding)]
     if cluster_rules:
         expected += [("ClusterRole", cluster_role), ("ClusterRoleBinding", binding)]
@@ -837,6 +848,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     base = check(docs, values, release)
     if base:
         return ["R4: rendered chart failed before mutations"] + base
+
+    with_rbac = next((n for n, sp in values["services"].items() if service_rendered(sp) and sp.get("rbac")), None)
+    if with_rbac is not None:
+        broken_values = copy.deepcopy(values)
+        named = dict(broken_values["services"][with_rbac]["rbac"][0], verbs=["create"], resourceNames=["x"])
+        broken_values["services"][with_rbac]["rbac"].append(named)
+        if not any("with resourceNames" in e for e in check(docs, broken_values, release)):
+            return ["R11: create narrowed by resourceNames did not fail"]
 
     deployment = _first(docs, "Deployment")
     if deployment is not None:
