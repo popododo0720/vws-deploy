@@ -51,4 +51,4 @@ Users who need protection from a full outage must run a second VWS cluster and r
 
 - Issue: popododo0720/vws-deploy#624
 - vws-storage decision: popododo0720/vws-storage#100, decision record popododo0720/vws-storage#164 (`docs/decisions/0001-zone-and-pvc-topology.md`)
-- AWS: Regions and Availability Zones, https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-regions-availability-zones.html
+- AWS EC2 User Guide, "Regions and Availability Zones" (AWS documentation)
