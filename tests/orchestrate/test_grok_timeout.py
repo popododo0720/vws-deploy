@@ -141,6 +141,20 @@ class Claimed(unittest.TestCase):
                 r = run(snap(it, *extra))
                 self.assertEqual((freed(r), woke(r)), ([], []))
 
+    def test_only_an_assigned_claim_without_a_pr_goes_idle(self):
+        """Soft-CAP (#641): ORCHESTRATE_GROK_IDLE_MIN frees only a done-unlinked claim, never a PR-backed one."""
+        pr_claim = woken(activity={"comments": [ts(2)], "assigned": [ts(2)],
+                                   "prs": [{"key": "vws-iam#9", "merged_at": ""}]})
+        pr_claim["assignees"] = ["grok-dev"]
+        r = run(snap(pr_claim))
+        self.assertEqual((freed(r), woke(r)), ([], []))
+        self.assertFalse(any(n["kind"] == "grok_idle_expired" for n in r["notes"]))
+        unlinked = woken(activity={"comments": [ts(2)], "assigned": [ts(2)], "prs": []})
+        unlinked["assignees"] = ["grok-dev"]
+        r = run(snap(unlinked))
+        self.assertEqual([n["item"] for n in r["notes"] if n["kind"] == "grok_idle_expired"], ["vws-iam#1"])
+        self.assertEqual(woke(r), ["vws-proto#4"])
+
     def test_a_comment_before_the_wake_is_not_a_claim(self):
         r = run(snap(woken(activity={"comments": [ts(4)], "assigned": [], "prs": []})))
         self.assertEqual([n["item"] for n in freed(r)], ["vws-iam#1"])
