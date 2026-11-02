@@ -106,7 +106,8 @@ services:
     # VWS_SECRET_KEY from env, so the chart's flags and env do not change, and it makes no Kubernetes
     # API call, so it needs no Role. vws-console-api publish.yml pushed
     # ghcr.io/popododo0720/vws/console-api:sha-c09cba3 (sha256:036dce4c…, revision c09cba3) on merge.
-    # spec.version does not move it.
+    # spec.version does not move it. Moving this past vws-console-api ac413c5 (#457) also moves
+    # compute.imageTag; see docs/image-pins.md.
     imageTag: sha-c09cba3
     # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
     # split them (popododo0720/vws-console-api#95). A one-replica Deployment is rendered with
@@ -147,6 +148,8 @@ services:
     # vws-compute publish.yml pushed ghcr.io/popododo0720/vws/compute:sha-1b62a87
     # (sha256:a8d7e7aa…, revision 1b62a87) on merge. ko sets the entrypoint /ko-app/vws-compute,
     # user 65532; this chart passes only args, never command. spec.version does not move it.
+    # console-api at or after vws-console-api ac413c5 needs this at or after vws-compute f609a2e
+    # (docs/image-pins.md).
     imageTag: sha-1b62a87
     # port is the container port and, through flags.listen, the gRPC listen port.
     # scripts/guard.sh config fails when they differ.
