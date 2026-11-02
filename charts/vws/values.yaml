@@ -30,11 +30,21 @@ global:
   topologySpread: soft
   # tag is the image tag of every service. Absent means Chart.yaml appVersion. vws render sets it
   # from VWSCluster spec.version.
+  # metricsScraper: the only pods that reach /metrics on a service with scrapeMetrics: true.
+  # namespace is a key of namespaces. A service sets scrapeMetrics once its image serves /metrics on
+  # healthPort (vws-lib obs, OTEL_METRICS_EXPORTER=prometheus); see docs/service-config.md (#620).
+  metricsScraper:
+    namespace: monitoring
+    podLabels:
+      app.kubernetes.io/name: prometheus
 
 namespaces:
   vms: vws-vms
   images: vws-images
   nad: vws-nad
+  # The Prometheus namespace. The chart never creates it (no rbac rule names it); only the
+  # metrics NetworkPolicy selects it by its kubernetes.io/metadata.name label.
+  monitoring: monitoring
 
 services:
   # vws-iam (vws-iam#1, #243): users, policies, SigV4 Authenticate and Authorize for console-api.

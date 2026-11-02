@@ -317,7 +317,15 @@ subjects:
     name: {{ $name }}
     namespace: {{ $.Release.Namespace }}
 {{- end }}
-{{- with $spec.allowFrom }}
+{{- /* One NetworkPolicy per service with allowFrom or scrapeMetrics (#243, #620). allowFrom
+limits the service port to those services' pods. scrapeMetrics limits the health listener, which
+serves /metrics (vws-lib obs), to global.metricsScraper; without allowFrom the service and extra
+ports stay open to every source, so the policy changes only who reaches /metrics. */}}
+{{- $scrape := $spec.scrapeMetrics | default false }}
+{{- if and $scrape (not $healthPort) }}
+  {{- fail (printf "R10: services.%s.scrapeMetrics needs healthPort" $name) }}
+{{- end }}
+{{- if or $spec.allowFrom $scrape }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -332,6 +340,7 @@ spec:
       {{- include "vws.selector" $ctx | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
+    {{- with $spec.allowFrom }}
     - from:
         {{- range . }}
         - podSelector:
@@ -341,6 +350,25 @@ spec:
         {{- end }}
       ports:
         - port: {{ $port }}
+    {{- else }}
+    - ports:
+        - port: {{ $port }}
+        {{- range $extra := $extraPorts }}
+        - port: {{ int $extra.port }}
+        {{- end }}
+    {{- end }}
+    {{- if $scrape }}
+    {{- $scraper := required "R10: scrapeMetrics needs global.metricsScraper" $.Values.global.metricsScraper }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "vws.ns" (dict "root" $ "key" $scraper.namespace) }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $scraper.podLabels | nindent 14 }}
+      ports:
+        - port: {{ $healthPort }}
+    {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
