@@ -16,11 +16,12 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 | `Get` (`checkAttachable`, health probe), `Delete` (instance destroy removes the root claim, vws-compute#105) | persistentvolumeclaims | get, delete | VM namespace (#121) |
 | `Get` (reading capacity, health probe) | persistentvolumeclaims | get | image namespace |
 | `Get`, `Delete` (instance destroy cleanup, vws-compute#105) | `cdi.kubevirt.io` datavolumes | get, delete | VM namespace. No `create` or `list` |
+| (CDI clone authorization for `CreateImage` from a volume or machine, vws-compute#96, #144, vws-deploy#617) | `cdi.kubevirt.io` datavolumes/source | create | VM namespace (`namespaces.vms`) only. The image DataVolume in the image namespace clones a PVC from the VM namespace, and CDI checks with a SubjectAccessReview that compute has `create` on this subresource in the source namespace. Not granted in the image namespace or cluster-wide |
 | `Get`, `List`, `Create`, `Update`, `Delete` (ConfigMap store) | configmaps | get, list, create, update, delete | store namespace `-namespace` (the release namespace in values, `release`) |
 
 - Start and stop are patches of `spec.runStrategy`. No code calls subresources such as `virtualmachines/start`.
 - No call writes status; it is only read.
-- `update` and `watch` on `datasources`, and PVC `list` and `watch`, stay off because no code uses them. `list` and `patch` on `datasources` are the image sweep in vws-compute#93. In the image namespace datavolumes stay `get`, `create`, and `delete`; in the VM namespace they are `get` and `delete` (vws-compute#105).
+- `update` and `watch` on `datasources`, and PVC `list` and `watch`, stay off because no code uses them. `list` and `patch` on `datasources` are the image sweep in vws-compute#93. In the image namespace datavolumes stay `get`, `create`, and `delete`; in the VM namespace they are `get` and `delete` (vws-compute#105). The only other DataVolume right in the VM namespace is `create` on the `datavolumes/source` subresource (#617), which lets CDI clone a claim out of it; it does not let compute create DataVolumes there.
 
 ## storage (`internal/backend/kube/kube.go`, `snapshot.go`)
 

@@ -530,7 +530,7 @@ for d in yaml.safe_load_all(sys.stdin):
             for key in ((g, res) for g in r["apiGroups"] for res in r["resources"]):
                 rights.setdefault(key, set()).update(r["verbs"])
 print(sorted((g, res, sorted(v)) for (g, res), v in rights.items()))')
-expect_text "compute: exact rights in vws-vms, including datavolume and PVC delete (vws-compute#105)" "$vm_rights" "[('', 'persistentvolumeclaims', ['delete', 'get']), ('', 'secrets', ['create', 'delete', 'get', 'update']), ('cdi.kubevirt.io', 'datavolumes', ['delete', 'get']), ('kubevirt.io', 'virtualmachineinstances', ['delete', 'get']), ('kubevirt.io', 'virtualmachines', ['create', 'delete', 'get', 'list', 'patch'])]"
+expect_text "compute: exact rights in vws-vms, including datavolume and PVC delete (vws-compute#105)" "$vm_rights" "[('', 'persistentvolumeclaims', ['delete', 'get']), ('', 'secrets', ['create', 'delete', 'get', 'update']), ('cdi.kubevirt.io', 'datavolumes', ['delete', 'get']), ('cdi.kubevirt.io', 'datavolumes/source', ['create']), ('kubevirt.io', 'virtualmachineinstances', ['delete', 'get']), ('kubevirt.io', 'virtualmachines', ['create', 'delete', 'get', 'list', 'patch'])]"
 
 image_rights=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
 import sys, yaml
@@ -542,6 +542,20 @@ for d in yaml.safe_load_all(sys.stdin):
                 rights.setdefault(key, set()).update(r["verbs"])
 print(sorted((g, res, sorted(v)) for (g, res), v in rights.items()))')
 expect_text "compute: exact rights in vws-images, list and patch only on datasources" "$image_rights" "[('', 'persistentvolumeclaims', ['get']), ('cdi.kubevirt.io', 'datasources', ['create', 'delete', 'get', 'list', 'patch']), ('cdi.kubevirt.io', 'datavolumes', ['create', 'delete', 'get'])]"
+
+# vws-deploy#617 (vws-compute#96, #144): CreateImage from a volume or machine clones a PVC in the VM
+# namespace into an image DataVolume in vws-images. CDI authorizes that clone with a
+# SubjectAccessReview for create on datavolumes/source in the source (VM) namespace. compute gets
+# exactly that rule there and nowhere else (not in vws-images, the release namespace or a ClusterRole).
+dv_source=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws | python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] in ("Role", "ClusterRole") and d["metadata"]["name"] == "vws-compute":
+        for r in d["rules"]:
+            if "datavolumes/source" in r["resources"]:
+                print(d["kind"], d["metadata"].get("namespace"), r["apiGroups"], r["resources"], r["verbs"], r.get("resourceNames"))')
+expect_text "compute: datavolumes/source create only in vws-vms (#617)" "$dv_source" "Role vws-vms ['cdi.kubevirt.io'] ['datavolumes/source'] ['create'] None"
+if [[ $(wc -l <<<"$dv_source") == 1 ]]; then ok "compute: no other datavolumes/source rule (#617)"; else bad "compute datavolumes/source rules" "$dv_source"; fi
 
 # S1: console-api credentials go only by secretKeyRef env. No -console-token, -access-key or -secret
 # in args, not even as a $(VAR) reference, so the values never reach the process arguments.
