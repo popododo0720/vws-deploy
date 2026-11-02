@@ -113,7 +113,10 @@ spec:
       port: {{ int $extra.port }}
       targetPort: {{ int $extra.port }}
 {{- end }}
-{{- if $healthPort }}
+{{- /* R15 (#623): an external (LoadBalancer) Service never publishes the health listener.
+Probes and scrapers reach the metrics containerPort on the pod IP, and a NetworkPolicy does not stop
+the load balancer from publishing the port, so only an in-cluster Service carries it. */}}
+{{- if and $healthPort (not $external) }}
     - name: metrics
       port: {{ $healthPort }}
       targetPort: metrics
