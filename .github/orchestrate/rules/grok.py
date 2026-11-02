@@ -4,7 +4,10 @@ One marker comment on the verify-wake thread (ORCHESTRATE_WAKE_THREAD; unset: no
 ready+grok issue on ORCHESTRATE_GROK_ALLOWLIST (empty: nothing is assigned), at most ORCHESTRATE_GROK_CAP at
 a time and one per repo; a woken issue holds its slot while it stays open with grok, except an ac-partial
 issue with boxes still open and no open PR (vws-deploy#545): one wake per ticked-box set, and the assignee may
-keep the issue.
+keep the issue. Soft-CAP parks do not count against the CAP (and do not strip `grok`): blocked|hold|
+do-not-merge|needs-human on the issue or a linked open PR, or every linked open PR non-draft with
+needs-verify|verify-approved (repo stays busy). A claimed task with no activity for ORCHESTRATE_GROK_IDLE_MIN
+also frees its slot.
 """
 import hashlib
 import re
@@ -14,8 +17,8 @@ from trusted_read import (
 )
 
 from .common import (
-    OPT_OUT_LABELS, ac_boxes, ac_partial_slice, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held, grok_open_pr,
-    grok_link, num, parse_deps, ready_time, reset_time, utc, wake_target,
+    DEFAULTS, OPT_OUT_LABELS, ac_boxes, ac_partial_slice, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held, grok_open_pr,
+    grok_cap_parked, grok_link, grok_parked_blocked, grok_parked_verify, num, parse_deps, ready_time, reset_time, utc, wake_target,
 )
 
 NAME = "grok"
@@ -32,7 +35,10 @@ def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
                       f"{who}: please take this issue: one small PR per its acceptance criteria, "
                       f"`Part of #{it['number']}` in commits and the PR body, no closing keywords.",
-                      f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok`.",
+                      f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok` "
+                      f"(soft-CAP: blocked/hold/do-not-merge/needs-human, or every linked open PR on "
+                      f"needs-verify|verify-approved, stops counting toward the CAP without removing `grok`; "
+                      f"idle after claim frees it too).",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
 
 
@@ -71,15 +77,23 @@ def grok_slot_key(k, it, items, key_times):
     return grok_wake_key(k, it, key_times), False
 
 
-def grok_release(k, it, items, woken_at, now, timeout_min):
+def grok_release(k, it, items, woken_at, now, timeout_min, idle_min=90):
     """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
-    grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
-    its body is ticked. grok_wake_expired: nothing claimed it (no assignee; no comment, assignment or linked
-    PR after the wake) within timeout_min of the wake. An unread timeline or wake time, or an open PR whose
-    `Part of` names it, keeps the slot."""
+    Soft-CAP parks (before the open-PR early return): grok_parked_blocked when the issue or a linked open PR
+    has blocked|hold|do-not-merge|needs-human; grok_parked_verify when every linked open PR is non-draft and
+    has needs-verify|verify-approved. Labels stay (no strip — B4 rework needs `grok`). grok_task_done: a PR
+    whose `Part of` names it merged after the wake, or every acceptance-criteria box in its body is ticked.
+    grok_idle_expired: claimed, no open linked PR, and no comment/assignment/PR activity for idle_min minutes.
+    grok_wake_expired: nothing claimed it within timeout_min of the wake. An unread timeline or wake time, or
+    an open PR that is not soft-CAP parked, keeps the slot."""
     act = it.get("grok_activity")
     if act is None or not woken_at:
         return "", {}
+    # Soft-CAP parks apply before the open-PR early return (decide_grok release path + grok_held).
+    if grok_parked_blocked(k, items):
+        return "grok_parked_blocked", {}
+    if grok_parked_verify(k, items):
+        return "grok_parked_verify", {}
     if grok_open_pr(k, items):  # a linked PR still open is work in flight, whatever merged before it
         return "", {}
     t0 = utc(woken_at)
@@ -89,10 +103,17 @@ def grok_release(k, it, items, woken_at, now, timeout_min):
     boxes = AC_CHECKBOX_RE.findall(it.get("body") or "")
     if boxes and " " not in boxes:
         return "grok_task_done", {"reason": "ac_done"}
+    times = [utc(t) for t in act.get("comments", []) + act.get("assigned", []) if t]
+    times += [utc(p["merged_at"]) for p in act.get("prs", []) if p.get("merged_at")]
     claimed = (it.get("assignees") or act.get("prs")
-               or any(utc(t) > t0 for t in act.get("comments", []) + act.get("assigned", []))
+               or any(t > t0 for t in times)
                or any(p["is_pr"] and p["state"] == "open" and grok_link(p) == k for p in items.values()))
-    if claimed or now - t0 < timeout_min * 60:
+    if claimed:
+        last = max(times) if times else t0
+        if now - last >= idle_min * 60:
+            return "grok_idle_expired", {"idle_min": idle_min, "last_activity": last}
+        return "", {}
+    if now - t0 < timeout_min * 60:
         return "", {}
     return "grok_wake_expired", {"woken_at": woken_at, "timeout_min": timeout_min}
 
@@ -115,7 +136,8 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         key, _continuing = grok_slot_key(k, it, items, key_times)
         if key in posted:
             kind, details = ("", {}) if now is None else grok_release(
-                k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
+                k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")),
+                int(float(cfg.get("ORCHESTRATE_GROK_IDLE_MIN", DEFAULTS["ORCHESTRATE_GROK_IDLE_MIN"]))))
             if kind:  # done or never claimed: the slot is free, and the same key is never posted again
                 held.discard(unit)
                 held.discard(k)
@@ -129,6 +151,9 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
             woken.add(k)
             continue
         if unit in held or k in held:
+            continue
+        # Soft-CAP parks free the CAP but must not be re-woken while still parked (keep `grok`).
+        if grok_cap_parked(grok_link(it) or k, items):
             continue
         if (k not in allow or "ready" not in labels or labels & ({"deepseek"} | set(OPT_OUT_LABELS))
                 or (it["is_pr"] and it.get("draft"))):
