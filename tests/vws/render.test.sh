@@ -815,4 +815,60 @@ helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/rn-c
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/rn-create.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/rn-create.yaml" 2>&1 || true)
 expect_text "resourceNames: check_render refuses create with resourceNames" "$out" "R11: compute narrows create on core/configmaps with resourceNames"
 
+# /metrics NetworkPolicy (#620): scrapeMetrics admits the health listener only from
+# global.metricsScraper and leaves the service port as it was.
+cat >"${WORK}/metrics-np.yaml" <<'YAML'
+services:
+  iam:
+    enabled: true
+    healthPort: 9096
+    scrapeMetrics: true
+  network:
+    healthPort: 8081
+    scrapeMetrics: true
+  storage:
+    healthPort: 7401
+    grpcReadinessService: null
+    scrapeMetrics: true
+YAML
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/metrics-np.yaml" >"${WORK}/metrics-np.out"
+got=$(python3 - "${WORK}/metrics-np.out" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for name in ("iam", "network", "storage"):
+    pol = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == name)
+    for i, rule in enumerate(pol["spec"]["ingress"]):
+        print(name, i, sorted(k for f in rule.get("from") or [{"*": 1}] for k in f), [p["port"] for p in rule["ports"]])
+    print(name, "scraper", pol["spec"]["ingress"][-1]["from"])
+PY2
+)
+expect_text "metrics np: iam keeps console-api only on 9095" "$got" "iam 0 ['podSelector'] [9095]"
+expect_text "metrics np: iam admits the scraper on 9096" "$got" "iam 1 ['namespaceSelector', 'podSelector'] [9096]"
+expect_text "metrics np: network service port stays open" "$got" "network 0 ['*'] [8080]"
+expect_text "metrics np: network admits the scraper on 8081" "$got" "network 1 ['namespaceSelector', 'podSelector'] [8081]"
+expect_text "metrics np: storage service port stays open" "$got" "storage 0 ['*'] [7400]"
+expect_text "metrics np: storage admits the scraper on 7401" "$got" "storage 1 ['namespaceSelector', 'podSelector'] [7401]"
+expect_text "metrics np: the scraper is monitoring/prometheus" "$got" "network scraper [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'monitoring'}}, 'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'prometheus'}}}]"
+if python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/metrics-np.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/metrics-np.yaml" >"${WORK}/metrics-np.check" 2>&1; then
+  ok "metrics np: check_render accepts the render and its mutations fail"
+else
+  bad "metrics np: check_render" "$(cat "${WORK}/metrics-np.check")"
+fi
+python3 - "${WORK}/metrics-np.out" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for doc in docs:
+    if doc["kind"] == "NetworkPolicy" and doc["metadata"]["name"] == "storage":
+        doc["spec"]["ingress"][1]["from"] = [{"namespaceSelector": {}}]
+yaml.safe_dump_all(docs, open(sys.argv[1] + ".open", "w"))
+PY2
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/metrics-np.out.open" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/metrics-np.yaml" 2>&1 || true)
+expect_text "metrics np: /metrics open to every namespace fails" "$out" "R10: NetworkPolicy storage must admit /metrics only from global.metricsScraper"
+printf 'services:\n  network:\n    scrapeMetrics: true\n' >"${WORK}/metrics-nohealth.yaml"
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/metrics-nohealth.yaml" >/dev/null 2>"${WORK}/metrics-nohealth.err"; then
+  bad "metrics np: scrapeMetrics without healthPort fails" "rendered"
+else
+  expect_text "metrics np: scrapeMetrics without healthPort fails" "$(cat "${WORK}/metrics-nohealth.err")" "R10: services.network.scrapeMetrics needs healthPort"
+fi
+
 finish_tests
