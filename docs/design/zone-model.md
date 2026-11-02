@@ -7,7 +7,7 @@ AWS documents each Availability Zone as an isolated failure domain: separate pow
 - `platform/rook-ceph-cluster.ha.values.yaml` has one `ceph-blockpool` with `failureDomain: host` and three replicas. `platform/rook-ceph-cluster.single-node.values.yaml` has the same pool with `failureDomain: osd` and one replica. `profiles/small.yaml` uses the chart default pool.
 - Each profile has one `ceph-block` StorageClass with `allowedTopologies: []` and `volumeBindingMode: Immediate`.
 - Nothing in the chart, the platform bundle or the installer sets `topology.kubernetes.io/zone` (or any other zone label) on nodes, and the chart passes no zone list to any service. vws-storage admits volumes only in its `-zones` list (default `vws-1a`) and records the zone as a PVC annotation (vws-storage `docs/decisions/0001-zone-and-pvc-topology.md`).
-- vws-compute does not place a VM by zone. It refuses to attach a volume from another zone (`checkAttachments`), which matches the EBS `InvalidVolume.ZoneMismatch` rule at the API.
+- vws-compute does not place a VM by zone. It refuses to attach a volume from another zone (`checkAttachments`), but with a generic invalid-argument error, not the EBS `InvalidVolume.ZoneMismatch` code. That error-code gap is tracked in popododo0720/vws-compute#167 and popododo0720/vws-console-api#531.
 
 ## Decision
 
@@ -25,7 +25,7 @@ Option 1 is chosen because:
 
 - No supported profile has enough independent hardware for option 2. `single-node` has one host, `small` uses the chart defaults, and `ha` assumes three hosts in one failure domain. A zone needs its own hosts, its own Ceph replicas and a share of the monitor quorum; with three hosts, three zones would leave one host per zone and no host redundancy inside a zone.
 - Option 2 changes vws-storage (class by zone, vws-storage#100 decision revisit) and vws-compute (VM placement by zone) as well as the bundle. Shipping only the bundle half would create labels and pools that nothing uses.
-- The API behavior that callers observe today already matches AWS for the single-zone case: a volume is created only in a known zone and cannot be attached to an instance in another zone.
+- The API behavior that callers observe today already matches AWS for the single-zone case: a volume is created only in a known zone and cannot be attached to an instance in another zone. The one difference is the cross-zone attach error code (see the parity table).
 
 ## When to revisit
 
@@ -42,8 +42,8 @@ At that point, vws-storage `docs/decisions/0001-zone-and-pvc-topology.md` (revis
 | --- | --- |
 | A zone is an isolated failure domain (power, network, facility) | **Gap.** All zones in a VWS cluster share one failure domain. A cluster-wide outage affects every zone. |
 | Spreading instances or volumes across zones protects against a zone outage | **Gap.** Placing resources in different VWS zones gives no extra availability. Use the `ha` profile for host redundancy. |
-| `CreateVolume` requires a known `AvailabilityZone` | Supported (vws-storage admission, unknown zone is refused). |
-| `AttachVolume` refuses a volume in another zone (`InvalidVolume.ZoneMismatch`) | Supported at the API (vws-compute `checkAttachments`). |
+| `CreateVolume` requires a known `AvailabilityZone` | Supported (vws-storage admission, unknown zone is refused). This record does not check which EC2 error code the refusal maps to. |
+| `AttachVolume` refuses a volume in another zone with `InvalidVolume.ZoneMismatch` | **Partial.** vws-compute `checkAttachments` refuses the attach, but returns a generic invalid-argument error, and vws-console-api has no `InvalidVolume.ZoneMismatch` mapping. Tracked in popododo0720/vws-compute#167 and popododo0720/vws-console-api#531. |
 
 Users who need protection from a full outage must run a second VWS cluster and replicate data themselves; VWS has no cross-cluster replication.
 
