@@ -66,6 +66,10 @@ VERDICT_RE = re.compile(r"\A#\s+(vws-[a-z0-9-]+)#([0-9]+)\s+@\s+([0-9a-f]{40})\s
 CONFLICT_RE = re.compile(r"(?i)conflicts? with main|merge conflict|needs? (?:a )?rebase|rebase onto main")
 MANAGED_LABELS = ("blocked", "in-review")
 NEEDS_VERIFY = "needs-verify"  # set by verify-queue.yml while every non-verify check is green (vws-deploy#397)
+VERIFY_APPROVED = "verify-approved"
+# Soft-CAP park: issue or linked open PR with any of these does not count against ORCHESTRATE_GROK_CAP.
+PARK_BLOCK_LABELS = frozenset({"blocked", "hold", "do-not-merge", "needs-human"})
+PARK_VERIFY_LABELS = frozenset({NEEDS_VERIFY, VERIFY_APPROVED})
 GROK_ALLOW_RE = re.compile(r"vws-[a-z0-9-]+#[1-9][0-9]*")
 # vws-deploy#506: ORCHESTRATE_GROK_OWNERS entries, repo=bot; the bot is what a grok-wake's Owner line names.
 GROK_OWNER_RE = re.compile(r"(vws-[a-z0-9-]+)=([a-z0-9][a-z0-9-]{0,38})")
@@ -124,6 +128,9 @@ DEFAULTS = {
     "ORCHESTRATE_GROK_CAP": "1",
     "ORCHESTRATE_GROK_ALLOWLIST": "",  # repo#N entries; only these are ever assigned to Grok
     "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN": "120",  # an unclaimed Grok wake frees its slot after this (#411)
+    # Soft-CAP: a claimed Grok task with no comment/assignment/PR activity for this many minutes frees its slot
+    # (done-unlinked claims); labels stay. Parked blocked/verify free the CAP without waiting for idle.
+    "ORCHESTRATE_GROK_IDLE_MIN": "90",
     # vws-deploy#506: the Grok dev bot each repo's grok-wakes name (repo=bot); an unlisted repo names
     # the bot called after the repo (vws-iam -> vws-iam). An issue or PR `Agent:` line wins over both.
     # vws-deploy#511: the console-api Grok dev bot is named vws-api.
@@ -835,27 +842,78 @@ def grok_open_pr(k, items):
     return any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k for p in items.values())
 
 
+def linked_open_prs(k, items):
+    """Open PRs whose `Part of` names issue k."""
+    return [p for p in items.values()
+            if p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k]
+
+
+def grok_parked_blocked(k, items):
+    """Soft-CAP: the issue or any linked open PR has blocked|hold|do-not-merge|needs-human.
+    Does not count against the Grok CAP; labels are left as-is (no strip)."""
+    it = items.get(k)
+    if it and set(it.get("labels") or []) & PARK_BLOCK_LABELS:
+        return True
+    return any(set(p.get("labels") or []) & PARK_BLOCK_LABELS for p in linked_open_prs(k, items))
+
+
+def grok_parked_verify(k, items):
+    """Soft-CAP: every linked open PR is non-draft and has needs-verify|verify-approved.
+    Does not count against the Grok CAP; keeps the repo in grok_busy; keeps `grok` on the issue
+    (B4 rework routing needs it)."""
+    prs = linked_open_prs(k, items)
+    if not prs:
+        return False
+    for p in prs:
+        if p.get("draft"):
+            return False
+        if not (set(p.get("labels") or []) & PARK_VERIFY_LABELS):
+            return False
+    return True
+
+
+def grok_cap_parked(k, items):
+    """True when soft-CAP parks k (blocked/human hold, or verify-owned linked PRs)."""
+    return grok_parked_blocked(k, items) or grok_parked_verify(k, items)
+
+
 def grok_held(items):
     """Grok work in flight without a wake key: an open grok item with an assignee, or the issue an open
     grok PR (draft too) names with `Part of`. An ac-partial issue with boxes still open and no open PR
-    is not in flight (vws-deploy#545). Returns the set of held repo#N (the linked issue for a PR)."""
+    is not in flight (vws-deploy#545). Soft-CAP parks (blocked/hold/do-not-merge/needs-human on the issue
+    or a linked open PR, or every linked open PR verify-owned) do not hold the CAP. Returns the set of
+    held repo#N (the linked issue for a PR)."""
     held = set()
     for k, it in items.items():
         if it["state"] != "open" or "grok" not in it["labels"]:
             continue
-        if it["is_pr"] and grok_link(it):
-            held.add(grok_link(it))
-        elif it.get("assignees") and not ac_partial_idle(it, items):
+        if it["is_pr"]:
+            link = grok_link(it)
+            if link:
+                if not grok_cap_parked(link, items):
+                    held.add(link)
+            elif it.get("assignees"):
+                held.add(k)  # assigned grok PR without Part of still holds the CAP
+        elif it.get("assignees") and not ac_partial_idle(it, items) and not grok_cap_parked(k, items):
             held.add(k)
     return held
 
 
 def grok_busy(items, held):
     """Repos with Grok work in flight: the repo of each held task, plus the repo of each open grok PR
-    that names an issue (a PR in vws-proto with `Part of vws-iam#1` keeps both repos busy)."""
-    return {k.split("#")[0] for k in held} | {
+    that names an issue (a PR in vws-proto with `Part of vws-iam#1` keeps both repos busy). Soft-CAP
+    verify-parked issues stay busy (one-per-repo) even though they do not hold the CAP; blocked parks do not."""
+    busy = {k.split("#")[0] for k in held} | {
         it["repo"] for it in items.values()
         if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)}
+    for k, it in items.items():
+        if it["state"] != "open" or "grok" not in it.get("labels", []) or it.get("is_pr"):
+            continue
+        if grok_parked_verify(k, items):
+            busy.add(it["repo"])
+            for p in linked_open_prs(k, items):
+                busy.add(p["repo"])
+    return busy
 
 
 def status_keys(snapshot, state):
