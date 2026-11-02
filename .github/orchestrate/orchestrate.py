@@ -195,7 +195,7 @@ def load_config(paths, environ):
     if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
         raise ValueError("ORCHESTRATE_BOARD_PROJECT must be a ProjectV2 node id (PVT_...)")
     for k in ("ORCHESTRATE_BOARD_EVERY", "ORCHESTRATE_BOARD_WRITES", "ORCHESTRATE_GROK_CAP",
-              "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN"):
+              "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN", "ORCHESTRATE_GROK_IDLE_MIN"):
         if not re.fullmatch(r"[1-9][0-9]*", cfg[k]):
             raise ValueError(f"{k} must be a positive integer, got {cfg[k]!r}")
     grok_owners(cfg)  # raises ValueError on a bad ORCHESTRATE_GROK_OWNERS entry
