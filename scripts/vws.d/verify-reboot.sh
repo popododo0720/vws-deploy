@@ -88,8 +88,8 @@ vws_verify_infra() {
   fi
 }
 
-# vws_verify_drainable PODS_FILE VMIS_FILE: issue #189. kubectl drain refuses a pod with no
-# controller (ownerReferences), and a VMI with no spec.evictionStrategy is shut down and restarted
+# vws_verify_drainable PODS_FILE VMIS_FILE: issues #189, #628. kubectl drain refuses a pod with no
+# ownerReferences entry marked controller: true (other owners do not count), and a VMI with no spec.evictionStrategy is shut down and restarted
 # elsewhere instead of live-migrated. One FAIL per offending object; returns 1 when it emitted one,
 # so --snapshot writes no file. A list that cannot be read is 3, never a silent pass.
 vws_verify_drainable() { # PODS_FILE VMIS_FILE
@@ -100,7 +100,7 @@ vws_verify_drainable() { # PODS_FILE VMIS_FILE
       ($pods_allow | split(",") | map(select(. != ""))) as $okp
       | ($vmis_allow | split(",") | map(select(. != ""))) as $okv
       | ($pods[0].items[]
-          | select(.spec.nodeName != null and ((.metadata.ownerReferences // []) | length) == 0)
+          | select(.spec.nodeName != null and ((.metadata.ownerReferences // []) | any(.controller == true) | not))
           | select(.status.phase != "Succeeded" and .status.phase != "Failed")
           | "\(.metadata.namespace)/\(.metadata.name)" as $id
           | select($okp | index($id) | not)
