@@ -6,8 +6,8 @@ a time and one per repo; a woken issue holds its slot while it stays open with g
 issue with boxes still open and no open PR (vws-deploy#545): one wake per ticked-box set, and the assignee may
 keep the issue. Soft-CAP parks do not count against the CAP (and do not strip `grok`): blocked|hold|
 do-not-merge|needs-human on the issue or a linked open PR, or every linked open PR non-draft with
-needs-verify|verify-approved (repo stays busy). A claimed task with no activity for ORCHESTRATE_GROK_IDLE_MIN
-also frees its slot.
+needs-verify|verify-approved (repo stays busy). An assigned claim with no linked PR and no activity for
+ORCHESTRATE_GROK_IDLE_MIN also frees its slot.
 """
 import hashlib
 import re
@@ -38,7 +38,7 @@ def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
                       f"Grok slot {slot} of {cap}; this issue holds the slot while it is open with `grok` "
                       f"(soft-CAP: blocked/hold/do-not-merge/needs-human, or every linked open PR on "
                       f"needs-verify|verify-approved, stops counting toward the CAP without removing `grok`; "
-                      f"idle after claim frees it too).",
+                      f"an assigned claim with no PR idle for ORCHESTRATE_GROK_IDLE_MIN frees it too).",
                       "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
 
 
@@ -83,7 +83,8 @@ def grok_release(k, it, items, woken_at, now, timeout_min, idle_min=90):
     has blocked|hold|do-not-merge|needs-human; grok_parked_verify when every linked open PR is non-draft and
     has needs-verify|verify-approved. Labels stay (no strip — B4 rework needs `grok`). grok_task_done: a PR
     whose `Part of` names it merged after the wake, or every acceptance-criteria box in its body is ticked.
-    grok_idle_expired: claimed, no open linked PR, and no comment/assignment/PR activity for idle_min minutes.
+    grok_idle_expired: claimed and still assigned, no PR on its timeline or open in the snapshot, and no
+    comment or assignment for idle_min minutes (done-unlinked claim); any other claim keeps the slot.
     grok_wake_expired: nothing claimed it within timeout_min of the wake. An unread timeline or wake time, or
     an open PR that is not soft-CAP parked, keeps the slot."""
     act = it.get("grok_activity")
@@ -104,14 +105,16 @@ def grok_release(k, it, items, woken_at, now, timeout_min, idle_min=90):
     if boxes and " " not in boxes:
         return "grok_task_done", {"reason": "ac_done"}
     times = [utc(t) for t in act.get("comments", []) + act.get("assigned", []) if t]
-    times += [utc(p["merged_at"]) for p in act.get("prs", []) if p.get("merged_at")]
     claimed = (it.get("assignees") or act.get("prs")
                or any(t > t0 for t in times)
                or any(p["is_pr"] and p["state"] == "open" and grok_link(p) == k for p in items.values()))
-    if claimed:
+    # Idle expiry only for a done-unlinked claim: still assigned, no PR ever named it, and no comment or
+    # assignment for idle_min. A comment-, assignment-event- or PR-only claim keeps the slot as before (#411).
+    if claimed and it.get("assignees") and not act.get("prs"):
         last = max(times) if times else t0
         if now - last >= idle_min * 60:
             return "grok_idle_expired", {"idle_min": idle_min, "last_activity": last}
+    if claimed:
         return "", {}
     if now - t0 < timeout_min * 60:
         return "", {}
