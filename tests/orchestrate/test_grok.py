@@ -259,6 +259,77 @@ class InFlight(unittest.TestCase):
         self.assertIn({"kind": "repo_busy", "target": "vws-iam#4", "repo": "vws-iam"}, r["notes"])
 
 
+class SoftStallCap(unittest.TestCase):
+    """blocked and needs-verify must not keep a Grok CAP slot (soft-stall fix)."""
+
+    def grok_pr(self, repo, number, body, labels=("grok",), draft=False):
+        return item(repo, number, labels=labels, is_pr=True, draft=draft, body=body)
+
+    def test_blocked_assigned_issue_does_not_hold(self):
+        s = snapshot(grok_task("vws-iam", 1, 30, extra=("blocked",)), grok_task("vws-deploy", 2, 10))
+        s["items"]["vws-iam#1"]["assignees"] = ["grok-dev"]
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertNotIn("vws-iam#1", next((n["targets"] for n in r["notes"] if n["kind"] == "grok_in_flight"), []))
+
+    def test_needs_verify_pr_does_not_hold(self):
+        s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-deploy", 2, 10),
+                     self.grok_pr("vws-iam", 20, "Part of #1", labels=("grok", "needs-verify")))
+        s["items"]["vws-iam#1"]["assignees"] = ["grok-dev"]
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertNotIn("vws-iam#1", next((n["targets"] for n in r["notes"] if n["kind"] == "grok_in_flight"), []))
+        self.assertIn({"type": "remove_label", "target": "vws-iam#1", "label": "grok",
+                       "reason": "Grok CAP freed (needs_verify)"}, r["actions"])
+
+    def test_open_grok_pr_without_needs_verify_still_holds(self):
+        s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-deploy", 2, 10),
+                     self.grok_pr("vws-iam", 20, "Part of #1"))
+        r = run(s)
+        self.assertEqual(wakes(r), [])
+        self.assertIn({"kind": "grok_in_flight", "targets": ["vws-iam#1"]}, r["notes"])
+
+    def test_woken_blocked_frees_and_strips_grok(self):
+        s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-deploy", 2, 10))
+        s = posted(s, run(s))
+        s["items"]["vws-iam#1"]["labels"] = sorted(["ready", "grok", "blocked"])
+        s["items"]["vws-iam#1"]["assignees"] = ["grok-dev"]
+        s["items"]["vws-iam#1"]["grok_activity"] = {"prs": [], "comments": [], "assigned": []}
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertTrue(any(n["kind"] == "grok_slot_freed" and n.get("reason") == "blocked"
+                            and n["item"] == "vws-iam#1" for n in r["notes"]))
+        self.assertIn({"type": "remove_label", "target": "vws-iam#1", "label": "grok",
+                       "reason": "Grok CAP freed (blocked)"}, r["actions"])
+
+    def test_woken_needs_verify_frees_and_strips_grok(self):
+        s = snapshot(grok_task("vws-iam", 1, 30), grok_task("vws-deploy", 2, 10))
+        s = posted(s, run(s))
+        s["items"]["vws-iam#1"]["assignees"] = ["grok-dev"]
+        s["items"]["vws-iam#1"]["grok_activity"] = {"prs": [], "comments": [], "assigned": []}
+        s["items"]["vws-iam#20"] = self.grok_pr("vws-iam", 20, "Part of #1", labels=("grok", "needs-verify"))
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertTrue(any(n["kind"] == "grok_slot_freed" and n.get("reason") == "needs_verify"
+                            and n["item"] == "vws-iam#1" for n in r["notes"]))
+        self.assertIn({"type": "remove_label", "target": "vws-iam#1", "label": "grok",
+                       "reason": "Grok CAP freed (needs_verify)"}, r["actions"])
+
+    def test_ac_partial_idle_still_excluded(self):
+        # Keep the existing ac-partial idle exception: no hold, one continuation wake path.
+        body = (
+            "## Acceptance criteria\n"
+            "- [x] one\n"
+            "- [ ] two\n"
+        )
+        s = snapshot(item("vws-iam", 1, labels=("ready", "grok", "ac-partial"), body=body,
+                          events=[event("labeled", "ready", 30)]))
+        s["items"]["vws-iam#1"]["assignees"] = ["grok-dev"]
+        s["items"]["vws-deploy#2"] = grok_task("vws-deploy", 2, 10)
+        r = run(s)
+        self.assertNotIn("vws-iam#1", next((n["targets"] for n in r["notes"] if n["kind"] == "grok_in_flight"), []))
+
+
 class OptOut(unittest.TestCase):
     def test_opt_out_labels_never_assigned(self):
         for label in orch.OPT_OUT_LABELS:

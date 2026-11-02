@@ -835,27 +835,45 @@ def grok_open_pr(k, items):
     return any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k for p in items.values())
 
 
+def grok_pr_needs_verify(k, items):
+    """True when an open PR whose `Part of` names k carries needs-verify (verify owns the CAP)."""
+    return any(p.get("is_pr") and p.get("state") == "open" and grok_link(p) == k
+               and NEEDS_VERIFY in (p.get("labels") or []) for p in items.values())
+
+
 def grok_held(items):
     """Grok work in flight without a wake key: an open grok item with an assignee, or the issue an open
     grok PR (draft too) names with `Part of`. An ac-partial issue with boxes still open and no open PR
-    is not in flight (vws-deploy#545). Returns the set of held repo#N (the linked issue for a PR)."""
+    is not in flight (vws-deploy#545). An issue labeled `blocked`, or whose linked open PR has
+    `needs-verify` (verify owns that CAP), does not hold. Returns the set of held repo#N (the linked
+    issue for a PR)."""
     held = set()
     for k, it in items.items():
         if it["state"] != "open" or "grok" not in it["labels"]:
             continue
         if it["is_pr"] and grok_link(it):
-            held.add(grok_link(it))
+            if NEEDS_VERIFY in it["labels"]:
+                continue
+            issue_key = grok_link(it)
+            linked = items.get(issue_key)
+            if linked and "blocked" in linked.get("labels", []):
+                continue
+            held.add(issue_key)
         elif it.get("assignees") and not ac_partial_idle(it, items):
+            if "blocked" in it["labels"] or grok_pr_needs_verify(k, items):
+                continue
             held.add(k)
     return held
 
 
 def grok_busy(items, held):
     """Repos with Grok work in flight: the repo of each held task, plus the repo of each open grok PR
-    that names an issue (a PR in vws-proto with `Part of vws-iam#1` keeps both repos busy)."""
+    that names an issue (a PR in vws-proto with `Part of vws-iam#1` keeps both repos busy). A
+    needs-verify PR is verify-owned and does not busy its repo for Grok."""
     return {k.split("#")[0] for k in held} | {
         it["repo"] for it in items.values()
-        if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)}
+        if it["state"] == "open" and "grok" in it["labels"] and it["is_pr"] and grok_link(it)
+        and NEEDS_VERIFY not in it["labels"]}
 
 
 def status_keys(snapshot, state):
