@@ -6,7 +6,7 @@ AWS documents each Availability Zone as an isolated failure domain: separate pow
 
 - `platform/rook-ceph-cluster.ha.values.yaml` has one `ceph-blockpool` with `failureDomain: host` and three replicas. `platform/rook-ceph-cluster.single-node.values.yaml` has the same pool with `failureDomain: osd` and one replica. `profiles/small.yaml` uses the chart default pool.
 - Each profile has one `ceph-block` StorageClass with `allowedTopologies: []` and `volumeBindingMode: Immediate`.
-- Nothing in the chart, the platform bundle or the installer sets `topology.kubernetes.io/zone` (or any other zone label) on nodes, and the chart passes no zone list to any service. vws-storage admits volumes only in its `-zones` list (default `vws-1a`) and records the zone as the PVC annotation `vws.popododo0720.io/zone` (vws-storage `docs/decisions/0001-zone-and-pvc-topology.md`).
+- Nothing in the chart, the platform bundle or the installer sets `topology.kubernetes.io/zone` (or any other zone label) on nodes, and the chart passes no zone list to any service. vws-storage admits volumes only in its `-zones` list (default `vws-1a`) and records the zone as a PVC annotation (vws-storage `docs/decisions/0001-zone-and-pvc-topology.md`).
 - vws-compute does not place a VM by zone. It refuses to attach a volume from another zone (`checkAttachments`), which matches the EBS `InvalidVolume.ZoneMismatch` rule at the API.
 
 ## Decision
