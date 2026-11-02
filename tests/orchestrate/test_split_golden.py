@@ -1,7 +1,9 @@
 """vws-deploy#501 AC2: splitting orchestrate.py into rules/ modules is a pure move.
 
 Both fixtures were recorded from the pre-split orchestrate.py (main 1c21811); the outputs were re-recorded
-from the same inputs on pre-split main f3ba31e (#549 adds `allow_assigned` to grok_wake). They must stay
+from the same inputs on pre-split main f3ba31e (#549 adds `allow_assigned` to grok_wake). vws-deploy#641 re-recorded the `out` of
+cases 10, 13, 14 and 33 and dry-run-plan.json from the same inputs: only the grok_wake body changed (the
+soft-CAP park/idle sentence); actions, notes and state are otherwise identical. They must stay
 byte-identical:
 
 - decide-cases.jsonl: decide() inputs and outputs recorded while the tests/orchestrate suite ran on the
