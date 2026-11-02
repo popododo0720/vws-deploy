@@ -765,4 +765,40 @@ expect_text "iam sync: iamfidodevices CRD present" "$got" "iam-crd-has-fido True
 expect_text "iam sync: the iam Role covers exactly the iam CRDs" "$got" "iam-rbac-matches-crds True []"
 expect_text "iam sync: the iam Role verbs stay get/list/create/update/delete" "$got" "iam-rbac-verbs ['create', 'delete', 'get', 'list', 'update']"
 
+# R11 resourceNames (#614, docs/design/admin-volume-types.md PR 2): a rule may narrow get/update/patch/
+# delete/watch to named objects. The schema refuses wildcards, bad names and an empty list, the Role carries
+# the names, and check_render refuses resourceNames with create (RBAC cannot limit create by name).
+# rn_values NAME RULE_JSON: ci/site.yaml plus compute's rbac with one more rule appended.
+rn_values() {
+  python3 - "${VWS_TEST_ROOT}/charts/vws/values.yaml" "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "$2" >"${WORK}/rn-$1.yaml" <<'PY'
+import json, sys, yaml
+rules = yaml.safe_load(open(sys.argv[1]))["services"]["compute"]["rbac"]
+site = yaml.safe_load(open(sys.argv[2])) or {}
+site.setdefault("services", {}).setdefault("compute", {})["rbac"] = rules + [json.loads(sys.argv[3])]
+yaml.safe_dump(site, sys.stdout)
+PY
+}
+rn_values ok '{"namespace": "release", "apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "watch"], "resourceNames": ["vws-volume-types"]}'
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/rn-ok.yaml" >"${WORK}/rn-ok.out" 2>"${WORK}/rn-ok.err"; then
+  ok "resourceNames: the schema accepts a named rule"
+else
+  bad "resourceNames: the schema accepts a named rule" "$(cat "${WORK}/rn-ok.err")"
+fi
+got=$(python3 -c 'import sys,yaml; print([r for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "Role" and d["metadata"]["name"] == "vws-compute" and d["metadata"]["namespace"] == "vws" for r in d["rules"] if r.get("resourceNames")])' "${WORK}/rn-ok.out" 2>&1 || true)
+expect_text "resourceNames: the Role in the release namespace carries the names" "$got" "'resourceNames': ['vws-volume-types']"
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/rn-ok.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/rn-ok.yaml" 2>&1) &&
+  ok "resourceNames: check_render accepts a named get/watch rule" || bad "resourceNames: check_render accepts a named rule" "$out"
+for case in 'star:["*"]' 'empty:[]' 'upper:["Vws-Volume-Types"]' 'dup:["a", "a"]'; do
+  rn_values "${case%%:*}" "{\"namespace\": \"release\", \"apiGroups\": [\"\"], \"resources\": [\"configmaps\"], \"verbs\": [\"get\"], \"resourceNames\": ${case#*:}}"
+  if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/rn-${case%%:*}.yaml" >/dev/null 2>"${WORK}/rn.err"; then
+    bad "resourceNames: the schema refuses ${case%%:*}" "rendered"
+  else
+    expect_text "resourceNames: the schema refuses ${case%%:*}" "$(tr '/' '.' <"${WORK}/rn.err")" "resourceNames"
+  fi
+done
+rn_values create '{"namespace": "release", "apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "create"], "resourceNames": ["vws-volume-types"]}'
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/rn-create.yaml" >"${WORK}/rn-create.out" 2>&1 || true
+out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/rn-create.out" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${WORK}/rn-create.yaml" 2>&1 || true)
+expect_text "resourceNames: check_render refuses create with resourceNames" "$out" "R11: compute narrows create on core/configmaps with resourceNames"
+
 finish_tests
