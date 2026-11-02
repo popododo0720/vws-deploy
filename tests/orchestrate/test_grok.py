@@ -465,6 +465,123 @@ if __name__ == "__main__":
     unittest.main()
 
 
+
+class SoftStallCap(unittest.TestCase):
+    """Soft-CAP: blocked/verify parks stop counting toward CAP without stripping `grok`; idle frees done-unlinked claims."""
+
+    def _issue_pr(self, issue_labels=("ready", "grok"), pr_labels=("grok", "needs-verify"),
+                  assignees=("grok-dev",), draft=False, pr_extra=()):
+        issue = grok_task("vws-iam", 1, ready_hours_ago=20, extra=tuple(
+            l for l in issue_labels if l not in ("ready", "grok")))
+        # rebuild labels exactly
+        issue["labels"] = sorted(issue_labels)
+        issue["assignees"] = list(assignees)
+        pr = item("vws-iam", 20, labels=tuple(pr_labels) + tuple(pr_extra), is_pr=True, draft=draft,
+                  body="Part of #1")
+        return issue, pr
+
+    def test_blocked_issue_does_not_hold_cap(self):
+        issue, pr = self._issue_pr(issue_labels=("ready", "grok", "blocked"), pr_labels=("grok",))
+        s = snapshot(issue, pr, grok_task("vws-deploy", 2))
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertNotIn("vws-iam#1", next((n["targets"] for n in r["notes"] if n["kind"] == "grok_in_flight"), []))
+
+    def test_hold_on_linked_pr_does_not_hold_cap(self):
+        issue, pr = self._issue_pr(pr_labels=("grok", "hold"))
+        s = snapshot(issue, pr, grok_task("vws-deploy", 2))
+        r = run(s)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertTrue(orch.grok_parked_blocked("vws-iam#1", s["items"]))
+
+    def test_needs_verify_parks_cap_keeps_busy_keeps_grok(self):
+        issue, pr = self._issue_pr()
+        other = grok_task("vws-iam", 4, ready_hours_ago=5)  # same repo
+        other_repo = grok_task("vws-deploy", 2)
+        s = snapshot(issue, pr, other, other_repo)
+        # CAP=2 so after deploy wakes there is still a free slot that hits same-repo busy
+        r = run(s, dict(ON, ORCHESTRATE_GROK_CAP="2"))
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        self.assertNotIn("vws-iam#1", [a["item"] for a in wakes(r)])
+        self.assertNotIn("vws-iam#4", [a["item"] for a in wakes(r)])
+        self.assertIn({"kind": "repo_busy", "target": "vws-iam#4", "repo": "vws-iam"}, r["notes"])
+        self.assertIn("grok", s["items"]["vws-iam#1"]["labels"])
+        self.assertTrue(orch.grok_parked_verify("vws-iam#1", s["items"]))
+        self.assertFalse(orch.grok_parked_blocked("vws-iam#1", s["items"]))
+
+    def test_verify_approved_also_parks(self):
+        issue, pr = self._issue_pr(pr_labels=("grok", "verify-approved"))
+        s = snapshot(issue, pr)
+        self.assertTrue(orch.grok_parked_verify("vws-iam#1", s["items"]))
+        self.assertEqual(orch.grok_held(s["items"]), set())
+
+    def test_draft_or_mixed_pr_still_holds(self):
+        issue, pr = self._issue_pr(draft=True)
+        s = snapshot(issue, pr)
+        self.assertFalse(orch.grok_parked_verify("vws-iam#1", s["items"]))
+        self.assertEqual(orch.grok_held(s["items"]), {"vws-iam#1"})
+        # one NV + one without
+        pr2 = item("vws-iam", 21, labels=("grok",), is_pr=True, body="Part of #1")
+        s2 = snapshot(issue, item("vws-iam", 20, labels=("grok", "needs-verify"), is_pr=True, body="Part of #1"), pr2)
+        self.assertFalse(orch.grok_parked_verify("vws-iam#1", s2["items"]))
+        self.assertEqual(orch.grok_held(s2["items"]), {"vws-iam#1"})
+
+    def test_release_parked_verify_before_open_pr_return(self):
+        issue, pr = self._issue_pr()
+        s = snapshot(issue, pr)
+        # pretend woken
+        key = orch.grok_wake_key("vws-iam#1", issue, {})
+        s["status"]["keys"] = [key]
+        s["status"]["key_times"] = {key: "2026-10-21T10:00:00Z"}
+        issue["grok_activity"] = {"comments": ["2026-10-21T10:05:00Z"], "assigned": [], "prs": []}
+        r = run(s)
+        self.assertIn({"kind": "grok_parked_verify", "item": "vws-iam#1", "key": key}, r["notes"])
+        self.assertEqual(wakes(r), [])  # nothing else queued in this snapshot
+
+    def test_release_parked_blocked_before_open_pr_return(self):
+        issue, pr = self._issue_pr(issue_labels=("ready", "grok", "needs-human"), pr_labels=("grok",))
+        s = snapshot(issue, pr, grok_task("vws-deploy", 2))
+        key = orch.grok_wake_key("vws-iam#1", issue, {})
+        s["status"]["keys"] = [key]
+        s["status"]["key_times"] = {key: "2026-10-21T10:00:00Z"}
+        issue["grok_activity"] = {"comments": ["2026-10-21T10:05:00Z"], "assigned": [], "prs": []}
+        r = run(s)
+        self.assertIn({"kind": "grok_parked_blocked", "item": "vws-iam#1", "key": key}, r["notes"])
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+        # grok label untouched
+        self.assertIn("grok", s["items"]["vws-iam#1"]["labels"])
+
+    def test_idle_expires_claimed_unlinked(self):
+        issue = grok_task("vws-iam", 1, ready_hours_ago=20)
+        issue["assignees"] = ["grok-dev"]
+        issue["grok_activity"] = {"comments": ["2026-10-21T09:00:00Z"], "assigned": ["2026-10-21T09:00:00Z"], "prs": []}
+        s = snapshot(issue, grok_task("vws-deploy", 2))
+        key = orch.grok_wake_key("vws-iam#1", issue, {})
+        s["status"]["keys"] = [key]
+        s["status"]["key_times"] = {key: "2026-10-21T08:00:00Z"}
+        # NOW is 2026-10-21T12:00:00Z → 180 min since last activity > default 90
+        r = run(s)
+        note = next(n for n in r["notes"] if n["kind"] == "grok_idle_expired")
+        self.assertEqual(note["item"], "vws-iam#1")
+        self.assertEqual(note["idle_min"], 90)
+        self.assertEqual([a["item"] for a in wakes(r)], ["vws-deploy#2"])
+
+    def test_idle_not_before_threshold(self):
+        issue = grok_task("vws-iam", 1, ready_hours_ago=20)
+        issue["assignees"] = ["grok-dev"]
+        # activity 30 min before NOW
+        issue["grok_activity"] = {"comments": ["2026-10-21T11:30:00Z"], "assigned": [], "prs": []}
+        s = snapshot(issue, grok_task("vws-deploy", 2))
+        key = orch.grok_wake_key("vws-iam#1", issue, {})
+        s["status"]["keys"] = [key]
+        s["status"]["key_times"] = {key: "2026-10-21T08:00:00Z"}
+        r = run(s)
+        self.assertFalse(any(n["kind"] == "grok_idle_expired" for n in r["notes"]))
+        self.assertEqual(wakes(r), [])
+        self.assertIn({"kind": "grok_in_flight", "targets": ["vws-iam#1"]}, r["notes"])
+
+
+
 class StatusLine(unittest.TestCase):
     """vws-deploy#532: the #415 Now block always shows Grok slot occupancy next to the DeepSeek line."""
 
