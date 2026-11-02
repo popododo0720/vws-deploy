@@ -33,14 +33,16 @@ ALLOWED_KINDS = {
 # R24: a production render refuses the placeholder values that development and lab values keep.
 # The list is the documentation IPv4 ranges (RFC 5737), the documentation IPv6 range (RFC 3849),
 # the reserved domains (RFC 2606), and display strings such as CHANGE_ME. One function holds the
-# list; it takes values and rendered docs, so a caller needs no profile key in values.
+# list; it takes values and rendered docs, so a caller needs no profile key in values. Bare
+# `localhost` and the fully qualified form with the root dot (`x.test.`) count as reserved too.
 DOCUMENTATION_NETWORKS = tuple(
     ipaddress.ip_network(text)
     for text in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32")
 )
 RESERVED_DOMAIN = re.compile(
     r"(?<![\w-])(?:(?:[a-z0-9-]+\.)*example\.(?:com|org|net)"
-    r"|(?:[a-z0-9-]+\.)+(?:example|invalid|test|localhost))(?![\w.-])"
+    r"|(?:[a-z0-9-]+\.)+(?:example|invalid|test|localhost)"
+    r"|(?<![\w.-])localhost)\.?(?![\w.-])"
 )
 IPV4_CANDIDATE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\d.])")
 IPV6_CANDIDATE = re.compile(
@@ -49,6 +51,9 @@ IPV6_CANDIDATE = re.compile(
 DISPLAY_PLACEHOLDER = re.compile(r"(?i)(?<![a-z0-9])(change_me|changeme|todo)(?![a-z0-9])")
 ANGLE_PLACEHOLDER = re.compile(r"<[^<>]+>")
 PLACEHOLDER_PROFILE = "production"
+# The only profiles check_render.py knows. Any other --profile value fails closed, so a typo such
+# as `prod` or `Production` cannot skip the production checks (vws-deploy#629).
+KNOWN_PROFILES = ("dev", PLACEHOLDER_PROFILE)
 
 
 # Resources a ClusterRole rule may name. Everything else is namespaced and needs a rule with a
@@ -1639,7 +1644,7 @@ def placeholder_errors(values: dict, docs: list[dict]) -> list[str]:
 
 
 def split_profile(argv: list[str]) -> tuple[str, list[str], str]:
-    profile = ""
+    profile = None
     args: list[str] = []
     index = 0
     while index < len(argv):
@@ -1656,7 +1661,12 @@ def split_profile(argv: list[str]) -> tuple[str, list[str], str]:
             continue
         args.append(arg)
         index += 1
-    return profile or "dev", args, ""
+    if profile is None:
+        return "dev", args, ""
+    if profile not in KNOWN_PROFILES:
+        known = ", ".join(KNOWN_PROFILES)
+        return "", [], f"unknown --profile '{profile}'; expected one of: {known}"
+    return profile, args, ""
 
 
 def main(argv: list[str]) -> int:
