@@ -44,7 +44,6 @@ At that point, vws-storage `docs/decisions/0001-zone-and-pvc-topology.md` (revis
 | Spreading instances or volumes across zones protects against a zone outage | **Gap.** Placing resources in different VWS zones gives no extra availability. Use the `ha` profile for host redundancy. |
 | `CreateVolume` requires a known `AvailabilityZone` | Supported (vws-storage admission, unknown zone is refused). |
 | `AttachVolume` refuses a volume in another zone (`InvalidVolume.ZoneMismatch`) | Supported at the API (vws-compute `checkAttachments`). |
-| `DescribeAvailabilityZones` lists the zones of a region | Out of scope for this record; tracked by the service that owns the API. |
 
 Users who need protection from a full outage must run a second VWS cluster and replicate data themselves; VWS has no cross-cluster replication.
 
