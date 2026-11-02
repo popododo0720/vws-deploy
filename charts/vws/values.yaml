@@ -197,6 +197,13 @@ services:
       apiGroups: [cdi.kubevirt.io]
       resources: [datavolumes]
       verbs: [get, delete]
+    # vws-compute#96, #144: CreateImage from a volume or machine clones a PVC in the VM namespace
+    # into an image DataVolume in the images namespace. CDI authorizes the clone with a
+    # SubjectAccessReview for create on datavolumes/source in the source namespace (vws-deploy#617).
+    - namespace: vms
+      apiGroups: [cdi.kubevirt.io]
+      resources: [datavolumes/source]
+      verbs: [create]
     # vws-compute#73 cloudinit.go: the cloud-init user data of a machine is Secret <instance>-cloudinit,
     # referenced by cloudInitNoCloud.userDataSecretRef. create: before the VM; get and update: a retried
     # create; delete: destroy, after the VM. The client is uncached (client.New), so no list or watch.
