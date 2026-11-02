@@ -73,8 +73,16 @@ if [[ ! -e ${WORK}/snap-unmanaged.json ]]; then ok "a controller-less pod leaves
 run_vws_real verify-reboot --snapshot "${WORK}/snap-unmanaged.json" --allow-unmanaged-pod vws/compute-0; expect_rc "an allowlisted controller-less pod exits 0" 0
 
 scenario managed-pod
-edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].metadata.ownerReferences = [{"kind": "StatefulSet", "name": "compute"}]'
-run_vws_real verify-reboot --snapshot "${WORK}/snap-managed.json"; expect_rc "a pod with an ownerReference exits 0" 0
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].metadata.ownerReferences = [{"kind": "StatefulSet", "name": "compute", "controller": true}]'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-managed.json"; expect_rc "a pod with a controller ownerReference exits 0" 0
+
+# #628: kubectl drain only counts an ownerReference with controller: true; any other owner is refused.
+scenario non-controller-owner-pod
+edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].metadata.ownerReferences = [{"kind": "ConfigMap", "name": "compute"}, {"kind": "StatefulSet", "name": "compute", "controller": false}]'
+run_vws_real verify-reboot --snapshot "${WORK}/snap-non-controller.json"; expect_rc "a pod with only non-controller ownerReferences exits 1" 1
+expect_text "the non-controller-owned pod is named" "$OUT" "FAIL  drain  vws/compute-0 on node-a has no controller"
+if [[ ! -e ${WORK}/snap-non-controller.json ]]; then ok "a non-controller-owned pod leaves no snapshot"; else bad "snapshot left" "non-controller"; fi
+run_vws_real verify-reboot --snapshot "${WORK}/snap-non-controller.json" --allow-unmanaged-pod vws/compute-0; expect_rc "an allowlisted non-controller-owned pod exits 0" 0
 
 scenario finished-pod
 edit_json get_pods.json '.items[2].spec.nodeName = "node-a" | .items[2].status.phase = "Succeeded"'
