@@ -100,3 +100,7 @@ When `spec.network.nodes.external` is set (subnet `vws-external`, MTU `external.
 - Image: `docker.io/kubeovn/kube-ovn:<KUBEOVN_VERSION>` (`scripts/versions.env`), already on the nodes, so no new image is pulled. runAsNonRoot 65534, read-only root, no capabilities.
 - Alternatives and why they were dropped: a Job runs once and misses later VPCs. Putting it in vws-network would give the service NB access and break the repository boundary (Kubernetes API only). TCP MSS clamping fixes only TCP, leaves UDP/ICMP PMTUD broken, and has no standard mechanism on OVN logical routers. If a Kube-OVN upgrade solves it, delete this Deployment.
 - Needs checking: not measured on vws-test. Whether gateway_mtu actually emits ICMP needs-frag (the distributed gateway port condition), whether `ovn-nbctl` runs as non-root, whether the Service follows NB leader changes, and whether the IPv6 Packet Too Big path (#246) works end to end. The flag-only path is created since #246: without `nodes.external`, the Deployment renders on `spec.services.network.flags.kube-external-subnet` with MTU 1500.
+
+## Zones
+
+A VWS cluster is one failure domain: every zone shares the same nodes, Ceph pool and StorageClass. The bundle sets no zone node labels and no per-zone pools or StorageClasses. The model and its AWS parity gap are in `docs/design/zone-model.md` (#624).
