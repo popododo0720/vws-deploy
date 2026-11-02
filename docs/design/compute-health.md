@@ -21,8 +21,8 @@ services:
     healthPort: 8081
 ```
 
-The render then has env `VWS_HEALTH_ADDR=0.0.0.0:8081`, container and `metrics` Service ports on
-8081, and httpGet probes (`/healthz` for startup and liveness, `/readyz` for readiness). It has
+The render then has env `VWS_HEALTH_ADDR=0.0.0.0:8081`, a `metrics` container port on 8081 and a
+`metrics` port on the headless `compute-peers` Service (not on the external Service, #623), and httpGet probes (`/healthz` for startup and liveness, `/readyz` for readiness). It has
 no `prometheus.io` annotations: vws-compute main no longer serves `/metrics`. A service without
 `healthPort` keeps the old tcpSocket or gRPC probes. Wiring an OTLP endpoint is separate work
 (#217).
@@ -34,7 +34,8 @@ same kind of key the chart already uses when an image reads a listener from env.
 derives from it:
 
 - the env value `0.0.0.0:<healthPort>`;
-- the `metrics` container port and Service port, including the headless peers Service;
+- the `metrics` container port and the `metrics` port of in-cluster Services (the headless peers
+  Service), never of an external LoadBalancer Service (#623);
 - the three probe checks and their paths.
 
 The chart fails when `healthPort` equals `port`, and the schema bounds both to 1024..65535. The
@@ -65,6 +66,25 @@ The #212 check also required three scrape annotations; #635 reverses that half.
 self-test adds them to a compute render to prove the failure. `scripts/guard.sh config` fails when
 the default render carries one.
 
+## Exposure rule (#623)
+
+The compute Service is `external: true`, a LoadBalancer. #621 put the `metrics` port on it, so
+the load balancer published `/healthz` and `/readyz` (and `/metrics` on the pinned image) without
+authentication. An `external` Service now never carries the `metrics` port. The kubelet probes the
+container port on the pod IP, and a Prometheus scraper targets pod IPs, so neither needs the load
+balancer. The headless `compute-peers` Service keeps `metrics`, and an in-cluster ClusterIP
+Service with `healthPort` keeps it too.
+
+| Option | Decision | Reason |
+| --- | --- | --- |
+| Drop `metrics` from every `external` Service | chosen | Nothing reaches the health listener through the load balancer; it closes the exposure on every CNI and load balancer |
+| Keep the port and add a NetworkPolicy that admits only scrapers and the kubelet | rejected | A NetworkPolicy filters pod ingress, not what the load balancer publishes; kubelet traffic comes from the node, and whether Kube-OVN admits it under such a policy is unchecked on vws-test (docs/service-config.md, #620) |
+
+`scripts/check_render.py` `check_service_ports` fails a render whose `external` LoadBalancer
+Service publishes a `metrics` port or the `healthPort` number, and the self-test adds that port
+to the compute Service to prove the failure. A restricting NetworkPolicy does not excuse it, for
+the reason above.
+
 ## Evidence
 
 - vws-compute#156 (ff1252d) replaced `internal/obs` with vws-lib `obs.Setup`, which serves
@@ -77,6 +97,4 @@ the default render carries one.
 - `scripts/guard.sh config` default-render assertions.
 
 Unverified: a real kubelet passing these probes. This repo does not apply to a cluster. No OTLP
-endpoint is rendered, so compute metrics reach no backend until #217 is done. The `metrics` port
-rides the compute Service, which is `external: true`, so whether the LoadBalancer publishes 8081
-is also unverified; the chart adds no NetworkPolicy for compute.
+endpoint is rendered, so compute metrics reach no backend until #217 is done.
