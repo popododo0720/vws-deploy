@@ -370,8 +370,24 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     if [p.get("containerPort") for p in ports] != want_ports:
         errors.append(f"R15: {name} containerPort {[p.get('containerPort') for p in ports]} must be {want_ports}")
     named = {p.get("name"): p.get("containerPort") for p in ports}
+    http_probes = bool(spec.get("httpProbes"))
+    if http_probes and health:
+        errors.append(f"R15: {name} sets both httpProbes and healthPort; pick one probe port")
     for kind in ("startupProbe", "livenessProbe", "readinessProbe"):
         probe = container.get(kind) or {}
+        if http_probes and not health:
+            # httpProbes (vws-deploy#612): the app serves /healthz and /readyz on its service port.
+            target = probe.get("httpGet")
+            if target is None:
+                errors.append(f"R15: {name} {kind} must be httpGet on the service port (httpProbes)")
+                continue
+            want_path = "/readyz" if kind == "readinessProbe" else "/healthz"
+            if target.get("path") != want_path:
+                errors.append(f"R15: {name} {kind} path {target.get('path')} must be {want_path}")
+            number = named.get(target.get("port"), target.get("port"))
+            if number != port:
+                errors.append(f"R15: {name} {kind} port {target.get('port')} is not the service port {port}")
+            continue
         if health:
             target = probe.get("httpGet")
             if target is None:
@@ -1027,6 +1043,7 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             if service_rendered(spec)
             and (spec or {}).get("flags", {}).get("listen")
             and not (spec or {}).get("healthPort")
+            and not (spec or {}).get("httpProbes")
         ),
         None,
     )
@@ -1055,6 +1072,37 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][target]["flags"]["listen"] = "127.0.0.1:%d" % int(values["services"][target].get("port", 8080))
         if not check(docs, broken_values, release):
             return ["R15: a -listen on 127.0.0.1 did not fail"]
+    # httpProbes (#612): httpGet /healthz (startup, liveness) and /readyz (readiness) on the
+    # service port. Break each and check it fails.
+    http_name = next(
+        (n for n, spec in values["services"].items() if service_rendered(spec) and (spec or {}).get("httpProbes")),
+        None,
+    )
+    if http_name is not None:
+        def http_mutate(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == http_name:
+                    change(doc["spec"]["template"]["spec"]["containers"][0])
+            return broken
+
+        def http_tcp(c):
+            c["livenessProbe"].pop("httpGet")
+            c["livenessProbe"]["tcpSocket"] = {"port": "http"}
+
+        def http_ready_path(c):
+            c["readinessProbe"]["httpGet"]["path"] = "/healthz"
+
+        def http_live_path(c):
+            c["livenessProbe"]["httpGet"]["path"] = "/readyz"
+
+        def http_port(c):
+            c["readinessProbe"]["httpGet"]["port"] = 9
+
+        for label, change in (("a tcpSocket liveness probe", http_tcp), ("readiness on /healthz", http_ready_path),
+                              ("liveness on /readyz", http_live_path), ("an HTTP probe on another port", http_port)):
+            if not check(http_mutate(change), values, release):
+                return [f"R15: httpProbes with {label} did not fail"]
     # healthPort: the HTTP probes, the env address and the metrics port come from that one value
     # (#212). No service serves /metrics (#635). Break each and check it fails.
     health_name = next(

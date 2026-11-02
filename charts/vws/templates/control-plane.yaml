@@ -78,7 +78,11 @@ renamed service, release namespace or port moves with it. */}}
   {{- $targetSecret := required (printf "services.%s.apiClient.service %s has no apiCredentials.existingSecret" $name .service) (($target.apiCredentials | default dict).existingSecret) }}
   {{- $apiClient = dict "url" (printf "http://%s.%s.svc:%d" .service $.Release.Namespace (int ($target.port | default 8080))) "secret" $targetSecret }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $httpProbes := $spec.httpProbes | default false }}
+{{- if and $httpProbes $healthPort }}
+  {{- fail (printf "R15: services.%s sets both httpProbes and healthPort" $name) }}
+{{- end }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
 ---
 apiVersion: v1
 kind: ServiceAccount
