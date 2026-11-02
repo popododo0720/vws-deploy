@@ -77,6 +77,20 @@ services:
     # portEnv names the env the image reads its listen port from (the Next.js server reads PORT). The
     # value is this service's port, the same as containerPort, the probe and the Service.
     portEnv: PORT
+    # httpProbes (vws-deploy#612): the console serves GET /healthz (process up) and GET /readyz
+    # (ready for traffic) on its app port, the `http` container port, unauthenticated
+    # (vws-console#117). Kubelet probes them with httpGet: /healthz for startup (5s period, 2s
+    # timeout) and liveness (10s, 2s, 3 failures), /readyz for readiness (5s, 2s, 2 failures), the
+    # same timings as every other service (vws.probes). GET /metrics (Prometheus, vws_console_
+    # prefix) is on the same port; the scrape restriction is a separate step of #612.
+    httpProbes: true
+    # imageTag pins the console to vws-console main c668c6f (vws-console#117 merged 2026-10-30),
+    # the first build with /healthz, /readyz and /metrics. vws-console publish.yml pushed
+    # ghcr.io/popododo0720/vws/console:sha-c668c6f
+    # (sha256:37a1a2f5a3b9499d42ee366da2f9c373ab0b907fe9ec157654efa9fba17d67f5); an anonymous
+    # manifest request returned HTTP 200 and this digest on 2026-11-02. An older image answers 404
+    # on /healthz, so these probes need this pin or later.
+    imageTag: sha-c668c6f
     # apiClient wires this service to another service's console surface: env VWS_CONSOLE_API_URL is
     # http://<service>.<release namespace>.svc:<that service's port>, and VWS_CONSOLE_API_TOKEN comes by
     # secretKeyRef from key console-token of that service's apiCredentials.existingSecret. The token

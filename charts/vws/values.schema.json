@@ -184,6 +184,10 @@
           "maximum": 65535,
           "description": "Second HTTP listener for /healthz and /readyz. Renders VWS_HEALTH_ADDR, a metrics container and Service port, and httpGet probes (vws-deploy#212). It must differ from port."
         },
+        "httpProbes": {
+          "type": "boolean",
+          "description": "The app serves /healthz and /readyz on its service port. Renders httpGet probes on the http port (vws-deploy#612). Not with healthPort."
+        },
         "replicas": {
           "type": "integer",
           "minimum": 1

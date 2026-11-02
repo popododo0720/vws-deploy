@@ -154,14 +154,19 @@ Probes of every service. A service with healthPort gets httpGet probes on its `m
 tcp (default) opens the container port, grpc calls grpc.health.v1 on it and needs the service to
 implement that. A service with grpcReadinessService gets grpc probes on its own (always, #110):
 liveness and startup ask the empty service name, readiness asks grpcReadinessService. Only a
-service with healthPort gets an HTTP probe; the others speak gRPC and have no /healthz. The port
-is the service port from values.
+service with healthPort gets an HTTP probe on that port; a service with httpProbes (vws-deploy#612,
+the console) serves /healthz and /readyz on its own service port and gets httpGet probes on
+`http`. The others speak gRPC and have no /healthz. The port is the service port from values.
 */}}
 {{- define "vws.probe" -}}
 {{- if .healthPort }}
 httpGet:
   path: {{ .path }}
   port: metrics
+{{- else if .httpProbes }}
+httpGet:
+  path: {{ .path }}
+  port: http
 {{- else if or (eq .root.Values.global.probe "grpc") .grpcReady }}
 grpc:
   port: {{ .port }}
