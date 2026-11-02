@@ -112,12 +112,14 @@ A development or lab render keeps placeholder values so the chart examples stay 
 | Required site value | Values key | Placeholder refused |
 | --- | --- | --- |
 | Elastic IP pool CIDR | `services.network.flags.pool`, from the CR's `spec.services.network.flags.pool` | `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` and addresses in them (RFC 5737); `2001:db8::/32` and addresses in it (RFC 3849) |
-| Public console origin | `services.console-api.flags.console-origins`, from the CR's `spec.services.console-api.flags.console-origins` | `example.com`, `example.org`, `example.net`, `.example`, `.invalid`, `.test`, `.localhost` (RFC 2606) |
+| Public console origin | `services.console-api.flags.console-origins`, from the CR's `spec.services.console-api.flags.console-origins` | `example.com`, `example.org`, `example.net`, `.example`, `.invalid`, `.test`, `.localhost` (RFC 2606), bare `localhost`, and each of them with the root dot such as `x.test.` |
 
 - Display strings such as `CHANGE_ME`, `changeme`, `TODO` and `<...>` are refused in any value.
 - A private range such as `10.20.0.0/24` passes. An address in a documentation range fails even with a host or a port, such as `https://192.0.2.10:8443`.
 - The development and lab profiles keep the same values. `scripts/guard.sh placeholders --profile dev FILE...` checks a values file without the production rule.
 - Validate a production values file with `scripts/guard.sh placeholders FILE...`. Its default profile is `production`.
+- The only profiles are `dev` and `production`. Any other `--profile` value, such as `prod` or `Production`, fails closed: `check_render.py` and `scripts/guard.sh placeholders` exit non-zero with `unknown --profile '<value>'` instead of skipping the production rule (#629).
+- A real FQDN passes with or without the root dot, such as `https://console.vws.internal.`; so does a name that only contains `localhost` as a label, such as `localhost.vws.internal`.
 - This is a guard, not a schema rule: the same value is legal in a development values file. `vws render` also refuses an RFC 5737 pool before this guard (#148).
 - A private range that overlaps a documentation range is not refused; only a range or address inside one is. The list covers the values this chart renders, not values injected outside values such as the installer or the CR. The VWSCluster CRD gets the same guard once the design in #62 decides the profile key.
 

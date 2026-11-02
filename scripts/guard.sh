@@ -433,6 +433,26 @@ PY
   grep -Fq -- "$expect" "$tmp/out" || { cat "$tmp/out" >&2; die "R24: ${name} did not name ${expect}"; }
 }
 
+# placeholder_pass TMP NAME PATH VALUE: production must accept VALUE at PATH (no false positive).
+placeholder_pass() {
+  local tmp=$1 name=$2 path=$3 value=$4
+  python3 - "$tmp/site.yaml" "$path" "$value" > "$tmp/pass.yaml" <<'PY'
+import sys
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1]))
+parts = sys.argv[2].split(".")
+node = values
+for part in parts[:-1]:
+    node = node.setdefault(part, {})
+node[parts[-1]] = sys.argv[3]
+yaml.safe_dump(values, sys.stdout)
+PY
+  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/pass.yaml" > "$tmp/pass.render.yaml"
+  python3 scripts/check_render.py --profile production "$tmp/pass.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/pass.yaml" > "$tmp/out" 2>&1 \
+    || { cat "$tmp/out" >&2; die "R24: production rejected ${name}"; }
+}
+
 cmd_placeholders() {
   local profile=production tmp
   local -a files=()
@@ -443,6 +463,10 @@ cmd_placeholders() {
       *) files+=("$1"); shift ;;
     esac
   done
+  case "$profile" in
+    dev | production) ;;
+    *) die "R24: unknown --profile '${profile}'; expected one of: dev, production" ;;
+  esac
   tmp=$(mktemp -d)
   if ((${#files[@]})); then
     local -a value_flags=()
@@ -482,10 +506,43 @@ EOF
   placeholder_case "$tmp" "the reserved TLD .invalid" services.console-api.flags.console-origins https://console.example.invalid
   placeholder_case "$tmp" "the reserved TLD .test" services.console-api.flags.console-origins https://app.test
   placeholder_case "$tmp" "the reserved TLD .localhost" services.console-api.flags.console-origins https://app.localhost
+  placeholder_case "$tmp" "the bare host localhost in a URL" services.console-api.flags.console-origins https://localhost
+  placeholder_case "$tmp" "the bare host localhost with a port" services.console-api.flags.console-origins https://localhost:8443
+  placeholder_case "$tmp" "the bare flag value localhost" services.console-api.flags.console-origins localhost
+  placeholder_case "$tmp" "the trailing-dot reserved TLD .invalid" services.console-api.flags.console-origins https://console.example.invalid.
+  placeholder_case "$tmp" "the trailing-dot reserved TLD .test" services.console-api.flags.console-origins https://x.test.
+  placeholder_case "$tmp" "the trailing-dot reserved domain example.com" services.console-api.flags.console-origins https://example.com.
+  placeholder_case "$tmp" "the trailing-dot bare host localhost" services.console-api.flags.console-origins localhost.
   placeholder_case "$tmp" "the display string CHANGE_ME" services.network.flags.pool CHANGE_ME
   placeholder_case "$tmp" "the display string changeme" services.network.flags.pool changeme
   placeholder_case "$tmp" "the display string TODO" services.network.flags.pool TODO
   placeholder_case "$tmp" "an angle-bracket placeholder" services.network.flags.pool '<site pool>'
+
+  # Legitimate production values pass: a private pool and a real FQDN, with and without the
+  # root dot, and names that only contain a reserved label (vws-deploy#629 AC5).
+  placeholder_pass "$tmp" "a real FQDN with a trailing dot" services.console-api.flags.console-origins https://console.vws.internal.
+  placeholder_pass "$tmp" "a real FQDN with a trailing dot and a port" services.console-api.flags.console-origins https://console.vws.internal.:8443
+  placeholder_pass "$tmp" "a host whose first label is localhost" services.console-api.flags.console-origins https://localhost.vws.internal
+  placeholder_pass "$tmp" "a host whose label starts with localhost" services.console-api.flags.console-origins https://localhost-proxy.vws.internal
+  placeholder_pass "$tmp" "the private pool 10.20.0.0/24" services.network.flags.pool 10.20.0.0/24
+
+  # A development render keeps bare localhost (vws-deploy#629 AC3).
+  placeholder_case "$tmp" "the bare host localhost" services.console-api.flags.console-origins https://localhost
+  python3 scripts/check_render.py --profile dev "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
+    || { rm -rf "$tmp"; die "R24: the development profile rejected localhost"; }
+
+  # Only dev and production are profiles; anything else fails closed (vws-deploy#629 AC1, AC2).
+  local bad
+  for bad in prod Production staging ''; do
+    if python3 scripts/check_render.py --profile "$bad" "$tmp/site.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/site.yaml" > "$tmp/out" 2>&1; then
+      rm -rf "$tmp"; die "R24: check_render.py accepted --profile '${bad}'"
+    fi
+    grep -Fq "unknown --profile '${bad}'" "$tmp/out" || { cat "$tmp/out" >&2; rm -rf "$tmp"; die "R24: --profile '${bad}' did not name the profile"; }
+    if (cmd_placeholders --profile "$bad") > "$tmp/out" 2>&1; then
+      rm -rf "$tmp"; die "R24: guard.sh placeholders accepted --profile '${bad}'"
+    fi
+    grep -Fq "unknown --profile '${bad}'" "$tmp/out" || { cat "$tmp/out" >&2; rm -rf "$tmp"; die "R24: guard.sh placeholders --profile '${bad}' did not name the profile"; }
+  done
 
   # The same placeholder stays legal in a development or lab render (AC3).
   python3 scripts/check_render.py "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
