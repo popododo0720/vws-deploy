@@ -132,6 +132,7 @@ class GhWrapper(Env):
             with self.subTest(f"{method} {path}"), self.assertRaises(PermissionError):
                 gh.get(path) if method == "GET" else gh.write(method, path, {})
         self.assertEqual(self.calls(), [], "a refused call never reaches gh")
+        self.assertTrue(orch.allowed("POST", f"{O}/vws-iam/issues/1/assignees"), "grok-wake assign")
 
     def test_etag_and_no_gh_token(self):
         gh = orch.Gh(os.path.join(self.tmp, "cache.json"))

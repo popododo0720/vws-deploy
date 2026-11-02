@@ -322,8 +322,12 @@ class Apply(unittest.TestCase):
         gh = FakeGh()
         r, events = self.apply(gh)
         self.assertEqual(gh.writes, [("POST", "repos/popododo0720/vws-deploy/issues/339/comments",
-                                      {"body": wakes(r)[0]["body"]})])
+                                      {"body": wakes(r)[0]["body"]}),
+                                     ("POST", "repos/popododo0720/vws-iam/issues/1/assignees",
+                                      {"assignees": ["popododo0720"]})])
         self.assertIn("applied", [e["event"] for e in events])
+        posted = [e for e in events if e["event"] == "grok_wake_posted"]
+        self.assertEqual(posted[0].get("assignee"), "popododo0720")
 
     def test_recheck_skips_changed_issue(self):
         for gh in (FakeGh(labels=("ready", "grok", "blocked")), FakeGh(state="closed"), FakeGh(labels=("grok",))):
@@ -360,12 +364,12 @@ class Apply(unittest.TestCase):
                 gh_item(22, body="Part of #1"), gh_item(23, ("ready", "grok"))]
         gh = FakeGh(open_items=idle)
         self.apply(gh)
-        self.assertEqual(len(gh.writes), 1)
+        self.assertEqual(len(gh.writes), 2)  # wake comment + issue assignee
 
     def test_recheck_reads_every_scoped_repo(self):
         gh = FakeGh(open_items=[CAND])
         self.apply(gh)
-        self.assertEqual(len(gh.writes), 1)
+        self.assertEqual(len(gh.writes), 2)  # wake comment + issue assignee
         self.assertEqual(sorted(p.split("/")[2] for p in gh.lists), ["vws-deploy", "vws-iam", "vws-proto"],
                          "every non-archived scoped repo, once")
         self.assertTrue(all(p.endswith("/issues?state=open&labels=grok&per_page=100") for p in gh.lists))
@@ -385,7 +389,7 @@ class Apply(unittest.TestCase):
         cfg = dict(ON, ORCHESTRATE_GROK_CAP="2")
         gh = FakeGh(open_items={"vws-iam": [CAND], "vws-proto": [gh_item(9, assignees=("grok-dev",))]})
         self.apply(gh, cfg)
-        self.assertEqual(len(gh.writes), 1, "a free slot and a free repo")
+        self.assertEqual(len(gh.writes), 2, "a free slot and a free repo")  # comment + assignee
         gh = FakeGh(open_items={"vws-iam": [CAND, gh_item(20, pr=True, body="Part of vws-proto#3")]})
         _, events = self.apply(gh, cfg)
         self.assertEqual(gh.writes, [], "a grok PR in vws-iam keeps vws-iam busy whatever issue it works on")
@@ -398,7 +402,7 @@ class Apply(unittest.TestCase):
         gh = FakeGh(open_items={"vws-iam": [CAND], "vws-deploy": [gh_item(2, ("ready", "grok"))],
                                 "vws-proto": [gh_item(9, assignees=("grok-dev",))]})
         _, events = self.apply(gh, cfg, s)
-        self.assertEqual(len(gh.writes), 1, "vws-proto#9 started since collect: one slot left")
+        self.assertEqual(len(gh.writes), 2, "vws-proto#9 started since collect: one slot left")  # comment + assignee
         self.assertIn("vws-iam/issues/1", gh.writes[0][2]["body"])
         self.assertIn("Grok cap 2 reached", self.grok_skips(events)[0]["reason"])
 
@@ -414,7 +418,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(gh.writes, [], "woken vws-proto#3 and the new vws-deploy#7 fill both slots")
         gh = FakeGh(open_items=fresh)
         self.apply(gh, cfg, s)
-        self.assertEqual(len(gh.writes), 1, "vws-proto#3 closed since collect: its slot is free")
+        self.assertEqual(len(gh.writes), 2, "vws-proto#3 closed since collect: its slot is free")  # comment + assignee
 
     def test_recheck_read_error_fails_closed(self):
         gh = FakeGh(fail_list=True)

@@ -317,7 +317,7 @@ ALLOWED = {
         re.compile(rf"^{_REPO}/actions/runs\?head_sha=[0-9a-f]{{40}}&per_page=100$"),
         re.compile(r"^rate_limit$"),
     ],
-    "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels)$")],
+    "POST": [re.compile(rf"^{_REPO}/issues/[0-9]+/(comments|labels|assignees)$")],
     "DELETE": [re.compile(rf"^{_REPO}/issues/[0-9]+/labels/(blocked|in-review|deepseek|needs-verify|verify-approved|ac-partial|ac-pending|hold)$")],  # hold: rule H only (#501)
     # Rule D only: the REST squash merge pinned to a head sha. update-branch is never allowed.
     "PUT": [re.compile(rf"^{_REPO}/pulls/[0-9]+/merge$")],
@@ -1479,6 +1479,14 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         calls = []
         if a["type"] in ("dispatch", "wake_verify", "grok_wake", "rebuild_wake", "grok_rework", "lead_wake"):
             calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
+            if a["type"] == "grok_wake":
+                # Claim the woken issue for CAP / board (수 via tmp 2026-11-02): wake comments alone left
+                # issues unassigned; vws-iam often never self-assigned. First ORCHESTRATE_GROK_LOGINS login
+                # (default popododo0720). DeepSeek has no grok-style wake — N/A.
+                irepo, inum = a["item"].split("#")
+                login = (cfg.get("ORCHESTRATE_GROK_LOGINS") or OWNER).split(",")[0].strip() or OWNER
+                calls.append(("POST", f"repos/{OWNER}/{irepo}/issues/{inum}/assignees",
+                              {"assignees": [login]}))
         elif a["type"] == "swap_label":
             if a.get("comment"):
                 calls.append(("POST", f"{base}/comments", {"body": a["body"]}))
@@ -1611,7 +1619,8 @@ def apply(result, snapshot, gh, cfg, paths, log, state, now=None):
         if a["type"] == "remove_label" and a["label"] == "hold":
             log("hold_released", target=a["target"], held_for=a.get("held_for", ""), reason=a["reason"])
         if a["type"] == "grok_wake":
-            log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"])
+            login = (cfg.get("ORCHESTRATE_GROK_LOGINS") or OWNER).split(",")[0].strip() or OWNER
+            log("grok_wake_posted", target=a["target"], item=a["item"], key=a["key"], assignee=login)
         log("applied", action=a["type"], target=a["target"], reason=a["reason"])
     return new_state, errors
 
