@@ -4,7 +4,8 @@ One marker comment on the verify-wake thread (ORCHESTRATE_WAKE_THREAD; unset: no
 ready+grok issue on ORCHESTRATE_GROK_ALLOWLIST (empty: nothing is assigned), at most ORCHESTRATE_GROK_CAP at
 a time and one per repo; a woken issue holds its slot while it stays open with grok, except an ac-partial
 issue with boxes still open and no open PR (vws-deploy#545): one wake per ticked-box set, and the assignee may
-keep the issue.
+keep the issue. A `blocked` issue, or one whose linked open PR has `needs-verify`, does not hold the CAP
+(verify owns needs-verify; soft-stall fix).
 """
 import hashlib
 import re
@@ -15,7 +16,7 @@ from trusted_read import (
 
 from .common import (
     OPT_OUT_LABELS, ac_boxes, ac_partial_slice, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held, grok_open_pr,
-    grok_link, num, parse_deps, ready_time, reset_time, utc, wake_target,
+    grok_link, grok_pr_needs_verify, num, parse_deps, ready_time, reset_time, utc, wake_target,
 )
 
 NAME = "grok"
@@ -75,8 +76,15 @@ def grok_release(k, it, items, woken_at, now, timeout_min):
     """vws-deploy#411: why a woken Grok task no longer holds its slot, as (note kind, details), or ("", {}).
     grok_task_done: a PR whose `Part of` names it merged after the wake, or every acceptance-criteria box in
     its body is ticked. grok_wake_expired: nothing claimed it (no assignee; no comment, assignment or linked
-    PR after the wake) within timeout_min of the wake. An unread timeline or wake time, or an open PR whose
-    `Part of` names it, keeps the slot."""
+    PR after the wake) within timeout_min of the wake. grok_slot_freed: the issue is `blocked`, or a linked
+    open PR has `needs-verify` (verify owns the CAP). An unread timeline or wake time, or an open PR whose
+    `Part of` names it (without needs-verify), keeps the slot."""
+    # Soft-stall frees do not need a wake timeline: blocked / needs-verify must drop the CAP even
+    # when collect has not filled grok_activity or key_times yet.
+    if not it.get("is_pr") and "blocked" in (it.get("labels") or []):
+        return "grok_slot_freed", {"reason": "blocked"}
+    if grok_pr_needs_verify(k, items):
+        return "grok_slot_freed", {"reason": "needs_verify"}
     act = it.get("grok_activity")
     if act is None or not woken_at:
         return "", {}
@@ -105,7 +113,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
     key_times = snapshot.get("status", {}).get("key_times", {})
     allow, bad = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))
     notes += [{"kind": "grok_allowlist_invalid", "token": b} for b in bad]
-    held, queue, woken, freed = grok_held(items), [], set(), []
+    held, queue, woken, freed, free_actions = grok_held(items), [], set(), [], []
     for k in sorted(items):
         it = items[k]
         labels = set(it["labels"])
@@ -116,7 +124,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         if key in posted:
             kind, details = ("", {}) if now is None else grok_release(
                 k, it, items, key_times.get(key), now, int(num(cfg, "ORCHESTRATE_GROK_WAKE_TIMEOUT_MIN")))
-            if kind:  # done or never claimed: the slot is free, and the same key is never posted again
+            if kind:  # done, expired, blocked, or verify-owned: the slot is free; same key is never posted again
                 held.discard(unit)
                 held.discard(k)
                 freed.append(k)
@@ -124,11 +132,28 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
                     released[k] = key
                 if (released_before or {}).get(k) != key:
                     notes.append(dict({"kind": kind, "item": k, "key": key}, **details))
+                # Match status to CAP: strip `grok` from a freed issue (not a PR — FAIL rework may need it).
+                if kind == "grok_slot_freed" and not it.get("is_pr") and "grok" in labels:
+                    free_actions.append({"type": "remove_label", "target": k, "label": "grok",
+                                         "reason": f"Grok CAP freed ({details.get('reason')})"})
                 continue
             held.add(unit)  # woken and still open with grok: the slot stays taken
             woken.add(k)
             continue
         if unit in held or k in held:
+            continue
+        # Verify-owned: free CAP already (grok_held); do not re-wake, and strip `grok` so status matches.
+        if not it.get("is_pr") and grok_pr_needs_verify(k, items):
+            if "grok" in labels and not any(a.get("target") == k and a.get("label") == "grok"
+                                           for a in free_actions):
+                free_actions.append({"type": "remove_label", "target": k, "label": "grok",
+                                     "reason": "Grok CAP freed (needs_verify)"})
+            continue
+        if not it.get("is_pr") and "blocked" in labels:
+            if "grok" in labels and not any(a.get("target") == k and a.get("label") == "grok"
+                                           for a in free_actions):
+                free_actions.append({"type": "remove_label", "target": k, "label": "grok",
+                                     "reason": "Grok CAP freed (blocked)"})
             continue
         if (k not in allow or "ready" not in labels or labels & ({"deepseek"} | set(OPT_OUT_LABELS))
                 or (it["is_pr"] and it.get("draft"))):
@@ -170,7 +195,7 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
                         "allow_assigned": continuing, "woken": sorted(woken), "released": sorted(freed),
                         "reason": why, "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
-    return actions
+    return free_actions + actions
 
 
 def decide(snapshot, state, cfg, now):
