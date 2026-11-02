@@ -347,11 +347,21 @@ def check_service_ports(name: str, spec: dict, by_kind: dict) -> list[str]:
     want.extend(
         {"name": item["name"], "port": item["port"], "targetPort": item["port"]} for item in extra
     )
-    if health:
+    external = bool(spec.get("external"))
+    # An external Service never publishes the health listener (#623): probes and scrapers use the
+    # pod IP, and a NetworkPolicy does not stop the load balancer from publishing the port.
+    if health and not external:
         want.append({"name": "metrics", "port": health, "targetPort": "metrics"})
     service = by_kind.get("Service", {}).get(name)
     if service is not None:
         got = port_view((service.get("spec") or {}).get("ports") or [])
+        if external and (service.get("spec") or {}).get("type") == "LoadBalancer":
+            leaked = [p for p in got if p["name"] == "metrics" or (health and p["port"] == health)]
+            if leaked:
+                errors.append(
+                    f"R15: external Service {name} publishes the health listener {leaked}; "
+                    "probes and scrapers use the pod IP (#623)"
+                )
         if got != want:
             errors.append(f"R15: Service {name} ports {got} must be {want}")
     if "state" in spec and spec.get("state") is not None:
@@ -915,6 +925,23 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
             if not check(broken, values, release):
                 return ["R4: a single-replica Deployment with maxSurge 1 did not fail"]
 
+    exposed = next(
+        (
+            n
+            for n, sp in values["services"].items()
+            if service_rendered(sp) and (sp or {}).get("external") and (sp or {}).get("healthPort")
+        ),
+        None,
+    )
+    if exposed is not None:
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") == "Service" and doc["metadata"]["name"] == exposed:
+                health = int(values["services"][exposed]["healthPort"])
+                doc["spec"]["ports"].append({"name": "metrics", "port": health, "targetPort": "metrics"})
+        if not any(f"external Service {exposed} publishes" in e for e in check(broken, values, release)):
+            return [f"R15: the metrics port on external Service {exposed} did not fail (#623)"]
+
     stateful_doc = _first(docs, "StatefulSet")
     if stateful_doc is not None:
         broken = copy.deepcopy(docs)
@@ -1204,12 +1231,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         for label, change in changes:
             if not check(health_mutate(change), values, release):
                 return [f"R15: {label} did not fail"]
-        broken = copy.deepcopy(docs)
-        for doc in broken:
-            if doc.get("kind") == "Service" and doc["metadata"]["name"] == health_name:
-                doc["spec"]["ports"] = [p for p in doc["spec"]["ports"] if p["name"] != "metrics"]
-        if not check(broken, values, release):
-            return ["R15: a missing metrics Service port did not fail"]
+        # An external Service carries no metrics port (#623); the case above covers it.
+        if not values["services"][health_name].get("external"):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "Service" and doc["metadata"]["name"] == health_name:
+                    doc["spec"]["ports"] = [p for p in doc["spec"]["ports"] if p["name"] != "metrics"]
+            if not check(broken, values, release):
+                return ["R15: a missing metrics Service port did not fail"]
         peers = f"{health_name}-peers"
         if any(d.get("kind") == "Service" and d["metadata"]["name"] == peers for d in docs):
             broken = copy.deepcopy(docs)
