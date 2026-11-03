@@ -1,14 +1,15 @@
 # Factory metrics summary
 
-Through 2026-11-02 (KST days). Written by .github/metrics/metrics.py in vws-deploy (#345); one file per day in metrics/daily/.
+Through 2026-11-03 (KST days). Written by .github/metrics/metrics.py in vws-deploy (#345); one file per day in metrics/daily/.
 
-- Last 7 days (7 with data): 256 PRs merged, 313 opened, 158 DeepSeek dispatches (144 done, 16 failed, 0 timed out), 102 grok swaps.
-- Last 7 days wakes: 150 verify wakes, 158 DeepSeek and 168 grok dispatches (51 reworks), lead wakes: 38 (7 days with input); tokens per merged PR: 5897443 (5 days with input).
-- Last 28 days (20 with data): 715 PRs merged, 918 opened, 246 DeepSeek dispatches (216 done, 35 failed, 0 timed out), 303 grok swaps.
-- Last 28 days wakes: 263 verify wakes, 246 DeepSeek and 180 grok dispatches (67 reworks) (11 days with data), lead wakes: 38 (7 days with input); tokens per merged PR: 5897443 (5 days with input).
+- Last 7 days (7 with data): 247 PRs merged, 298 opened, 148 DeepSeek dispatches (135 done, 15 failed, 0 timed out), 98 grok swaps.
+- Last 7 days wakes: 142 verify wakes, 148 DeepSeek and 183 grok dispatches (53 reworks), lead wakes: 7 (7 days with input); tokens per merged PR: 5897443 (5 days with input).
+- Last 28 days (21 with data): 734 PRs merged, 943 opened, 246 DeepSeek dispatches (216 done, 35 failed, 0 timed out), 307 grok swaps.
+- Last 28 days wakes: 281 verify wakes, 246 DeepSeek and 201 grok dispatches (74 reworks) (12 days with data), lead wakes: 38 (8 days with input); tokens per merged PR: 5897443 (5 days with input).
 
 | day | prs_opened | prs_merged | lead_time_median_h | verify_pass_rate | deepseek_dispatched | deepseek_done | deepseek_failed | deepseek_timeout | grok_swaps | ci_failure_rate | verify_backlog | stalls | tokens | verify_wakes | grok_dispatches | rework_dispatches | lead_wakes | alerts |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-03 | 25 | 19 | 0.89 | 0.909 | 0 | 0 | 0 | 0 | 4 | 0.038 | 16 | 60 | - | 18 | 21 | 7 | 0 | stall |
 | 2026-11-02 | 47 | 34 | 0.84 | 0.872 | 2 | 0 | 2 | 0 | 11 | 0.091 | 15 | 79 | 5553132 | 18 | 50 | 4 | 4 | stall |
 | 2026-11-01 | 25 | 26 | 0.93 | 0.824 | 6 | 7 | 1 | 0 | 15 | 0.01 | 12 | 141 | 64499789 | 18 | 20 | 5 | 0 | stall grok_escalation_rate |
 | 2026-10-31 | 73 | 66 | 0.94 | 0.867 | 55 | 51 | 4 | 0 | 29 | 0.013 | 15 | 0 | 560115751 | 29 | 35 | 13 | 0 | - |
