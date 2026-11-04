@@ -32,8 +32,7 @@ func TestCRRoundTrip(t *testing.T) {
 	h.fill()
 	cr := h.exportCR()
 	hash := h.summary()
-	spec := cr["spec"].(map[string]any)
-	if spec["network"].(map[string]any)["nodes"].(map[string]any)["external"].(map[string]any)["eipPool"] != "198.18.0.128/25" {
+	if obj(t, cr, "spec", "network", "nodes", "external")["eipPool"] != "198.18.0.128/25" {
 		t.Fatalf("exported CR %v", cr)
 	}
 
@@ -44,8 +43,8 @@ func TestCRRoundTrip(t *testing.T) {
 	if status != 200 || body["state"] != "editing" {
 		t.Fatalf("POST /cr: %d %v", status, body)
 	}
-	for _, s := range body["steps"].([]any) {
-		if s.(map[string]any)["status"] != "valid" {
+	for _, s := range as[[]any](t, body["steps"]) {
+		if obj(t, s)["status"] != "valid" {
 			t.Fatalf("steps after POST /cr %v", body["steps"])
 		}
 	}
@@ -89,23 +88,29 @@ func TestPostCRRejects(t *testing.T) {
 		{"wrong kind", func(cr map[string]any) { cr["kind"] = "Other" }, "kind", "invalid"},
 		{"wrong name", func(cr map[string]any) { cr["metadata"] = map[string]any{"name": "x"} }, "metadata.name", "invalid"},
 		{"services override", func(cr map[string]any) {
-			cr["spec"].(map[string]any)["services"] = map[string]any{"network": map[string]any{"flags": map[string]any{"pool": "198.18.0.0/24"}}}
+			obj(t, cr, "spec")["services"] = map[string]any{
+				"network": map[string]any{"flags": map[string]any{"pool": "198.18.0.0/24"}},
+			}
 		}, "spec.services", "unsupported"},
 		{"no eip pool", func(cr map[string]any) {
-			delete(cr["spec"].(map[string]any)["network"].(map[string]any)["nodes"].(map[string]any)["external"].(map[string]any), "eipPool")
+			delete(obj(t, cr, "spec", "network", "nodes", "external"), "eipPool")
 		}, "spec.network.nodes.external.eipPool", "required"},
-		{"no profile", func(cr map[string]any) { delete(cr["spec"].(map[string]any), "profile") }, "spec.profile", "required"},
-		{"bad storage", func(cr map[string]any) { cr["spec"].(map[string]any)["storage"] = map[string]any{"driver": "minio"} }, "spec.storage.driver", "not_available"},
+		{"no profile", func(cr map[string]any) { delete(obj(t, cr, "spec"), "profile") }, "spec.profile", "required"},
+		{"bad storage", func(cr map[string]any) {
+			obj(t, cr, "spec")["storage"] = map[string]any{"driver": "minio"}
+		}, "spec.storage.driver", "not_available"},
 	}
 	for _, c := range cases {
 		cr := map[string]any{}
-		_ = json.Unmarshal(mustJSON(t, good), &cr)
+		if err := json.Unmarshal(mustJSON(t, good), &cr); err != nil {
+			t.Fatal(err)
+		}
 		c.change(cr)
 		status, body := h.do("POST", "/api/v1/cr", cr)
 		e := h.wantError(status, body, 400, ReasonValidationFailed)
 		found := false
-		for _, f := range e["fields"].([]any) {
-			m := f.(map[string]any)
+		for _, f := range as[[]any](t, e["fields"]) {
+			m := obj(t, f)
 			found = found || (m["field"] == c.field && m["code"] == c.code)
 		}
 		if !found {

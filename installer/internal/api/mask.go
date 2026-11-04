@@ -11,8 +11,9 @@ const Masked = "***"
 
 var (
 	// key=value, key: value and "key": "value" where the key names a secret.
-	secretPair = regexp.MustCompile(`(?i)((?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?code|credential|private[_-]?key)[a-z0-9_-]*"?\s*[:=]\s*"?)([^\s"',;}]+)`)
-	bearer     = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
+	secretPair = regexp.MustCompile(`(?i)((?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?code|` +
+		`credential|private[_-]?key)[a-z0-9_-]*"?\s*[:=]\s*"?)([^\s"',;}]+)`)
+	bearer = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
 	// A URL's user:password@.
 	urlUser  = regexp.MustCompile(`(://[^/\s:@]+:)[^/\s@]+@`)
 	pemBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE REQUEST)-----`)

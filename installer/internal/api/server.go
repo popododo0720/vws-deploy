@@ -67,7 +67,10 @@ func New(c Config) *Server {
 	if c.Context == nil {
 		c.Context = context.Background()
 	}
-	srv := &Server{s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now, installCtx: c.Context, apiVersion: c.APIVersion, credentials: c.Credentials}
+	srv := &Server{
+		s: newSession(), auth: c.Auth, cluster: c.Cluster, preflight: c.Preflight, now: c.Now,
+		installCtx: c.Context, apiVersion: c.APIVersion, credentials: c.Credentials,
+	}
 	srv.events = newEventLog(srv.secrets)
 	return srv
 }
@@ -179,7 +182,9 @@ func (srv *Server) postSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: SessionCookie, Value: tok, Path: "/api/v1", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: tok, Path: "/api/v1", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+	})
 	view := map[string]any{"token": tok, "idleTimeoutSeconds": int(IdleTimeout.Seconds())}
 	if err := writeJSON(w, http.StatusOK, view); err != nil {
 		slog.LogAttrs(r.Context(), slog.LevelError, "installer api", slog.String("err", err.Error()))
@@ -226,7 +231,8 @@ type StepResult struct {
 func (srv *Server) stepIn(r *http.Request) (int, error) {
 	i := stepIndex(r.PathValue("step"))
 	if i < 0 {
-		return 0, fail(ReasonNotFound, "no step "+r.PathValue("step")+"; steps are roles, network, storage, eip, profile, observability")
+		return 0, fail(ReasonNotFound,
+			"no step "+r.PathValue("step")+"; steps are roles, network, storage, eip, profile, observability")
 	}
 	return i, nil
 }
@@ -439,7 +445,9 @@ func (srv *Server) install(cr []byte, done chan struct{}) {
 		if cerr := srv.storeCredential(res.AdminUser); cerr != nil {
 			srv.mu.Lock()
 			defer srv.mu.Unlock()
-			srv.s.state, srv.s.lastErr = StateFailed, "the install ran but the initial admin Secret "+cluster.InitialAdminSecret+" could not be created; install again"
+			srv.s.state = StateFailed
+			srv.s.lastErr = "the install ran but the initial admin Secret " + cluster.InitialAdminSecret +
+				" could not be created; install again"
 			srv.events.add("state", string(StateFailed))
 			return
 		}

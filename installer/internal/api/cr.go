@@ -25,7 +25,9 @@ var crSpecKeys = []string{"profile", "storage", "network", "observability"}
 
 // splitCR turns a CR into one raw value per step: spec.network.nodes.external.eipPool becomes
 // the eip step, and roles keeps the saved value or defaults to every node (roles are not in the CR).
-func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMessage) (map[string]json.RawMessage, []FieldError) {
+func splitCR(
+	cr map[string]json.RawMessage, apiVersion string, roles json.RawMessage,
+) (map[string]json.RawMessage, []FieldError) {
 	var errs []FieldError
 	var gotVersion string
 	if raw := cr["apiVersion"]; len(raw) == 0 {
@@ -69,7 +71,10 @@ func splitCR(cr map[string]json.RawMessage, apiVersion string, roles json.RawMes
 	}
 	sort.Strings(extra)
 	for _, k := range extra {
-		errs = append(errs, FieldError{Field: "spec." + k, Code: "unsupported", Message: "the installer draft has no spec." + k + "; use vws apply --unattended -f for this CR"})
+		errs = append(errs, FieldError{
+			Field: "spec." + k, Code: "unsupported",
+			Message: "the installer draft has no spec." + k + "; use vws apply --unattended -f for this CR",
+		})
 	}
 	out := map[string]json.RawMessage{"roles": roles}
 	for _, k := range []string{"profile", "storage", "observability"} {

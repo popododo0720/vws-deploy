@@ -50,7 +50,7 @@ func (k KubeSecret) Store(ctx context.Context, user, password string) error {
 		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("secret manifest: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, k.Kubectl, "create", "-f", "-")
 	cmd.Stdin = bytes.NewReader(manifest)
@@ -67,7 +67,8 @@ func (k KubeSecret) Store(ctx context.Context, user, password string) error {
 }
 
 func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
-	out, err := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "get", "secret", InitialAdminSecret, "-o", "json").Output()
+	out, err := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "get", "secret", InitialAdminSecret,
+		"-o", "json").Output()
 	if err != nil {
 		return "", "", false, fmt.Errorf("kubectl get secret %s: %w", InitialAdminSecret, err)
 	}
@@ -89,7 +90,9 @@ func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
 }
 
 func (k KubeSecret) MarkConsumed(ctx context.Context) error {
-	if err := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "label", "--overwrite", "secret", InitialAdminSecret, consumedLabel+"=true").Run(); err != nil {
+	label := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "label", "--overwrite", "secret",
+		InitialAdminSecret, consumedLabel+"=true")
+	if err := label.Run(); err != nil {
 		return fmt.Errorf("kubectl label secret %s: %w", InitialAdminSecret, err)
 	}
 	return nil

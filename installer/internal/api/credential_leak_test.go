@@ -18,7 +18,7 @@ type syncBuf struct {
 func (s *syncBuf) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.b.Write(p)
+	return s.b.Write(p) //nolint:wrapcheck // io.Writer passthrough
 }
 
 func (s *syncBuf) String() string {

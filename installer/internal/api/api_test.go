@@ -110,6 +110,33 @@ func newHarness(t *testing.T, pf Preflight) *harness {
 	return h
 }
 
+// as is a type assertion that fails the test instead of panicking.
+func as[T any](t *testing.T, v any) T {
+	t.Helper()
+	x, ok := v.(T)
+	if !ok {
+		t.Fatalf("got %T, want %T", v, x)
+	}
+	return x
+}
+
+// obj walks the nested JSON objects in v along keys.
+func obj(t *testing.T, v any, keys ...string) map[string]any {
+	t.Helper()
+	m := as[map[string]any](t, v)
+	for _, k := range keys {
+		m = as[map[string]any](t, m[k])
+	}
+	return m
+}
+
+func closeBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (h *harness) code() string { return h.codes[len(h.codes)-1] }
 
 // do sends a request with the current token and returns the status and the JSON body.
@@ -121,10 +148,12 @@ func (h *harness) do(method, path string, body any) (int, map[string]any) {
 	case string:
 		rd = strings.NewReader(b)
 	default:
-		j, _ := json.Marshal(b)
-		rd = bytes.NewReader(j)
+		rd = bytes.NewReader(mustJSON(h.t, b))
 	}
-	req, _ := http.NewRequest(method, h.http.URL+path, rd)
+	req, err := http.NewRequestWithContext(context.Background(), method, h.http.URL+path, rd)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	if h.token != "" {
 		req.Header.Set("Authorization", "Bearer "+h.token)
 	}
@@ -132,9 +161,12 @@ func (h *harness) do(method, path string, body any) (int, map[string]any) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer closeBody(h.t, resp)
 	h.header = resp.Header
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	h.bodies.Write(raw)
 	var out map[string]any
 	if len(raw) > 0 {
@@ -154,17 +186,17 @@ func (h *harness) login() {
 	if status != 200 {
 		h.t.Fatalf("login: %d %v", status, body)
 	}
-	h.token = body["token"].(string)
+	h.token = as[string](h.t, body["token"])
 }
 
 // wantError checks the #139 error model: status, code, a message and retryable false.
 func (h *harness) wantError(status int, body map[string]any, wantStatus int, code Reason) map[string]any {
 	h.t.Helper()
-	e, _ := body["error"].(map[string]any)
-	if status != wantStatus || e == nil || e["code"] != string(code) {
+	e, ok := body["error"].(map[string]any)
+	if status != wantStatus || !ok || e["code"] != string(code) {
 		h.t.Fatalf("want %d %s, got %d %v", wantStatus, code, status, body)
 	}
-	if m, _ := e["message"].(string); m == "" {
+	if m, ok := e["message"].(string); !ok || m == "" {
 		h.t.Fatalf("error %s has no message", code)
 	}
 	if e["retryable"] != false {
@@ -191,7 +223,8 @@ var goodValues = []struct {
 func (h *harness) fill() {
 	h.t.Helper()
 	for _, v := range goodValues {
-		if status, body := h.do("PUT", "/api/v1/steps/"+v.step, map[string]any{"value": v.value}); status != 200 || body["status"] != "valid" {
+		status, body := h.do("PUT", "/api/v1/steps/"+v.step, map[string]any{"value": v.value})
+		if status != 200 || body["status"] != "valid" {
 			h.t.Fatalf("PUT %s: %d %v", v.step, status, body)
 		}
 	}
@@ -200,7 +233,7 @@ func (h *harness) fill() {
 func (h *harness) state() string {
 	h.t.Helper()
 	_, body := h.do("GET", "/api/v1/state", nil)
-	return body["state"].(string)
+	return as[string](h.t, body["state"])
 }
 
 func (h *harness) summary() string {
@@ -209,7 +242,7 @@ func (h *harness) summary() string {
 	if status != 200 {
 		h.t.Fatalf("summary: %d %v", status, body)
 	}
-	return body["specHash"].(string)
+	return as[string](h.t, body["specHash"])
 }
 
 func (h *harness) waitState(want string) {
@@ -289,11 +322,17 @@ func TestOneTimeCode(t *testing.T) {
 
 func TestCookieSession(t *testing.T) {
 	h := newHarness(t, nil)
-	resp, err := http.Post(h.http.URL+"/api/v1/session", "application/json", strings.NewReader(`{"code":"`+h.code()+`"}`))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", h.http.URL+"/api/v1/session",
+		strings.NewReader(`{"code":"`+h.code()+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeBody(t, resp)
 	var c *http.Cookie
 	for _, x := range resp.Cookies() {
 		if x.Name == SessionCookie {
@@ -303,13 +342,16 @@ func TestCookieSession(t *testing.T) {
 	if c == nil || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode {
 		t.Fatalf("session cookie %+v", c)
 	}
-	req, _ := http.NewRequest("GET", h.http.URL+"/api/v1/state", nil)
+	req, err = http.NewRequestWithContext(context.Background(), "GET", h.http.URL+"/api/v1/state", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: c.Value})
 	got, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got.Body.Close()
+	closeBody(t, got)
 	if got.StatusCode != 200 {
 		t.Fatalf("cookie session: %d", got.StatusCode)
 	}
@@ -360,8 +402,8 @@ func TestHappyPath(t *testing.T) {
 	if status != 200 || body["status"] != "pending" {
 		t.Fatalf("GET step: %d %v", status, body)
 	}
-	nics := body["options"].(map[string]any)["nics"].([]any)
-	if len(nics) != 2 || nics[0].(map[string]any)["name"] != "ens3" || len(nics[0].(map[string]any)["nodes"].([]any)) != 2 {
+	nics := as[[]any](t, obj(t, body, "options")["nics"])
+	if len(nics) != 2 || obj(t, nics[0])["name"] != "ens3" || len(as[[]any](t, obj(t, nics[0])["nodes"])) != 2 {
 		t.Fatalf("nic options %v", nics)
 	}
 	_, body = h.do("GET", "/api/v1/steps/profile", nil)
@@ -370,8 +412,8 @@ func TestHappyPath(t *testing.T) {
 	}
 	h.fill()
 	_, st := h.do("GET", "/api/v1/state", nil)
-	for _, s := range st["steps"].([]any) {
-		if s.(map[string]any)["status"] != "valid" {
+	for _, s := range as[[]any](t, st["steps"]) {
+		if obj(t, s)["status"] != "valid" {
 			t.Fatalf("state steps %v", st["steps"])
 		}
 	}
@@ -393,7 +435,8 @@ func TestHappyPath(t *testing.T) {
 	h.cluster.release <- nil
 	h.waitState("succeeded")
 	_, body = h.do("GET", "/api/v1/result", nil)
-	if body["consoleURL"] != "https://console.example.invalid" || body["adminUser"] != "admin" || body["credentialAvailable"] != false {
+	if body["consoleURL"] != "https://console.example.invalid" || body["adminUser"] != "admin" ||
+		body["credentialAvailable"] != false {
 		t.Fatalf("result %v", body)
 	}
 	status, body = h.do("PUT", "/api/v1/steps/profile", map[string]any{"value": "ha"})
@@ -406,12 +449,13 @@ func TestHappyPath(t *testing.T) {
 	if err := json.Unmarshal(h.cluster.crs[0], &cr); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := specHash(cr); got != hash {
+	if got, _, err := specHash(cr); err != nil || got != hash {
 		t.Fatalf("installed CR hash %s, confirmed %s", got, hash)
 	}
-	spec := cr["spec"].(map[string]any)
-	ext := spec["network"].(map[string]any)["nodes"].(map[string]any)["external"].(map[string]any)
-	if ext["eipPool"] != "198.18.0.128/25" || spec["profile"] != "small" || spec["storage"].(map[string]any)["driver"] != "rook-ceph" {
+	spec := obj(t, cr, "spec")
+	ext := obj(t, spec, "network", "nodes", "external")
+	if ext["eipPool"] != "198.18.0.128/25" || spec["profile"] != "small" ||
+		obj(t, spec, "storage")["driver"] != "rook-ceph" {
 		t.Fatalf("CR spec %v", spec)
 	}
 	if cr["apiVersion"] != crdAPIVersion(t) || cr["kind"] != "VWSCluster" {
@@ -485,11 +529,12 @@ func TestFailedInstallRetries(t *testing.T) {
 	}
 	h.waitState("failed")
 	_, body := h.do("GET", "/api/v1/result", nil)
-	if body["error"] == "" || strings.Contains(body["error"].(string), "hunter2") {
+	if body["error"] == "" || strings.Contains(as[string](t, body["error"]), "hunter2") {
 		t.Fatalf("failed result %v", body)
 	}
 	// failed -> editing on the next save, then a fresh summary installs again.
-	if status, _ := h.do("PUT", "/api/v1/steps/observability", map[string]any{"value": map[string]any{"otlpEndpoint": ""}}); status != 200 {
+	status, _ := h.do("PUT", "/api/v1/steps/observability", map[string]any{"value": map[string]any{"otlpEndpoint": ""}})
+	if status != 200 {
 		t.Fatal("PUT after failure")
 	}
 	if h.state() != "editing" {
@@ -522,7 +567,7 @@ func TestValidation(t *testing.T) {
 	for _, c := range cases {
 		status, body := h.do("PUT", "/api/v1/steps/"+c.step, map[string]any{"value": c.value})
 		e := h.wantError(status, body, 400, ReasonValidationFailed)
-		f := e["fields"].([]any)[0].(map[string]any)
+		f := obj(t, as[[]any](t, e["fields"])[0])
 		if f["field"] != c.field || f["code"] != c.code {
 			t.Fatalf("%s %v: fields %v", c.step, c.value, e["fields"])
 		}
@@ -539,14 +584,30 @@ func TestValidation(t *testing.T) {
 		code  string
 	}{
 		{"network", map[string]any{"driver": "calico"}, "spec.network.driver", "unsupported"},
-		{"network", map[string]any{"nodes": map[string]any{"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/33"}}}, "spec.network.nodes.management.cidr", "invalid"},
-		{"network", map[string]any{"nodes": map[string]any{"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24", "vlan": 5000}}}, "spec.network.nodes.management.vlan", "out_of_range"},
-		{"network", map[string]any{"nodes": map[string]any{"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24"}, "external": map[string]any{"nic": "ens8", "cidr": "198.18.0.0/24", "gateway": "10.9.9.1"}}}, "spec.network.nodes.external.gateway", "invalid"},
-		{"network", map[string]any{"nodes": map[string]any{"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24"}, "external": map[string]any{"nic": "ens8", "cidr": "198.18.0.0/24", "gateway": "198.18.0.1", "eipPool": "198.18.0.0/25"}}}, "spec.network.nodes.external.eipPool", "wrong_step"},
+		{"network", map[string]any{"nodes": map[string]any{
+			"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/33"},
+		}}, "spec.network.nodes.management.cidr", "invalid"},
+		{"network", map[string]any{"nodes": map[string]any{
+			"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24", "vlan": 5000},
+		}}, "spec.network.nodes.management.vlan", "out_of_range"},
+		{"network", map[string]any{"nodes": map[string]any{
+			"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24"},
+			"external":   map[string]any{"nic": "ens8", "cidr": "198.18.0.0/24", "gateway": "10.9.9.1"},
+		}}, "spec.network.nodes.external.gateway", "invalid"},
+		{"network", map[string]any{"nodes": map[string]any{
+			"management": map[string]any{"nic": "ens3", "cidr": "10.0.0.0/24"},
+			"external": map[string]any{
+				"nic": "ens8", "cidr": "198.18.0.0/24", "gateway": "198.18.0.1", "eipPool": "198.18.0.0/25",
+			},
+		}}, "spec.network.nodes.external.eipPool", "wrong_step"},
 		{"storage", map[string]any{"driver": "minio"}, "spec.storage.driver", "not_available"},
 		{"storage", map[string]any{"driver": "local"}, "spec.storage.driver", "not_available"},
 		{"storage", map[string]any{"driver": "existing"}, "spec.storage.storageClass", "required"},
-		{"storage", map[string]any{"driver": "nfs", "nfs": map[string]any{"server": "nfs.example.invalid"}}, "spec.storage.nfs.share", "required"},
+		{
+			"storage",
+			map[string]any{"driver": "nfs", "nfs": map[string]any{"server": "nfs.example.invalid"}},
+			"spec.storage.nfs.share", "required",
+		},
 		{
 			"storage", withTypes(map[string]any{"driver": "rook-ceph"},
 				map[string]any{"gp4": map[string]any{"storageClass": "fast"}}),
@@ -585,15 +646,19 @@ func TestValidation(t *testing.T) {
 		{"eip", "", "spec.network.nodes.external.eipPool", "required"},
 		{"eip", "10.1.0.0/24", "spec.network.nodes.external.eipPool", "invalid"},
 		{"profile", "huge", "spec.profile", "unsupported"},
-		{"observability", map[string]any{"otlpEndpoint": "http://collector:4317"}, "spec.observability.otlpEndpoint", "not_available"},
+		{
+			"observability",
+			map[string]any{"otlpEndpoint": "http://collector:4317"},
+			"spec.observability.otlpEndpoint", "not_available",
+		},
 	}
 	for _, c := range more {
 		h.fill()
 		status, body := h.do("PUT", "/api/v1/steps/"+c.step, map[string]any{"value": c.value})
 		e := h.wantError(status, body, 400, ReasonValidationFailed)
 		found := false
-		for _, f := range e["fields"].([]any) {
-			m := f.(map[string]any)
+		for _, f := range as[[]any](t, e["fields"]) {
+			m := obj(t, f)
 			found = found || (m["field"] == c.field && m["code"] == c.code)
 		}
 		if !found {
@@ -601,8 +666,9 @@ func TestValidation(t *testing.T) {
 		}
 	}
 	_, body = h.do("GET", "/api/v1/steps/storage", nil)
-	drivers := body["options"].(map[string]any)["drivers"].([]any)
-	if d := drivers[3].(map[string]any); d["driver"] != "minio" || d["disabled"] != true || !strings.Contains(d["reason"].(string), "Coming soon") {
+	drivers := as[[]any](t, obj(t, body, "options")["drivers"])
+	d := obj(t, drivers[3])
+	if d["driver"] != "minio" || d["disabled"] != true || !strings.Contains(as[string](t, d["reason"]), "Coming soon") {
 		t.Fatalf("minio option %v", d)
 	}
 	var opts struct {
@@ -689,9 +755,15 @@ func TestPreflightBlocksAndWarns(t *testing.T) {
 		defer mu.Unlock()
 		switch {
 		case step == "network" && block:
-			return []Check{{ID: "nic.exists", Severity: "error", Status: "fail", Node: "node2", Field: "spec.network.nodes.external.nic", Message: "node2 has no ens8"}}
+			return []Check{{
+				ID: "nic.exists", Severity: "error", Status: "fail", Node: "node2",
+				Field: "spec.network.nodes.external.nic", Message: "node2 has no ens8",
+			}}
 		case step == "network":
-			return []Check{{ID: "nic.mtu", Severity: "warning", Status: "fail", Message: "mtu differs"}, {ID: "nic.link", Severity: "info", Status: "unknown", Message: "R10"}}
+			return []Check{
+				{ID: "nic.mtu", Severity: "warning", Status: "fail", Message: "mtu differs"},
+				{ID: "nic.link", Severity: "info", Status: "unknown", Message: "R10"},
+			}
 		}
 		return nil
 	}
@@ -702,7 +774,7 @@ func TestPreflightBlocksAndWarns(t *testing.T) {
 	if status != 200 || body["status"] != "invalid" {
 		t.Fatalf("a blocking preflight: %d %v", status, body)
 	}
-	if c := body["preflight"].(map[string]any)["checks"].([]any)[0].(map[string]any); c["id"] != "nic.exists" {
+	if c := obj(t, as[[]any](t, obj(t, body, "preflight")["checks"])[0]); c["id"] != "nic.exists" {
 		t.Fatalf("preflight %v", body["preflight"])
 	}
 	status, body = h.do("PUT", "/api/v1/steps/storage", map[string]any{"value": goodValues[2].value})
@@ -717,7 +789,7 @@ func TestPreflightBlocksAndWarns(t *testing.T) {
 	}
 	h.fill()
 	_, body = h.do("GET", "/api/v1/summary", nil)
-	if w := body["warnings"].([]any); len(w) != 2 {
+	if w := as[[]any](t, body["warnings"]); len(w) != 2 {
 		t.Fatalf("summary warnings %v", w)
 	}
 }
@@ -788,7 +860,7 @@ func TestRoute(t *testing.T) {
 		seen = Route(r)
 	})
 	rec := httptest.NewRecorder()
-	wrapped.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/steps/network", nil))
+	wrapped.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/steps/network", nil))
 	if seen != "GET /api/v1/steps/{step}" {
 		t.Fatalf("route %q", seen)
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +17,10 @@ type sse struct{ id, typ, data string }
 // stream reads the event stream to its end (the install ended and every event was sent).
 func (h *harness) stream(lastID string) (int, []sse, string) {
 	h.t.Helper()
-	req, _ := http.NewRequest("GET", h.http.URL+"/api/v1/install/events", nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", h.http.URL+"/api/v1/install/events", nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	if lastID != "" {
 		req.Header.Set("Last-Event-ID", lastID)
@@ -25,8 +29,11 @@ func (h *harness) stream(lastID string) (int, []sse, string) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	defer closeBody(h.t, resp)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	if resp.StatusCode == 200 && resp.Header.Get("Content-Type") != "text/event-stream" {
 		h.t.Fatalf("content type %q", resp.Header.Get("Content-Type"))
 	}

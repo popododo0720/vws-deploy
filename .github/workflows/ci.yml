@@ -31,8 +31,7 @@ jobs:
           VWS_BASE_REF: ${{ github.base_ref }}
         run: make check
 
-  # Common golangci-lint baseline (.github/golangci-common.yml, vws-deploy#300). fetch-depth 0 gives
-  # new-from-merge-base the origin/main history it compares against.
+  # Common golangci-lint baseline (.github/golangci-common.yml, vws-deploy#300), on the whole module (#302).
   lint:
     runs-on: ubuntu-latest
     defaults:
@@ -40,8 +39,6 @@ jobs:
         working-directory: installer
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:

@@ -428,7 +428,8 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 	if !slices.Contains([]string{"yes", "y"}, strings.ToLower(answer)) {
 		return ErrAborted
 	}
-	if err := t.C.Do(ctx, http.MethodPost, "/install", map[string]any{"confirm": true, "specHash": sum.SpecHash}, nil); err != nil {
+	install := map[string]any{"confirm": true, "specHash": sum.SpecHash}
+	if err := t.C.Do(ctx, http.MethodPost, "/install", install, nil); err != nil {
 		return err
 	}
 	t.printf("installing")
@@ -463,7 +464,7 @@ func (t *TUI) confirmAndInstall(ctx context.Context) error {
 		t.printf(".")
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("install: %w", ctx.Err())
 		case <-time.After(t.Poll):
 		}
 	}
