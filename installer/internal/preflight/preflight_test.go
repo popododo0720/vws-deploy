@@ -61,7 +61,9 @@ func net(external bool, vlan, mtu int) api.Network {
 }
 
 func TestNodeIPInsideManagement(t *testing.T) {
-	nodes := []cluster.Node{{Name: "a", InternalIPs: []string{"10.0.0.5"}}, {Name: "b", InternalIPs: []string{"192.168.0.5"}}, {Name: "c"}}
+	nodes := []cluster.Node{
+		{Name: "a", InternalIPs: []string{"10.0.0.5"}}, {Name: "b", InternalIPs: []string{"192.168.0.5"}}, {Name: "c"},
+	}
 	got := engine.Run(context.Background(), "network", net(false, 0, 0), nodes)
 	want(t, got, "node.ip", "a", "pass", false)
 	want(t, got, "node.ip", "b", "fail", true)
@@ -128,7 +130,8 @@ func TestSharedInterfaceNeedsTheLargerMTU(t *testing.T) {
 		Tunnel:     &api.Attachment{NIC: "ens3", CIDR: "10.1.0.0/24", MTU: 9000},
 	}}
 	links := wanted(n)
-	if len(links) != 1 || links[0].iface != "ens3" || links[0].mtu != 9000 || strings.Join(links[0].nets, ",") != "management,tunnel" {
+	if len(links) != 1 || links[0].iface != "ens3" || links[0].mtu != 9000 ||
+		strings.Join(links[0].nets, ",") != "management,tunnel" {
 		t.Fatalf("wanted %+v", links)
 	}
 }
@@ -141,11 +144,15 @@ func TestNoNodeNetworks(t *testing.T) {
 }
 
 func TestStorage(t *testing.T) {
-	want(t, engine.Run(context.Background(), "storage", api.Storage{Driver: "existing", StorageClass: "fast-rbd"}, nil), "storage.class", "", "pass", false)
-	want(t, engine.Run(context.Background(), "storage", api.Storage{Driver: "existing", StorageClass: "nope"}, nil), "storage.class", "", "fail", true)
+	ctx := context.Background()
+	want(t, engine.Run(ctx, "storage", api.Storage{Driver: "existing", StorageClass: "fast-rbd"}, nil),
+		"storage.class", "", "pass", false)
+	want(t, engine.Run(ctx, "storage", api.Storage{Driver: "existing", StorageClass: "nope"}, nil),
+		"storage.class", "", "fail", true)
 	broken := Engine{StorageClasses: func(context.Context) ([]string, error) { return nil, errors.New("forbidden") }}
-	want(t, broken.Run(context.Background(), "storage", api.Storage{Driver: "existing", StorageClass: "x"}, nil), "storage.class", "", "unknown", false)
-	want(t, engine.Run(context.Background(), "storage", api.Storage{Driver: "nfs"}, nil), "storage.nfs", "", "unknown", false)
+	want(t, broken.Run(ctx, "storage", api.Storage{Driver: "existing", StorageClass: "x"}, nil),
+		"storage.class", "", "unknown", false)
+	want(t, engine.Run(ctx, "storage", api.Storage{Driver: "nfs"}, nil), "storage.nfs", "", "unknown", false)
 	if got := engine.Run(context.Background(), "storage", api.Storage{Driver: "rook-ceph"}, nil); len(got) != 0 {
 		t.Fatalf("rook-ceph checks %+v", got)
 	}
@@ -154,7 +161,10 @@ func TestStorage(t *testing.T) {
 // The engine plugged into the API: a missing NIC makes the network step invalid and blocks the
 // next step, as #139 says for fail+error.
 func TestEngineBlocksTheStep(t *testing.T) {
-	nodes := []cluster.Node{{Name: "a", Ready: true, InternalIPs: []string{"10.0.0.5"}, NICsKnown: true, NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}}}}
+	nodes := []cluster.Node{{
+		Name: "a", Ready: true, InternalIPs: []string{"10.0.0.5"}, NICsKnown: true,
+		NICs: []cluster.NIC{{Name: "ens3", MTU: 1500}},
+	}}
 	checks := engine.Run(context.Background(), "network", net(true, 0, 0), nodes)
 	blocked := false
 	for _, c := range checks {

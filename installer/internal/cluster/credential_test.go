@@ -17,11 +17,14 @@ func TestKubeSecret(t *testing.T) {
 	// A fake kubectl that keeps the created object and answers get from it.
 	kubectl := fakeBin(t, dir, "kubectl", `echo "$*" >> `+args+`
 case "$1 $2" in
-"create -f") [ -f `+secret+` ] && { echo 'Error from server (AlreadyExists): secrets "vws-initial-admin" already exists' >&2; exit 1; }
+"create -f") [ -f `+secret+` ] && {
+    echo 'Error from server (AlreadyExists): secrets "vws-initial-admin" already exists' >&2; exit 1; }
   cat > `+secret+` ;;
 "-n vws") case "$3" in
   get) [ -f `+secret+` ] || exit 1
-    if [ -f `+labeled+` ]; then sed 's/"metadata":{/"metadata":{"labels":{"vws-initial-admin-consumed":"true"},/' `+secret+`; else cat `+secret+`; fi ;;
+    if [ -f `+labeled+` ]; then
+      sed 's/"metadata":{/"metadata":{"labels":{"vws-initial-admin-consumed":"true"},/' `+secret+`
+    else cat `+secret+`; fi ;;
   label) touch `+labeled+` ;;
   *) exit 9 ;;
   esac ;;
@@ -50,12 +53,19 @@ esac
 	if _, _, consumed, err := k.Load(ctx); err != nil || !consumed {
 		t.Fatalf("after MarkConsumed: %v %v", consumed, err)
 	}
-	raw, _ := os.ReadFile(args)
+	raw, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(raw), pw) || strings.Contains(string(raw), "Other-Fake") {
 		t.Fatalf("the password reached kubectl's arguments:\n%s", raw)
 	}
-	stored, _ := os.ReadFile(secret)
-	if !strings.Contains(string(stored), `"name":"vws-initial-admin"`) || !strings.Contains(string(stored), `"namespace":"vws"`) || strings.Contains(string(stored), pw) {
+	stored, err := os.ReadFile(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stored), `"name":"vws-initial-admin"`) ||
+		!strings.Contains(string(stored), `"namespace":"vws"`) || strings.Contains(string(stored), pw) {
 		t.Fatalf("secret %s (the value is base64 in data)", stored)
 	}
 }

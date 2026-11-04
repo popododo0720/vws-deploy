@@ -29,7 +29,9 @@ type eventLog struct {
 }
 
 func newEventLog(literals func() []string) *eventLog {
-	return &eventLog{ring: make([]event, 0, EventBuffer), next: 1, changed: make(chan struct{}), mask: mask{literals: literals}}
+	return &eventLog{
+		ring: make([]event, 0, EventBuffer), next: 1, changed: make(chan struct{}), mask: mask{literals: literals},
+	}
 }
 
 // add masks and appends; a log line with newlines becomes one event per line.

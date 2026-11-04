@@ -40,6 +40,10 @@ linters:
       context: all
       static-msg: true
       key-naming-case: snake
+    wrapcheck:
+      # Errors from this module's own packages already carry their context.
+      ignore-package-globs:
+        - github.com/popododo0720/vws-deploy/installer/*
     depguard:
       rules:
         no-sentry-direct:

@@ -109,7 +109,8 @@ func ParseLinks(raw []byte) (map[string][]NIC, error) {
 
 // StorageClasses lists the StorageClass names with kubectl.
 func (v VWS) StorageClasses(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(ctx, v.Kubectl, "get", "storageclasses", "-o", "jsonpath={.items[*].metadata.name}").Output()
+	out, err := exec.CommandContext(ctx, v.Kubectl, "get", "storageclasses",
+		"-o", "jsonpath={.items[*].metadata.name}").Output()
 	if err != nil {
 		return nil, fmt.Errorf("kubectl get storageclasses: %w", err)
 	}
@@ -120,7 +121,7 @@ func (v VWS) StorageClasses(ctx context.Context) ([]string, error) {
 func (v VWS) Install(ctx context.Context, cr []byte, log func(string)) (Result, error) {
 	path := filepath.Join(v.WorkDir, "vwscluster.json")
 	if err := os.WriteFile(path, cr, 0o600); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("write cr: %w", err)
 	}
 	return Result{}, v.run(ctx, log, "apply", "--unattended", "-f", path)
 }

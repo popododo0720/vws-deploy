@@ -32,12 +32,27 @@ type Input struct {
 
 // Steps is the fixed step order.
 var Steps = []Step{
-	{Name: "roles", Decode: decodeRoles, Apply: func(map[string]any, any) {}, Defaults: defaultRoles, Options: nodeOptions},
-	{Name: "network", Decode: decodeNetwork, Apply: setPath("network"), Defaults: constant(Network{Driver: "kube-ovn"}), Options: nicOptions},
-	{Name: "storage", Decode: decodeStorage, Apply: setPath("storage"), Defaults: constant(Storage{Driver: "rook-ceph"}), Options: storageOptions},
+	{
+		Name: "roles", Decode: decodeRoles, Apply: func(map[string]any, any) {}, Defaults: defaultRoles,
+		Options: nodeOptions,
+	},
+	{
+		Name: "network", Decode: decodeNetwork, Apply: setPath("network"), Defaults: constant(Network{Driver: "kube-ovn"}),
+		Options: nicOptions,
+	},
+	{
+		Name: "storage", Decode: decodeStorage, Apply: setPath("storage"), Defaults: constant(Storage{Driver: "rook-ceph"}),
+		Options: storageOptions,
+	},
 	{Name: "eip", Decode: decodeEIP, Apply: applyEIP, Defaults: constant(""), Options: constant(nil)},
-	{Name: "profile", Decode: decodeProfile, Apply: setPath("profile"), Defaults: defaultProfile, Options: constant([]string{"single-node", "small", "ha"})},
-	{Name: "observability", Decode: decodeObservability, Apply: setPath("observability"), Defaults: constant(Observability{}), Options: constant(nil)},
+	{
+		Name: "profile", Decode: decodeProfile, Apply: setPath("profile"), Defaults: defaultProfile,
+		Options: constant([]string{"single-node", "small", "ha"}),
+	},
+	{
+		Name: "observability", Decode: decodeObservability, Apply: setPath("observability"),
+		Defaults: constant(Observability{}), Options: constant(nil),
+	},
 }
 
 func stepIndex(name string) int {
@@ -86,7 +101,9 @@ func decodeRoles(raw json.RawMessage, in Input) (any, []FieldError) {
 	var out []FieldError
 	for i, name := range v.Nodes {
 		if !slices.ContainsFunc(nodes, func(n cluster.Node) bool { return n.Name == name }) {
-			out = append(out, FieldError{Field: fmt.Sprintf("roles.nodes[%d]", i), Code: "not_found", Message: "no node " + name + " in the cluster"})
+			out = append(out, FieldError{
+				Field: fmt.Sprintf("roles.nodes[%d]", i), Code: "not_found", Message: "no node " + name + " in the cluster",
+			})
 		}
 	}
 	return v, out
@@ -206,7 +223,10 @@ func decodeNetwork(raw json.RawMessage, _ Input) (any, []FieldError) {
 		if n.External != nil {
 			out = append(out, checkAttachment("spec.network.nodes.external", n.External, true)...)
 			if n.External.EIPPool != "" {
-				out = append(out, FieldError{Field: "spec.network.nodes.external.eipPool", Code: "wrong_step", Message: "set the elastic IP pool in the eip step"})
+				out = append(out, FieldError{
+					Field: "spec.network.nodes.external.eipPool", Code: "wrong_step",
+					Message: "set the elastic IP pool in the eip step",
+				})
 			}
 		}
 	}
@@ -224,7 +244,9 @@ func decodeNetwork(raw json.RawMessage, _ Input) (any, []FieldError) {
 			out = append(out, FieldError{Field: field + ".mode", Code: "unsupported", Message: "only ovn-underlay"})
 		}
 		if d.EIPPool != "" {
-			out = append(out, FieldError{Field: field + ".eipPool", Code: "invalid", Message: "direct networks have no elastic IP pool"})
+			out = append(out, FieldError{
+				Field: field + ".eipPool", Code: "invalid", Message: "direct networks have no elastic IP pool",
+			})
 		}
 		out = append(out, checkAttachment(field, &d.Attachment, true)...)
 	}
@@ -316,7 +338,9 @@ func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
 	case v.Driver == "":
 		return v, []FieldError{required("spec.storage.driver")}
 	case i < 0:
-		return v, []FieldError{{Field: "spec.storage.driver", Code: "unsupported", Message: "unknown storage driver " + v.Driver}}
+		return v, []FieldError{{
+			Field: "spec.storage.driver", Code: "unsupported", Message: "unknown storage driver " + v.Driver,
+		}}
 	case storageDrivers[i].Disabled:
 		return v, []FieldError{{Field: "spec.storage.driver", Code: "not_available", Message: storageDrivers[i].Reason}}
 	}
@@ -395,22 +419,28 @@ func decodeEIP(raw json.RawMessage, in Input) (any, []FieldError) {
 		return pool, []FieldError{{Field: field, Code: "invalid", Message: "not a CIDR"}}
 	}
 	if network.Nodes == nil || network.Nodes.External == nil {
-		return pool, []FieldError{{Field: "spec.network.nodes.external", Code: "required", Message: "the elastic IP pool lives on the external network; set it in the network step"}}
+		return pool, []FieldError{{
+			Field: "spec.network.nodes.external", Code: "required",
+			Message: "the elastic IP pool lives on the external network; set it in the network step",
+		}}
 	}
 	ext, err := netip.ParsePrefix(network.Nodes.External.CIDR)
 	if err == nil && (p.Bits() < ext.Bits() || !ext.Contains(p.Addr())) {
-		return pool, []FieldError{{Field: field, Code: "invalid", Message: "the pool is outside the external network " + ext.String()}}
+		return pool, []FieldError{{
+			Field: field, Code: "invalid", Message: "the pool is outside the external network " + ext.String(),
+		}}
 	}
 	return pool, nil
 }
 
 func applyEIP(spec map[string]any, value any) {
 	network, ok := spec["network"].(Network)
-	if !ok || network.Nodes == nil || network.Nodes.External == nil {
+	pool, isString := value.(string)
+	if !ok || !isString || network.Nodes == nil || network.Nodes.External == nil {
 		return
 	}
 	ext := *network.Nodes.External
-	ext.EIPPool = value.(string)
+	ext.EIPPool = pool
 	nodes := *network.Nodes
 	nodes.External = &ext
 	network.Nodes = &nodes
@@ -446,7 +476,10 @@ func decodeObservability(raw json.RawMessage, _ Input) (any, []FieldError) {
 		return nil, errs
 	}
 	if v.OTLPEndpoint != "" {
-		return v, []FieldError{{Field: "spec.observability.otlpEndpoint", Code: "not_available", Message: "the chart cannot take an OTLP endpoint yet; leave it empty"}}
+		return v, []FieldError{{
+			Field: "spec.observability.otlpEndpoint", Code: "not_available",
+			Message: "the chart cannot take an OTLP endpoint yet; leave it empty",
+		}}
 	}
 	return v, nil
 }

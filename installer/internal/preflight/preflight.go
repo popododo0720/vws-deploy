@@ -61,7 +61,8 @@ func roles(v api.Roles, nodes []cluster.Node) []api.Check {
 		if i < 0 {
 			continue // validation already rejected it
 		}
-		out = append(out, check("node.ready", "error", nodes[i].Ready, name, "roles.nodes", name+" Ready", "wait for the node or leave it out"))
+		out = append(out, check("node.ready", "error", nodes[i].Ready, name, "roles.nodes", name+" Ready",
+			"wait for the node or leave it out"))
 	}
 	return out
 }
@@ -98,9 +99,11 @@ func wanted(n api.Network) []link {
 	}
 	var entries []entry
 	if nn := n.Nodes; nn != nil {
-		entries = append(entries, entry{"management", nn.Management, false}, entry{"tunnel", nn.Tunnel, false}, entry{"external", nn.External, true})
+		entries = append(entries, entry{"management", nn.Management, false}, entry{"tunnel", nn.Tunnel, false},
+			entry{"external", nn.External, true})
 		if nn.Storage != nil {
-			entries = append(entries, entry{"storage.public", nn.Storage.Public, false}, entry{"storage.cluster", nn.Storage.Cluster, false})
+			entries = append(entries, entry{"storage.public", nn.Storage.Public, false},
+				entry{"storage.cluster", nn.Storage.Cluster, false})
 		}
 	}
 	for i := range n.Direct {
@@ -137,7 +140,8 @@ func wanted(n api.Network) []link {
 
 func network(n api.Network, nodes []cluster.Node) []api.Check {
 	if n.Nodes == nil || n.Nodes.Management == nil {
-		return []api.Check{check("network.nodes", "info", true, "", "spec.network.nodes", "spec.network.nodes is not set: one NIC, nothing to check", "")}
+		return []api.Check{check("network.nodes", "info", true, "", "spec.network.nodes",
+			"spec.network.nodes is not set: one NIC, nothing to check", "")}
 	}
 	mgmt, err := netip.ParsePrefix(n.Nodes.Management.CIDR)
 	if err != nil {
@@ -152,11 +156,13 @@ func network(n api.Network, nodes []cluster.Node) []api.Check {
 				break
 			}
 		}
-		msg := fmt.Sprintf("InternalIP %s is outside management %s", strings.Join(node.InternalIPs, ",")+orNone(node.InternalIPs), mgmt)
+		msg := fmt.Sprintf("InternalIP %s is outside management %s",
+			strings.Join(node.InternalIPs, ",")+orNone(node.InternalIPs), mgmt)
 		if inside != "" {
 			msg = fmt.Sprintf("%s is inside management %s", inside, mgmt)
 		}
-		out = append(out, check("node.ip", "error", inside != "", node.Name, "spec.network.nodes.management.cidr", msg, "the management CIDR must hold every node InternalIP"))
+		out = append(out, check("node.ip", "error", inside != "", node.Name, "spec.network.nodes.management.cidr", msg,
+			"the management CIDR must hold every node InternalIP"))
 	}
 	want := wanted(n)
 	for _, node := range nodes {
@@ -172,12 +178,14 @@ func network(n api.Network, nodes []cluster.Node) []api.Check {
 			i := slices.IndexFunc(node.NICs, func(c cluster.NIC) bool { return c.Name == l.iface })
 			nets := strings.Join(l.nets, ",")
 			if i < 0 {
-				out = append(out, check("nic.exists", "error", false, node.Name, "spec.network.nodes", fmt.Sprintf("interface %s (%s) does not exist", l.iface, nets), "create the interface or pick another NIC"))
+				out = append(out, check("nic.exists", "error", false, node.Name, "spec.network.nodes",
+					fmt.Sprintf("interface %s (%s) does not exist", l.iface, nets), "create the interface or pick another NIC"))
 				continue
 			}
 			got := node.NICs[i].MTU
 			out = append(out, check("nic.mtu", "error", got >= l.mtu, node.Name, "spec.network.nodes",
-				fmt.Sprintf("interface %s (%s) MTU %d, want at least %d", l.iface, nets, got, l.mtu), "raise the NIC MTU or lower the CR mtu"))
+				fmt.Sprintf("interface %s (%s) MTU %d, want at least %d", l.iface, nets, got, l.mtu),
+				"raise the NIC MTU or lower the CR mtu"))
 		}
 	}
 	return out
@@ -195,10 +203,13 @@ func (e Engine) storage(ctx context.Context, s api.Storage) []api.Check {
 	case "existing":
 		classes, err := e.StorageClasses(ctx)
 		if err != nil {
-			return []api.Check{{ID: "storage.class", Severity: "warning", Status: "unknown", Field: "spec.storage.storageClass", Message: "cannot list StorageClasses"}}
+			return []api.Check{{
+				ID: "storage.class", Severity: "warning", Status: "unknown", Field: "spec.storage.storageClass",
+				Message: "cannot list StorageClasses",
+			}}
 		}
-		return []api.Check{check("storage.class", "error", slices.Contains(classes, s.StorageClass), "", "spec.storage.storageClass",
-			"StorageClass "+s.StorageClass+" exists", "create it first or pick another driver")}
+		return []api.Check{check("storage.class", "error", slices.Contains(classes, s.StorageClass), "",
+			"spec.storage.storageClass", "StorageClass "+s.StorageClass+" exists", "create it first or pick another driver")}
 	case "nfs":
 		return []api.Check{{
 			ID: "storage.nfs", Severity: "info", Status: "unknown", Field: "spec.storage.nfs.server",

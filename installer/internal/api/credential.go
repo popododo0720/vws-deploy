@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/popododo0720/vws-deploy/installer/internal/cluster"
@@ -20,7 +21,7 @@ func newPassword() (string, error) {
 	buf := make([]byte, PasswordLength)
 	for len(out) < PasswordLength {
 		if _, err := rand.Read(buf); err != nil {
-			return "", err
+			return "", fmt.Errorf("password: %w", err)
 		}
 		for _, c := range buf {
 			if int(c) < limit && len(out) < PasswordLength {
@@ -56,7 +57,8 @@ func (srv *Server) postCredential(w http.ResponseWriter, r *http.Request) error 
 	switch srv.s.state {
 	case StateSucceeded:
 	case StateFinished:
-		return fail(ReasonCredentialConsumed, "the initial admin password was already handed out; it is in Secret "+cluster.InitialAdminSecret)
+		return fail(ReasonCredentialConsumed,
+			"the initial admin password was already handed out; it is in Secret "+cluster.InitialAdminSecret)
 	case StateInstalling:
 		return fail(ReasonInstallInProgress, "an install is running")
 	default:
@@ -68,7 +70,8 @@ func (srv *Server) postCredential(w http.ResponseWriter, r *http.Request) error 
 	}
 	if consumed {
 		srv.s.state = StateFinished
-		return fail(ReasonCredentialConsumed, "the initial admin password was already handed out; it is in Secret "+cluster.InitialAdminSecret)
+		return fail(ReasonCredentialConsumed,
+			"the initial admin password was already handed out; it is in Secret "+cluster.InitialAdminSecret)
 	}
 	if err := srv.credentials.MarkConsumed(r.Context()); err != nil {
 		return internal(err)

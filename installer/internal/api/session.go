@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -105,8 +106,10 @@ func (s *session) blockedBy(i int) int {
 }
 
 func (s *session) network() Network {
-	n, _ := s.steps[stepIndex("network")].value.(Network)
-	return n
+	if n, ok := s.steps[stepIndex("network")].value.(Network); ok {
+		return n
+	}
+	return Network{}
 }
 
 // cr builds the VWSCluster CR from every valid step.
@@ -125,20 +128,20 @@ func (s *session) cr(apiVersion string) map[string]any {
 	}
 }
 
-// specHash is the sha256 of the canonical CR JSON: marshalled once, read back into maps and
-// marshalled again, so struct field order does not matter and encoding/json sorts every key.
+// specHash is the sha256 of the canonical CR JSON: marshaled once, read back into maps and
+// marshaled again, so struct field order does not matter and encoding/json sorts every key.
 // A client that hashes the summary CR the same way gets the same value.
 func specHash(cr map[string]any) (string, []byte, error) {
 	b, err := json.Marshal(cr)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("spec hash: %w", err)
 	}
 	var plain any
 	if err := json.Unmarshal(b, &plain); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("spec hash: %w", err)
 	}
 	if b, err = json.Marshal(plain); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("spec hash: %w", err)
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), b, nil

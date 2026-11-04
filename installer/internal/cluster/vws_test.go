@@ -22,7 +22,8 @@ func fakeBin(t *testing.T, dir, name, body string) string {
 func TestNodes(t *testing.T) {
 	dir := t.TempDir()
 	kubectl := fakeBin(t, dir, "kubectl", `[ "$*" = "get nodes -o json" ] || exit 9
-echo '{"items":[{"metadata":{"name":"node1","labels":{"node-role.kubernetes.io/control-plane":""}}},{"metadata":{"name":"node2"}}]}'
+echo '{"items":[{"metadata":{"name":"node1","labels":{"node-role.kubernetes.io/control-plane":""}}},`+
+		`{"metadata":{"name":"node2"}}]}'
 `)
 	nodes, err := VWS{Kubectl: kubectl}.Nodes(context.Background())
 	if err != nil {
@@ -39,7 +40,12 @@ echo '{"items":[{"metadata":{"name":"node1","labels":{"node-role.kubernetes.io/c
 func TestNodesStatusAndLinks(t *testing.T) {
 	dir := t.TempDir()
 	kubectl := fakeBin(t, dir, "kubectl", `case "$*" in
-"get nodes -o json") echo '{"items":[{"metadata":{"name":"node1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"addresses":[{"type":"InternalIP","address":"10.0.0.11"},{"type":"Hostname","address":"node1"}]}},{"metadata":{"name":"node2"},"status":{"conditions":[{"type":"Ready","status":"False"}],"addresses":[{"type":"InternalIP","address":"10.0.0.12"}]}},{"metadata":{"name":"node3"}}]}' ;;
+"get nodes -o json") echo '{"items":[`+
+		`{"metadata":{"name":"node1"},"status":{"conditions":[{"type":"Ready","status":"True"}],`+
+		`"addresses":[{"type":"InternalIP","address":"10.0.0.11"},{"type":"Hostname","address":"node1"}]}},`+
+		`{"metadata":{"name":"node2"},"status":{"conditions":[{"type":"Ready","status":"False"}],`+
+		`"addresses":[{"type":"InternalIP","address":"10.0.0.12"}]}},`+
+		`{"metadata":{"name":"node3"}}]}' ;;
 "get storageclasses -o jsonpath={.items[*].metadata.name}") printf 'ceph-block fast-rbd' ;;
 *) exit 9 ;;
 esac
@@ -90,10 +96,15 @@ cat "$4" >> `+calls+`
 exit 0
 `)
 	var lines []string
-	if _, err := (VWS{VWS: vws, WorkDir: dir}).Install(context.Background(), []byte(`{"kind":"VWSCluster"}`), func(l string) { lines = append(lines, l) }); err != nil {
+	_, err := (VWS{VWS: vws, WorkDir: dir}).Install(context.Background(), []byte(`{"kind":"VWSCluster"}`),
+		func(l string) { lines = append(lines, l) })
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(calls)
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := "apply --unattended -f " + filepath.Join(dir, "vwscluster.json") + "\n{\"kind\":\"VWSCluster\"}"
 	if string(got) != want {
 		t.Fatalf("calls %q, want %q", got, want)
@@ -101,7 +112,11 @@ exit 0
 	if strings.Join(lines, ",") != "step apply" {
 		t.Fatalf("log lines %v", lines)
 	}
-	if fi, _ := os.Stat(filepath.Join(dir, "vwscluster.json")); fi.Mode().Perm() != 0o600 {
+	fi, err := os.Stat(filepath.Join(dir, "vwscluster.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("CR file mode %v", fi.Mode().Perm())
 	}
 }
@@ -117,12 +132,14 @@ func TestInstallFailsWithApply(t *testing.T) {
 func TestInstallSurvivesALineLongerThanTheScanner(t *testing.T) {
 	dir := t.TempDir()
 	// 2 MiB on one line, over maxLogLine, then more output: a stopped reader would block the child on the pipe.
-	vws := fakeBin(t, dir, "vws", `head -c 2097152 /dev/zero | tr '\0' x; echo; echo after; i=0; while [ $i -lt 2000 ]; do echo line $i; i=$((i+1)); done
+	vws := fakeBin(t, dir, "vws", `head -c 2097152 /dev/zero | tr '\0' x; echo; echo after
+i=0; while [ $i -lt 2000 ]; do echo line $i; i=$((i+1)); done
 `)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var lines []string
-	if _, err := (VWS{VWS: vws, WorkDir: dir}).Install(ctx, []byte(`{}`), func(l string) { lines = append(lines, l) }); err != nil {
+	_, err := (VWS{VWS: vws, WorkDir: dir}).Install(ctx, []byte(`{}`), func(l string) { lines = append(lines, l) })
+	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if ctx.Err() != nil {

@@ -68,16 +68,24 @@ func (h *harness) installed() { h.t.Helper(); h.installed2("succeeded") }
 // is nowhere else.
 func (h *harness) credential() (int, map[string]any, http.Header) {
 	h.t.Helper()
-	req, _ := http.NewRequest("POST", h.http.URL+"/api/v1/result/credential", nil)
+	req, err := http.NewRequestWithContext(context.Background(), "POST", h.http.URL+"/api/v1/result/credential", nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	defer closeBody(h.t, resp)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	var out map[string]any
-	_ = json.Unmarshal(raw, &out)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		h.t.Fatalf("credential body is not JSON: %v", err)
+	}
 	return resp.StatusCode, out, resp.Header
 }
 
@@ -98,7 +106,7 @@ func TestCredentialOnce(t *testing.T) {
 	if status != 200 || body["adminUser"] != "admin" || hdr.Get("Cache-Control") != "no-store" {
 		t.Fatalf("credential %d %v", status, body)
 	}
-	pw := body["password"].(string)
+	pw := as[string](t, body["password"])
 	if pw != fs.password || len(pw) != PasswordLength || strings.Trim(pw, passwordAlphabet) != "" {
 		t.Fatalf("password shape %d", len(pw))
 	}
@@ -133,7 +141,7 @@ func TestCredentialFailures(t *testing.T) {
 	fs.storeErr = errors.New("kubectl create failed")
 	h.installed2("failed")
 	_, res := h.do("GET", "/api/v1/result", nil)
-	if res["credentialAvailable"] != false || !strings.Contains(res["error"].(string), cluster.InitialAdminSecret) {
+	if res["credentialAvailable"] != false || !strings.Contains(as[string](t, res["error"]), cluster.InitialAdminSecret) {
 		t.Fatalf("result %v", res)
 	}
 

@@ -64,7 +64,7 @@ func serve(args []string) error {
 	namespace := fs.String("namespace", "vws", "namespace of Secret vws-initial-admin (#146)")
 	apiVersion := fs.String("api-version", "", "VWSCluster apiVersion (group/version from the CRD); required")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("flags: %w", err)
 	}
 	if !strings.Contains(*apiVersion, "/") {
 		return errors.New("-api-version GROUP/VERSION is required")
@@ -73,11 +73,11 @@ func serve(args []string) error {
 	defer stop()
 	shutdown, err := obs.Setup(ctx, obs.ForService("vws-installer"))
 	if err != nil {
-		return err
+		return fmt.Errorf("obs setup: %w", err)
 	}
 	defer shutdown(context.Background()) //nolint:errcheck // exit path
 	if err := os.MkdirAll(*dir, 0o700); err != nil {
-		return err
+		return fmt.Errorf("state dir: %w", err)
 	}
 	auth, err := api.NewAuth(time.Now, func(code string) error {
 		return writeSecretFile(filepath.Join(*dir, "access-code"), code)
@@ -109,11 +109,13 @@ func serve(args []string) error {
 	}
 	go func() {
 		<-ctx.Done()
-		_ = hs.Shutdown(context.Background())
+		if err := hs.Shutdown(context.WithoutCancel(ctx)); err != nil {
+			slog.LogAttrs(ctx, slog.LevelWarn, "installer api shutdown", slog.String("err", err.Error()))
+		}
 	}()
 	slog.LogAttrs(ctx, slog.LevelInfo, "installer api listening", slog.String("addr", *listen))
 	if err := hs.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
-		return err
+		return fmt.Errorf("serve: %w", err)
 	}
 	srv.Wait()
 	return nil
@@ -123,9 +125,12 @@ func serve(args []string) error {
 func writeSecretFile(path, value string) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(value+"\n"), 0o600); err != nil {
-		return err
+		return fmt.Errorf("write %s: %w", tmp, err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename %s: %w", tmp, err)
+	}
+	return nil
 }
 
 // selfSigned makes a fresh ECDSA P-256 certificate for vws-installer and returns its SHA-256
@@ -133,11 +138,11 @@ func writeSecretFile(path, value string) error {
 func selfSigned() (tls.Certificate, string, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", fmt.Errorf("key: %w", err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", fmt.Errorf("serial: %w", err)
 	}
 	tpl := &x509.Certificate{
 		SerialNumber: serial,
@@ -150,7 +155,7 @@ func selfSigned() (tls.Certificate, string, error) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, "", err
+		return tls.Certificate{}, "", fmt.Errorf("sign: %w", err)
 	}
 	sum := sha256.Sum256(der)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, hex.EncodeToString(sum[:]), nil

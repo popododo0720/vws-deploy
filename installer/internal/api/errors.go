@@ -91,7 +91,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		e = internal(err)
 	}
 	if e.Reason == ReasonInternal {
-		slog.LogAttrs(r.Context(), slog.LevelError, "installer api", slog.String("err", e.E.Error()))
+		slog.LogAttrs(r.Context(), slog.LevelError, "installer api", slog.String("err", e.Error()))
 	}
 	var body wireError
 	body.Error.Code, body.Error.Message, body.Error.Fields = e.Reason, e.Message, e.Fields

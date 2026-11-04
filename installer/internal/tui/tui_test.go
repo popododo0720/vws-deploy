@@ -121,7 +121,8 @@ func TestWizardInstalls(t *testing.T) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
 	}
-	if len(fc.crs) != 1 || !strings.Contains(string(fc.crs[0]), `"profile":"small"`) || !strings.Contains(string(fc.crs[0]), `"driver":"rook-ceph"`) {
+	if len(fc.crs) != 1 || !strings.Contains(string(fc.crs[0]), `"profile":"small"`) ||
+		!strings.Contains(string(fc.crs[0]), `"driver":"rook-ceph"`) {
 		t.Fatalf("installed CR %s", fc.crs)
 	}
 }
@@ -199,7 +200,9 @@ func TestWizardReasksOnFieldErrors(t *testing.T) {
 func TestWizardShowsPreflight(t *testing.T) {
 	pf := func(_ context.Context, step string, _ any, _ []cluster.Node) []api.Check {
 		if step == "network" {
-			return []api.Check{{ID: "nic.mtu", Severity: "warning", Status: "fail", Node: "node2", Message: "mtu differs", Hint: "set mtu"}}
+			return []api.Check{{
+				ID: "nic.mtu", Severity: "warning", Status: "fail", Node: "node2", Message: "mtu differs", Hint: "set mtu",
+			}}
 		}
 		return nil
 	}
@@ -208,7 +211,9 @@ func TestWizardShowsPreflight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"[warning/fail] nic.mtu node2 mtu differs", "hint: set mtu", "warning [warning/fail] nic.mtu mtu differs"} {
+	for _, want := range []string{
+		"[warning/fail] nic.mtu node2 mtu differs", "hint: set mtu", "warning [warning/fail] nic.mtu mtu differs",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -267,7 +272,10 @@ func TestFailedInstallReports(t *testing.T) {
 
 func TestPinRejectsAnotherCertificate(t *testing.T) {
 	var code string
-	auth, _ := api.NewAuth(time.Now, func(c string) error { code = c; return nil })
+	auth, err := api.NewAuth(time.Now, func(c string) error { code = c; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	hs := httptest.NewTLSServer(api.New(api.Config{Auth: auth, Cluster: &fakeCluster{}, APIVersion: "x/v1"}).Handler())
 	defer hs.Close()
 	c := &client.Client{Base: hs.URL, HTTP: client.PinnedHTTP(strings.Repeat("0", 64))}
@@ -283,8 +291,10 @@ func TestClientErrorModel(t *testing.T) {
 	if !errors.As(err, &e) || e.Status != 409 || e.Code != "step_out_of_order" || e.Message == "" {
 		t.Fatalf("error %#v", err)
 	}
-	err = c.Do(context.Background(), "PUT", "/steps/roles", map[string]any{"value": map[string]any{"nodes": []string{"nodeX"}}}, nil)
-	if !errors.As(err, &e) || e.Code != "validation_failed" || len(e.Fields) != 1 || e.Fields[0].Field != "roles.nodes[0]" {
+	roles := map[string]any{"value": map[string]any{"nodes": []string{"nodeX"}}}
+	err = c.Do(context.Background(), "PUT", "/steps/roles", roles, nil)
+	if !errors.As(err, &e) || e.Code != "validation_failed" || len(e.Fields) != 1 ||
+		e.Fields[0].Field != "roles.nodes[0]" {
 		t.Fatalf("validation error %#v", err)
 	}
 }

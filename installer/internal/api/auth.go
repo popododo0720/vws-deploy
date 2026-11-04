@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -51,7 +52,7 @@ func (a *Auth) rotate() error {
 	buf := make([]byte, codeLength)
 	for len(code) < codeLength {
 		if _, err := rand.Read(buf); err != nil {
-			return err
+			return fmt.Errorf("access code: %w", err)
 		}
 		for _, c := range buf {
 			if int(c) < limit && len(code) < codeLength {

@@ -35,14 +35,18 @@ func runPrintURL(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("print-url", flag.ContinueOnError)
 	dir := fs.String("state-dir", "/tmp/vws-installer", "installer state directory")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("flags: %w", err)
 	}
 	code, fp, err := access(*dir)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "url: https://localhost:8443 (after: kubectl -n vws port-forward svc/vws-installer 8443)\naccess code: %s (one use; read it again after each login)\ncertificate sha256: %s\n", code, fp)
-	return err
+	_, err = fmt.Fprintf(out, "url: https://localhost:8443 (after: kubectl -n vws port-forward svc/vws-installer 8443)\n"+
+		"access code: %s (one use; read it again after each login)\ncertificate sha256: %s\n", code, fp)
+	if err != nil {
+		return fmt.Errorf("print url: %w", err)
+	}
+	return nil
 }
 
 // runTUI is vws init in the installer pod: the TUI against the local API.
@@ -51,7 +55,7 @@ func runTUI(args []string) error {
 	dir := fs.String("state-dir", "/tmp/vws-installer", "installer state directory")
 	url := fs.String("url", "https://127.0.0.1:8443", "installer API")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("flags: %w", err)
 	}
 	code, fp, err := access(*dir)
 	if err != nil {
@@ -65,7 +69,8 @@ func runTUI(args []string) error {
 	}
 	err = tui.New(c, os.Stdin, os.Stdout).Run(ctx)
 	if errors.Is(err, tui.ErrAborted) {
-		fmt.Fprintln(os.Stdout, "nothing installed; the draft stays in the installer, run vws init again") //nolint:errcheck // terminal
+		//nolint:errcheck // terminal
+		fmt.Fprintln(os.Stdout, "nothing installed; the draft stays in the installer, run vws init again")
 		return nil
 	}
 	return err
