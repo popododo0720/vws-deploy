@@ -386,7 +386,7 @@ class MainRulesetCell(unittest.TestCase):
             if path == "repos/o/vws-proto/tags?per_page=100":
                 return [{"name": t} for t in tags]
             if path == "repos/o/r/git/trees/main?recursive=1":
-                return {"truncated": False, "tree": [{"type": "blob", "path": "go.mod"}]}
+                return {"truncated": False, "tree": [{"type": "blob", "path": "go.mod", "sha": "g1"}]}
             if path == "repos/o/r/contents/go.mod":
                 return _b64(gomod)
             return None
@@ -403,19 +403,53 @@ class MainRulesetCell(unittest.TestCase):
         rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
                                            api=self.proto_api(REQ % b"v0.4.0"))
         self.assertIn("vws-proto", text.splitlines()[0])
-        self.assertEqual(cells[-1], "v0.4.0 (latest v0.5.0) |")
+        self.assertEqual(cells[-2], "v0.4.0 (latest v0.5.0)")
+        self.assertEqual(cells[-1], "not vendored |")
         self.assertEqual(rc, 0, text)
 
     def test_go_repo_two_minors_behind_is_drift(self):
         detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
         rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
                                            api=self.proto_api(REQ % b"v0.3.0"))
-        self.assertEqual(cells[-1], "go.mod: v0.3.0 is 2 minor versions behind v0.5.0 (max 1) |")
+        self.assertEqual(cells[-2], "go.mod: v0.3.0 is 2 minor versions behind v0.5.0 (max 1)")
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
     def test_non_go_repo_vws_proto_cell_is_na(self):
         _, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
-        self.assertEqual(cells[-1], "n/a |")
+        self.assertEqual(cells[-2:], ["n/a", "n/a |"])
+
+    def lib_api(self, copy_sha, tag_sha="s1"):
+        """A Go repo with a third_party/vws-lib copy whose go.mod blob is copy_sha; vws-lib v0.2.0 holds tag_sha."""
+        gomod = b"module github.com/popododo0720/vws-lib\n\ngo 1.26.0\n\ntoolchain go1.26.9\n"
+        proto = self.proto_api(REQ % b"v0.5.0")
+
+        def api(path):
+            if path == "repos/o/r/git/trees/main?recursive=1":
+                return {"truncated": False, "tree": [{"type": "blob", "path": "go.mod", "sha": "g1"},
+                        {"type": "blob", "path": "third_party/vws-lib/go.mod", "sha": copy_sha}]}
+            if path == "repos/o/vws-lib/tags?per_page=100":
+                return [{"name": "v0.2.0"}, {"name": "v0.1.1"}]
+            if path == "repos/o/vws-lib/git/trees/v0.2.0?recursive=1":
+                return {"truncated": False, "tree": [{"type": "blob", "path": "go.mod", "sha": tag_sha}]}
+            if path == "repos/o/r/contents/third_party/vws-lib/go.mod":
+                return _b64(gomod)
+            return proto(path)
+        return api
+
+    def test_go_repo_with_current_vws_lib_copy_is_ok(self):
+        detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+        rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
+                                           api=self.lib_api("s1"))
+        self.assertIn("vws-lib |", text.splitlines()[0] + " |")
+        self.assertEqual(cells[-1], "third_party/vws-lib = v0.2.0 |")
+        self.assertEqual(rc, 0, text)
+
+    def test_go_repo_with_stale_vws_lib_copy_is_drift(self):
+        detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+        rc, _, text, cells = self.run_main(detail, kind="go", extra_files={".golangci.yml": self.go_cfg()},
+                                           api=self.lib_api("old"))
+        self.assertEqual(cells[-1], "third_party/vws-lib is stale: 1 file(s) differ from vws-lib v0.2.0: go.mod |")
+        self.assertEqual(rc, dc.DRIFT_EXIT, text)
 
     def test_admin_detail_without_actor_is_ok(self):
         _, cell, text, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
