@@ -33,6 +33,9 @@ Checks per repo, on its default branch:
   vws-proto   Go repos: each go.mod's vws-proto version next to the latest vws-proto tag; drift on a replace,
               a pseudo-version, more than one minor version behind, or a copied vws-proto *.pb.go
               (proto_drift.py, vws-deploy#404)
+  vws-lib     Go repos: each vendored third_party/vws-lib/ copy is byte for byte the latest vws-lib release
+              tag (its VENDOR record aside), and its go.mod files pin toolchain >= go1.26.9 and
+              golang.org/x/net >= v0.60.0 (lib_drift.py, vws-deploy#321)
 An archived repo is reported and skipped; it is not drift.
 
 --bypass-audit (vws-deploy#458) checks only the ruleset bypass actors, for the admin audit run on the
@@ -46,6 +49,7 @@ Any other non-zero status (1 is an uncaught Python error) is a crash, never drif
 """
 import argparse
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -57,6 +61,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import caller_pin  # noqa: E402
+import lib_drift  # noqa: E402
 import proto_drift  # noqa: E402
 
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
@@ -805,6 +810,7 @@ def main():
     vendored = load_vendored(a.vendored)
     scripts, callees = {}, {}
     proto = {}  # the vws-proto tags, read once for the first Go repo (#404)
+    lib_release = functools.cache(lambda: lib_drift.release(a.owner, gh))  # read once, on the first copy (#321)
 
     names = [ln.split("\t")[0] for ln in open(a.repos) if ln.strip() and not ln.startswith("#")]
     extra_heads = parse_heads(a.head, set(names))
@@ -815,14 +821,14 @@ def main():
         repo, kind, cfgpath, extra = (line.rstrip("\n").split("\t") + ["", "", ""])[:4]
         info = gh(f"repos/{a.owner}/{repo}")
         if info is None:
-            rows.append([repo, "unreadable", "", "", "", "", "", "", "", "", "", "", ""])
+            rows.append([repo, "unreadable"] + [""] * 12)
             drift += 1
             continue
         if info.get("archived"):
-            rows.append([repo, "archived (skipped)", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"])
+            rows.append([repo, "archived (skipped)"] + ["-"] * 12)
             continue
         issues, notes = {}, {}
-        proto_ok = "n/a"
+        proto_ok = lib_ok = "n/a"
         p = protection(a.owner, repo)
         if not p or not p["protected"]:
             issues["protection"] = ["main is not protected"]
@@ -920,9 +926,13 @@ def main():
             if not proto:
                 proto["tags"] = proto_drift.proto_tags(a.owner, gh)
                 proto["latest"] = proto_drift.latest_tag(proto["tags"] or [])
-            bad_p, proto_ok = proto_drift.proto_cell(a.owner, repo, proto["latest"], proto["tags"], gh)
+            t = proto_drift.main_tree(a.owner, repo, gh)
+            bad_p, proto_ok = proto_drift.proto_cell(a.owner, repo, proto["latest"], proto["tags"], gh, t)
             if bad_p:
                 issues["vws-proto"] = bad_p
+            bad_lib, lib_ok = lib_drift.lib_cell(a.owner, repo, t, lib_release, gh)
+            if bad_lib:
+                issues["vws-lib"] = bad_lib
         if issues:
             drift += 1
         if notes:
@@ -950,6 +960,7 @@ def main():
             cell("vendored"),
             cell("bootstrap"),
             cell("vws-proto", proto_ok),
+            cell("vws-lib", lib_ok),
         ])
 
     for repo, why in caller_pin.pin_drift(pins, lambda sha: on_main(a.owner, sha)).items():
@@ -980,7 +991,8 @@ def main():
             head_rows.append([repo, f"ok ({len(todo)} PR head(s))"])
 
     head = ["repo", "protection", "ruleset", "required checks", "workflows", "caller", "guard-agents.sh",
-            "AGENTS/QUALITY", "incident form", "lint", "vendored copies", "bootstrap", "vws-proto"]
+            "AGENTS/QUALITY", "incident form", "lint", "vendored copies", "bootstrap", "vws-proto",
+            "vws-lib"]
     table = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     table += ["| " + " | ".join(r) + " |" for r in rows]
     table += ["", "| repo | caller, vendored copies and bootstrap at PR heads |", "|---|---|"]
