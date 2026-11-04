@@ -44,7 +44,7 @@ Both names must match the names the bundle creates. `scripts/guard.sh bundle` ch
 
 ## CDI feature gates
 
-`platform/cdi-cr.yaml` turns on `HonorWaitForFirstConsumer` in `spec.config.featureGates`. This gate is opt-in and is off when absent from the CR. When on, CDI does not create worker pods on a `WaitForFirstConsumer` StorageClass until the VM is scheduled. The default Ceph class is `Immediate`, so the gate does nothing there. The local lab's default k3s class (`local-path`) is `WaitForFirstConsumer`, where it matters. The gate name and field path were checked against the source, docs and CRD of the pinned CDI. `scripts/guard.sh bundle` checks that this CR's fields exist in the bundle CRD schema. Whether DataVolumes work on a real cluster was not checked (needs checking, T1 or above).
+`platform/cdi-cr.yaml` turns on `HonorWaitForFirstConsumer` in `spec.config.featureGates`. This gate is opt-in and is off when absent from the CR. When on, CDI does not create worker pods on a `WaitForFirstConsumer` StorageClass until the VM is scheduled. The default Ceph class is `Immediate`, so the gate does nothing there. The default k3s class (`local-path`) is `WaitForFirstConsumer`, where it matters. The gate name and field path were checked against the source, docs and CRD of the pinned CDI. `scripts/guard.sh bundle` checks that this CR's fields exist in the bundle CRD schema. Whether DataVolumes work on a real cluster was not checked (needs checking, T1 or above).
 
 ## Required host kernel modules
 
@@ -78,7 +78,7 @@ Confirmed on k3s v1.35.9 + external Ceph (ceph-csi-rbd), 3 nodes. Other distribu
 
 - Only the render and kubeconform were checked. Real cluster installation, startup order and upgrades are unverified. Measurements happen in the T2 lab.
 - kubeconform skips CRD-based resources (CephCluster, KubeVirt, CDI and others) because their schemas are not in the default catalog. Only their syntax is checked.
-- `KUBERNETES_VERSION` (the kubeconform schemas) and `K3S_VERSION` must be the same Kubernetes minor, and `scripts/guard.sh bundle` checks this. That minor was picked inside the intersection of the documented support ranges (KubeVirt, Rook, Kube-OVN). No support range was found in the docs for CDI and Multus (needs checking). Behaviour on a real cluster was not checked either.
+- `KUBERNETES_VERSION` sets the kubeconform schemas. Its minor was picked inside the intersection of the documented support ranges (KubeVirt, Rook, Kube-OVN). No support range was found in the docs for CDI and Multus (needs checking). Behaviour on a real cluster was not checked either.
 
 ## Bundle adjusted to the node networks (#127)
 
