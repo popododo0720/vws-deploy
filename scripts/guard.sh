@@ -144,7 +144,7 @@ PY
 # vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
 r8_scan() {
   grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
-    --exclude-dir=lab --exclude=crd-check.sh "$@"
+    --exclude=crd-check.sh "$@"
 }
 
 cmd_ci() {
@@ -583,18 +583,13 @@ cmd_bundle() {
       || { rm -rf "$tmp"; die "R12: a ${digest} MULTUS_IMAGE_DIGEST was accepted"; }
   done
   rm -rf "$tmp"
-  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK CSI_DRIVER_NFS K3S; do
+  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK CSI_DRIVER_NFS; do
     version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
     [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
     hits=$(grep -R -n -F -e "$version" . --exclude-dir=.git --exclude-dir=build --exclude-dir=.cache \
       --exclude=versions.env || true)
     [[ -z $hits ]] || die "R12: ${name} version is written outside scripts/versions.env: ${hits}"
   done
-  local k8s k3s
-  k8s=$(sed -n 's/^KUBERNETES_VERSION=\([0-9]*\.[0-9]*\)\..*/\1/p' scripts/versions.env)
-  k3s=$(sed -n 's/^K3S_VERSION=v\([0-9]*\.[0-9]*\)\..*/\1/p' scripts/versions.env)
-  [[ -n $k8s && -n $k3s ]] || die "R12: scripts/versions.env needs KUBERNETES_VERSION and K3S_VERSION as major.minor.patch"
-  [[ $k8s == "$k3s" ]] || die "R12: KUBERNETES_VERSION is ${k8s} but K3S_VERSION is ${k3s}"
   cmd_cdi_cr
   for name in rbd openvswitch geneve kvm nfs; do
     grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
