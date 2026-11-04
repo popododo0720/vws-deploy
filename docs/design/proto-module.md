@@ -81,6 +81,8 @@ vws-proto has tags v0.1.0 to v0.5.0; v0.5.0 is commit 3fbc83c and `https://proxy
 
 vws-lib is still vendored as `third_party/vws-lib` with a `replace` (vws-storage, vws-iam, vws-network) through `scripts/vendor-lib.sh`, which is the current team rule. The same design fits vws-lib, but changing that rule is a lead decision outside #404.
 
+drift-check fails on a stale copy (#321, `.github/drift/lib_drift.py`, the `vws-lib` column). In each Go repo's `main`, every `third_party/vws-lib/` copy must be byte for byte vws-lib at its latest release tag (git blob shas; the `VENDOR` record that `vendor-lib.sh` writes is ignored). Each `go.mod` in the copy must pin `toolchain` at go1.26.9 or later (without a `toolchain` line, the `go` line counts) and, when it requires `golang.org/x/net`, v0.60.0 or later. Unlike vws-proto there is no minor-version lag, because a copy has no `require` to compare, only files. A new vws-lib tag therefore turns every copy into drift until that repo vendors again. Unreadable reads and a truncated tree are drift. vws-compute and vws-console-api already `require` a vws-lib tag with no copy, and drift-check reports them as `not vendored`.
+
 ## Rollback
 
 - A consumer migration or bump PR is undone with `git revert`, which restores the previous `go.mod`, `go.sum` and, for a migration, the copy and `replace`. No data or deployment state changes.
