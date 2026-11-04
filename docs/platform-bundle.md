@@ -22,7 +22,7 @@ Versions and the sha256 of downloaded files live only in `scripts/versions.env`.
 
 The startup order is etcd, API, CNI, CSI, KubeVirt, VWS. Do not start a step before the previous one is Ready.
 
-1. **etcd and the API server.** The Kubernetes distribution provides them. Production is Talos (#8) and the local lab is k3s (#7). Backup and restore follow the runbook from #6.
+1. **etcd and the API server.** The Kubernetes distribution provides them. Production is Talos (#8). Backup and restore follow the runbook from #6.
 2. **CNI.** Start without the distribution's default CNI, or use Kube-OVN as the default CNI. Install Kube-OVN first (`20-kube-ovn.yaml`), then Multus (`10-multus.yaml`). VMs connect through Multus NetworkAttachmentDefinitions (provider kube-ovn).
 3. **CSI.** The Rook operator (`30-rook-ceph-operator.yaml`), then the Ceph cluster (`31-rook-ceph-cluster.yaml`). The default StorageClass is Ceph RBD.
    With `spec.storage.driver: nfs`, install csi-driver-nfs (`35-csi-driver-nfs.yaml`) and StorageClass `vws-nfs` (`36-vws-nfs-storageclass.yaml`, which `vws apply` builds from the CR). The NFS export must already exist and be mountable from every node.
