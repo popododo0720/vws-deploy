@@ -49,10 +49,6 @@ services:
 
 The chart has no icon. Even when `helm lint` recommends one, do not add a logo file.
 
-## Local lab
-
-`scripts/lab/` is a throwaway T1 lab that brings up k3s, KubeVirt and CDI. It is the only path in this repository that applies anything to a cluster. The order is `k3s-up.sh`, `virt-up.sh`, `vm-test.sh`, `down.sh`. Without `/dev/kvm`, `kvm-check.sh` returns `emulation` and KubeVirt starts with `useEmulation`. With `LAB_DRY_RUN=1`, commands that change state are printed instead of run. **Unverified**: the box lacks the RAM, so it has not been run on a real cluster.
-
 ## Checks
 
 `make check` runs the same checks locally and in GitHub Actions. For CRDs, `make crd` (`scripts/crd-check.sh`) sends them with `--dry-run=server` to an envtest kube-apiserver so apiserver rules that kubeconform misses (such as `uniqueItems` in structural schemas) are checked too (#210). Rendered manifests live only in `build/` and are not committed. The working rules are in `AGENTS.md`.
