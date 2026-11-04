@@ -28,8 +28,8 @@ def _strip(line):
     return line.split("//", 1)[0].strip()
 
 
-def parse_gomod(text):
-    """(required vws-proto version or None, whether a replace names vws-proto) for one go.mod."""
+def parse_gomod(text, module=MODULE):
+    """(required version of module or None, whether a replace names it) for one go.mod."""
     if isinstance(text, bytes):
         text = text.decode("utf-8", "replace")
     version, replaced, block = None, False, None
@@ -50,8 +50,8 @@ def parse_gomod(text):
                 block = m.group(1)
                 continue
             directive, rest = m.group(1), m.group(3)
-        fields = rest.split()
-        if not fields or fields[0] != MODULE:
+        fields = [f.strip('"`') for f in rest.split()]  # go.mod may quote a module path
+        if not fields or fields[0] != module:
             continue
         if directive == "require" and len(fields) >= 2:
             version = fields[1]
@@ -161,9 +161,13 @@ def _read(owner, repo, api, shas=None):
     return read
 
 
-def proto_cell(owner, repo, latest, tags, api):
-    """(issues, ok text) of the vws-proto cell for one Go repo's default branch."""
-    t = api(f"repos/{owner}/{repo}/git/trees/main?recursive=1")
+def main_tree(owner, repo, api):
+    return api(f"repos/{owner}/{repo}/git/trees/main?recursive=1")
+
+
+def proto_cell(owner, repo, latest, tags, api, t=None):
+    """(issues, ok text) of the vws-proto cell for one Go repo's default branch; t is its main_tree reply."""
+    t = main_tree(owner, repo, api) if t is None else t
     if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
         return ["repo tree unreadable"], ""
     issues = ["repo tree truncated; pb.go copy check incomplete"] if t.get("truncated") else []
