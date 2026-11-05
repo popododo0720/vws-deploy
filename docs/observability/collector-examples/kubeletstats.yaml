@@ -1,0 +1,32 @@
+# Pod, container and node usage from the local kubelet: one collector per node, K8S_NODE_NAME from
+# the downward API (spec.nodeName).
+# Needs: a ClusterRole with get on nodes/stats (and nodes/proxy only if extra metadata is turned on).
+#   An API token mount. Reach to the kubelet on port 10250; a distribution whose kubelet serving
+#   certificate does not verify needs insecure_skip_verify, which this example keeps off. No host mount.
+# Stability: kubeletstats receiver metrics beta (collector-contrib README, 2026-10-12).
+receivers:
+  kubeletstats:
+    # KUBELET_AUTH_TYPE is unset in a pod. serviceAccount reads the in-cluster CA when the receiver is
+    # built, so scripts/guard.sh validates with none; the serviceAccount client is checked only in a pod.
+    auth_type: ${env:KUBELET_AUTH_TYPE:-serviceAccount}
+    endpoint: https://${env:K8S_NODE_NAME}:10250
+    collection_interval: 30s
+    insecure_skip_verify: false
+    metric_groups: [node, pod, container]
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    metrics:
+      receivers: [kubeletstats]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
