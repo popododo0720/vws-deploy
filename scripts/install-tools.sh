@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the pinned helm and kubeconform binaries used by make check and CI.
+# Install the pinned helm, kubeconform and otelcol-contrib binaries used by make check and CI.
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -27,4 +27,9 @@ fetch "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERS
 tar -xzf "$work/kubeconform.tgz" -C "$work"
 install -m 755 "$work/kubeconform" "$dest/kubeconform"
 
-echo "installed helm and kubeconform in ${dest}"
+fetch "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol-contrib_${OTELCOL_VERSION}_linux_amd64.tar.gz" \
+  "$OTELCOL_SHA256" "$work/otelcol.tgz"
+tar -xzf "$work/otelcol.tgz" -C "$work" otelcol-contrib
+install -m 755 "$work/otelcol-contrib" "$dest/otelcol-contrib"
+
+echo "installed helm, kubeconform and otelcol-contrib in ${dest}"

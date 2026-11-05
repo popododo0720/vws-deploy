@@ -27,6 +27,7 @@ ALLOWED_KINDS = {
     "Role",
     "RoleBinding",
     "NetworkPolicy",
+    "ConfigMap",
 }
 
 
@@ -744,6 +745,118 @@ def check_flags(name: str, spec: dict, container: dict, values: dict, nsmap: dic
     return errors
 
 
+# observability (vws-deploy#50, R25). The env that vws.otelEnv owns, and every VWS_* env a service
+# may get. A name outside VWS_ENV, or an OTEL_*/SENTRY_* env values do not ask for, fails.
+TELEMETRY_ENV = re.compile(r"^(OTEL_|SENTRY_)|^VWS_LOG_LEVEL$")
+VWS_ENV = {
+    "VWS_SERVICE_NAME", "VWS_HEALTH_ADDR", "VWS_STATE_DIR", "VWS_LOG_LEVEL",
+    "VWS_S3_ACCESS_KEY", "VWS_S3_SECRET_KEY", "VWS_CONSOLE_TOKEN", "VWS_ACCESS_KEY", "VWS_SECRET_KEY",
+    "VWS_IAM_KEK", "VWS_IAM_KEK_ID", "VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN",
+}
+COLLECTOR = "otel-collector"
+COLLECTOR_KINDS = ("ServiceAccount", "ConfigMap", "Service", "Deployment", "NetworkPolicy")
+
+
+def secret_ref(name: str, key: str) -> dict:
+    return {"valueFrom": {"secretKeyRef": {"name": name, "key": key}}}
+
+
+def want_otel_env(name: str, spec: dict, values: dict, release_ns: str) -> list[dict]:
+    """The env vws.otelEnv must render for one service, in order."""
+    obs = values.get("observability") or {}
+    if not obs.get("enabled"):
+        return []
+    defaults, override = obs["defaults"], spec.get("observability") or {}
+    pick = {k: override.get(k, defaults[k]) for k in ("protocol", "sampler", "samplerArg", "logLevel")}
+    attrs = {**(defaults.get("resourceAttributes") or {}), **(override.get("resourceAttributes") or {})}
+    sentry = {**(defaults.get("sentry") or {}), **(override.get("sentry") or {})}
+    port = 4317 if pick["protocol"] == "grpc" else 4318
+    endpoint = obs.get("otlpEndpoint") or f"http://{COLLECTOR}.{release_ns}.svc:{port}"
+    env = [
+        {"name": "OTEL_SERVICE_NAME", "value": name},
+        {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": endpoint},
+        {"name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": pick["protocol"]},
+    ]
+    if obs.get("otlpHeadersSecret"):
+        env.append({"name": "OTEL_EXPORTER_OTLP_HEADERS", **secret_ref(obs["otlpHeadersSecret"], "headers")})
+    env += [
+        {"name": "OTEL_TRACES_SAMPLER", "value": pick["sampler"]},
+        {"name": "OTEL_TRACES_SAMPLER_ARG", "value": pick["samplerArg"]},
+    ]
+    if attrs:
+        env.append({"name": "OTEL_RESOURCE_ATTRIBUTES", "value": ",".join(f"{k}={attrs[k]}" for k in sorted(attrs))})
+    env.append({"name": "VWS_LOG_LEVEL", "value": pick["logLevel"]})
+    if sentry.get("enabled"):
+        env.append({"name": "SENTRY_DSN", **secret_ref(sentry.get("dsnSecret") or "", "dsn")})
+    return env
+
+
+def check_otel_env(name: str, spec: dict, container: dict, values: dict, release_ns: str) -> list[str]:
+    errors: list[str] = []
+    env = container.get("env") or []
+    for entry in env:
+        key = entry.get("name", "")
+        if key.startswith("VWS_") and key not in VWS_ENV:
+            errors.append(f"R25: {name} env {key} is not an allowed VWS_* name")
+        if key in ("SENTRY_DSN", "OTEL_EXPORTER_OTLP_HEADERS") and "value" in entry:
+            errors.append(f"R25: {name} passes secret env {key} as a value; it comes only by secretKeyRef")
+    got = [e for e in env if TELEMETRY_ENV.search(e.get("name", ""))]
+    want = want_otel_env(name, spec, values, release_ns)
+    if got != want:
+        errors.append(f"R25: {name} telemetry env {[e.get('name') for e in got]} does not equal values, want {want}")
+    return errors
+
+
+def check_collector(docs: list[dict], values: dict) -> list[str]:
+    """The collector exists only for enabled with an empty otlpEndpoint, and has no API rights."""
+    obs = values.get("observability") or {}
+    want = bool(obs.get("enabled")) and not obs.get("otlpEndpoint")
+    errors: list[str] = []
+    mine = [d for d in docs if d.get("metadata", {}).get("name") == COLLECTOR]
+    for doc in docs:
+        if doc.get("kind") == "ConfigMap" and doc["metadata"].get("name") != COLLECTOR:
+            errors.append(f"R10: ConfigMap {doc['metadata'].get('name')} is not the collector config")
+        for subject in doc.get("subjects") or []:
+            if subject.get("name") == COLLECTOR:
+                errors.append(f"R25: {doc['kind']} {doc['metadata'].get('name')} grants the collector API rights")
+    kinds = sorted(d.get("kind") for d in mine)
+    if not want:
+        if mine:
+            errors.append(f"R25: collector {kinds} rendered but observability does not ask for it")
+        return errors
+    if kinds != sorted(COLLECTOR_KINDS):
+        errors.append(f"R25: collector renders {kinds}, want {sorted(COLLECTOR_KINDS)}")
+        return errors
+    by = {d["kind"]: d for d in mine}
+    pod = by["Deployment"]["spec"]["template"]["spec"]
+    if pod.get("automountServiceAccountToken") is not False or by["ServiceAccount"].get("automountServiceAccountToken") is not False:
+        errors.append("R25: the collector must not mount an API token")
+    if [v.get("name") for v in pod.get("volumes") or []] != ["config"] or "configMap" not in pod["volumes"][0]:
+        errors.append("R25: the collector mounts only its ConfigMap")
+    container = (pod.get("containers") or [{}])[0]
+    if container.get("image") != obs["collector"]["image"]:
+        errors.append("R25: the collector image is not observability.collector.image")
+    for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+        if set(container.get(probe) or {}) & {"exec", "httpGet"} or "tcpSocket" not in (container.get(probe) or {}):
+            errors.append(f"R15: the collector {probe} must be tcpSocket")
+    for entry in container.get("env") or []:
+        if "value" in entry:
+            errors.append(f"R25: the collector passes env {entry.get('name')} as a value")
+    try:
+        config = yaml.safe_load(by["ConfigMap"]["data"]["config.yaml"])
+    except (KeyError, yaml.YAMLError) as exc:
+        return errors + [f"R25: the collector ConfigMap has no config.yaml: {exc}"]
+    nxt = obs["collector"]["exporters"]["otlp"]
+    got_next = ((config.get("exporters") or {}).get("otlp") or {}).get("endpoint", "")
+    if got_next != nxt["endpoint"]:
+        errors.append(f"R25: collector otlp exporter endpoint {got_next!r} is not values {nxt['endpoint']!r}")
+    for signal in ("traces", "metrics", "logs"):
+        pipe = ((config.get("service") or {}).get("pipelines") or {}).get(signal) or {}
+        if pipe.get("processors") != ["memory_limiter", "batch"]:
+            errors.append(f"R25: collector {signal} pipeline must run memory_limiter then batch")
+    return errors
+
+
 def service_rendered(spec) -> bool:
     return isinstance(spec, dict) and spec.get("enabled", True) is not False
 
@@ -830,6 +943,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_port_env(name, spec, container))
         errors.extend(check_kek(name, spec, container))
         errors.extend(check_network_policy(name, spec, by_kind, release, values, nsmap))
+        errors.extend(check_otel_env(name, spec, container, values, release_ns))
         if stateful:
             if wspec.get("replicas") != 1:
                 errors.append(f"R4: StatefulSet {name} must have one replica")
@@ -878,6 +992,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
                     errors.append(f"R4: Deployment {name} must keep a ready pod during rollout")
             if any(mount.get("name") == "state" for mount in container.get("volumeMounts") or []):
                 errors.append(f"R4: Deployment {name} must not mount a state volume")
+    errors.extend(check_collector(docs, values))
     return errors
 
 
@@ -1555,6 +1670,68 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         return ["R14: a Namespace that is not kept did not fail"]
 
     # A catalog with only one kind must still prove the other kind's check.
+    # observability (#50, R25): the telemetry env equals values, secrets only by secretKeyRef, no
+    # VWS_* name outside the allowlist, and the collector only when asked and without API rights.
+    obs_on = bool((values.get("observability") or {}).get("enabled"))
+    svc = next((n for n, sp in values["services"].items() if service_rendered(sp)), None)
+    if svc is not None:
+        def env_mutate(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == svc:
+                    change(doc["spec"]["template"]["spec"]["containers"][0].setdefault("env", []))
+            return broken
+
+        def entry_or_none(env, key):
+            return next((e for e in env if e["name"] == key), None)
+
+        env_cases = [
+            ("a VWS_* env outside the allowlist", lambda env: env.append({"name": "VWS_DEBUG", "value": "1"})),
+            ("a literal SENTRY_DSN", lambda env: env.append({"name": "SENTRY_DSN", "value": "https://k@sentry/1"})),
+            ("an OTEL_* env values do not ask for", lambda env: env.append({"name": "OTEL_SDK_DISABLED", "value": "true"})),
+        ]
+        if obs_on:
+            env_cases += [
+                ("a sampler ratio apart from values",
+                 lambda env: entry_of(env, "OTEL_TRACES_SAMPLER_ARG").update(value=entry_of(env, "OTEL_TRACES_SAMPLER_ARG")["value"] + "1")),
+                ("a hardcoded OTLP endpoint",
+                 lambda env: entry_of(env, "OTEL_EXPORTER_OTLP_ENDPOINT").update(value=entry_of(env, "OTEL_EXPORTER_OTLP_ENDPOINT")["value"] + "/x")),
+                ("no VWS_LOG_LEVEL", lambda env: env.remove(entry_of(env, "VWS_LOG_LEVEL"))),
+            ]
+            for key in ("SENTRY_DSN", "OTEL_EXPORTER_OTLP_HEADERS"):
+                if any(e["name"] == key for d in docs if d.get("kind") in ("Deployment", "StatefulSet") and d["metadata"]["name"] == svc
+                       for e in d["spec"]["template"]["spec"]["containers"][0].get("env") or []):
+                    env_cases.append((f"a literal {key}", lambda env, k=key: entry_or_none(env, k).update(value="x")))
+                    env_cases.append((f"{key} from another Secret", lambda env, k=key: entry_or_none(env, k)["valueFrom"]["secretKeyRef"].update(name="other")))
+        for label, change in env_cases:
+            if not check(env_mutate(change), values, release):
+                return [f"R25: {svc} with {label} did not fail"]
+    collector = [d for d in docs if d.get("metadata", {}).get("name") == COLLECTOR]
+    if collector:
+        def col_mutate(change):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == COLLECTOR:
+                    change(doc["spec"]["template"]["spec"])
+            return broken
+
+        binding = {"kind": "ClusterRoleBinding", "metadata": {"name": "obs"}, "roleRef": {},
+                   "subjects": [{"kind": "ServiceAccount", "name": COLLECTOR}]}
+        col_cases = [
+            ("an API token", lambda pod: pod.update(automountServiceAccountToken=True)),
+            ("a host path", lambda pod: pod["volumes"].append({"name": "logs", "hostPath": {"path": "/var/log"}})),
+            ("an exec probe", lambda pod: pod["containers"][0]["livenessProbe"].update(exec={"command": ["true"]})),
+            ("a literal env", lambda pod: pod["containers"][0].setdefault("env", []).append({"name": "OTLP_AUTHORIZATION", "value": "x"})),
+        ]
+        for label, change in col_cases:
+            if not check(col_mutate(change), values, release):
+                return [f"R25: the collector with {label} did not fail"]
+        if not check(docs + [binding], values, release):
+            return ["R25: a binding to the collector did not fail"]
+        off = copy.deepcopy(values)
+        off["observability"]["enabled"] = False
+        if not any("collector" in e for e in check(docs, off, release)):
+            return ["R25: a collector without observability.enabled did not fail"]
     synthetic = check(
         [
             {

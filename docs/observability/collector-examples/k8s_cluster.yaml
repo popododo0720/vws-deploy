@@ -1,0 +1,29 @@
+# Cluster-wide object state as metrics: one collector per cluster (a gateway), never per node.
+# Needs: a ClusterRole with get, list and watch on nodes, namespaces, pods, replicationcontrollers,
+#   resourcequotas, services and events (core), daemonsets, deployments, replicasets and statefulsets
+#   (apps), jobs and cronjobs (batch), horizontalpodautoscalers (autoscaling); no Secrets. An API token
+#   mount. No host mount.
+# Stability: k8s_cluster receiver metrics beta, logs development (collector-contrib README, 2026-10-12).
+receivers:
+  k8s_cluster:
+    auth_type: serviceAccount
+    collection_interval: 30s
+    node_conditions_to_report: [Ready, MemoryPressure, DiskPressure, PIDPressure]
+    allocatable_types_to_report: [cpu, memory, ephemeral-storage]
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    metrics:
+      receivers: [k8s_cluster]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]

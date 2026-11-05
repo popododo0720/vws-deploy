@@ -1,0 +1,29 @@
+# Container logs from the node's log files: one collector per node.
+# Needs: /var/log/pods of the host mounted read-only, no API rights. If the files are readable only
+#   by root, the collector runs as root (unverified). This mount is an R10 exception a later issue
+#   must approve (#47).
+# Stability: filelog receiver logs beta (collector-contrib README, 2026-10-12).
+receivers:
+  filelog:
+    include: [/var/log/pods/*/*/*.log]
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: container
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]

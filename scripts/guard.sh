@@ -1407,6 +1407,134 @@ cmd_english() {
   scripts/guard-agents.sh english .github/english-allowlist || die "R22: the repo is English only; Hangul is allowed only in files that .github/english-allowlist lists with a reason"
 }
 
+cmd_observability() {
+  # R25 (#50): observability values, the minimal collector and the collector examples.
+  local tmp version kver case name want_tag example
+  kver=$(sed -n 's/^KUBERNETES_VERSION=//p' scripts/versions.env)
+  version=$(sed -n 's/^OTELCOL_VERSION=v\{0,1\}//p' scripts/versions.env)
+  [[ -n $version ]] || die "R25: scripts/versions.env has no OTELCOL_VERSION"
+  want_tag=$(python3 -c 'import yaml;print(yaml.safe_load(open("charts/vws/values.yaml"))["observability"]["collector"]["image"].split(":")[1].split("@")[0])')
+  [[ $want_tag == "$version" ]] || die "R25: observability.collector.image tag ${want_tag} is not OTELCOL_VERSION ${version}"
+  command -v otelcol-contrib >/dev/null || die "R25: otelcol-contrib missing; run scripts/install-tools.sh"
+  otelcol-contrib --version | grep -q -F " ${version}" || die "R25: otelcol-contrib is not OTELCOL_VERSION ${version}"
+  tmp=$(mktemp -d)
+  mkdir -p .cache/kubeconform
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/off.yaml"
+  if grep -q -E 'name: (OTEL_|SENTRY_|VWS_LOG_LEVEL)|otel-collector' "$tmp/off.yaml"; then
+    rm -rf "$tmp"; die "R25: the default render has telemetry env or the collector"
+  fi
+  cat > "$tmp/collector.yaml" <<'YAML'
+observability:
+  enabled: true
+  defaults:
+    resourceAttributes:
+      deployment.environment: lab
+  collector:
+    exporters:
+      otlp:
+        endpoint: gateway.observability.svc:4317
+        authorizationSecret: "42"
+services:
+  compute:
+    observability:
+      samplerArg: "1.0"
+      protocol: http/protobuf
+YAML
+  cat > "$tmp/debug.yaml" <<'YAML'
+observability:
+  enabled: true
+  defaults:
+    samplerArg: "0.5"
+  collector:
+    exporters:
+      otlp:
+        endpoint: http://gateway.observability.svc:4317
+        insecure: true
+YAML
+  cat > "$tmp/external.yaml" <<'YAML'
+observability:
+  enabled: true
+  otlpEndpoint: https://otlp.observability.internal:4317
+  otlpHeadersSecret: vws-otlp-headers
+  defaults:
+    sentry:
+      enabled: true
+      dsnSecret: "true"
+services:
+  compute:
+    observability:
+      logLevel: debug
+      sentry:
+        enabled: false
+YAML
+  for case in collector debug external; do
+    helm lint charts/vws --strict -f "$SITE_VALUES" -f "$tmp/${case}.yaml" >/dev/null || { rm -rf "$tmp"; die "R25: helm lint fails with the ${case} observability values"; }
+    helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/${case}.yaml" --namespace vws > "$tmp/${case}.render.yaml"
+    kubeconform -strict -summary -kubernetes-version "$kver" -cache .cache/kubeconform "$tmp/${case}.render.yaml" >/dev/null ||
+      { rm -rf "$tmp"; die "R25: kubeconform rejects the ${case} observability render"; }
+    python3 scripts/check_render.py "$tmp/${case}.render.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "$tmp/${case}.yaml" ||
+      { rm -rf "$tmp"; die "R25: check_render rejects the ${case} observability render"; }
+  done
+  if grep -q 'otel-collector' "$tmp/external.render.yaml"; then
+    rm -rf "$tmp"; die "R25: an external otlpEndpoint still renders the collector"
+  fi
+  for case in collector debug; do
+    python3 - "$tmp/${case}.render.yaml" "$tmp/${case}.otelcol.yaml" <<'PY'
+import sys, yaml
+cm = next(d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "otel-collector")
+open(sys.argv[2], "w").write(cm["data"]["config.yaml"])
+PY
+    OTLP_AUTHORIZATION=unused otelcol-contrib validate --config="$tmp/${case}.otelcol.yaml" ||
+      { rm -rf "$tmp"; die "R25: otelcol-contrib validate rejects the ${case} collector config"; }
+  done
+  # Negative: the schema takes only the telemetry keys in defaults and overrides, and no secret value.
+  for case in \
+    'observability: {defaults: {exporter: otlp}}' \
+    'services: {compute: {observability: {otlpEndpoint: "http://x:4317"}}}' \
+    'services: {compute: {observability: {sentry: {dsn: "https://k@sentry.internal/1"}}}}' \
+    'observability: {defaults: {sentry: {dsn: "https://k@sentry.internal/1"}}}' \
+    'observability: {otlpHeaders: "authorization=Bearer x"}' \
+    'observability: {collector: {exporters: {otlp: {headers: {authorization: x}}}}}' \
+    'observability: {defaults: {samplerArg: "2"}}' \
+    'observability: {collector: {image: "otel/opentelemetry-collector-contrib:latest"}}' \
+    'observability: {collector: {exporters: {otlp: {endpoint: "http://gw.observability.svc:4317/"}}}}' \
+    'observability: {otlpEndpoint: "https://otlp.observability.internal:4317/v1"}'; do
+    printf '%s\n' "$case" > "$tmp/bad.yaml"
+    if helm lint charts/vws --strict -f "$SITE_VALUES" -f "$tmp/bad.yaml" > "$tmp/out" 2>&1 ||
+      ! grep -q -E 'Additional property|Does not match pattern' "$tmp/out"; then
+      rm -rf "$tmp"; die "R25: the values schema did not reject ${case}"
+    fi
+  done
+  # Negative: a render that cannot work fails instead of rendering.
+  for case in \
+    'observability: {enabled: true, otlpHeadersSecret: vws-otlp-headers}' \
+    'observability: {enabled: true, collector: {exporters: {debug: {enabled: false}}}}' \
+    'observability: {enabled: true, defaults: {sentry: {enabled: true}}}' \
+    'observability: {enabled: true, collector: {exporters: {otlp: {authorizationSecret: vws-otlp-auth}}}}'; do
+    printf '%s\n' "$case" > "$tmp/bad.yaml"
+    if helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/bad.yaml" --namespace vws > "$tmp/out" 2>&1 ||
+      ! grep -q -E 'observability|sentry' "$tmp/out"; then
+      rm -rf "$tmp"; die "R25: helm template did not refuse ${case}"
+    fi
+  done
+  sed 's/limit_percentage: 80/limit_percentage: 180/' "$tmp/debug.otelcol.yaml" > "$tmp/bad.otelcol.yaml"
+  if otelcol-contrib validate --config="$tmp/bad.otelcol.yaml" >/dev/null 2>&1; then
+    rm -rf "$tmp"; die "R25: otelcol-contrib validate accepted a bad memory_limiter"
+  fi
+  rm -rf "$tmp"
+  # Examples: config only, each with its rights or mounts and its component stability, and valid.
+  local examples=docs/observability/collector-examples
+  [[ -d $examples ]] || die "R25: ${examples} is missing"
+  for name in k8s_cluster k8sobjects kubeletstats hostmetrics filelog; do
+    example="${examples}/${name}.yaml"
+    [[ -f $example ]] || die "R25: ${example} is missing"
+    grep -q '^# Needs: ' "$example" || die "R25: ${example} has no '# Needs:' line"
+    grep -q '^# Stability: ' "$example" || die "R25: ${example} has no '# Stability:' line"
+    ! grep -q -E '^(apiVersion|kind):' "$example" || die "R25: ${example} is a manifest; examples are collector config only"
+    K8S_NODE_NAME=node-0 HOST_ROOT=/ KUBELET_AUTH_TYPE=none otelcol-contrib validate --config="$example" || die "R25: otelcol-contrib validate rejects ${example}"
+  done
+}
+
 cmd_all() {
   cmd_layout
   cmd_names
@@ -1415,6 +1543,7 @@ cmd_all() {
   cmd_cursor
   cmd_agents
   cmd_config
+  cmd_observability
   cmd_vws
   cmd_upgrade_compat
   cmd_bootstrap
@@ -1436,7 +1565,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|observability|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|commits|commit-msg|all>
 EOF
 }
 
@@ -1451,6 +1580,7 @@ case "$command_name" in
   agents) cmd_agents ;;
   bundle) cmd_bundle ;;
   config) cmd_config ;;
+  observability) cmd_observability ;;
   vws) cmd_vws ;;
   upgrade-compat) cmd_upgrade_compat ;;
   bootstrap) cmd_bootstrap ;;

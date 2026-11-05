@@ -1,0 +1,29 @@
+# Kubernetes events as logs: one collector per cluster (a gateway). k8s_events is alpha, so events
+# come through k8sobjects in watch mode instead.
+# Needs: a ClusterRole with get, list and watch on events in group events.k8s.io; no Secrets. An API
+#   token mount. No host mount.
+# Stability: k8sobjects receiver logs beta (collector-contrib README, 2026-10-12).
+receivers:
+  k8sobjects:
+    auth_type: serviceAccount
+    objects:
+      - name: events
+        group: events.k8s.io
+        mode: watch
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    logs:
+      receivers: [k8sobjects]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]

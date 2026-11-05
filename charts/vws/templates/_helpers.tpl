@@ -302,6 +302,9 @@ spec:
               name: {{ .secret }}
               key: console-token
         {{- end }}
+        {{- with include "vws.otelEnv" (dict "root" .root "name" .name "override" .observability) }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
       {{- include "vws.probes" . | nindent 6 }}
       resources:
         requests:
@@ -337,5 +340,134 @@ spec:
         items:
           - key: {{ .kube.key }}
             path: {{ .kube.key }}
+    {{- end }}
+{{- end -}}
+
+{{/*
+OTel env of one service (vws-deploy#50): empty unless observability.enabled. Each key of
+services.<name>.observability replaces the same key of observability.defaults; resourceAttributes
+and sentry merge key by key. The endpoint is observability.otlpEndpoint, else the in-release
+collector on the port of the protocol. Secrets come only by secretKeyRef.
+Call with (dict "root" $ "name" $name "override" $spec.observability).
+*/}}
+{{- define "vws.otelEnv" -}}
+{{- $obs := .root.Values.observability | default dict }}
+{{- if $obs.enabled }}
+{{- $d := $obs.defaults }}
+{{- $o := .override | default dict }}
+{{- $t := dict }}
+{{- range $k := list "protocol" "sampler" "samplerArg" "logLevel" }}
+  {{- $_ := set $t $k (ternary (index $o $k) (index $d $k) (hasKey $o $k)) }}
+{{- end }}
+{{- $attrs := merge (deepCopy ($o.resourceAttributes | default dict)) (deepCopy ($d.resourceAttributes | default dict)) }}
+{{- $ds := $d.sentry | default dict }}
+{{- $os := $o.sentry | default dict }}
+{{- $sentryOn := ternary $os.enabled $ds.enabled (hasKey $os "enabled") }}
+{{- $dsn := ternary $os.dsnSecret $ds.dsnSecret (hasKey $os "dsnSecret") }}
+{{- $endpoint := $obs.otlpEndpoint }}
+{{- if not $endpoint }}
+  {{- if $obs.otlpHeadersSecret }}
+    {{- fail "observability.otlpHeadersSecret needs observability.otlpEndpoint" }}
+  {{- end }}
+  {{- $endpoint = printf "http://otel-collector.%s.svc:%d" .root.Release.Namespace (ternary 4317 4318 (eq $t.protocol "grpc")) }}
+{{- end }}
+- name: OTEL_SERVICE_NAME
+  value: {{ .name | quote }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ $endpoint | quote }}
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: {{ $t.protocol | quote }}
+{{- with $obs.otlpHeadersSecret }}
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ . | quote }}
+      key: headers
+{{- end }}
+- name: OTEL_TRACES_SAMPLER
+  value: {{ $t.sampler | quote }}
+- name: OTEL_TRACES_SAMPLER_ARG
+  value: {{ $t.samplerArg | quote }}
+{{- if $attrs }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ include "vws.pairs" $attrs | quote }}
+{{- end }}
+- name: VWS_LOG_LEVEL
+  value: {{ $t.logLevel | quote }}
+{{- if $sentryOn }}
+- name: SENTRY_DSN
+  valueFrom:
+    secretKeyRef:
+      name: {{ required (printf "services.%s: sentry.enabled needs sentry.dsnSecret" .name) $dsn | quote }}
+      key: dsn
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{- define "vws.pairs" -}}
+{{- $out := list }}
+{{- range $k := keys . | sortAlpha }}{{ $out = append $out (printf "%s=%s" $k (index $ $k)) }}{{ end }}
+{{- join "," $out }}
+{{- end -}}
+
+{{- define "vws.collectorLabels" -}}
+{{ include "vws.selector" . }}
+app.kubernetes.io/part-of: vws
+app.kubernetes.io/component: observability
+helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" }}
+{{- end -}}
+
+{{/*
+Config of the minimal collector. The same text goes into the ConfigMap and its checksum, and
+scripts/guard.sh observability runs otelcol-contrib validate on it.
+Call with (dict "c" $collector "exporters" $exporterNames).
+*/}}
+{{- define "vws.collectorConfig" -}}
+{{- $next := .c.exporters.otlp -}}
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  {{- if .c.exporters.debug.enabled }}
+  debug:
+    verbosity: basic
+  {{- end }}
+  {{- if $next.endpoint }}
+  otlp:
+    endpoint: {{ $next.endpoint | quote }}
+    tls:
+      insecure: {{ $next.insecure }}
+    {{- if $next.authorizationSecret }}
+    headers:
+      authorization: ${env:OTLP_AUTHORIZATION}
+    {{- end }}
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+  {{- end }}
+service:
+  pipelines:
+    {{- range $signal := list "traces" "metrics" "logs" }}
+    {{ $signal }}:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [{{ join ", " $.exporters }}]
     {{- end }}
 {{- end -}}

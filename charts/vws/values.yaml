@@ -38,6 +38,45 @@ global:
     podLabels:
       app.kubernetes.io/name: prometheus
 
+# observability (vws-deploy#50, design docs/design/observability.md) is off by default; off renders
+# nothing new. enabled is the only switch. On, every service gets the OTel env of vws.otelEnv
+# (_helpers.tpl): OTEL_SERVICE_NAME, the OTLP endpoint and protocol, the sampler, resource
+# attributes, VWS_LOG_LEVEL and, from Secrets only, OTEL_EXPORTER_OTLP_HEADERS and SENTRY_DSN.
+# otlpEndpoint empty: the chart runs one minimal collector (otel-collector, OTLP in, memory_limiter
+# and batch, otlp and debug out, no API rights) and the services send to it. otlpEndpoint set: no
+# collector, and the services send there. defaults hold every key; services.<name>.observability
+# may set any of the same keys and nothing else (values.schema.json). A Secret key is fixed by the
+# chart (headers, dsn, authorization); only the Secret name is a value.
+observability:
+  enabled: false
+  otlpEndpoint: ""
+  # A Secret with key headers (W3C list, such as authorization=Bearer%20x) for an external endpoint.
+  otlpHeadersSecret: ""
+  defaults:
+    protocol: grpc
+    sampler: parentbased_traceidratio
+    samplerArg: "0.1"
+    logLevel: info
+    resourceAttributes: {}
+    sentry:
+      enabled: false
+      dsnSecret: ""
+  collector:
+    # otel/opentelemetry-collector-contrib OTELCOL_VERSION (scripts/versions.env), multi-arch index
+    # digest from Docker Hub on 2026-11-05. scripts/guard.sh observability checks the tag.
+    image: docker.io/otel/opentelemetry-collector-contrib:0.164.0@sha256:340c9ca6a36617084c6661bdc4f0fe92b7cda5a805d61673ec8db375fddc522b
+    cpu: 100m
+    memory: 512Mi
+    exporters:
+      # endpoint empty sends nothing on; debug then has to stay on. authorizationSecret: a Secret
+      # with key authorization, sent as the authorization header.
+      otlp:
+        endpoint: ""
+        insecure: false
+        authorizationSecret: ""
+      debug:
+        enabled: true
+
 namespaces:
   vms: vws-vms
   images: vws-images
@@ -169,8 +208,8 @@ services:
     # probes /healthz (startup and liveness) and /readyz (readiness) there. vws-compute#156
     # (ff1252d) replaced internal/obs with vws-lib obs.Setup, which serves those paths only and
     # sends metrics over OTLP; the older image sha-1b62a87 still serves /metrics too. The chart
-    # renders no scrape annotations: /metrics is gone from the current compute build, and no
-    # OTLP endpoint is rendered yet (#217). /readyz follows the same verdict as
+    # renders no scrape annotations: /metrics is gone from the current compute build. The OTLP
+    # endpoint comes from observability (#50). /readyz follows the same verdict as
     # grpc.health.v1, so a dependency outage marks the pod unready instead of restarting it.
     healthPort: 8081
     # The KubeVirt agent and its flags are on vws-compute main (vws-compute#23, #44); the image

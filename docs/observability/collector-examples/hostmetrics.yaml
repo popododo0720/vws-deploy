@@ -1,0 +1,35 @@
+# Node CPU, memory, load, disk, filesystem, network and paging: one collector per node.
+# Needs: the host root mounted read-only at /hostfs (root_path), no API rights. Host NIC counters
+#   most likely also need the host network namespace (unverified, T2). The process scraper stays off
+#   because it needs more rights. These are the R10 exceptions a later issue must approve (#47).
+# Stability: hostmetrics receiver metrics beta, logs development (collector-contrib README, 2026-10-12).
+receivers:
+  hostmetrics:
+    # HOST_ROOT is unset in a pod; scripts/guard.sh sets it to / because validate stats the path.
+    root_path: ${env:HOST_ROOT:-/hostfs}
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      memory: {}
+      load: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+      paging: {}
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]
