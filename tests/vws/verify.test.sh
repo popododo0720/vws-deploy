@@ -36,9 +36,21 @@ md=$(cat "${WORK}/fm/feature-map.md")
 expect_text "md shows the pass in KST" "$md" "| EC2 key pair import | vws-console-api | vws-console-api#128 | \`scripts/vws verify scenario ec2-keypair\` | 2026-10-14 15:30 KST |"
 expect_text "md marks unverified" "$md" "| Console login | vws-console | - | - | unverified | - |"
 
-run_vws_real verify --check-feature-map --map "$map"; expect_rc "a fresh md passes the check" 0
-echo "edited" >>"${WORK}/fm/feature-map.md"
-run_vws_real verify --check-feature-map --map "$map"; expect_rc "a hand-edited md fails the check" 1
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a scenario with no scenario file fails the check" 1
+expect_text "the missing scenario is named" "$OUT" "scenario ec2-keypair in ${map} does not exist"
+expect_text "every missing scenario is named" "$OUT" "scenario sts-assume-role in ${map} does not exist"
+expect_text "the md itself is current" "$OUT" "OK    feature-map  ${WORK}/fm/feature-map.md matches"
+jq '.features |= map(select(.scenario == null)) | .features += [{"feature": "S3", "repo": "vws-storage", "scenario": "s3-basic"}, {"feature": "Bad", "repo": "x", "scenario": "../s3-basic"}]' \
+  "$map" >"${WORK}/fm/path.json"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "${WORK}/fm/path.json"
+run_vws_real verify --check-feature-map --map "${WORK}/fm/path.json"; expect_rc "a path as a scenario name fails the check" 1
+expect_text "the path is named" "$OUT" "scenario ../s3-basic in ${WORK}/fm/path.json does not exist"
+jq '.features |= map(select(.scenario != "../s3-basic"))' "${WORK}/fm/path.json" >"${WORK}/fm/real.json"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "${WORK}/fm/real.json"
+run_vws_real verify --check-feature-map --map "${WORK}/fm/real.json"; expect_rc "a fresh md with existing scenarios passes the check" 0
+echo "edited" >>"${WORK}/fm/real.md"
+run_vws_real verify --check-feature-map --map "${WORK}/fm/real.json"; expect_rc "a hand-edited md fails the check" 1
+expect_text "the stale md is named" "$OUT" "real.md is stale"
 
 echo '{"scenario": "x"}' >"${WORK}/fm/bad.json"
 run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/bad.json"; expect_rc "a result missing fields is invalid input" 2

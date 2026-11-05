@@ -3,7 +3,7 @@
 # Sourced by scripts/vws. Usage: vws verify list
 #        vws verify scenario NAME [--json] [--fail-at STEP] [--result FILE] [--map FILE]
 #        vws verify --update-feature-map [--map FILE] RESULT.json...
-#        vws verify --check-feature-map [--map FILE]
+#        vws verify --check-feature-map [--map FILE]   (FAIL: stale md, or a scenario with no scenario file)
 # scenario and list: vws-deploy#251, lib/verify_scenario.sh, docs/vws-cli.md. scenario runs only on the
 # cluster whose kube-system UID is vwsTest.kubeSystemUID in the map.
 # --update-feature-map, vws-deploy#252. RESULT.json is a scenario result:
@@ -15,7 +15,7 @@
 # map unchanged; includes finishedAt > 5 min in the future), 3 map unreadable.
 # The feature-map modes change local files only and never touch the cluster.
 # shellcheck disable=SC2034 # read by scripts/vws
-VWS_NEED=(python3)
+VWS_NEED=(python3 jq)
 
 vws_verify_scenario() { # NAME ARGS...
   local name=${1:-} map="${VWS_ROOT}/docs/feature-map.json" fail_at='' result=''
@@ -73,6 +73,11 @@ vws_cmd_main() {
       1) vws_emit FAIL feature-map "${map%.json}.md is stale; run scripts/vws verify --update-feature-map" ;;
       *) vws_die_env "feature map ${map} is unreadable" ;;
     esac
+    # A scenario the map names must exist, or nightly would fail on it every night.
+    while IFS= read -r name; do
+      [[ $name =~ ^[a-z0-9][a-z0-9-]{0,62}$ && -f $(vws_sc_file "$name") ]] ||
+        vws_emit FAIL feature-map "scenario ${name:0:64} in ${map} does not exist; see scripts/vws verify list"
+    done < <(jq -r '.features[].scenario // empty' "$map")
     return 0
   fi
   ((${#results[@]})) || vws_usage "verify --update-feature-map needs at least one RESULT.json"
