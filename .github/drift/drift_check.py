@@ -6,7 +6,8 @@ Checks per repo, on its default branch:
   ruleset     an active vws-main branch ruleset, with no bypass actors; the bypass list is readable
               only with an admin token, so without one the cell says "unverified", never ok
   checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
-  workflows   repo-guard.yml, direct-push-watch.yml and verify-queue.yml exist (verify-queue: #460)
+  workflows   repo-guard.yml and direct-push-watch.yml exist. verify-queue.yml is not required (vws-deploy#673):
+              the factory engine picks open PRs itself and does not read needs-verify
   caller      repo-guard.yml is the short caller of the vws-deploy repo-guard-<job>.yml files (caller_pin.py): a 40-hex
               pin, the same pin in every repo, and that pin is on vws-deploy main (vws-deploy#402). A repo
               that caller-pending.tsv lists is exempt only while its repo-guard.yml is byte for byte the full
@@ -21,7 +22,7 @@ Checks per repo, on its default branch:
               full sha256 that guard-variants.tsv pins for that repo ("accepted variant")
   vendored    each file that vendored.tsv pins (verify-queue.yml, check-english.sh) matches its full sha256, or
               the one variant pinned for that repo (#439 class 4). Every repo but vws-deploy must have
-              check-english.sh (#423); a missing verify-queue.yml is the workflows cell's drift
+              check-english.sh (#423); a missing verify-queue.yml is not drift (vws-deploy#673)
   bootstrap   every workflow run: step that calls scripts/guard-agents.sh SUB, and every vws-deploy
               repo-guard-*.yml the caller pins, names a SUB that the default-branch script already
               dispatches: the script lands first, then the workflow that calls it (#439 class 4)
@@ -65,9 +66,8 @@ import lib_drift  # noqa: E402
 import proto_drift  # noqa: E402
 
 COMMON_CHECKS = ["pr-hygiene", "vws-verify", "verify-gate"]
-# verify-queue.yml (#460): without it a repo's PRs never get needs-verify and Rule A never wakes vws-verify.
-WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml",
-             ".github/workflows/verify-queue.yml"]
+# verify-queue.yml is not required (vws-deploy#673); vendored.tsv still pins a copy that exists.
+WORKFLOWS = [".github/workflows/repo-guard.yml", ".github/workflows/direct-push-watch.yml"]
 STALE_PHRASES = (
     "private, free plan",
     "no server-side protection",

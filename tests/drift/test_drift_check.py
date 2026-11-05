@@ -464,11 +464,18 @@ class MainRulesetCell(unittest.TestCase):
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
 
-    def test_missing_verify_queue_is_drift(self):
-        # vws-deploy#460: a repo without verify-queue.yml never gets needs-verify, so Rule A never wakes vws-verify.
+    def test_missing_verify_queue_is_not_drift(self):
+        # vws-deploy#673: the factory engine does not read needs-verify, so a repo needs no verify-queue.yml.
+        rc, _, text, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []},
+                                           extra_files={".github/workflows/verify-queue.yml": None})
+        self.assertEqual([cells[4], cells[10]], ["ok", "ok"])
+        self.assertNotIn("verify-queue", text)
+        self.assertEqual(rc, 0)
+
+    def test_missing_direct_push_watch_is_drift(self):
         rc, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []},
-                                        extra_files={".github/workflows/verify-queue.yml": None})
-        self.assertEqual(cells[4], "missing verify-queue.yml")
+                                        extra_files={".github/workflows/direct-push-watch.yml": None})
+        self.assertEqual(cells[4], "missing direct-push-watch.yml")
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
     def test_every_workflow_present_is_ok(self):
@@ -476,8 +483,9 @@ class MainRulesetCell(unittest.TestCase):
         self.assertEqual(cells[4], "ok")
         self.assertEqual(rc, 0)
 
-    def test_workflows_list_names_verify_queue(self):
-        self.assertIn(".github/workflows/verify-queue.yml", dc.WORKFLOWS)
+    def test_workflows_list_drops_verify_queue(self):
+        self.assertEqual(dc.WORKFLOWS, [".github/workflows/repo-guard.yml",
+                                        ".github/workflows/direct-push-watch.yml"])
 
     OK_DETAIL = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
 
@@ -775,7 +783,7 @@ class OpenPrHeads(unittest.TestCase):
 
 RG = ".github/workflows/repo-guard.yml"
 DPW = ".github/workflows/direct-push-watch.yml"
-VQ = ".github/workflows/verify-queue.yml"  # required since #476 (vws-deploy#460)
+VQ = ".github/workflows/verify-queue.yml"  # optional (vws-deploy#673); a copy must match the pin
 # A stand-in for the full repo-guard.yml a pending repo still carries; only its bytes matter.
 FULL = b"""name: repo-guard
 on:
