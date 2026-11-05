@@ -74,7 +74,7 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 
 ## Decision change: no `vws-volumes` namespace
 
-Volume PVCs live in the VM namespace (`vws-vms`), because KubeVirt hotplug can attach only PVCs in the VM's namespace (dr eggbot's decision). So `vws-volumes` in values, its Namespace and its Role were removed, and storage's PVC and VolumeSnapshot Role is in `namespaces.vms`. On the service side, vws-storage#31 (merged as vws-storage#33) makes `-kube-namespace` default to `vws-vms` (`internal/backend/kube/config.go` `DefaultNamespace`), and `-kube-namespace` must equal `-vm-namespace`. This chart takes both from `namespaces.vms` so they are equal.
+Volume PVCs live in the VM namespace (`vws-vms`), because KubeVirt hotplug can attach only PVCs in the VM's namespace (dr eggbot's decision). So `vws-volumes` in values, its Namespace and its Role were removed, and storage's PVC and VolumeSnapshot Role is in `namespaces.vms`. On the service side, vws-storage#29 (merged as vws-storage#34, commit `a3d93d7`) makes `-kube-namespace` default to `vws-vms` (`internal/backend/kube/config.go` `DefaultNamespace`), and `-kube-namespace` must equal `-vm-namespace`. This chart takes both from `namespaces.vms` so they are equal.
 
 ## Still needs checking
 
