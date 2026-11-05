@@ -667,6 +667,10 @@ cmd_agents() {
   python3 -m unittest discover -s tests/workflows >/dev/null 2>&1 \
     || die "R13: tests/workflows fail (python3 -m unittest discover -s tests/workflows -v)"
   scripts/guard-agents.sh agents AGENTS.md || die "R13: AGENTS.md lost the Insider-risk guardrails"
+  scripts/guard-agents.sh rules AGENTS.md || die "R13: a row of the AGENTS.md rule table has no enforcer"
+  [[ -f installer/internal/archtest/arch_test.go ]] || die "R26: installer/internal/archtest/arch_test.go is missing"
+  grep -q -x -F '        run: ../scripts/guard-agents.sh archtest ../AGENTS.md' .github/workflows/ci.yml ||
+    die "R26: the ci installer job does not run scripts/guard-agents.sh archtest"
   scripts/guard-agents.sh selftest >/dev/null || die "R13: scripts/guard-agents.sh accepted a bad input"
   scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
   grep -q 'guard-agents.sh pr-base' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check the base"
