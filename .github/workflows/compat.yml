@@ -1,0 +1,118 @@
+name: compat
+
+# Compatibility matrix of unmodified aws-cli and the Terraform AWS provider (vws-deploy#133, docs/compat.md).
+# ci.yml calls this with target fake when a pull request or push changes the compat paths; a dispatch with
+# target vws runs it against VWS. It has no pull_request trigger of its own, so verify-queue and
+# ci-fail-caller see its runs as part of ci.
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        default: fake
+  workflow_dispatch:
+    inputs:
+      target:
+        description: fake (vws-console-api -backend fake) or vws (the VWS_COMPAT_* repo variables and secrets)
+        type: choice
+        options: [fake, vws]
+        default: fake
+      runner:
+        description: runner label; a vws run needs one that reaches the VWS endpoints
+        type: string
+        default: ubuntu-latest
+      open_issues:
+        description: open an issue in the owning repo for each failing row (vws target only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    env:
+      TARGET: ${{ inputs.target || 'fake' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests/compat -v
+
+      - name: Install terraform and aws-cli
+        run: |
+          tests/compat/install.sh
+          echo /tmp/bin >> "$GITHUB_PATH"
+
+      - name: Check out the console-api fake
+        if: env.TARGET == 'fake'
+        run: |
+          source scripts/versions.env
+          git init -q /tmp/console-api
+          git -C /tmp/console-api fetch -q --depth 1 https://github.com/popododo0720/vws-console-api.git "$CONSOLE_API_FAKE_REF"
+          git -C /tmp/console-api checkout -q --detach FETCH_HEAD
+          test "$(git -C /tmp/console-api rev-parse HEAD)" = "$CONSOLE_API_FAKE_REF"
+
+      - uses: actions/setup-go@v5
+        if: env.TARGET == 'fake'
+        with:
+          go-version-file: /tmp/console-api/go.mod
+          cache: false
+
+      - name: Start the console-api fake
+        if: env.TARGET == 'fake'
+        run: |
+          (cd /tmp/console-api && go build -o /tmp/vws-console-api ./cmd/vws-console-api)
+          /tmp/vws-console-api -backend fake >/tmp/console-api.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8083/healthz; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/console-api.log
+          exit 1
+
+      - name: Run the matrix (fake)
+        if: env.TARGET == 'fake'
+        env:
+          VWS_COMPAT_TARGET: fake
+          VWS_COMPAT_ALLOWED_HOSTS: 127.0.0.1
+          VWS_COMPAT_EC2_ENDPOINT: http://127.0.0.1:8081
+          VWS_COMPAT_S3_ENDPOINT: http://127.0.0.1:8082
+          VWS_COMPAT_ACCESS_KEY_ID: AKIDEXAMPLE
+          VWS_COMPAT_SECRET_ACCESS_KEY: secret
+        run: tests/compat/compat.py run build/compat
+
+      - name: Run the matrix (vws)
+        if: env.TARGET == 'vws'
+        env:
+          VWS_COMPAT_TARGET: vws
+          VWS_COMPAT_ALLOWED_HOSTS: ${{ vars.VWS_COMPAT_ALLOWED_HOSTS }}
+          VWS_COMPAT_EC2_ENDPOINT: ${{ vars.VWS_COMPAT_EC2_ENDPOINT }}
+          VWS_COMPAT_S3_ENDPOINT: ${{ vars.VWS_COMPAT_S3_ENDPOINT }}
+          VWS_COMPAT_REGION: ${{ vars.VWS_COMPAT_REGION }}
+          VWS_COMPAT_IMAGE_ID: ${{ vars.VWS_COMPAT_IMAGE_ID }}
+          VWS_COMPAT_INSTANCE_TYPE: ${{ vars.VWS_COMPAT_INSTANCE_TYPE }}
+          VWS_COMPAT_ACCESS_KEY_ID: ${{ secrets.VWS_COMPAT_ACCESS_KEY_ID }}
+          VWS_COMPAT_SECRET_ACCESS_KEY: ${{ secrets.VWS_COMPAT_SECRET_ACCESS_KEY }}
+        run: tests/compat/compat.py run build/compat
+
+      - name: Matrix summary
+        if: always() && hashFiles('build/compat/matrix.md') != ''
+        run: cat build/compat/matrix.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-matrix-${{ env.TARGET }}
+          path: |
+            build/compat/results.json
+            build/compat/matrix.md
+          if-no-files-found: warn
+
+      - name: Open issues for failing rows
+        if: env.TARGET == 'vws' && inputs.open_issues
+        env:
+          GH_TOKEN: ${{ secrets.VWS_COMPAT_ISSUE_TOKEN }}
+        run: tests/compat/compat.py issues build/compat/results.json --apply
