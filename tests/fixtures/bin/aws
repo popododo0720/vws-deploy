@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Fake aws-cli for tests/vws. It never talks to a network. It keeps a small S3 in ${VWS_FAKE_LOG}.s3/:
+# a bucket is a directory and an object a file, with the S3 error codes for a missing bucket or key.
+# Every call is appended to $VWS_FAKE_LOG as: aws<TAB><service>_<operation><TAB>all arguments<TAB>endpoint.
+# A file $VWS_FAKE_DIR/aws/<service>_<operation>.fail makes the call fail with its text on stderr (exit 254).
+set -euo pipefail
+: "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
+# The caller must pass a clean environment (env -i): a variable the test exported must not arrive.
+[[ -z ${VWS_LEAK_CANARY:-} && $AWS_SHARED_CREDENTIALS_FILE == /dev/null && -n $AWS_SECRET_ACCESS_KEY ]] ||
+  { echo "fake aws: not an isolated environment" >&2; exit 99; }
+args=() skip=0
+for arg in "$@"; do
+  if ((skip)); then skip=0; continue; fi
+  case $arg in
+    --cli-connect-timeout | --cli-read-timeout) skip=1 ;;
+    *) args+=("$arg") ;;
+  esac
+done
+op="${args[0]}_${args[1]}"
+printf 'aws\t%s\t%s\t%s\n' "$op" "${args[*]}" "$AWS_ENDPOINT_URL" >>"$VWS_FAKE_LOG"
+# <op>.sleep holds seconds to wait first, so a test can signal a run mid-call.
+[[ ! -f ${VWS_FAKE_DIR}/aws/${op}.sleep ]] || sleep "$(cat "${VWS_FAKE_DIR}/aws/${op}.sleep")"
+if [[ -f ${VWS_FAKE_DIR}/aws/${op}.fail ]]; then
+  cat "${VWS_FAKE_DIR}/aws/${op}.fail" >&2
+  exit 254
+fi
+opt() { local i; for ((i = 2; i < ${#args[@]} - 1; i++)); do [[ ${args[i]} != "$1" ]] || { echo "${args[i + 1]}"; return; }; done; }
+s3="${VWS_FAKE_LOG}.s3"
+bucket=$(opt --bucket) key=$(opt --key)
+err() { echo "An error occurred ($1) when calling the $2 operation: fake" >&2; exit 254; }
+need_bucket() { [[ -d ${s3}/${bucket} ]] || err NoSuchBucket "$1"; }
+case $op in
+  s3api_create-bucket)
+    [[ ! -d ${s3}/${bucket} ]] || err BucketAlreadyOwnedByYou CreateBucket
+    mkdir -p "${s3}/${bucket}"
+    printf '{"Location": "/%s"}\n' "$bucket" ;;
+  s3api_put-object)
+    need_bucket PutObject
+    cp "$(opt --body)" "${s3}/${bucket}/${key}"
+    echo '{"ETag": "\"fake\""}' ;;
+  s3api_get-object)
+    need_bucket GetObject
+    [[ -f ${s3}/${bucket}/${key} ]] || err NoSuchKey GetObject
+    cp "${s3}/${bucket}/${key}" "${args[-1]}"
+    echo '{"ETag": "\"fake\""}' ;;
+  s3api_list-objects-v2)
+    need_bucket ListObjectsV2
+    (cd "${s3}/${bucket}" && ls -1) | paste -sd '\t' ;;
+  s3api_delete-object)
+    need_bucket DeleteObject
+    rm -f "${s3}/${bucket}/${key}" ;;
+  s3api_delete-bucket)
+    need_bucket DeleteBucket
+    rmdir "${s3}/${bucket}" 2>/dev/null || err BucketNotEmpty DeleteBucket ;;
+  *) echo "fake aws: no fake for ${op}" >&2; exit 1 ;;
+esac

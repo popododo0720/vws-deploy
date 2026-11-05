@@ -2,7 +2,7 @@
 # summary: run every feature-map scenario one at a time and record the results in the feature map
 # Sourced by scripts/vws. Usage: vws [--context CTX] nightly [--map FILE] [--results DIR] [--timeout SECONDS]
 # vws-deploy#290 (Part of #252). Reads the scenario names from the map (docs/feature-map.json by
-# default), runs each one in name order with `scripts/vws verify scenario NAME --result FILE`
+# default), runs each one in name order with `scripts/vws verify scenario NAME --result FILE --map MAP`
 # (vws-deploy#287), one at a time and each under --timeout (default 1800 s, then SIGTERM, then
 # SIGKILL 30 s later), and then records every result written with the same update that
 # `vws verify --update-feature-map` runs. Only a vws-test pass moves a feature's last pass forward.
@@ -74,7 +74,7 @@ vws_cmd_main() {
     fi
     rm -f "${results}/${name}.json"
     rc=0
-    timeout --kill-after=30 "$timeout_s" "${runner[@]}" "$name" --result "${results}/${name}.json" \
+    timeout --kill-after=30 "$timeout_s" "${runner[@]}" "$name" --result "${results}/${name}.json" --map "$map" \
       </dev/null >"${results}/${name}.log" 2>&1 || rc=$?
     if ((rc == 124 || rc == 137)); then
       vws_emit FAIL "scenario/${name}" "timed out after ${timeout_s}s; log ${results}/${name}.log"
