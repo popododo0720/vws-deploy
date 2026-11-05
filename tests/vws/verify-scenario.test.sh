@@ -83,7 +83,9 @@ rm -rf "$s3"
 
 echo 5 >"${fake}/aws/s3api_get-object.sleep"
 reset_log
-(PATH="${FIXTURES}/bin:${PATH}" exec bash "$VWS_BIN" verify scenario s3-basic --json --map "$map" >"${WORK}/term.out" 2>&1) &
+cp "${WORK}/r1.json" "${WORK}/term.json"
+(PATH="${FIXTURES}/bin:${PATH}" exec bash "$VWS_BIN" verify scenario s3-basic --json --map "$map" --result "${WORK}/term.json" \
+  >"${WORK}/term.out" 2>&1) &
 pid=$!
 for _ in $(seq 50); do grep -q get-object "$VWS_FAKE_LOG" 2>/dev/null && break; sleep 0.1; done
 kill -TERM "$pid"
@@ -93,7 +95,50 @@ expect_rc "SIGTERM mid-step exits 143" 143
 expect_text "SIGTERM runs the cleanup" "$(jq -r 'select(.step | startswith("cleanup:")) | "\(.step)=\(.result)"' <<<"$OUT" 2>/dev/null | paste -sd ' ')" \
   "cleanup:delete-object=pass cleanup:delete-bucket=pass"
 if [[ $(buckets) == 0 ]]; then ok "SIGTERM tears down"; else bad "teardown after SIGTERM" "$(find "$s3")"; fi
+expect_text "the interrupted step is a fail" "$OUT" '"step":"get-object"'
+expect_text "it says why" "$OUT" "interrupted by SIGTERM"
+if jq -e '.result == "fail"' "${WORK}/term.json" >/dev/null; then ok "an interrupted run replaces an old pass with a fail"
+else bad "interrupted result" "$(cat "${WORK}/term.json")"; fi
 rm "${fake}/aws/s3api_get-object.sleep"
+
+# term_when OP ARGS...: run the scenario, send SIGTERM once the fake logs OP, and set OUT, RC and SECS.
+term_when() {
+  local op=$1 pid t0
+  shift
+  reset_log
+  t0=$(date +%s)
+  (PATH="${FIXTURES}/bin:${PATH}" exec bash "$VWS_BIN" verify scenario s3-basic --json --map "$map" "$@" \
+    >"${WORK}/term.out" 2>&1) &
+  pid=$!
+  for _ in $(seq 100); do grep -q "$op" "$VWS_FAKE_LOG" 2>/dev/null && break; sleep 0.1; done
+  kill -TERM "$pid"
+  RC=0; wait "$pid" || RC=$?
+  SECS=$(($(date +%s) - t0)) OUT=$(cat "${WORK}/term.out") ERR=''
+}
+echo 2 >"${fake}/aws/s3api_delete-object.sleep"
+term_when s3api_delete-object --fail-at get-object
+expect_rc "SIGTERM during a cleanup step exits 143" 143
+expect_text "the interrupted cleanup step is recorded" "$OUT" "interrupted by SIGTERM"
+expect_text "the interrupted cleanup step runs again, then the rest" "$(steps)" \
+  "cleanup:delete-object=fail cleanup:delete-object=pass cleanup:delete-bucket=pass"
+if [[ $(buckets) == 0 ]]; then ok "SIGTERM during cleanup still tears down"; else bad "teardown after SIGTERM in cleanup" "$(find "$s3")"; fi
+echo 30 >"${fake}/aws/s3api_delete-object.sleep"
+VWS_VERIFY_SIGNAL_GRACE=2 term_when s3api_delete-object --fail-at get-object
+expect_rc "a cleanup past the signal grace still exits 143" 143
+if ((SECS < 10)); then ok "the cleanup after a signal ends within its grace (${SECS}s)"; else bad "grace bound" "took ${SECS}s"; fi
+expect_text "what the grace could not clean is named by run ID" "$OUT" "the signal grace is spent; not run; find what is left by vws-verify-"
+rm -f "${fake}/aws/s3api_delete-object.sleep"; rm -rf "$s3"
+
+cp "${WORK}/r1.json" "${WORK}/stale.json"
+printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
+run_vws_real verify scenario s3-basic --map "$map" --result "${WORK}/stale.json"
+if [[ ! -e ${WORK}/stale.json ]]; then ok "a refused run leaves no old result behind"; else bad "stale result" "$(cat "${WORK}/stale.json")"; fi
+printf 'uid-vws-test' >"${fake}/kubectl/get_ns.json"
+
+run_vws_real nightly --map "$map" --results "${WORK}/nightly/run1"
+expect_rc "nightly runs the real scenario against its own map" 0
+if jq -e '.result == "pass" and .clusterUID == "uid-vws-test"' "${WORK}/nightly/run1/s3-basic.json" >/dev/null; then
+  ok "nightly records the scenario result"; else bad "nightly result" "$OUT $(cat "${WORK}/nightly/run1/s3-basic.log")"; fi
 
 printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
 run_vws_real verify scenario s3-basic --map "$map"
@@ -119,6 +164,8 @@ aws_host="s3.us-east-1.ama""zonaws.com"
 VWS_VERIFY_ENDPOINT="https://${aws_host}" run_vws_real verify scenario s3-basic --map "$map"
 expect_rc "an AWS-owned endpoint is refused" 2
 expect_text "it says why" "$ERR" "is AWS-owned, not VWS; refused"
+VWS_VERIFY_ENDPOINT="https://${aws_host}.:443/" run_vws_real verify scenario s3-basic --map "$map"
+expect_rc "an AWS-owned endpoint with a trailing dot is refused" 2
 VWS_VERIFY_ENDPOINT='ftp://x' run_vws_real verify scenario s3-basic --map "$map"
 expect_rc "a non-http endpoint is refused" 2
 if ! grep -q '^aws' "$VWS_FAKE_LOG"; then ok "refused input gets no aws call"; else bad "no aws call" "$(cat "$VWS_FAKE_LOG")"; fi

@@ -35,7 +35,7 @@ vws_verify_scenario() { # NAME ARGS...
       *) vws_usage "verify scenario: unknown argument $1" ;;
     esac
   done
-  vws_need jq timeout aws
+  vws_need jq timeout aws pgrep
   # JSON lines, one per step: the -o json summary at exit would be a second shape in the same stream.
   [[ $VWS_OUTPUT != json ]] || VWS_OUTPUT=jsonl
   vws_sc_main "$name" "$map" "$fail_at" "$result"
