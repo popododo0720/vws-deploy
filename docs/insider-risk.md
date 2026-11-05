@@ -18,7 +18,13 @@ The design is https://github.com/popododo0720/vws-deploy/issues/33. This repo is
 4. Even if the repo already has CI, keep these workflows as separate files. Do not run the same job in two places.
 5. Local check: `scripts/guard-agents.sh selftest`, `scripts/guard-agents.sh agents`. If the repo has its own guard (such as `guard.sh`), call `agents` and `selftest` from there. In this repo `scripts/guard.sh agents` does it.
 
-Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `GUARD_ITEMS` (default 7), `GUARD_QUALITY_ITEMS` (default 9, the checklist items), `GUARD_RETRY_SECONDS` (retry interval for push-watch's PR lookup, default 5).
+Environment variables: `GUARD_MAIN_BRANCH` (default `main`), `GUARD_HEADING`, `GUARD_ITEMS` (default 7), `GUARD_QUALITY_ITEMS` (default 9, the checklist items), `GUARD_RETRY_SECONDS` (retry interval for push-watch's PR lookup, default 5), `GUARD_ALLOW_SHAS` (see below).
+
+## What push-watch judges (#37)
+
+- **Rewritten history.** The previous head (`github.event.before`) must be an ancestor of the new head. After a force-push the old head may be missing from the clone, so push-watch first fetches it by SHA from `origin`. If it is still missing, the job fails with "the previous head ... is gone (history rewrite suspected)" instead of checking only the new head. A new branch (`before` all zeros) checks only the new head.
+- **Merge methods.** The PR lookup is `gh api repos/R/commits/SHA/pulls`. Checked on vws-deploy on 2026-11-05: a squash merge commit (`2c3721c`, #669) and a merge commit (`40059c2`, `Merge pull request #245`) both return their PR. A rebase merge was not tested: the `vws-main` ruleset allows only squash merges. A repo that allows rebase merges should check it before relying on the watch. There is no fallback to `(#N)` in the commit message, because anyone who pushes directly can write that text.
+- **Known commits without a PR.** Commits from before the guard, such as the initial commit (`59bc296` here has no PR), fail the watch when a push range contains them. List their full 40-character SHAs, space or comma separated, in the repo variable `GUARD_ALLOW_SHAS`; the workflow passes it to the script. A short or malformed entry fails the job. The variable is set in repo settings, so adding an entry needs repo admin rights and stays out of PR diffs.
 
 ## Limits
 
