@@ -4,7 +4,7 @@ This repository holds only the deployment artifacts of the VWS private cloud. Th
 
 ## Rules
 
-| ID | Rule | Structure | Check |
+| ID | Rule | Structure | Enforcer |
 | --- | --- | --- | --- |
 | R1 | Work on a branch; never push to main or master, and never force-push: a push to an existing branch must fast-forward it | `.githooks/pre-push` | `scripts/guard.sh hooks` |
 | R2 | A commit touches one scope from scripts/scopes, and its subject is `scope: summary` | `scripts/scopes` | `scripts/guard.sh commits` |
@@ -29,8 +29,9 @@ This repository holds only the deployment artifacts of the VWS private cloud. Th
 | R23 | Records from the previous release decode: every fixture under `testdata/upgrade/<version>/` loads and renders with the current code, and regenerating one is allowed only at a release bump | `testdata/upgrade/` | `scripts/guard.sh upgrade-compat` `tests/vws/upgrade-compat.test.sh` |
 | R24 | A production render refuses placeholder values: the RFC 5737 IPv4 ranges `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24` and addresses in them, `2001:db8::/32` (RFC 3849) and addresses in it, the RFC 2606 domains (also bare `localhost` and the trailing-dot form such as `x.test.`), and display strings such as `CHANGE_ME`, `changeme`, `TODO` and `<...>`. Development and lab renders keep them. The only profiles are `dev` and `production`; any other `--profile` (such as `prod` or `Production`) fails closed with an error. The failure names the key and the value | `scripts/check_render.py` `scripts/guard.sh` `docs/service-config.md` | `scripts/guard.sh placeholders` `scripts/guard.sh all` |
 | R25 | `observability.enabled` (default false) is the only telemetry switch; off renders no `OTEL_*`, `SENTRY_*` or `VWS_LOG_LEVEL` env and no collector. A service's telemetry env equals `observability.defaults` with its `services.<name>.observability` override (same keys, schema-enforced), and no service gets a `VWS_*` env outside the allowlist in `scripts/check_render.py`. OTLP headers and the Sentry DSN come only by secretKeyRef. The minimal collector renders only with an empty `otlpEndpoint`, has no API token, Role or binding and mounts only its ConfigMap; its config and `docs/observability/collector-examples/` pass `otelcol-contrib validate` at `OTELCOL_VERSION` | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/_helpers.tpl` `charts/vws/templates/control-plane.yaml` `scripts/versions.env` | `scripts/guard.sh observability` |
+| R26 | Installer packages keep their layers: a package imports only the module packages its entry in `layers` lists, and a new package adds an entry. Only `internal/cluster` imports `os/exec` or Kubernetes client types, and no production code imports std `log` or `testing` | `installer/internal/archtest/arch_test.go` `.github/workflows/ci.yml` | `scripts/guard-agents.sh archtest` (ci installer job) `scripts/guard.sh agents` |
 
-The structure and check cells point at real paths and real commands. A rule that is only a sentence is not a rule.
+The structure and enforcer cells point at real paths and real commands. A rule that is only a sentence is not a rule. `scripts/guard-agents.sh rules` reads the last column as the enforcer and prints how many rows say `Judgment` (a rule with no check).
 
 ## English only
 

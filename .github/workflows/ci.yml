@@ -102,3 +102,7 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 ./...
+
+      # Prints the AGENTS.md rule and Judgment counts, then runs go test -v on the layer rules (R26).
+      - name: Architecture test
+        run: ../scripts/guard-agents.sh archtest ../AGENTS.md

@@ -71,15 +71,16 @@ cmd_agents() {
   fi
 }
 
-# The rule table under HEADING has two columns, rule | enforcer. An enforcer cell is never empty;
-# a rule without a test, lint or CI step says so with a cell that starts with "Judgment".
+# The rule table under HEADING has two or more columns, and the last one is the enforcer. Every row has
+# the header's column count. An enforcer cell is never empty; a rule without a test, lint or CI step
+# says so with a cell that starts with "Judgment".
 # HEADING: the argument, else GUARD_RULES_HEADING, else "## Rules" or RULES_HEADING_LEGACY, whichever FILE has.
 # The legacy heading is the Korean "rules table" heading, written as UTF-8 octal escapes so this file stays
 # English only; it is still accepted until every repo's AGENTS.md is English.
 RULES_HEADING_LEGACY=$'## \352\267\234\354\271\231\355\221\234'
 RULES_HEADER_LEGACY=$'| \352\267\234\354\271\231 | \352\260\225\354\240\234 |'
 cmd_rules() {
-  local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows
+  local file=${1:-AGENTS.md} heading=${2:-${GUARD_RULES_HEADING:-}} h rows cols
   [[ -f $file ]] || die "rules: ${file} does not exist"
   if [[ -z $heading ]]; then
     for h in "## Rules" "$RULES_HEADING_LEGACY"; do
@@ -93,13 +94,14 @@ cmd_rules() {
     on && /^## / { exit }
     on && /^\|/ { print }' "$file")
   [[ -n $rows ]] || die "rules: '${heading}' has no table"
-  awk -F'|' 'NR == 1 && NF != 4 { exit 1 } NR == 2 && $2 !~ /^[[:space:]]*:?-+:?[[:space:]]*$/ { exit 1 }' <<<"$rows" ||
-    die "rules: '${heading}' needs a two-column '| Rule | Enforcer |' table"
+  awk -F'|' 'NR == 1 && NF < 4 { exit 1 } NR == 2 && $2 !~ /^[[:space:]]*:?-+:?[[:space:]]*$/ { exit 1 }' <<<"$rows" ||
+    die "rules: '${heading}' needs a '| Rule | ... | Enforcer |' table with the enforcer last"
+  cols=$(awk -F'|' 'NR == 1 { print NF; exit }' <<<"$rows")
   rows=$(tail -n +3 <<<"$rows")
   [[ -n $rows ]] || die "rules: '${heading}' has no rule rows"
-  awk -F'|' 'NF != 4 || $3 ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
+  awk -F'|' -v n="$cols" 'NF != n || $(NF - 1) ~ /^[[:space:]]*$/ { print "rules: row without an enforcer: " $0; bad = 1 } END { exit bad }' <<<"$rows" >&2 ||
     die "rules: every row needs an enforcer (test, lint, CI step) or 'Judgment'"
-  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$3 ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
+  echo "rules: $(wc -l <<<"$rows") rows, $(awk -F'|' '$(NF - 1) ~ /^[[:space:]]*Judgment/' <<<"$rows" | wc -l) Judgment"
 }
 
 # verify-gate: the approval is bound to one head commit. A push changes the head, so the old section no
@@ -753,6 +755,11 @@ cmd_selftest() {
   expect_fail "a row with three columns" cmd_rules "$tmp/threecol.md"
   sed 's/| Rule | Enforcer |/| Rule | Enforcer | Note |/' "$rules" >"$tmp/header.md"
   expect_fail "a three-column header" cmd_rules "$tmp/header.md"
+  printf '# t\n## Rules\n\n| ID | Rule | Check | Enforcer |\n| --- | --- | --- | --- |\n| R1 | a | - | `TestA` |\n| R2 | b | `x` | Judgment. why |\n| R3 | c | Judgment | `TestC` |\n' >"$tmp/wide.md"
+  [[ $(cmd_rules "$tmp/wide.md") == "rules: 3 rows, 1 Judgment" ]] || die "selftest: a four-column table is not read by its last column"
+  echo "ok: a four-column table is read by its last column"
+  sed 's/^| R1 | a | - | `TestA` |$/| R1 | a | `TestA` |  |/' "$tmp/wide.md" >"$tmp/wide-empty.md"
+  expect_fail "a four-column row with an empty last column" cmd_rules "$tmp/wide-empty.md"
   sed 's/^## Rules$/## other/' "$rules" >"$tmp/norules.md"
   expect_fail "no rule table heading" cmd_rules "$tmp/norules.md"
   printf '# t\n## Rules\n\n| Rule | Enforcer |\n| --- | --- |\n' >"$tmp/emptyrules.md"
