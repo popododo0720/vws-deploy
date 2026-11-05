@@ -18,6 +18,38 @@ and `batch`, then `debug` (the collector log) and, when
 retry (5s to 30s, giving up after 300s) and a 1000-batch queue. A non-empty `otlpEndpoint` renders
 no collector and sends every service there.
 
+From a VWSCluster CR, `spec.observability.enabled` and `spec.observability.otlpEndpoint` become
+these two values (`vws render`, #217). The CR takes no other observability key; set the rest in
+values.
+
+## Which services call obs.Setup
+
+`obs.Setup` reads this env, serves `/healthz` and `/readyz` on `VWS_HEALTH_ADDR` and marks the
+pod NotReady on SIGTERM. Every Go control service calls it on its main branch as read on
+2026-11-05. The chart's pinned image of a service can be older than that commit.
+
+| Service | Call | Commit |
+| --- | --- | --- |
+| compute | `cmd/vws-compute/main.go` (`setupObs = obs.Setup`) | vws-compute `4fbbb72` |
+| network | `cmd/vws-network/main.go:89` | vws-network `26656bf` |
+| storage | `cmd/vws-storage/main.go:98` | vws-storage `57b3459` |
+| iam | `cmd/vws-iam/main.go:292` | vws-iam `c00c925` |
+| console-api | `cmd/vws-console-api/main.go:48` | vws-console-api `dca6269` |
+
+Only compute has a `healthPort` in values, so only compute gets `VWS_HEALTH_ADDR` and HTTP
+probes (R15). A service gets them when its image is checked to serve the listener; until then
+its probes stay tcpSocket or grpc (`docs/service-config.md`, "Ports and probes").
+
+## Metrics are pushed
+
+The services push metrics over OTLP. That is the design, not a gap: vws-lib names every
+instrument with the prefix `vws.` (`obs.MetricPrefix`), and `NewCounter` and `NewHistogram`
+refuse any other name. A backend that turns OTLP into Prometheus names writes `vws_`, since
+Prometheus names cannot hold a dot. The minimal collector does no such translation (its
+exporters are `otlp` and `debug`), so names keep `vws.` up to the next hop. A pull `/metrics` exists only as
+the opt-in `OTEL_METRICS_EXPORTER=prometheus` of vws-lib#55 on the health listener, gated by
+`scrapeMetrics` (#620); the chart does not set that env.
+
 ## Service env
 
 `vws.otelEnv` in `charts/vws/templates/_helpers.tpl` is the only place these names are written.
