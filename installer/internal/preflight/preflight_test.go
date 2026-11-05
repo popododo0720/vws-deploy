@@ -183,7 +183,8 @@ func TestEngineBlocksTheStep(t *testing.T) {
 func TestLinksFileTurnsOnNICChecks(t *testing.T) {
 	dir := t.TempDir()
 	kubectl := filepath.Join(dir, "kubectl")
-	nodes := `{"items":[{"metadata":{"name":"node1"},"status":{"addresses":[{"type":"InternalIP","address":"10.0.0.11"}]}}]}`
+	nodes := `{"items":[{"metadata":{"name":"node1"},` +
+		`"status":{"addresses":[{"type":"InternalIP","address":"10.0.0.11"}]}}]}`
 	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\necho '"+nodes+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,8 @@ func TestLinksFileTurnsOnNICChecks(t *testing.T) {
 			tunnel = &got[i]
 		}
 	}
-	if tunnel == nil || tunnel.Status != "fail" || !tunnel.Blocks() || !strings.Contains(tunnel.Message, "want at least 9000") {
+	if tunnel == nil || tunnel.Status != "fail" || !tunnel.Blocks() ||
+		!strings.Contains(tunnel.Message, "want at least 9000") {
 		t.Fatalf("tunnel MTU check %+v in %+v", tunnel, got)
 	}
 }
