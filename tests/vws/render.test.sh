@@ -756,7 +756,7 @@ expect_text "iam: the CR replicas reach the values" "$(cat "${WORK}/iam-r2.value
 
 # iam CRD and RBAC sync (#243): the chart copy of vws-iam deploy/crds/iam.yaml and the iam Role
 # must name the same kinds, so every store resource the binary writes exists and is allowed.
-# vws-iam main deploy/crds/iam.yaml has 13 CRDs, ending with iamgroupmembershiplocks and iamfidodevices.
+# vws-iam main deploy/crds/iam.yaml has 17 CRDs, including iamfidodevices and iaminstanceprofiles (#656).
 helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true >"${WORK}/iam-rbac.out"
 got=$(python3 - "${VWS_TEST_ROOT}/charts/vws/crds/iam.yaml" "${WORK}/iam-rbac.out" <<'PY'
 import sys, yaml
@@ -769,13 +769,15 @@ verbs = sorted({v for r in rules for v in r["verbs"]})
 print("iam-crd-count", len(crds))
 print("iam-crd-has-locks", "iamgroupmembershiplocks" in crds)
 print("iam-crd-has-fido", "iamfidodevices" in crds)
+print("iam-crd-has-instance-profiles", "iaminstanceprofiles" in crds)
 print("iam-rbac-matches-crds", allowed == crds, sorted(set(crds) ^ set(allowed)))
 print("iam-rbac-verbs", verbs)
 PY
 )
-expect_text "iam sync: the chart has the 13 vws-iam CRDs" "$got" "iam-crd-count 13"
+expect_text "iam sync: the chart has the 17 vws-iam CRDs" "$got" "iam-crd-count 17"
 expect_text "iam sync: iamgroupmembershiplocks CRD present" "$got" "iam-crd-has-locks True"
 expect_text "iam sync: iamfidodevices CRD present" "$got" "iam-crd-has-fido True"
+expect_text "iam sync: iaminstanceprofiles CRD present" "$got" "iam-crd-has-instance-profiles True"
 expect_text "iam sync: the iam Role covers exactly the iam CRDs" "$got" "iam-rbac-matches-crds True []"
 expect_text "iam sync: the iam Role verbs stay get/list/create/update/delete" "$got" "iam-rbac-verbs ['create', 'delete', 'get', 'list', 'update']"
 
