@@ -4,6 +4,8 @@
 # Idempotent: an already deleted binding is unchanged and the check runs again. The command fails
 # (exit 1) when the installer ServiceAccount can still act as cluster-admin, and exits 3 when the
 # answer cannot be read. Outside the installer pod it checks with --as (needs impersonate rights).
+# Before the revoke it warns when Secret vws-initial-admin was never handed out (#208): afterwards the
+# installer cannot read Secrets, so only a cluster-admin kubeconfig can. It never blocks the revoke.
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq python3 kubectl)
 # shellcheck source=scripts/vws.d/lib/installer.sh
@@ -15,10 +17,29 @@ VWS_REVOKED_RIGHTS=("* *" "create clusterrolebindings" "create clusterroles" "de
 # Rights the installer keeps (bootstrap Role vws-operator). Every one must answer yes.
 VWS_KEPT_RIGHTS=("get vwsclusters" "patch vwsclusters/status")
 
+# vws_installer_credential_check: reads only the consumed label of the initial admin Secret, never its data.
+vws_installer_credential_check() {
+  local label err
+  err=$(mktemp)
+  if label=$(vws_kubectl get secret vws-initial-admin -o 'jsonpath={.metadata.labels.vws-initial-admin-consumed}' 2>"$err"); then
+    if [[ $label == true ]]; then
+      vws_emit OK credential "the initial admin password was handed out"
+    else
+      vws_emit WARN credential "the initial admin password was never handed out; run vws init before finish, or read Secret vws-initial-admin later with a cluster-admin kubeconfig"
+    fi
+  elif grep -q NotFound "$err"; then
+    vws_emit OK credential "no Secret vws-initial-admin: console sign-in is off, nothing to hand out"
+  else
+    vws_emit WARN credential "cannot read whether the initial admin password was handed out"
+  fi
+  rm -f "$err"
+}
+
 vws_cmd_main() {
   local right verb resource result answer
   [[ $# -eq 1 && $1 == finish ]] || vws_usage "usage: vws installer finish"
   vws_installer_namespace
+  vws_installer_credential_check
   result=$(vws_installer_revoke) || vws_die_env "cannot delete clusterrolebinding ${VWS_INSTALLER_BINDING}"
   vws_emit OK revoke "clusterrolebinding ${VWS_INSTALLER_BINDING}: ${result}"
   if [[ -n $VWS_DRY_RUN ]]; then

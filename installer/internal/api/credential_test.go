@@ -13,34 +13,22 @@ import (
 	"github.com/popododo0720/vws-deploy/installer/internal/cluster"
 )
 
-// fakeCredStore stands in for Secret vws-initial-admin.
+// fakeCredStore stands in for Secret vws-initial-admin as vws apply made it (#208).
 type fakeCredStore struct {
-	mu                sync.Mutex
-	user, password    string
-	consumed          bool
-	storeErr, markErr error
-	stores            int
-}
-
-func (f *fakeCredStore) Store(_ context.Context, user, pw string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.stores++
-	if f.storeErr != nil {
-		return f.storeErr
-	}
-	if f.password != "" {
-		return cluster.ErrCredentialExists
-	}
-	f.user, f.password = user, pw
-	return nil
+	mu               sync.Mutex
+	user, password   string
+	consumed         bool
+	loadErr, markErr error
 }
 
 func (f *fakeCredStore) Load(context.Context) (string, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return "", "", false, f.loadErr
+	}
 	if f.password == "" {
-		return "", "", false, errors.New("no secret")
+		return "", "", false, cluster.ErrNoCredential
 	}
 	return f.user, f.password, f.consumed, nil
 }
@@ -57,7 +45,7 @@ func (f *fakeCredStore) MarkConsumed(context.Context) error {
 
 func credHarness(t *testing.T) (*harness, *fakeCredStore) {
 	h := newHarness(t, nil)
-	fs := &fakeCredStore{}
+	fs := &fakeCredStore{user: "root", password: "Fake4Initial7Admin2Pass9"}
 	h.srv.credentials = fs
 	return h, fs
 }
@@ -103,12 +91,12 @@ func TestCredentialOnce(t *testing.T) {
 		t.Fatalf("result %v", res)
 	}
 	status, body, hdr := h.credential()
-	if status != 200 || body["adminUser"] != "admin" || hdr.Get("Cache-Control") != "no-store" {
+	if status != 200 || body["adminUser"] != "root" || hdr.Get("Cache-Control") != "no-store" {
 		t.Fatalf("credential %d %v", status, body)
 	}
 	pw := as[string](t, body["password"])
-	if pw != fs.password || len(pw) != PasswordLength || strings.Trim(pw, passwordAlphabet) != "" {
-		t.Fatalf("password shape %d", len(pw))
+	if pw != fs.password {
+		t.Fatal("the password is not the Secret's")
 	}
 	status, body, _ = h.credential()
 	h.wantError(status, body, 410, ReasonCredentialConsumed)
@@ -137,18 +125,33 @@ func TestCredentialOnce(t *testing.T) {
 }
 
 func TestCredentialFailures(t *testing.T) {
+	// A Secret that cannot be read (not NotFound) fails the install, so a retry reads it again.
 	h, fs := credHarness(t)
-	fs.storeErr = errors.New("kubectl create failed")
+	fs.loadErr = errors.New("kubectl get failed")
 	h.installed2("failed")
 	_, res := h.do("GET", "/api/v1/result", nil)
 	if res["credentialAvailable"] != false || !strings.Contains(as[string](t, res["error"]), cluster.InitialAdminSecret) {
 		t.Fatalf("result %v", res)
 	}
 
+	// No Secret: console sign-in is off (-iam static), so the install succeeds with nothing to hand out.
+	h, fs = credHarness(t)
+	fs.password = ""
+	h.installed()
+	_, res = h.do("GET", "/api/v1/result", nil)
+	if res["credentialAvailable"] != false || res["adminUser"] != "" {
+		t.Fatalf("sign-in off result %v", res)
+	}
+	status, body, _ := h.credential()
+	h.wantError(status, body, 404, ReasonNotFound)
+	if h.state() != "succeeded" {
+		t.Fatal("a missing Secret changed the state")
+	}
+
 	h, fs = credHarness(t)
 	h.installed()
 	fs.markErr = errors.New("kubectl label failed")
-	status, body, _ := h.credential()
+	status, body, _ = h.credential()
 	if status != 500 || body["password"] != nil {
 		t.Fatalf("a failed mark returned %d %v", status, body)
 	}
@@ -159,11 +162,8 @@ func TestCredentialFailures(t *testing.T) {
 
 	// An installer that restarts after the hand-out finds the label and answers 410.
 	h, fs = credHarness(t)
-	fs.user, fs.password, fs.consumed = "admin", "Fake-Existing-Password-01", true
+	fs.consumed = true
 	h.installed()
-	if fs.password != "Fake-Existing-Password-01" {
-		t.Fatal("an existing Secret was replaced")
-	}
 	status, body, _ = h.credential()
 	h.wantError(status, body, 410, ReasonCredentialConsumed)
 }
@@ -176,15 +176,4 @@ func (h *harness) installed2(want string) {
 	h.cluster.release <- nil
 	h.do("POST", "/api/v1/install", map[string]any{"confirm": true, "specHash": hash})
 	h.waitState(want)
-}
-
-func TestNewPassword(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
-		pw, err := newPassword()
-		if err != nil || len(pw) != PasswordLength || strings.Trim(pw, passwordAlphabet) != "" || seen[pw] {
-			t.Fatalf("%v %d", err, len(pw))
-		}
-		seen[pw] = true
-	}
 }

@@ -20,6 +20,27 @@ expect_text "a second finish is unchanged" "$OUT" "vws-installer-temp: unchanged
 VWS_INSTALLER_POD=1 run_vws_real installer finish; expect_rc "in the pod finish asks for itself" 0
 if grep -q -- '--as=' "$VWS_FAKE_LOG"; then bad "in the pod no impersonation" "$(calls)"; else ok "in the pod no impersonation"; fi
 
+# The initial admin Secret (#208): finish reads only its label and warns, never blocks the revoke.
+installer_scenario cred-none
+run_vws_real installer finish;                   expect_rc "finish without the admin Secret exits 0" 0
+expect_text "no admin Secret: sign-in is off" "$OUT" "OK    credential  "; expect_text "no admin Secret: sign-in is off: reason" "$OUT" "console sign-in is off"
+installer_scenario cred-unread
+echo '' >"${VWS_FAKE_DIR}/kubectl/get_secret.json"
+rm "${VWS_FAKE_DIR}/kubectl/get_secret.fail"
+run_vws_real installer finish;                   expect_rc "finish with an unread password still revokes" 0
+expect_text "an unread password warns" "$OUT" "WARN  credential  "; expect_text "an unread password warns: reason" "$OUT" "never handed out"
+expect_text "the revoke still runs after the warning" "$OUT" "vws-installer-temp: deleted"
+expect_text "finish asks only for the label" "$(calls)" "jsonpath={.metadata.labels.vws-initial-admin-consumed}"
+installer_scenario cred-taken
+echo true >"${VWS_FAKE_DIR}/kubectl/get_secret.json"
+rm "${VWS_FAKE_DIR}/kubectl/get_secret.fail"
+run_vws_real installer finish;                   expect_rc "finish after the hand-out exits 0" 0
+expect_text "a handed-out password is OK" "$OUT" "OK    credential  "; expect_text "a handed-out password is OK: reason" "$OUT" "was handed out"
+installer_scenario cred-forbidden
+echo 'Error from server (Forbidden): secrets is forbidden' >"${VWS_FAKE_DIR}/kubectl/get_secret.fail"
+run_vws_real installer finish;                   expect_rc "an unreadable label still revokes" 0
+expect_text "an unreadable label warns" "$OUT" "WARN  credential  "; expect_text "an unreadable label warns: reason" "$OUT" "cannot read"
+
 installer_scenario still-admin
 echo yes >"${VWS_FAKE_DIR}/kubectl/auth_can-i_all_all.json"
 run_vws_real installer finish;                   expect_rc "cluster-admin still there exits 1" 1

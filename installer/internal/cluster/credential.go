@@ -11,65 +11,44 @@ import (
 	"strings"
 )
 
-// InitialAdminSecret is the only place the initial admin password is stored (#146).
+// InitialAdminSecret is the only place the initial admin password is stored (#146). vws apply
+// creates it before the chart when console-api serves sign-in, and console-api reads its password
+// as -root-password-file (#208). The installer only reads it.
 const InitialAdminSecret = "vws-initial-admin"
+
+// RootUser is the console-api account root that signs in with the Secret's password (#208).
+const RootUser = "root"
 
 // consumedLabel marks the Secret once POST /result/credential returned the password.
 const consumedLabel = "vws-initial-admin-consumed"
 
-// ErrCredentialExists means InitialAdminSecret was already there; the stored one stays.
-var ErrCredentialExists = errors.New("the initial admin secret already exists")
+// ErrNoCredential means InitialAdminSecret does not exist: console sign-in is off (-iam static).
+var ErrNoCredential = errors.New("no initial admin secret")
 
-// Credentials stores and reads the initial admin credential.
+// Credentials reads the initial admin credential.
 type Credentials interface {
-	// Store creates the Secret. It returns ErrCredentialExists and changes nothing when one is
-	// already there.
-	Store(ctx context.Context, user, password string) error
-	// Load reads it back and whether it was handed out already.
+	// Load reads it and whether it was handed out already. ErrNoCredential when there is none.
 	Load(ctx context.Context) (user, password string, consumed bool, err error)
 	// MarkConsumed records that the password was handed out.
 	MarkConsumed(ctx context.Context) error
 }
 
-// KubeSecret keeps the credential in Secret InitialAdminSecret with kubectl. The password goes
-// to kubectl on stdin and comes back on stdout, never in an argument, an error or a log.
+// KubeSecret reads the credential in Secret InitialAdminSecret with kubectl. The password comes
+// back on stdout, never in an argument, an error or a log.
 type KubeSecret struct {
 	Kubectl   string
 	Namespace string
 }
 
-func (k KubeSecret) Store(ctx context.Context, user, password string) error {
-	manifest, err := json.Marshal(map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Secret",
-		"type":       "Opaque",
-		"metadata":   map[string]any{"name": InitialAdminSecret, "namespace": k.Namespace},
-		"data": map[string]string{
-			"username": base64.StdEncoding.EncodeToString([]byte(user)),
-			"password": base64.StdEncoding.EncodeToString([]byte(password)),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("secret manifest: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, k.Kubectl, "create", "-f", "-")
-	cmd.Stdin = bytes.NewReader(manifest)
+func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
+	cmd := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "get", "secret", InitialAdminSecret, "-o", "json")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if strings.Contains(stderr.String(), "AlreadyExists") {
-			return ErrCredentialExists
-		}
-		// kubectl's stderr names the object, not the data; it is still left out.
-		return fmt.Errorf("kubectl create secret %s: %w", InitialAdminSecret, err)
-	}
-	return nil
-}
-
-func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
-	out, err := exec.CommandContext(ctx, k.Kubectl, "-n", k.Namespace, "get", "secret", InitialAdminSecret,
-		"-o", "json").Output()
+	out, err := cmd.Output()
 	if err != nil {
+		if strings.Contains(stderr.String(), "NotFound") {
+			return "", "", false, ErrNoCredential
+		}
 		return "", "", false, fmt.Errorf("kubectl get secret %s: %w", InitialAdminSecret, err)
 	}
 	var s struct {
@@ -85,6 +64,11 @@ func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
 	pw, err2 := base64.StdEncoding.DecodeString(s.Data["password"])
 	if err1 != nil || err2 != nil || len(pw) == 0 {
 		return "", "", false, errors.New("secret " + InitialAdminSecret + " has no username and password")
+	}
+	// The #146 installer wrote an empty username, and vws apply keeps an existing Secret; the
+	// password still signs in as RootUser.
+	if len(user) == 0 {
+		user = []byte(RootUser)
 	}
 	return string(user), string(pw), s.Metadata.Labels[consumedLabel] == "true", nil
 }
