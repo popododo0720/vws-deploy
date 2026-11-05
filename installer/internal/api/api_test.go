@@ -56,7 +56,7 @@ func (f *fakeCluster) Install(_ context.Context, cr []byte, log func(string)) (c
 	if err := <-f.release; err != nil {
 		return cluster.Result{}, err
 	}
-	return cluster.Result{ConsoleURL: "https://console.example.invalid", AdminUser: "admin"}, nil
+	return cluster.Result{ConsoleURL: "https://console.example.invalid"}, nil
 }
 
 type clock struct {
@@ -435,7 +435,7 @@ func TestHappyPath(t *testing.T) {
 	h.cluster.release <- nil
 	h.waitState("succeeded")
 	_, body = h.do("GET", "/api/v1/result", nil)
-	if body["consoleURL"] != "https://console.example.invalid" || body["adminUser"] != "admin" ||
+	if body["consoleURL"] != "https://console.example.invalid" || body["adminUser"] != "" ||
 		body["credentialAvailable"] != false {
 		t.Fatalf("result %v", body)
 	}

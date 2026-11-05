@@ -32,7 +32,7 @@ type fakeCluster struct {
 func (f *fakeCluster) Nodes(context.Context) ([]cluster.Node, error) { return f.nodes, nil }
 func (f *fakeCluster) Install(_ context.Context, cr []byte, _ func(string)) (cluster.Result, error) {
 	f.crs = append(f.crs, cr)
-	return cluster.Result{ConsoleURL: "https://console.example.invalid", AdminUser: "admin"}, f.err
+	return cluster.Result{ConsoleURL: "https://console.example.invalid"}, f.err
 }
 
 func apiVersion(t *testing.T) string {
@@ -393,7 +393,8 @@ func TestAttachmentReportsBadNumber(t *testing.T) {
 	}
 }
 
-// credStore stands in for Secret vws-initial-admin. loadFails makes that many Loads fail first.
+// credStore stands in for Secret vws-initial-admin as vws apply made it. loadFails makes that many
+// Loads after the install's own Load fail.
 type credStore struct {
 	mu             sync.Mutex
 	user, password string
@@ -402,22 +403,17 @@ type credStore struct {
 	loads          int
 }
 
-func (f *credStore) Store(_ context.Context, user, pw string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.password != "" {
-		return cluster.ErrCredentialExists
-	}
-	f.user, f.password = user, pw
-	return nil
-}
+func newCredStore() *credStore { return &credStore{user: "root", password: "Fake4Initial7Admin2Pass9"} }
 
 func (f *credStore) Load(context.Context) (string, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.loads++
-	if f.loads <= f.loadFails {
+	if f.loads > 1 && f.loads-1 <= f.loadFails {
 		return "", "", false, errors.New("apiserver unavailable")
+	}
+	if f.password == "" {
+		return "", "", false, cluster.ErrNoCredential
 	}
 	return f.user, f.password, f.consumed, nil
 }
@@ -438,18 +434,18 @@ func (f *credStore) secret() (string, bool) {
 // After the install the TUI fetches the password once from the real API, shows it on the
 // terminal with a shown-once notice, and the server then refuses a second hand-out with 410.
 func TestWizardHandsOutCredentialOnce(t *testing.T) {
-	cs := &credStore{}
+	cs := newCredStore()
 	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
 	out, err := run(t, c, happy)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	pw, consumed := cs.secret()
-	if len(pw) != api.PasswordLength || !consumed {
+	if pw == "" || !consumed {
 		t.Fatalf("secret password %d chars, consumed %v", len(pw), consumed)
 	}
 	for _, want := range []string{
-		"(shown once)", "user:     admin", "password: " + pw, "Secret vws-initial-admin", "vws installer finish",
+		"(shown once)", "user:     root", "admin user: root", "password: " + pw, "Secret vws-initial-admin", "vws installer finish",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
@@ -468,7 +464,7 @@ func TestWizardHandsOutCredentialOnce(t *testing.T) {
 // A Secret that was already consumed (another client took the hand-out) gives 410; the TUI
 // points to the Secret, shows no password, and the install still counts as done.
 func TestWizardCredentialConsumed(t *testing.T) {
-	cs := &credStore{user: "admin", password: "already-taken-password-0", consumed: true}
+	cs := &credStore{user: "root", password: "already-taken-password-0", consumed: true}
 	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
 	out, err := run(t, c, happy)
 	if err != nil {
@@ -482,7 +478,8 @@ func TestWizardCredentialConsumed(t *testing.T) {
 
 // A 500 from the hand-out (the Secret could not be read) is retried; the password is shown once.
 func TestWizardCredentialRetries500(t *testing.T) {
-	cs := &credStore{loadFails: 2}
+	cs := newCredStore()
+	cs.loadFails = 2
 	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
 	out, err := run(t, c, happy)
 	if err != nil {
@@ -497,21 +494,22 @@ func TestWizardCredentialRetries500(t *testing.T) {
 
 // A 500 that does not clear stops after a bounded number of attempts and names the Secret.
 func TestWizardCredentialGivesUp(t *testing.T) {
-	cs := &credStore{loadFails: 100}
+	cs := newCredStore()
+	cs.loadFails = 100
 	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, cs)
 	out, err := run(t, c, happy)
 	if err == nil || !strings.Contains(err.Error(), "4 attempts failed") ||
 		!strings.Contains(err.Error(), "vws-initial-admin") {
 		t.Fatalf("err %v\n%s", err, out)
 	}
-	if cs.loads != 4 {
+	if cs.loads != 1+4 {
 		t.Fatalf("loads %d", cs.loads)
 	}
 }
 
 // A 409 (no succeeded install) is an error, not a retry.
 func TestCredentialConflictIsError(t *testing.T) {
-	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, &credStore{})
+	c, _ := serveCreds(t, &fakeCluster{nodes: nodes}, nil, newCredStore())
 	var out bytes.Buffer
 	tu := New(c, strings.NewReader(""), &out)
 	tu.Poll = time.Millisecond

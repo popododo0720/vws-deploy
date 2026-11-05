@@ -37,7 +37,7 @@ func captureLogs(t *testing.T) *syncBuf {
 	return buf
 }
 
-// TestCredentialNotInEventsOrLogs: the generated password reaches neither the install event
+// TestCredentialNotInEventsOrLogs: the Secret's password reaches neither the install event
 // stream (GET /api/v1/install/events) nor the log, through a failed and a good hand-out.
 func TestCredentialNotInEventsOrLogs(t *testing.T) {
 	logs := captureLogs(t)
@@ -45,9 +45,6 @@ func TestCredentialNotInEventsOrLogs(t *testing.T) {
 	h.cluster.lines = []string{"helm upgrade vws", "waiting for the console"}
 	h.installed()
 	pw := fs.password
-	if len(pw) != PasswordLength {
-		t.Fatalf("no password generated: %d", len(pw))
-	}
 	// A failed mark logs an internal error; that line must not carry the value either.
 	fs.markErr = errors.New("kubectl label failed")
 	if status, _, _ := h.credential(); status != 500 {

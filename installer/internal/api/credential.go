@@ -1,49 +1,11 @@
 package api
 
 import (
-	"crypto/rand"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/popododo0720/vws-deploy/installer/internal/cluster"
 )
-
-// PasswordLength is the initial admin password length (#146).
-const PasswordLength = 24
-
-const passwordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-// newPassword draws PasswordLength characters from crypto/rand without modulo bias.
-func newPassword() (string, error) {
-	limit := 256 - 256%len(passwordAlphabet)
-	out := make([]byte, 0, PasswordLength)
-	buf := make([]byte, PasswordLength)
-	for len(out) < PasswordLength {
-		if _, err := rand.Read(buf); err != nil {
-			return "", fmt.Errorf("password: %w", err)
-		}
-		for _, c := range buf {
-			if int(c) < limit && len(out) < PasswordLength {
-				out = append(out, passwordAlphabet[int(c)%len(passwordAlphabet)])
-			}
-		}
-	}
-	return string(out), nil
-}
-
-// storeCredential creates the initial admin password in the Secret only. The server keeps no
-// copy: POST /result/credential reads it back. An existing Secret is kept as it is.
-func (srv *Server) storeCredential(user string) error {
-	pw, err := newPassword()
-	if err != nil {
-		return err
-	}
-	if err := srv.credentials.Store(srv.installCtx, user, pw); err != nil && !errors.Is(err, cluster.ErrCredentialExists) {
-		return err
-	}
-	return nil
-}
 
 // postCredential hands the initial admin password out once. It marks the Secret before it
 // answers, so a failed mark returns no password; afterwards 410 credential_consumed, and the
@@ -65,6 +27,9 @@ func (srv *Server) postCredential(w http.ResponseWriter, r *http.Request) error 
 		return fail(ReasonStepOutOfOrder, "no install has succeeded")
 	}
 	user, pw, consumed, err := srv.credentials.Load(r.Context())
+	if errors.Is(err, cluster.ErrNoCredential) {
+		return fail(ReasonNotFound, "console sign-in is off (-iam static), so there is no initial admin password")
+	}
 	if err != nil {
 		return internal(err)
 	}

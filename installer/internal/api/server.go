@@ -441,13 +441,19 @@ func (srv *Server) install(cr []byte, done chan struct{}) {
 	defer close(done)
 	srv.events.add("state", string(StateInstalling))
 	res, err := srv.cluster.Install(srv.installCtx, cr, func(line string) { srv.events.add("log", line) })
+	view := resultView{ConsoleURL: res.ConsoleURL}
 	if err == nil && srv.credentials != nil {
-		if cerr := srv.storeCredential(res.AdminUser); cerr != nil {
+		// vws apply made the Secret when sign-in is on (#208); none means there is nothing to hand out.
+		user, _, _, cerr := srv.credentials.Load(srv.installCtx)
+		switch {
+		case cerr == nil:
+			view.AdminUser, view.CredentialAvailable = user, true
+		case !errors.Is(cerr, cluster.ErrNoCredential):
 			srv.mu.Lock()
 			defer srv.mu.Unlock()
 			srv.s.state = StateFailed
 			srv.s.lastErr = "the install ran but the initial admin Secret " + cluster.InitialAdminSecret +
-				" could not be created; install again"
+				" could not be read; install again"
 			srv.events.add("state", string(StateFailed))
 			return
 		}
@@ -461,7 +467,7 @@ func (srv *Server) install(cr []byte, done chan struct{}) {
 	}
 	srv.s.state = StateSucceeded
 	srv.events.add("state", string(StateSucceeded))
-	srv.s.result = resultView{ConsoleURL: res.ConsoleURL, AdminUser: res.AdminUser}
+	srv.s.result = view
 }
 
 // Wait blocks until a started install ends. Tests and shutdown use it.
@@ -487,6 +493,6 @@ func (srv *Server) getResult(w http.ResponseWriter, _ *http.Request) error {
 	defer srv.mu.Unlock()
 	v := srv.s.result
 	v.State, v.Error = srv.s.state, srv.s.lastErr
-	v.CredentialAvailable = srv.credentials != nil && srv.s.state == StateSucceeded
+	v.CredentialAvailable = v.CredentialAvailable && srv.s.state == StateSucceeded
 	return writeJSON(w, http.StatusOK, v)
 }
