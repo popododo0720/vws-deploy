@@ -38,7 +38,7 @@ checks their sha256.
 | `VWS_COMPAT_ALLOWED_HOSTS` | comma list; each endpoint host must be in it |
 | `VWS_COMPAT_ACCESS_KEY_ID`, `VWS_COMPAT_SECRET_ACCESS_KEY` | VWS test credentials |
 | `VWS_COMPAT_REGION` | default `vws-1` |
-| `VWS_COMPAT_IMAGE_ID` | image for instances; default the first image describe-images returns |
+| `VWS_COMPAT_IMAGE_ID` | image for instances; default the first image describe-images returns. Without an image, Terraform still runs the resources that need none |
 | `VWS_COMPAT_INSTANCE_TYPE` | default `t3.micro` |
 
 The run refuses an AWS-owned endpoint host (`AWS_OWNED` in `tests/compat/compat.py`) and any host outside the
@@ -67,8 +67,9 @@ matrix, writes the matrix to the job summary and uploads `results.json` and `mat
 ## Issues for failures
 
 `compat.py issues RESULTS` prints one issue per failing row. `--apply` opens it in `popododo0720/<owner>` with the
-title `compat: <tool> <resource> <action> fails against VWS`, unless an open issue with that exact title exists, so
-a rerun opens nothing twice. The body names the tool version, the run and the error, and says
+title `compat: <tool> <resource> <action> fails against VWS`, unless an open issue with that exact title exists in
+any repo of the org, so a rerun opens nothing twice, also after an owner moved the issue. `gh issue create` is
+tried once: a create whose reply was lost is found by title on the next run. The body names the tool version, the run and the error, and says
 `Part of popododo0720/vws-deploy#133`. Results from a `fake` run are refused.
 
 | Resource | Owner |
