@@ -73,6 +73,7 @@ endpoint, because the chart had no observability values.
 | Other keys in the CR (`defaults`, `otlpHeadersSecret`, collector) | not taken | mirror the whole values block | The CR schema refuses fields named like secrets (R18), and the rest is tuning that values already hold. |
 | `global.probe: http` from the issue | per-service `healthPort` (R15, #212) | one global switch | A global switch turns on HTTP probes for images that do not serve the listener, and their probes fail. `healthPort` is set per service once its image is checked. |
 
+## What the collector does not do
 
 It reads no Kubernetes API (`automountServiceAccountToken: false`, no Role or binding), mounts
 only its ConfigMap, uses no host path or host namespace, and runs as a non-root user with a
