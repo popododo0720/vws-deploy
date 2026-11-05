@@ -393,11 +393,16 @@ spec:
                               type: string
                               pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}(\.\.([0-9]{1,3}\.){3}[0-9]{1,3})?$'
                 observability:
+                  description: Becomes the chart's observability values (docs/observability/README.md, #217).
                   type: object
                   properties:
+                    enabled:
+                      description: true sends every service's telemetry over OTLP. Off or unset renders no telemetry env and no collector.
+                      type: boolean
                     otlpEndpoint:
-                      description: Empty turns telemetry off. Not rendered until the chart has observability values.
+                      description: Only with enabled. Empty runs the chart's minimal collector; set sends every service to this OTLP endpoint and runs no collector.
                       type: string
+                      pattern: '^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$'
                 services:
                   description: Per-service overrides, checked again by charts/vws/values.schema.json.
                   type: object
