@@ -431,8 +431,11 @@ def render(cr):
     rgw = (storage.get("s3") or {}).get("rgw")
     if rgw is not None:
         services.setdefault("storage", {})["s3"] = {"rgw": dict(rgw)}
-    if (spec.get("observability") or {}).get("otlpEndpoint"):
-        raise Invalid("spec.observability.otlpEndpoint: the chart has no observability values yet; leave it empty")
+    obs = spec.get("observability") or {}
+    if obs.get("enabled"):
+        out["observability"] = {"enabled": True, **({"otlpEndpoint": obs["otlpEndpoint"]} if obs.get("otlpEndpoint") else {})}
+    elif obs.get("otlpEndpoint"):
+        raise Invalid("spec.observability.otlpEndpoint: only with spec.observability.enabled: true")
     if spec.get("secrets"):
         raise Invalid("spec.secrets: no chart value takes a Secret name from the CR yet; leave it empty")
 

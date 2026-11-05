@@ -39,11 +39,28 @@ bad_cr "wrong name" 's/name: vws$/name: other/'
 bad_cr "wrong group" 's#apiVersion: .*#apiVersion: example.com/v1alpha1#'
 bad_cr "unknown service" 's/^    console:$/    billing:/'
 bad_cr "replicas below one" 's/replicas: 4/replicas: 0/'
-bad_cr "otlp endpoint the chart cannot take yet" 's/otlpEndpoint: ""/otlpEndpoint: http:\/\/collector:4317/'
+bad_cr "otlp endpoint without enabled" 's/otlpEndpoint: ""/otlpEndpoint: http:\/\/collector:4317/'
+bad_cr "otlp endpoint with a path" 's/otlpEndpoint: ""/enabled: true\n    otlpEndpoint: http:\/\/collector:4317\/v1/'
+bad_cr "otlp endpoint without a scheme" 's/otlpEndpoint: ""/enabled: true\n    otlpEndpoint: collector:4317/'
+bad_cr "observability enabled as a string" 's/otlpEndpoint: ""/enabled: "yes"/'
 bad_cr "existing driver without a class" 's/driver: rook-ceph/driver: existing/'
 bad_cr "no elastic IP pool" '/^    network:$/,/pool:/d'
 bad_cr "an RFC 5737 pool" 's/pool: 198.18.1.0\/24/pool: 192.0.2.0\/24/'
 bad_cr "version with a slash" 's/version: 0.1.0/version: a\/b/'
+
+# spec.observability -> observability values (#217). Off leaves the overlay without the key.
+obs_case() { # NAME SED WANT: render ha.yaml edited by SED; its observability values as JSON equal WANT
+  sed -e "$2" "${EX}/ha.yaml" >"${WORK}/$1.yaml"
+  run_vws_real render "${WORK}/$1.yaml" "${WORK}/$1.out"; expect_rc "observability $1 renders" 0
+  local got
+  got=$(python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(open(sys.argv[1])).get("observability"), sort_keys=True))' "${WORK}/$1.out")
+  if [[ $got == "$3" ]]; then ok "observability $1 gives $3"; else bad "observability $1" "want $3, got $got"; fi
+}
+obs_case off 's/otlpEndpoint: ""/enabled: false/' 'null'
+obs_case collector 's/otlpEndpoint: ""/enabled: true\n    otlpEndpoint: ""/' '{"enabled": true}'
+obs_case external 's/otlpEndpoint: ""/enabled: true\n    otlpEndpoint: https:\/\/otlp.example.internal:4317/' '{"enabled": true, "otlpEndpoint": "https://otlp.example.internal:4317"}'
+if python3 -c 'import sys,yaml; sys.exit("observability" in yaml.safe_load(open(sys.argv[1])))' "${WORK}/ha.yaml"; then
+  ok "the ha example (empty endpoint, no enabled) renders no observability key"; else bad "ha observability" "$(cat "${WORK}/ha.yaml")"; fi
 
 # spec.storage.s3.rgw goes to services.storage.s3.rgw so vws apply keeps RGW on (#108).
 sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    s3:\n      rgw:\n        enabled: true\n        endpoint: http:\/\/10.77.0.101:8080\n        bucketPrefix: vwslab\n        existingSecret: ceph-rgw-s3/' "${EX}/small.yaml" >"${WORK}/rgw.yaml"
