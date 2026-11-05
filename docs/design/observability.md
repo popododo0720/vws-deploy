@@ -59,6 +59,20 @@ services:
 | Where the checks run | `scripts/check_render.py` (env equals values, VWS_* allowlist, secrets by secretKeyRef, collector without API rights) and `scripts/guard.sh observability` (renders, schema and render negatives, `otelcol-contrib validate`) under the new rule R25 | extending R15 or R16 | #50 forbids reusing R15 and R16. R25 is the next free number. |
 | Validator | `otelcol-contrib` `OTELCOL_VERSION` from `scripts/versions.env`, sha256 checked by `scripts/install-tools.sh` | running the collector image in CI | The box has no container runtime. The binary is about 110 MB per CI run. |
 
+## From the VWSCluster CR (vws-deploy#217)
+
+`vws render` maps `spec.observability.enabled` to `observability.enabled` and a non-empty
+`spec.observability.otlpEndpoint` to `observability.otlpEndpoint`. Before #217 render refused any
+endpoint, because the chart had no observability values.
+
+| Decision | Chosen | Rejected | Why |
+| --- | --- | --- | --- |
+| How the CR turns telemetry on | an explicit `enabled` boolean | a non-empty `otlpEndpoint` meaning on | The chart's empty endpoint already means "run the collector". With the endpoint as the switch, the CR could never ask for the collector. |
+| Endpoint without `enabled` | exit code 2 | ignore it, or turn telemetry on | Both silent readings would surprise someone. The CR written before #217 had only `otlpEndpoint: ""`, which still renders. |
+| Off in the overlay | no `observability` key | `observability: {enabled: false}` | The overlay of every existing CR stays the same bytes, so `status.appliedValuesHash` does not change and `vws apply` sees no drift. |
+| Other keys in the CR (`defaults`, `otlpHeadersSecret`, collector) | not taken | mirror the whole values block | The CR schema refuses fields named like secrets (R18), and the rest is tuning that values already hold. |
+| `global.probe: http` from the issue | per-service `healthPort` (R15, #212) | one global switch | A global switch turns on HTTP probes for images that do not serve the listener, and their probes fail. `healthPort` is set per service once its image is checked. |
+
 ## What the collector does not do
 
 It reads no Kubernetes API (`automountServiceAccountToken: false`, no Role or binding), mounts
