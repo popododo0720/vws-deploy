@@ -22,7 +22,7 @@ var="FAKE_${cmd//-/_}"
 case ${!var:-pass} in
   hang) sleep 30 ;;
   fail)
-    echo "FAIL  ${cmd}  broken with secret ${VWS_VERIFY_SECRET_ACCESS_KEY:-} token=${API_TOKEN:-}"
+    echo "FAIL  ${cmd}  broken with secret ${VWS_VERIFY_SECRET_ACCESS_KEY:-} token=${API_TOKEN:-} gh=${GH_TOKEN:-}"
     printf '%s\n' "${PRIVATE_KEY:-}"
     if [[ $cmd == nightly ]]; then
       echo "scenario output with ${VWS_VERIFY_SECRET_ACCESS_KEY:-}" >"$2/ec2-run.log"
@@ -50,7 +50,7 @@ chmod +x "${WORK}/vws" "${WORK}/bin/gh" "${WORK}/bin/openstack"
 export PATH="${WORK}/bin:${PATH}" VWS_NIGHTLY_E2E_VWS="${WORK}/vws" VWS_NIGHTLY_E2E_BACKOFF=0
 export FAKE_VWS_LOG="${WORK}/vws.log" FAKE_GH_LOG="${WORK}/gh.log" FAKE_GH_BODY="${WORK}/body.md" FAKE_OS_LOG="${WORK}/os.log"
 export OS_CLOUD=other-project OS_AUTH_URL=https://keystone.invalid OS_PASSWORD=hunter22
-export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value API_TOKEN=abc
+export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value API_TOKEN=abc GH_TOKEN=abc-longer-token
 export PRIVATE_KEY=$'-----BEGIN KEY-----\npemline1secret\npemline2secret\n-----END KEY-----'
 url=https://logs.invalid/run
 e2e() { : >"$FAKE_VWS_LOG"; : >"$FAKE_GH_LOG"; : >"$FAKE_OS_LOG"; rm -f "$FAKE_GH_BODY"; run_vws_real nightly-e2e --cr "$cr" --log-url "$url" "$@"; }
@@ -88,7 +88,7 @@ expect_text "the body follows the incident form" "$body" "## The check that woul
 expect_text "the body has the failing step log" "$body" "### step scenarios (last 60 lines)"
 expect_text "the body has the failed scenario log" "$body" "### scenario ec2-run (last 30 lines)"
 if [[ $body != *"### scenario s3-basic"* ]]; then ok "a passed scenario log is left out"; else bad "passed log" "$body"; fi
-if [[ $body != *s3cr3t-value* && $body != *pemline* && $body != *token=abc* && $body == *"[redacted]"* ]]; then ok "secret values are redacted in the body"; else bad "redaction" "$body"; fi
+if [[ $body != *s3cr3t-value* && $body != *pemline* && $body != *token=abc* && $body != *longer-token* && $body == *"[redacted]"* ]]; then ok "secret values are redacted in the body"; else bad "redaction" "$body"; fi
 if [[ $OUT != *s3cr3t-value* && $OUT != *token=abc* ]] && ! grep -qE 's3cr3t-value|token=abc' "${WORK}/$r/e2e/summary.json"; then ok "secret values stay out of the output and summary.json"
 else bad "secret leaked" "$OUT"; fi
 if [[ $(summary "$r" '.result + " " + .incident') == "fail https://github.com/popododo0720/vws-deploy/issues/9001" ]]; then

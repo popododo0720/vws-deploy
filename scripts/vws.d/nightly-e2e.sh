@@ -62,6 +62,8 @@ vws_e2e_redact() { # stdin to stdout, the values of secret-looking exported vari
       ((${#part} < 3)) || vals+=("$part")
     done <<<"$val"
   done < <(compgen -e | grep -E 'SECRET|TOKEN|PASSWORD|PASSWD|ACCESS_KEY|CREDENTIAL|PRIVATE' || true)
+  # Longest first, so a short value inside a longer one cannot split it before the longer one matches.
+  ((${#vals[@]} == 0)) || mapfile -t vals < <(printf '%s\n' "${vals[@]}" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
   while IFS= read -r line || [[ -n $line ]]; do
     for val in "${vals[@]}"; do line=${line//"$val"/[redacted]}; done
     printf '%s\n' "${line:0:300}"
