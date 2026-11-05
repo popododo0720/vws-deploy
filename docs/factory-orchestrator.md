@@ -316,6 +316,10 @@ ping. With `factory-grok-wake` enabled, the next wake on the thread is claimed w
 
 ## The needs-verify queue (vws-deploy#397)
 
+The factory engine (`~/factory`) that now runs the factory picks the open PRs of running issues itself
+and does not read `needs-verify`; nothing there wakes on the label (vws-deploy#673). This section and
+Rule A describe the script in `.github/orchestrate/`.
+
 `.github/workflows/verify-queue.yml` ships unchanged to every vws-* repo with `repo-guard.yml`. It keeps
 the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
 
@@ -328,7 +332,9 @@ the `needs-verify` label on a PR exactly while the PR waits for vws-verify:
   in other repos stay byte for byte the same; a name a repo does not have is ignored. `tests/workflows/test_verify_queue.py` fails when a `pull_request` workflow
   in this repo, or one of those names, is missing; a repo that adds a PR workflow under a new name must
   add it to the list here and copy the file again. The drift check (`.github/drift/drift-check.sh`)
-  reports a repo without `verify-queue.yml` as drift (vws-deploy#460). `check_suite` is not used because GitHub starts no workflow for check suites
+  does not require `verify-queue.yml` (vws-deploy#673): the factory engine picks open PRs itself and
+  does not read `needs-verify`, so no wake depends on the label. A copy that exists must still match
+  the `vendored.tsv` pin. `check_suite` is not used because GitHub starts no workflow for check suites
   created by GitHub Actions.
 - Once `gate / verify-gate` (vws-deploy#413) is on `main`, it joins the skip list next to `verify-gate`
   and `vws-verify`; whichever of #413 and #397 merges second adds it.
@@ -394,8 +400,9 @@ as waiting for verify. Rule V then sets both labels from this table:
   reviews of a `needs-verify` PR) still fails the tick. Any other read error skips only that PR in this
   rule for the tick; Rule D reads a `verify-approved` PR again and fails closed itself.
 
-Retiring `verify-queue.yml` (deleting it from vws-deploy and vws-console-api, closing the copy PRs, and
-dropping it from the drift `WORKFLOWS` list) is a follow-up of vws-deploy#487 once this rule runs live.
+The drift `WORKFLOWS` list no longer names `verify-queue.yml` (vws-deploy#673). Deleting the file from
+the repos that still carry it (vws-deploy, vws-console-api, vws-conformance, vws-proto, vws-lib) is a
+separate cleanup.
 
 ## Rule H: serial-merge hold release (vws-deploy#501)
 
