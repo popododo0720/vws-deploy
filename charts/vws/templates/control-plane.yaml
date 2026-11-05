@@ -82,7 +82,7 @@ renamed service, release namespace or port moves with it. */}}
 {{- if and $httpProbes $healthPort }}
   {{- fail (printf "R15: services.%s sets both httpProbes and healthPort" $name) }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image "observability" ($spec.observability | default dict) }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -374,4 +374,176 @@ spec:
     {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- /* Minimal OTel collector (vws-deploy#50): only when observability is on and otlpEndpoint is
+empty. One Deployment, OTLP in, memory_limiter and batch, otlp (bounded retry and queue) and debug
+out. It reads no Kubernetes API (no token, no Role) and mounts only its config. Cluster and host
+collection are examples in docs/observability/collector-examples, never rendered. */}}
+{{- $obs := .Values.observability | default dict }}
+{{- if and $obs.enabled (not $obs.otlpEndpoint) }}
+{{- $c := $obs.collector }}
+{{- $next := $c.exporters.otlp }}
+{{- $exporters := list }}
+{{- if $next.endpoint }}{{ $exporters = append $exporters "otlp" }}{{ end }}
+{{- if $c.exporters.debug.enabled }}{{ $exporters = append $exporters "debug" }}{{ end }}
+{{- if not $exporters }}
+  {{- fail "observability.collector needs exporters.otlp.endpoint or exporters.debug.enabled" }}
+{{- end }}
+{{- if and $next.authorizationSecret (not $next.endpoint) }}
+  {{- fail "observability.collector.exporters.otlp.authorizationSecret needs exporters.otlp.endpoint" }}
+{{- end }}
+{{- $octx := dict "root" $ "name" "otel-collector" }}
+{{- $config := include "vws.collectorConfig" (dict "c" $c "exporters" $exporters) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.collectorLabels" $octx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.collectorLabels" $octx | nindent 4 }}
+data:
+  config.yaml: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.collectorLabels" $octx | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vws.selector" $octx | nindent 4 }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.collectorLabels" $octx | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vws.selector" $octx | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "vws.collectorLabels" $octx | nindent 8 }}
+      annotations:
+        checksum/config: {{ $config | sha256sum }}
+    spec:
+      restartPolicy: Always
+      serviceAccountName: otel-collector
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: {{ $c.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/etc/otelcol/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          {{- with $next.authorizationSecret }}
+          env:
+            - name: OTLP_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: authorization
+          {{- end }}
+          startupProbe:
+            tcpSocket:
+              port: otlp-grpc
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 13
+          livenessProbe:
+            tcpSocket:
+              port: otlp-grpc
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: otlp-grpc
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: {{ $c.cpu }}
+              memory: {{ $c.memory }}
+            limits:
+              memory: {{ $c.memory }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.collectorLabels" $octx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vws.selector" $octx | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: vws
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+      ports:
+        - port: 4317
+        - port: 4318
 {{- end }}
