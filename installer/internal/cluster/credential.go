@@ -16,6 +16,9 @@ import (
 // as -root-password-file (#208). The installer only reads it.
 const InitialAdminSecret = "vws-initial-admin"
 
+// RootUser is the console-api account root that signs in with the Secret's password (#208).
+const RootUser = "root"
+
 // consumedLabel marks the Secret once POST /result/credential returned the password.
 const consumedLabel = "vws-initial-admin-consumed"
 
@@ -61,6 +64,11 @@ func (k KubeSecret) Load(ctx context.Context) (string, string, bool, error) {
 	pw, err2 := base64.StdEncoding.DecodeString(s.Data["password"])
 	if err1 != nil || err2 != nil || len(pw) == 0 {
 		return "", "", false, errors.New("secret " + InitialAdminSecret + " has no username and password")
+	}
+	// The #146 installer wrote an empty username, and vws apply keeps an existing Secret; the
+	// password still signs in as RootUser.
+	if len(user) == 0 {
+		user = []byte(RootUser)
 	}
 	return string(user), string(pw), s.Metadata.Labels[consumedLabel] == "true", nil
 }

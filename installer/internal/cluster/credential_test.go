@@ -53,6 +53,14 @@ esac
 	if err != nil || user != "root" || got != pw || consumed {
 		t.Fatalf("Load %q %v %v", user, consumed, err)
 	}
+	legacy := `{"metadata":{"name":"vws-initial-admin"},"data":{"username":"","password":"` +
+		base64.StdEncoding.EncodeToString([]byte(pw)) + `"}}`
+	if err := os.WriteFile(secret, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if user, got, _, err := k.Load(ctx); err != nil || user != RootUser || got != pw {
+		t.Fatalf("a #146 Secret with an empty username: %q %v", user, err)
+	}
 	if err := k.MarkConsumed(ctx); err != nil {
 		t.Fatal(err)
 	}
