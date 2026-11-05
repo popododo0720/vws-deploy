@@ -170,7 +170,7 @@ func network(n api.Network, nodes []cluster.Node) []api.Check {
 			out = append(out, api.Check{
 				ID: "nic.links", Severity: "warning", Status: "unknown", Node: node.Name, Field: "spec.network.nodes",
 				Message: "NICs and MTUs are not verified: no links for this node",
-				Hint:    "start vws-installer with -links FILE (talosctl -n <nodes> get links -o json)",
+				Hint:    "talosctl -n <nodes> get links -o json > links.json; kubectl -n vws create configmap vws-installer-links --from-file=links.json",
 			})
 			continue
 		}
