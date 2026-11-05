@@ -5,7 +5,8 @@ Checks per repo, on its default branch:
   protection  main is protected, admins included, no force push, no deletion
   ruleset     an active vws-main branch ruleset, with no bypass actors; the bypass list is readable
               only with an admin token, so without one the cell says "unverified", never ok
-  checks      required status checks (classic plus the ruleset) include the common set plus the repo's own
+  checks      required status checks (classic plus the ruleset) include the common set plus the repo's own,
+              and the repo has the verify-approved label, without which verify-gate can never pass (#249)
   workflows   repo-guard.yml and direct-push-watch.yml exist. verify-queue.yml is not required (vws-deploy#673):
               the factory engine picks open PRs itself and does not read needs-verify
   caller      repo-guard.yml is the short caller of the vws-deploy repo-guard-<job>.yml files (caller_pin.py): a 40-hex
@@ -867,6 +868,8 @@ def main():
         miss = missing_checks(checks, extra)
         if miss:
             issues["checks"] = ["missing " + ",".join(miss)]
+        if not label_exists(a.owner, repo, "verify-approved"):
+            issues["checks"] = issues.get("checks", []) + ["no verify-approved label"]
         files = workflow_files(a.owner, repo)
         wf = [w.rsplit("/", 1)[1] for w in WORKFLOWS if files is not None and w not in files]
         if wf:
