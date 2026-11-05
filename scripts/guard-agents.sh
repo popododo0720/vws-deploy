@@ -37,7 +37,8 @@
 # GUARD_VERIFY_ACTORS (comma list of logins allowed to approve; empty = any author), GUARD_VERIFY_LABELER
 # (login that last added the label), GUARD_VERIFY_EXCLUDE (PR author and head pusher: never approve),
 # GUARD_VERIFY_IDENTITY (the vws-verify login, exempt from EXCLUDE), GUARD_PART_OF_OWNER (default popododo0720,
-# the owner pr-normalize strips), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch.
+# the owner pr-normalize strips), GUARD_ARCHTEST_PKG (default ./internal/archtest/...), GITHUB_REPOSITORY and an authenticated gh for push-watch,
+# GUARD_ALLOW_SHAS (push-watch: full SHAs, space or comma separated, of known commits without a pull request).
 set -euo pipefail
 export LC_ALL=C
 
@@ -620,18 +621,31 @@ pr_count() {
 }
 
 cmd_push_watch() {
-  local before=${1:-} after=${2:-} zero sha
-  local -a commits bad=()
+  local before=${1:-} after=${2:-} zero sha allow=" " allow_raw
+  local -a commits bad=() allowed=()
   [[ -n $before && -n $after ]] || die "push-watch: needs BEFORE and AFTER"
+  [[ $before =~ ^[0-9a-f]{40}$ ]] || die "push-watch: BEFORE '${before}' is not a full 40-character SHA"
+  # GUARD_ALLOW_SHAS: full SHAs of known commits without a pull request (such as the initial commit).
+  allow_raw=${GUARD_ALLOW_SHAS:-}
+  read -r -a allowed <<<"${allow_raw//,/ }"
+  for sha in "${allowed[@]}"; do
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "push-watch: GUARD_ALLOW_SHAS entry '${sha}' is not a full 40-character SHA"
+    allow+="${sha} "
+  done
   zero=$(printf '0%.0s' {1..40})
-  if [[ $before == "$zero" ]] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+  if [[ $before == "$zero" ]]; then
     commits=("$after")
   else
+    # A force-push can leave the old head out of the clone; fetch it by SHA before judging.
+    git cat-file -e "${before}^{commit}" 2>/dev/null || timeout 60 git fetch -q --no-tags origin "$before" 2>/dev/null || true
+    git cat-file -e "${before}^{commit}" 2>/dev/null ||
+      die "push-watch: the previous head ${before} of '${MAIN}' is gone (history rewrite suspected)"
     git merge-base --is-ancestor "$before" "$after" ||
       die "push-watch: history of '${MAIN}' was rewritten (${before} is not an ancestor of ${after})"
     mapfile -t commits < <(git rev-list --first-parent "${before}..${after}")
   fi
   for sha in "${commits[@]}"; do
+    [[ $allow == *" ${sha} "* ]] && { echo "push-watch: ${sha} is in GUARD_ALLOW_SHAS"; continue; }
     [[ $(pr_count "$sha") -gt 0 ]] || bad+=("$sha")
   done
   [[ ${#bad[@]} -eq 0 ]] || die "push-watch: commits on '${MAIN}' without a pull request: ${bad[*]}"
@@ -1094,6 +1108,25 @@ GH
   git -C "$repo" commit -q -m rewrite
   expect_fail "rewritten history" push "$c3" "$(git -C "$repo" rev-parse HEAD)"
   expect_fail "new branch whose head has no pull request" push "$(printf '0%.0s' {1..40})" "$c1"
+  # Issue 37: a previous head missing from the clone is fetched by SHA, and fails when it is gone.
+  expect_fail "previous head gone from the clone and from origin" push "$(printf 'd%.0s' {1..40})" "$c3"
+  expect_fail "a BEFORE that is not a full SHA" push --upload-pack=x "$c3"
+  local origin="$tmp/origin" gone
+  git -C "$repo" init -q --bare "$origin"
+  git -C "$repo" remote add origin "$origin"
+  git init -q -b "$MAIN" "$tmp/other"
+  git -C "$tmp/other" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m gone
+  gone=$(git -C "$tmp/other" rev-parse HEAD)
+  git -C "$tmp/other" push -q "$origin" HEAD:refs/heads/gone
+  git -C "$repo" cat-file -e "${gone}^{commit}" 2>/dev/null && die "selftest: ${gone} must not be in the clone yet"
+  expect_fail "force-pushed previous head fetched from origin" push "$gone" "$c3"
+  git -C "$repo" cat-file -e "${gone}^{commit}" || die "selftest: push-watch did not fetch ${gone} from origin"
+  git -C "$repo" remote remove origin
+  # Issue 37: a known commit without a pull request passes only when GUARD_ALLOW_SHAS names its full SHA.
+  printf '%s\n' "$c2" >"$tmp/pulls"
+  expect_fail "a commit without a pull request, not allowed" push "$c1" "$c3"
+  GUARD_ALLOW_SHAS="$c3 $c1" expect_pass "a commit without a pull request in GUARD_ALLOW_SHAS" push "$c1" "$c3"
+  GUARD_ALLOW_SHAS=${c3:0:12} expect_fail "a short SHA in GUARD_ALLOW_SHAS" push "$c1" "$c3"
   git -C "$repo" checkout -q -b commits "$c3"
   echo y >"$repo/h"
   git -C "$repo" add h
