@@ -10,7 +10,7 @@ Last pass is a vws-test scenario run (KST). `unverified` means no scenario exist
 | EC2 user-data | vws-console-api | vws-console-api#128 | - | unverified | - |
 | EBS volume create / attach / snapshot | vws-storage | - | - | unverified | - |
 | Elastic IP allocate / associate | vws-network | - | - | unverified | - |
-| S3 object put / get (RGW) | vws-storage | vws-deploy#51 | - | unverified | - |
+| S3 object put / get (RGW) | vws-storage | vws-deploy#51 | `scripts/vws verify scenario s3-basic` | never passed | - |
 | IAM users and access keys | vws-iam | vws-iam#3 | - | unverified | - |
 | IAM policy evaluation (Authorize) | vws-iam | vws-iam#4 | - | unverified | - |
 | STS AssumeRole / GetSessionToken | vws-iam | vws-iam#5 | - | unverified | - |
