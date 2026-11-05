@@ -1692,8 +1692,10 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         ]
         if obs_on:
             env_cases += [
-                ("a sampler ratio apart from values", lambda env: entry_of(env, "OTEL_TRACES_SAMPLER_ARG").update(value="0.5")),
-                ("a hardcoded OTLP endpoint", lambda env: entry_of(env, "OTEL_EXPORTER_OTLP_ENDPOINT").update(value="http://x:4317")),
+                ("a sampler ratio apart from values",
+                 lambda env: entry_of(env, "OTEL_TRACES_SAMPLER_ARG").update(value=entry_of(env, "OTEL_TRACES_SAMPLER_ARG")["value"] + "1")),
+                ("a hardcoded OTLP endpoint",
+                 lambda env: entry_of(env, "OTEL_EXPORTER_OTLP_ENDPOINT").update(value=entry_of(env, "OTEL_EXPORTER_OTLP_ENDPOINT")["value"] + "/x")),
                 ("no VWS_LOG_LEVEL", lambda env: env.remove(entry_of(env, "VWS_LOG_LEVEL"))),
             ]
             for key in ("SENTRY_DSN", "OTEL_EXPORTER_OTLP_HEADERS"):

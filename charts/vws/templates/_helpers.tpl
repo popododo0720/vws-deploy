@@ -381,7 +381,7 @@ Call with (dict "root" $ "name" $name "override" $spec.observability).
 - name: OTEL_EXPORTER_OTLP_HEADERS
   valueFrom:
     secretKeyRef:
-      name: {{ . }}
+      name: {{ . | quote }}
       key: headers
 {{- end }}
 - name: OTEL_TRACES_SAMPLER
@@ -398,7 +398,7 @@ Call with (dict "root" $ "name" $name "override" $spec.observability).
 - name: SENTRY_DSN
   valueFrom:
     secretKeyRef:
-      name: {{ required (printf "services.%s: sentry.enabled needs sentry.dsnSecret" .name) $dsn }}
+      name: {{ required (printf "services.%s: sentry.enabled needs sentry.dsnSecret" .name) $dsn | quote }}
       key: dsn
 {{- end }}
 {{- end }}

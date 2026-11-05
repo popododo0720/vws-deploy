@@ -161,7 +161,7 @@
         },
         "otlpEndpoint": {
           "type": "string",
-          "pattern": "^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?)?$",
+          "pattern": "^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
           "description": "Empty runs the minimal collector; set sends every service to this OTLP endpoint and renders no collector."
         },
         "otlpHeadersSecret": {
@@ -237,7 +237,7 @@
                   "properties": {
                     "endpoint": {
                       "type": "string",
-                      "pattern": "^([A-Za-z0-9.-]+:[0-9]{1,5}|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?)?$",
+                      "pattern": "^([A-Za-z0-9.-]+:[0-9]{1,5}|https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
                       "description": "Next OTLP gRPC hop. Empty sends nothing on."
                     },
                     "insecure": {

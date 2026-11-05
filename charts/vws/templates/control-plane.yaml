@@ -484,7 +484,7 @@ spec:
             - name: OTLP_AUTHORIZATION
               valueFrom:
                 secretKeyRef:
-                  name: {{ . }}
+                  name: {{ . | quote }}
                   key: authorization
           {{- end }}
           startupProbe:
