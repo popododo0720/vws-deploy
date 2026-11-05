@@ -257,7 +257,7 @@ def awscli_scenarios(r, cfg, run_id, work):
         expect(images, "describe-images returned no images")
         return cfg.image_id or images[0]["ImageId"]
 
-    image = m.step("image", "describe-images", first_image)
+    image = m.step("image", "describe-images", first_image) or cfg.image_id or None
 
     def create_vpc():
         vpc = r.aws("ec2", "create-vpc", "--cidr-block", "10.232.0.0/16")["Vpc"]["VpcId"]
@@ -777,7 +777,8 @@ def cmd_issues(path, apply, org):
         if not apply:
             print(f"would open {repo}: {title}")
             continue
-        found = json.loads(gh(["issue", "list", "-R", repo, "--state", "open", "--search", f'"{title}" in:title',
+        # Every repo of the org: an owner may move the issue, for example to vws-console-api.
+        found = json.loads(gh(["search", "issues", title, "--owner", org, "--state", "open", "--match", "title",
                                "--json", "title,url", "--limit", "100"]))
         url = next((i["url"] for i in found if i["title"] == title), None)
         if url:

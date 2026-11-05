@@ -204,6 +204,13 @@ class ScenarioTest(unittest.TestCase):
         self.assertEqual(by[("subnet", "create-subnet")].result, "skip")
         self.assertEqual(by[("bucket", "rb")].result, "pass")
 
+    def test_given_image_id_survives_a_failed_describe_images(self):
+        cfg = compat.load_config({**GOOD, "VWS_COMPAT_IMAGE_ID": "ami-00000000000000001"})
+        rows, _, image = compat.awscli_scenarios(FakeAws(fail_on={"ec2 describe-images"}), cfg, "x", self.work)
+        by = {(r.resource, r.action): r.result for r in rows}
+        self.assertEqual(image, "ami-00000000000000001")
+        self.assertEqual((by[("image", "describe-images")], by[("instance", "run-instances")]), ("fail", "pass"))
+
     def test_given_image_id_wins_over_describe_images(self):
         cfg = compat.load_config({**GOOD, "VWS_COMPAT_IMAGE_ID": "ami-00000000000000001"})
         _, _, image = compat.awscli_scenarios(FakeAws(), cfg, "x", self.work)
@@ -318,16 +325,16 @@ class OutputTest(unittest.TestCase):
             log = os.path.join(d, "gh.log")
             open_issues = os.path.join(d, "open.json")
             with open(open_issues, "w", encoding="utf-8") as f:
-                json.dump([["popododo0720/vws-compute", "compat: aws-cli instance run-instances fails against VWS"]], f)
+                json.dump([["popododo0720/vws-console-api", "compat: aws-cli instance run-instances fails against VWS"]], f)
             stub(d, "gh", f"""import json, sys
 args = sys.argv[1:]
 open({log!r}, "a").write(json.dumps(args) + "\\n")
 known = json.load(open({open_issues!r}))
-repo = args[args.index("-R") + 1]
-if args[:2] == ["issue", "list"]:
-    print(json.dumps([{{"title": t, "url": "u"}} for r, t in known if r == repo]))
+if args[:2] == ["search", "issues"]:
+    assert args[args.index("--owner") + 1] == "popododo0720"
+    print(json.dumps([{{"title": t, "url": "u"}} for r, t in known]))
 else:
-    known.append([repo, args[args.index("--title") + 1]])
+    known.append([args[args.index("-R") + 1], args[args.index("--title") + 1]])
     json.dump(known, open({open_issues!r}, "w"))
     print("https://github.com/x/y/issues/9")
 """)
@@ -350,7 +357,7 @@ class IssueCreateTest(unittest.TestCase):
             log = os.path.join(d, "gh.log")
             stub(d, "gh", f"""import sys
 open({log!r}, "a").write(" ".join(sys.argv[1:3]) + "\\n")
-if sys.argv[1:3] == ["issue", "list"]:
+if sys.argv[1:3] == ["search", "issues"]:
     print("[]")
 else:
     sys.exit(1)
