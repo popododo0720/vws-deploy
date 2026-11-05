@@ -3,6 +3,8 @@ package preflight
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,7 +78,7 @@ func TestLinksUnknownDoesNotBlock(t *testing.T) {
 	nodes := []cluster.Node{{Name: "a", InternalIPs: []string{"10.0.0.5"}}}
 	got := engine.Run(context.Background(), "network", net(true, 20, 9000), nodes)
 	c := want(t, got, "nic.links", "a", "unknown", false)
-	if c.Severity != "warning" || !strings.Contains(c.Hint, "-links") {
+	if c.Severity != "warning" || !strings.Contains(c.Hint, "configmap vws-installer-links") {
 		t.Fatalf("unknown links %+v", *c)
 	}
 }
@@ -172,5 +174,55 @@ func TestEngineBlocksTheStep(t *testing.T) {
 	}
 	if !blocked {
 		t.Fatalf("a missing external NIC does not block: %+v", checks)
+	}
+}
+
+// TestLinksFileTurnsOnNICChecks runs the real node reader as bootstrap.yaml starts it: -links names a
+// file in the optional ConfigMap vws-installer-links (#205). Before the operator creates the
+// ConfigMap the file is missing and every node is unknown; once it exists nic.exists and nic.mtu run.
+func TestLinksFileTurnsOnNICChecks(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := filepath.Join(dir, "kubectl")
+	nodes := `{"items":[{"metadata":{"name":"node1"},` +
+		`"status":{"addresses":[{"type":"InternalIP","address":"10.0.0.11"}]}}]}`
+	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\necho '"+nodes+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v := cluster.VWS{Kubectl: kubectl, Links: filepath.Join(dir, "links", "links.json")}
+	run := func() []api.Check {
+		t.Helper()
+		got, err := v.Nodes(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return engine.Run(context.Background(), "network", net(true, 20, 9000), got)
+	}
+	got := run()
+	want(t, got, "nic.links", "node1", "unknown", false)
+	if find(got, "nic.mtu", "node1") != nil {
+		t.Fatalf("NIC checks ran without links: %+v", got)
+	}
+	if err := os.Mkdir(filepath.Dir(v.Links), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stream := `{"node":"10.0.0.11","metadata":{"id":"ens3"},"spec":{"mtu":1500}}
+{"node":"10.0.0.11","metadata":{"id":"ens3.20"},"spec":{"mtu":1500}}
+{"node":"10.0.0.11","metadata":{"id":"ens8"},"spec":{"mtu":1500}}`
+	if err := os.WriteFile(v.Links, []byte(stream), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got = run()
+	if find(got, "nic.links", "node1") != nil {
+		t.Fatalf("still unknown with a links file: %+v", got)
+	}
+	var tunnel *api.Check
+	for i := range got {
+		if got[i].ID == "nic.mtu" && strings.Contains(got[i].Message, "ens3.20 ") {
+			tunnel = &got[i]
+		}
+	}
+	if tunnel == nil || tunnel.Status != "fail" || !tunnel.Blocks() ||
+		!strings.Contains(tunnel.Message, "want at least 9000") {
+		t.Fatalf("tunnel MTU check %+v in %+v", tunnel, got)
 	}
 }

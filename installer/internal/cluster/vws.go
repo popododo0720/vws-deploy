@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +21,9 @@ type VWS struct {
 	Kubectl string
 	VWS     string
 	WorkDir string
-	// Links is an optional `talosctl -n <every node> get links -o json` file (#128). Empty: the
-	// NICs are unknown.
+	// Links is an optional `talosctl -n <every node> get links -o json` file (#128). Empty or
+	// missing: the NICs are unknown. bootstrap.yaml mounts it from the optional ConfigMap
+	// vws-installer-links, so the file appears once the operator creates that ConfigMap (#205).
 	Links string
 }
 
@@ -55,11 +58,13 @@ func (v VWS) Nodes(ctx context.Context) ([]Node, error) {
 	var links map[string][]NIC
 	if v.Links != "" {
 		raw, err := os.ReadFile(v.Links)
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("links file: %w", err)
 		}
-		if links, err = ParseLinks(raw); err != nil {
-			return nil, err
+		if err == nil {
+			if links, err = ParseLinks(raw); err != nil {
+				return nil, err
+			}
 		}
 	}
 	nodes := make([]Node, 0, len(list.Items))

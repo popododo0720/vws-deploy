@@ -80,7 +80,16 @@ When validation fails, the value is stored as `invalid` and the response is 400 
 | storage | `storage.nfs` | info, unknown | the NFS server is not contacted |
 | profile | `profile.nodes` | error | Ready node count ≥ 1 for single-node, 3 for small, 6 for ha (`VWS_PROFILE_MIN_NODES`) |
 
-NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes> get links -o json`, the same input as nodenet.py). A links entry's `node` is a node name or InternalIP. When links does not know a node, `nic.links` is unknown and the network option `options.nics` is empty for that node. The bootstrap Deployment does not pass `-links` yet (how to provide the file needs checking).
+NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes> get links -o json`, the same input as nodenet.py). A links entry's `node` is a node name or InternalIP. When links does not know a node, `nic.links` is unknown and the network option `options.nics` is empty for that node.
+
+The bootstrap Deployment passes `-links=/etc/vws-installer/links/links.json` and mounts the optional ConfigMap `vws-installer-links` there read-only (#205). The operator supplies the snapshot at install time, after `kubectl apply -f build/bootstrap.yaml` (which creates the namespace `vws`):
+
+```sh
+talosctl -n <every node> get links -o json > links.json
+kubectl -n vws create configmap vws-installer-links --from-file=links.json
+```
+
+Until the ConfigMap exists the file is missing and every node reports `nic.links` unknown, as before; a missing file is not an error. A file that does not parse fails every step with an internal error until the ConfigMap is fixed, so a broken snapshot never reads as a pass. The mount has no `subPath`, so the kubelet syncs a later ConfigMap into the running pod (usually within a minute) and the next preflight reads it. The file is a snapshot. The installer never collects NICs itself (R10), so a NIC change or an added node shows the old data until the operator replaces the ConfigMap. Live collection for node add and refresh is a follow-up (#205 option c). The API `status` for a node without links stays `unknown`; only the TUI shows it as CANNOT VERIFY (#638).
 
 ## Storing the CR and unattended installs (#144)
 
@@ -139,4 +148,4 @@ Inside the installer pod, `vws init` (no arguments) runs `vws-installer tui`. It
 ## Remaining work (outside this PR)
 
 - Image: the build stage of `bootstrap/Containerfile` (`INSTALLER_GO_IMAGE`, which must match the Go version in `installer/go.mod`, R20) builds with `CGO_ENABLED=0` into `/opt/vws/bin/vws-installer` (#191). Publishing and pinning the digest are not done yet (the `VWS_INSTALLER_IMAGE` digest is zeros).
-- TLS, port-forward and the install path on a real cluster (not run). NIC checks with a real links file (not run).
+- TLS, port-forward and the install path on a real cluster (not run). NIC checks with a real links file from the `vws-installer-links` ConfigMap (not run).

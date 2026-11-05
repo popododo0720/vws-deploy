@@ -132,6 +132,10 @@ subjects:
 # behind the ClusterIP Service. A Deployment cannot carry activeDeadlineSeconds, so the time bound sits on the
 # rights instead: the reaper deletes vws-installer-temp at its TTL, and the pod keeps only the
 # operating rights below after that.
+# The NIC and MTU preflight (#128, #143) reads -links from the optional ConfigMap vws-installer-links,
+# which the operator creates at install time (#205, docs/installer-api.md). It is a snapshot: the
+# installer never collects NICs itself, so a later NIC change or an added node is not seen until
+# the operator replaces the ConfigMap. Until it exists every node reports nic.links unknown.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -177,6 +181,7 @@ spec:
             - -listen=0.0.0.0:8443
             - -state-dir=/tmp/vws-installer
             - -vws=/opt/vws/scripts/vws
+            - -links=/etc/vws-installer/links/links.json
           ports:
             - name: api
               containerPort: 8443
@@ -201,9 +206,16 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: links
+              mountPath: /etc/vws-installer/links
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: links
+          configMap:
+            name: vws-installer-links
+            optional: true
 ---
 # ClusterIP only: reach it with kubectl port-forward svc/vws-installer 8443. No NodePort, LoadBalancer,
 # externalIPs or Ingress.

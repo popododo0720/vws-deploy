@@ -1294,9 +1294,17 @@ crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
 want_version = f"{crd['spec']['group']}/{crd['spec']['versions'][0]['name']}"
 installer = tpl["spec"]["containers"][0]
 want_cmd = ["/opt/vws/bin/vws-installer", f"-api-version={want_version}", "-listen=0.0.0.0:8443",
-            "-state-dir=/tmp/vws-installer", "-vws=/opt/vws/scripts/vws"]
+            "-state-dir=/tmp/vws-installer", "-vws=/opt/vws/scripts/vws",
+            "-links=/etc/vws-installer/links/links.json"]
 if installer.get("command") != want_cmd or installer.get("args"):
-    fail(f"the installer container runs {installer.get('command')} {installer.get('args') or ''}; want {want_cmd} (#191)")
+    fail(f"the installer container runs {installer.get('command')} {installer.get('args') or ''}; want {want_cmd} (#191, #205)")
+# -links reads links.json from the optional, operator-created ConfigMap vws-installer-links (#205).
+links_vol = [v["name"] for v in tpl["spec"].get("volumes", [])
+             if v.get("configMap") == {"name": "vws-installer-links", "optional": True}]
+links_mount = [m for m in installer.get("volumeMounts", []) if m["name"] in links_vol]
+if len(links_mount) != 1 or links_mount[0].get("mountPath") != "/etc/vws-installer/links" \
+        or links_mount[0].get("readOnly") is not True or "subPath" in links_mount[0]:
+    fail("the installer needs ConfigMap vws-installer-links (optional) mounted read-only at /etc/vws-installer/links, no subPath (#205)")
 for kind in ("readinessProbe", "livenessProbe"):
     if ((installer.get(kind) or {}).get("tcpSocket") or {}).get("port") != "api":
         fail(f"the installer container needs a tcpSocket {kind} on port api")
@@ -1388,6 +1396,12 @@ cmd_bootstrap() {
   bad_bootstrap "an idle installer" 's#^\( *\)- /opt/vws/bin/vws-installer$#\1- sleep\n\1- infinity#'
   bad_bootstrap "a hard-coded API version" 's#-api-version=[^ ]*#-api-version=example.com/v1#'
   bad_bootstrap "an API on another port" 's#-listen=0.0.0.0:8443#-listen=0.0.0.0:9443#'
+  bad_bootstrap "no -links" '/- -links=/d'
+  bad_bootstrap "-links outside the mount" 's#-links=/etc/vws-installer/links/#-links=/tmp/#'
+  bad_bootstrap "no links ConfigMap" 's/name: vws-installer-links$/name: other-links/'
+  bad_bootstrap "a required links ConfigMap" 's/^            optional: true$/            optional: false/'
+  bad_bootstrap "a writable links mount" '/mountPath: \/etc\/vws-installer\/links$/{n;s/readOnly: true/readOnly: false/}'
+  bad_bootstrap "a subPath links mount" 's#^\( *\)mountPath: /etc/vws-installer/links$#&\n\1subPath: links.json#'
   bad_bootstrap "no readiness probe" 's/^          readinessProbe:$/          startupProbe:/'
   bad_bootstrap "no reaper" 's/name: vws-installer-reaper/name: something-else/'
   bad_bootstrap "a reaper deadline equal to the TTL" "s/activeDeadlineSeconds: $((ttl + 600))/activeDeadlineSeconds: ${ttl}/"
