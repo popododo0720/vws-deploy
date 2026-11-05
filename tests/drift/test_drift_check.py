@@ -414,6 +414,21 @@ class MainRulesetCell(unittest.TestCase):
         self.assertEqual(cells[-2], "go.mod: v0.3.0 is 2 minor versions behind v0.5.0 (max 1)")
         self.assertEqual(rc, dc.DRIFT_EXIT)
 
+    def test_missing_verify_approved_label_is_drift(self):
+        detail = {**RulesetDrift.NON_ADMIN, "bypass_actors": []}
+        with mock.patch.object(dc, "label_exists", lambda o, r, name: name != "verify-approved"):
+            rc, _, text, cells = self.run_main(detail)
+        self.assertEqual(cells[3], "no verify-approved label")
+        self.assertEqual(rc, dc.DRIFT_EXIT, text)
+
+    def test_verify_approved_label_is_asked_for(self):
+        seen = []
+        real = dc.label_exists
+        with mock.patch.object(dc, "label_exists", lambda o, r, name: seen.append(name) or real(o, r, name)):
+            rc, _, text, _ = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
+        self.assertIn("verify-approved", seen)
+        self.assertEqual(rc, 0, text)
+
     def test_non_go_repo_vws_proto_cell_is_na(self):
         _, _, _, cells = self.run_main({**RulesetDrift.NON_ADMIN, "bypass_actors": []})
         self.assertEqual(cells[-2:], ["n/a", "n/a |"])
