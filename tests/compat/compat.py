@@ -230,6 +230,9 @@ class Matrix:
         except Fail as e:
             self.rows.append(Row(self.tool, resource, action, "fail", str(e)))
             return None
+        except (KeyError, IndexError, TypeError) as e:
+            self.rows.append(Row(self.tool, resource, action, "fail", f"unexpected response: {type(e).__name__} {e}"))
+            return None
         self.rows.append(Row(self.tool, resource, action, "pass"))
         return value if value is not None else True
 
@@ -488,6 +491,7 @@ def run_cleanup(r, cleanup):
     return left
 
 
+TF_NEEDS_IMAGE = {"aws_instance.this", "aws_ebs_volume.this", "aws_volume_attachment.this", "aws_eip_association.this"}
 TF_ADDR = re.compile(r"^(aws_[a-z0-9_]+)\.this$")
 
 
@@ -568,14 +572,18 @@ def terraform_scenarios(r, work, image):
             skip_all(action, "needs init")
         return rows, []
     rows.append(Row("terraform", "provider", "init", "pass"))
+    targets = []
     if image is None:
-        for action in ("apply", "plan", "destroy"):
-            skip_all(action, "needs image")
-        return rows, []
-    r.env["TF_VAR_image_id"] = image
+        targets = [f"-target={a}" for a in addrs if a not in TF_NEEDS_IMAGE]
+        for a in addrs:
+            if a in TF_NEEDS_IMAGE:
+                for action in ("apply", "plan", "destroy"):
+                    row(a, action, "skip", "needs image")
+        addrs = [a for a in addrs if a not in TF_NEEDS_IMAGE]
+    r.env["TF_VAR_image_id"] = image or ""
 
     try:
-        apply = r.run(["terraform", "apply", "-auto-approve", "-input=false", "-json"], 1800, cwd=tfdir)
+        apply = r.run(["terraform", "apply", "-auto-approve", "-input=false", "-json", *targets], 1800, cwd=tfdir)
         out, errs = apply.stdout, tf_errors(apply.stdout, r)
     except Fail as e:
         out, errs = "", {"": str(e)}
@@ -590,7 +598,7 @@ def terraform_scenarios(r, work, image):
             row(a, "apply", "skip", "not applied: " + (errs.get("") or "a dependency failed"))
 
     try:
-        plan = r.run(["terraform", "plan", "-input=false", "-json", "-detailed-exitcode"], 900, cwd=tfdir)
+        plan = r.run(["terraform", "plan", "-input=false", "-json", "-detailed-exitcode", *targets], 900, cwd=tfdir)
         changed = {}
         for ev in tf_events(plan.stdout):
             if ev.get("type") == "planned_change":
@@ -610,7 +618,7 @@ def terraform_scenarios(r, work, image):
             row(a, "plan", "pass")
 
     try:
-        destroy = r.run(["terraform", "destroy", "-auto-approve", "-input=false", "-json"], 1800, cwd=tfdir)
+        destroy = r.run(["terraform", "destroy", "-auto-approve", "-input=false", "-json", *targets], 1800, cwd=tfdir)
         derrs = tf_errors(destroy.stdout, r)
     except Fail as e:
         derrs = {"": str(e)}
@@ -775,7 +783,8 @@ def cmd_issues(path, apply, org):
         if url:
             print(f"exists {url}")
             continue
-        print("opened " + gh(["issue", "create", "-R", repo, "--title", title, "--body", body]).strip())
+        # One attempt: a create whose reply was lost may still have opened the issue, and a rerun finds it by title.
+        print("opened " + gh(["issue", "create", "-R", repo, "--title", title, "--body", body], attempts=1).strip())
     return 0
 
 

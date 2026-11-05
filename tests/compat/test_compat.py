@@ -193,6 +193,17 @@ class ScenarioTest(unittest.TestCase):
         self.assertEqual(sum(1 for c in fake.calls if c[:2] == ("ec2", "delete-vpc")), 2)
         self.assertEqual(left, ["vpc-1: ec2 delete-vpc refused"])
 
+    def test_response_without_expected_key_is_a_fail_row(self):
+        class NoVpc(FakeAws):
+            def aws(self, *args, timeout=180):
+                return {} if args[:2] == ("ec2", "create-vpc") else super().aws(*args, timeout=timeout)
+
+        rows, _, _ = compat.awscli_scenarios(NoVpc(), self.cfg, "x", self.work)
+        by = {(r.resource, r.action): r for r in rows}
+        self.assertEqual((by[("vpc", "create-vpc")].result, by[("vpc", "create-vpc")].detail), ("fail", "unexpected response: KeyError 'Vpc'"))
+        self.assertEqual(by[("subnet", "create-subnet")].result, "skip")
+        self.assertEqual(by[("bucket", "rb")].result, "pass")
+
     def test_given_image_id_wins_over_describe_images(self):
         cfg = compat.load_config({**GOOD, "VWS_COMPAT_IMAGE_ID": "ami-00000000000000001"})
         _, _, image = compat.awscli_scenarios(FakeAws(), cfg, "x", self.work)
@@ -227,6 +238,44 @@ class TerraformParseTest(unittest.TestCase):
             with mock.patch.object(compat.time, "sleep") as sleep:
                 self.assertEqual(compat.tf_init(r, d), "TLS handshake timeout")
             self.assertEqual([c.args for c in sleep.call_args_list], [(10,), (20,)])
+
+
+TF_STUB = """import json, os, sys
+args = sys.argv[1:]
+open(os.path.join(os.environ["HOME"], "tf.log"), "a").write(json.dumps(args) + "\\n")
+state = os.path.join(os.environ["HOME"], "state.json")
+targets = [a[len("-target="):] for a in args if a.startswith("-target=")]
+if args[:1] == ["apply"]:
+    json.dump(targets, open(state, "w"))
+    for t in targets:
+        print(json.dumps({"type": "apply_complete", "hook": {"resource": {"addr": t}, "action": "create"}}))
+elif args[:1] == ["destroy"]:
+    json.dump([], open(state, "w"))
+elif args[:2] == ["state", "list"] and os.path.exists(state):
+    print("\\n".join(json.load(open(state))))
+"""
+
+
+class TerraformNoImageTest(unittest.TestCase):
+    def test_no_image_runs_the_image_free_resources(self):
+        with tempfile.TemporaryDirectory() as d:
+            bin_dir = os.path.join(d, "bin")
+            os.makedirs(bin_dir)
+            stub(bin_dir, "terraform", TF_STUB)
+            r = compat.Runner({"PATH": bin_dir, "HOME": d}, d, [])
+            rows, left = compat.terraform_scenarios(r, os.path.join(d, "work"), None)
+            by = {(row.resource, row.action): row.result for row in rows}
+            self.assertEqual(by[("aws_instance", "apply")], "skip")
+            self.assertEqual(by[("aws_eip_association", "destroy")], "skip")
+            self.assertEqual(by[("aws_vpc", "apply")], "pass")
+            self.assertEqual(by[("aws_s3_object", "plan")], "pass")
+            self.assertEqual(by[("aws_eip", "destroy")], "pass")
+            self.assertEqual(left, [])
+            self.assertEqual(len(rows), 1 + 3 * len(compat.tf_addresses(os.path.join(HERE, "terraform"))))
+            with open(os.path.join(d, "tf.log"), encoding="utf-8") as f:
+                apply = next(json.loads(line) for line in f if line.startswith('["apply"'))
+            self.assertNotIn("-target=aws_instance.this", apply)
+            self.assertIn("-target=aws_vpc.this", apply)
 
 
 def doc(target="vws"):
@@ -293,6 +342,27 @@ else:
             creates = [c for c in calls if c[:2] == ["issue", "create"]]
             self.assertEqual(len(creates), 1, "the second run finds the issue the first one opened")
             self.assertIn("popododo0720/vws-network", creates[0])
+
+
+class IssueCreateTest(unittest.TestCase):
+    def test_failed_create_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "gh.log")
+            stub(d, "gh", f"""import sys
+open({log!r}, "a").write(" ".join(sys.argv[1:3]) + "\\n")
+if sys.argv[1:3] == ["issue", "list"]:
+    print("[]")
+else:
+    sys.exit(1)
+""")
+            path = os.path.join(d, "results.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(doc(), f)
+            with mock.patch.dict(os.environ, {"PATH": d + os.pathsep + os.environ["PATH"]}), \
+                    self.assertRaises(RuntimeError):
+                compat.cmd_issues(path, True, "popododo0720")
+            with open(log, encoding="utf-8") as f:
+                self.assertEqual(f.read().count("issue create"), 1)
 
 
 def stub(directory, name, body):
