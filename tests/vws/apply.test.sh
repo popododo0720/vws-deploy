@@ -277,6 +277,35 @@ echo 'Error from server (AlreadyExists): secrets "vws-iam-kek" already exists' >
 run_vws_real apply --unattended; expect_rc "an existing KEK exits 0" 0
 expect_text "an existing KEK is kept, not rotated" "$OUT" "kept Secret vws-iam-kek"
 
+# Initial admin (#208): only while console-api serves sign-in; username root, a fresh 24-character
+# password on kubectl stdin only, created before helm, never rotated.
+printf 'services:\n  iam:\n    enabled: true\n  console-api:\n    flags:\n      iam: grpc\n' >"${WORK}/signin-on.yaml"
+for f in iam-off iam-on; do
+  if ! python3 "$AS" names "${WORK}/${f}.yaml" | grep -q admin; then ok "${f}, -iam static: no initial admin Secret"; else bad "${f} admin" "$(python3 "$AS" names "${WORK}/${f}.yaml")"; fi
+done
+expect_text "sign-in on: the initial admin Secret is listed with kind admin" "$(python3 "$AS" names "${WORK}/signin-on.yaml")" $'vws-initial-admin\tadmin'
+expect_text "sign-in on: the overlay keeps the base console-api flags" "$(python3 "$AS" names "${WORK}/signin-on.yaml")" $'vws-console-api-credentials\tapi'
+a1=$(python3 "$AS" manifest vws-initial-admin admin); a2=$(python3 "$AS" manifest vws-initial-admin admin)
+if python3 -c 'import sys,json,string; m=json.load(sys.stdin); d=m["stringData"]; sys.exit(0 if m["metadata"]["name"] == "vws-initial-admin" and sorted(d) == ["password", "username"] and d["username"] == "root" and len(d["password"]) == 24 and not d["password"].strip(string.ascii_letters + string.digits) else 1)' <<<"$a1"; then
+  ok "the initial admin is root with 24 letters and digits"; else bad "admin shape" "(not printed: holds values)"; fi
+if [[ $(jq -r .stringData.password <<<"$a1") != "$(jq -r .stringData.password <<<"$a2")" ]]; then ok "each admin manifest is fresh"; else bad "fresh admin" "same value twice"; fi
+installer_scenario initial-admin
+jq '.spec.services.iam = {enabled: true} | .spec.services["console-api"].flags.iam = "grpc"' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json" && mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+installer_template
+run_vws_real apply --unattended; expect_rc "apply with sign-in on exits 0" 0
+expect_text "the initial admin Secret is created" "$OUT" "created Secret vws-initial-admin"
+pw=$(sed -n '/^--- create$/,/^$/p' "${VWS_FAKE_LOG}.stdin" | grep '"vws-initial-admin"' | jq -r .stringData.password)
+if [[ -n $pw ]] && [[ $OUT != *"$pw"* && $ERR != *"$pw"* ]] && ! grep -qF -- "$pw" "$VWS_FAKE_LOG"; then
+  ok "the admin password is only on kubectl stdin"; else bad "admin leak" "the password reached the output or an argument"; fi
+# The n-th "--- create" stdin block is the admin manifest; the n-th kubectl create call must precede helm.
+n=$(awk '/^--- create$/{c++} /"vws-initial-admin"/{print c; exit}' "${VWS_FAKE_LOG}.stdin")
+admin_line=$(grep -n $'^kubectl\tcreate' "$VWS_FAKE_LOG" | sed -n "${n:-0}p" | cut -d: -f1)
+first_helm=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
+if [[ -n $admin_line && -n $first_helm ]] && ((admin_line < first_helm)); then ok "the initial admin Secret exists before helm"; else bad "admin order" "$(calls)"; fi
+echo 'Error from server (AlreadyExists): secrets "vws-initial-admin" already exists' >"${VWS_FAKE_DIR}/kubectl/create_.fail"
+run_vws_real apply --unattended; expect_rc "a rerun with the admin Secret exits 0" 0
+expect_text "an existing admin password is kept, not rotated" "$OUT" "kept Secret vws-initial-admin"
+
 # The default image (#232): after the chart, a DataVolume and a DataSource ami-0123456789abcdef0 in
 # the images namespace, created only when missing; the DataSource points at the DataVolume's claim.
 installer_scenario seed-image
