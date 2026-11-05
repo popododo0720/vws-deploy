@@ -1418,6 +1418,7 @@ cmd_observability() {
   command -v otelcol-contrib >/dev/null || die "R25: otelcol-contrib missing; run scripts/install-tools.sh"
   otelcol-contrib --version | grep -q -F " ${version}" || die "R25: otelcol-contrib is not OTELCOL_VERSION ${version}"
   tmp=$(mktemp -d)
+  mkdir -p .cache/kubeconform
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/off.yaml"
   if grep -q -E 'name: (OTEL_|SENTRY_|VWS_LOG_LEVEL)|otel-collector' "$tmp/off.yaml"; then
     rm -rf "$tmp"; die "R25: the default render has telemetry env or the collector"
@@ -1432,7 +1433,7 @@ observability:
     exporters:
       otlp:
         endpoint: gateway.observability.svc:4317
-        authorizationSecret: vws-otlp-auth
+        authorizationSecret: "42"
 services:
   compute:
     observability:
@@ -1442,6 +1443,13 @@ YAML
   cat > "$tmp/debug.yaml" <<'YAML'
 observability:
   enabled: true
+  defaults:
+    samplerArg: "0.5"
+  collector:
+    exporters:
+      otlp:
+        endpoint: http://gateway.observability.svc:4317
+        insecure: true
 YAML
   cat > "$tmp/external.yaml" <<'YAML'
 observability:
@@ -1451,7 +1459,7 @@ observability:
   defaults:
     sentry:
       enabled: true
-      dsnSecret: vws-sentry
+      dsnSecret: "true"
 services:
   compute:
     observability:
@@ -1488,7 +1496,9 @@ PY
     'observability: {otlpHeaders: "authorization=Bearer x"}' \
     'observability: {collector: {exporters: {otlp: {headers: {authorization: x}}}}}' \
     'observability: {defaults: {samplerArg: "2"}}' \
-    'observability: {collector: {image: "otel/opentelemetry-collector-contrib:latest"}}'; do
+    'observability: {collector: {image: "otel/opentelemetry-collector-contrib:latest"}}' \
+    'observability: {collector: {exporters: {otlp: {endpoint: "http://gw.observability.svc:4317/"}}}}' \
+    'observability: {otlpEndpoint: "https://otlp.observability.internal:4317/v1"}'; do
     printf '%s\n' "$case" > "$tmp/bad.yaml"
     if helm lint charts/vws --strict -f "$SITE_VALUES" -f "$tmp/bad.yaml" > "$tmp/out" 2>&1 ||
       ! grep -q -E 'Additional property|Does not match pattern' "$tmp/out"; then
