@@ -52,11 +52,15 @@ vws_e2e_step() { # NAME ARGS...: one vws command under its limit, output to NAME
 }
 
 vws_e2e_redact() { # stdin to stdout, the values of secret-looking exported variables replaced
-  local name val line
+  local name val line part
   local -a vals=()
   while IFS= read -r name; do
     val=${!name-}
-    ((${#val} < 4)) || vals+=("$val")
+    # Each line of a multi-line value (a PEM key) is matched alone, since the log is read line by line.
+    while IFS= read -r part; do
+      part=${part%$'\r'}
+      ((${#part} < 3)) || vals+=("$part")
+    done <<<"$val"
   done < <(compgen -e | grep -E 'SECRET|TOKEN|PASSWORD|PASSWD|ACCESS_KEY|CREDENTIAL|PRIVATE' || true)
   while IFS= read -r line || [[ -n $line ]]; do
     for val in "${vals[@]}"; do line=${line//"$val"/[redacted]}; done
@@ -88,7 +92,7 @@ vws_e2e_incident_body() { # RUN LOG_URL
 }
 
 vws_e2e_incident() { # RUN LOG_URL REPO: prints the URL of the open incident for this run
-  local title="incident: nightly e2e $1 failed at ${vws_e2e_failed}" body list url i
+  local title="incident: nightly e2e $1 failed" body list url i
   body="${vws_e2e_dir}/incident.md"
   vws_e2e_incident_body "$1" "$2" >"$body"
   for i in 1 2 3; do
@@ -146,7 +150,9 @@ vws_cmd_main() {
 
   started=$(date -u +%FT%TZ)
   want=$(jq -r '.vwsTest.kubeSystemUID // empty' "$map" 2>/dev/null) || want=''
-  uid=$(vws_kubectl get ns kube-system -o 'jsonpath={.metadata.uid}' 2>"${vws_e2e_dir}/scope.log") || uid=''
+  export -f vws_kubectl vws_kube_flags vws_kubectl_reads
+  uid=$(timeout --kill-after=10 60 bash -c 'vws_kubectl get ns kube-system --request-timeout=30s -o "jsonpath={.metadata.uid}"' \
+    2>"${vws_e2e_dir}/scope.log") || uid=''
   if [[ -z $want ]]; then
     vws_e2e_record scope fail 3 "$started" "${map} has no vwsTest.kubeSystemUID; nothing ran"
   elif [[ $uid != "$want" ]]; then

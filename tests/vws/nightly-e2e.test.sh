@@ -22,7 +22,8 @@ var="FAKE_${cmd//-/_}"
 case ${!var:-pass} in
   hang) sleep 30 ;;
   fail)
-    echo "FAIL  ${cmd}  broken with secret ${VWS_VERIFY_SECRET_ACCESS_KEY:-}"
+    echo "FAIL  ${cmd}  broken with secret ${VWS_VERIFY_SECRET_ACCESS_KEY:-} token=${API_TOKEN:-}"
+    printf '%s\n' "${PRIVATE_KEY:-}"
     if [[ $cmd == nightly ]]; then
       echo "scenario output with ${VWS_VERIFY_SECRET_ACCESS_KEY:-}" >"$2/ec2-run.log"
       echo '{"result": "fail"}' >"$2/ec2-run.json"
@@ -49,7 +50,8 @@ chmod +x "${WORK}/vws" "${WORK}/bin/gh" "${WORK}/bin/openstack"
 export PATH="${WORK}/bin:${PATH}" VWS_NIGHTLY_E2E_VWS="${WORK}/vws" VWS_NIGHTLY_E2E_BACKOFF=0
 export FAKE_VWS_LOG="${WORK}/vws.log" FAKE_GH_LOG="${WORK}/gh.log" FAKE_GH_BODY="${WORK}/body.md" FAKE_OS_LOG="${WORK}/os.log"
 export OS_CLOUD=other-project OS_AUTH_URL=https://keystone.invalid OS_PASSWORD=hunter22
-export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value
+export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value API_TOKEN=abc
+export PRIVATE_KEY=$'-----BEGIN KEY-----\npemline1secret\npemline2secret\n-----END KEY-----'
 url=https://logs.invalid/run
 e2e() { : >"$FAKE_VWS_LOG"; : >"$FAKE_GH_LOG"; : >"$FAKE_OS_LOG"; rm -f "$FAKE_GH_BODY"; run_vws_real nightly-e2e --cr "$cr" --log-url "$url" "$@"; }
 summary() { jq -r "$2" "${WORK}/$1/e2e/summary.json"; }
@@ -80,21 +82,21 @@ expect_text "the failed step is named" "$OUT" "FAIL  e2e/scenarios  vws nightly 
 expect_text "feature-map-pr still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results"
 expect_text "the incident is reported" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/9001"
 expect_text "the incident has the incident label and names the step" "$(cat "$FAKE_GH_LOG")" \
-  "issue create --repo popododo0720/vws-deploy --label incident --title incident: nightly e2e 20261105T130200Z failed at scenarios"
+  "issue create --repo popododo0720/vws-deploy --label incident --title incident: nightly e2e 20261105T130200Z failed --body-file"
 body=$(cat "$FAKE_GH_BODY")
 expect_text "the body follows the incident form" "$body" "## The check that would have caught this"
 expect_text "the body has the failing step log" "$body" "### step scenarios (last 60 lines)"
 expect_text "the body has the failed scenario log" "$body" "### scenario ec2-run (last 30 lines)"
 if [[ $body != *"### scenario s3-basic"* ]]; then ok "a passed scenario log is left out"; else bad "passed log" "$body"; fi
-if [[ $body != *s3cr3t-value* && $body == *"[redacted]"* ]]; then ok "secret values are redacted in the body"; else bad "redaction" "$body"; fi
-if [[ $OUT != *s3cr3t-value* ]] && ! grep -q s3cr3t-value "${WORK}/$r/e2e/summary.json"; then ok "secret values stay out of the output and summary.json"
+if [[ $body != *s3cr3t-value* && $body != *pemline* && $body != *token=abc* && $body == *"[redacted]"* ]]; then ok "secret values are redacted in the body"; else bad "redaction" "$body"; fi
+if [[ $OUT != *s3cr3t-value* && $OUT != *token=abc* ]] && ! grep -qE 's3cr3t-value|token=abc' "${WORK}/$r/e2e/summary.json"; then ok "secret values stay out of the output and summary.json"
 else bad "secret leaked" "$OUT"; fi
 if [[ $(summary "$r" '.result + " " + .incident') == "fail https://github.com/popododo0720/vws-deploy/issues/9001" ]]; then
   ok "summary.json records the failure and the incident"; else bad "summary fail" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
 
-FAKE_nightly=fail FAKE_GH_LIST='[{"title":"incident: nightly e2e 20261105T130200Z failed at scenarios","url":"https://github.com/popododo0720/vws-deploy/issues/77"}]' \
+FAKE_apply=fail FAKE_GH_LIST='[{"title":"incident: nightly e2e 20261105T130200Z failed","url":"https://github.com/popododo0720/vws-deploy/issues/77"}]' \
   e2e --results "${WORK}/$r"
-expect_text "a rerun of the same run reuses the open incident" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/77"
+expect_text "a rerun of the same run reuses (even when another step fails) the open incident" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/77"
 if ! grep -q 'issue create' "$FAKE_GH_LOG"; then ok "a rerun opens no second incident"; else bad "duplicate" "$(cat "$FAKE_GH_LOG")"; fi
 
 FAKE_apply=fail e2e --results "${WORK}/r/20261105T130300Z"
@@ -108,7 +110,8 @@ e2e --results "${WORK}/$r"
 expect_rc "another cluster: exit 1" 1
 expect_text "the scope failure names the cluster" "$OUT" "FAIL  e2e/scope  cluster kube-system UID 'uid-elsewhere' is not vws-test"
 if [[ ! -s $FAKE_VWS_LOG ]]; then ok "on another cluster no step runs"; else bad "ran elsewhere" "$(cat "$FAKE_VWS_LOG")"; fi
-expect_text "the scope failure opens an incident" "$(cat "$FAKE_GH_LOG")" "failed at scope"
+expect_text "the scope failure opens an incident" "$(cat "$FAKE_GH_LOG")" "issue create"
+expect_text "the incident body names the scope step" "$(cat "$FAKE_GH_BODY")" "failed at step \`scope\`"
 printf '%s' "$uid" >"${fake}/kubectl/get_ns.json"
 
 FAKE_apply=fail FAKE_GH_CREATE_FAIL=1 e2e --results "${WORK}/r/20261105T130500Z"
