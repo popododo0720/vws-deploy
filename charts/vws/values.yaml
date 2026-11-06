@@ -253,8 +253,9 @@ services:
       apiGroups: [cdi.kubevirt.io]
       resources: [datavolumes/source]
       verbs: [create]
-    # vws-compute#73 cloudinit.go: the cloud-init user data of a machine is Secret <instance>-cloudinit,
-    # referenced by cloudInitNoCloud.userDataSecretRef. create: before the VM; get and update: a retried
+    # vws-compute#73, #89 cloudinit.go: a machine's cloud-init user data is Secret <instance>-cloudinit
+    # (cloudInitNoCloud.secretRef) and its SSH keys are Secret <instance>-ssh-keys (accessCredentials).
+    # Both go through ensureSecret and deleteSecret. create: before the VM; get and update: a retried
     # create; delete: destroy, after the VM. The client is uncached (client.New), so no list or watch.
     # No resourceNames: the names are per instance, and RBAC cannot limit create by name anyway;
     # compute itself touches only Secrets with its managed label.
