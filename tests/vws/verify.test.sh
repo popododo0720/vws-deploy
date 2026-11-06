@@ -54,6 +54,10 @@ run_vws_real verify --check-feature-map --map "$map"; expect_rc "a map row in ne
 expect_text "the unclassified row is named" "$OUT" "FAIL  phase1  STS: map row is neither phase1 nor later"
 jq '.later += [{"feature": "Console login", "reason": "dup"}]' "${p1}.orig" >"$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a name in both lists is an unreadable list" 3
+jq '.later[0].reason = ""' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a later feature without a reason is an unreadable list" 3
+jq '.later = {}' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a later that is not a list is an unreadable list" 3
 echo '{"phase1": [' >"$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a truncated Phase 1 list is unreadable" 3
 rm "$p1"

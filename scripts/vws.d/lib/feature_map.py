@@ -139,9 +139,11 @@ def phase1_gaps(map_path, data):
     """FAIL lines for Phase 1 features missing from the map and map rows in neither list."""
     with open(phase1_path(map_path), encoding="utf-8") as f:
         p1 = json.load(f)
-    want = p1["phase1"]
-    later = [x["feature"] for x in p1["later"]]
-    names = want + later
+    want, later = p1["phase1"], p1["later"]
+    if not isinstance(want, list) or not isinstance(later, list) or not all(
+            isinstance(x, dict) and isinstance(x.get("reason"), str) and x["reason"] for x in later):
+        raise ValueError(f"{phase1_path(map_path)}: phase1 must be a list and later a list of {{feature, reason}}")
+    names = want + [x.get("feature") for x in later]
     if not all(isinstance(n, str) and n for n in names) or len(set(names)) != len(names):
         raise ValueError(f"{phase1_path(map_path)}: feature names must be unique non-empty strings")
     have = [f["feature"] for f in data["features"]]
