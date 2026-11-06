@@ -15,7 +15,7 @@
   | `hygiene` | `pr-hygiene` | `pull_request` | contents read, pull-requests read, issues read (the acceptance-criteria lint reads the linked issue, #430) |
   | `gate` | `verify-gate` | `pull_request` | contents read, pull-requests read, issues read |
   | `reset` | `verify-reset` | `pull_request` synchronize | issues write, pull-requests write |
-  | `rerun` | `verify-rerun` | `issue_comment` on a PR | actions write, pull-requests read |
+  | `rerun` | `verify-rerun` | `issue_comment` on a PR | actions write, issues write, pull-requests write (it drops `verify-approved` when it cannot re-run the gate, #312) |
   | `pr-hygiene` | shim, `needs: hygiene` | `always()` and `pull_request` | none |
   | `verify-gate` | shim, `needs: gate` | `always()` and `pull_request` | none |
 
@@ -27,6 +27,14 @@
 The rulesets require the bare contexts `pr-hygiene` and `verify-gate`. A job in a called workflow reports as `<caller job> / <called job>` (`hygiene / pr-hygiene`), so the caller has two shim jobs with the bare names. A skipped required check counts as passed, so a shim runs `always()` and passes only when `needs.<call>.result` is `success` and the call's `passed` output names its job. The called job writes `passed` in its last step, so a call that was skipped, cancelled or failed before the end fails the shim. The ruleset needs no change; the `x / y` runs are extra, non-required checks.
 
 `verify-rerun` re-runs the called job `gate / verify-gate`. GitHub re-runs a job together with the jobs that depend on it, so the `verify-gate` shim re-runs after it. Re-running only the shim would replay the old `needs` result.
+
+### Which run verify-rerun picks, and when it gives up (#312)
+
+Several PRs can share a head SHA (a fork PR and a branch PR), so the run is never picked by the SHA alone. `verify-rerun` takes the newest `pull_request` run of `repo-guard.yml` for the head that lists this PR number. A fork PR's runs list no `pull_requests`, so for a fork PR it takes the newest run with no `pull_requests` from the PR's own head repo and branch. The branch goes to jq as `--arg` data, because a ref may contain a quote. It looks the job up again on every try, because the jobs list is the run's newest attempt and another re-run can start a newer one meanwhile. GitHub then refuses the old job with "Only jobs from the current attempt can be re-run" (vws-proto run 41954745801), and the next try re-runs the newest attempt's job.
+
+When it cannot re-run the gate it removes `verify-approved`, says so in the log and fails. That covers no run of this PR, a run without the gate job, a refusal with HTTP 4xx (a run past its re-run window) and a job still running after 15 minutes. A server error on the re-run is retried. The label is the cheap side to lose: adding it again starts a `labeled` run that reads the comments. Leaving it would keep an old green gate after its verdict was edited or deleted. This is why the `rerun` call gets `issues: write` and `pull-requests: write`, the same pair `reset` uses for the same label.
+
+Rejected: matching a fork PR's run by SHA alone (the bug), and reading the runs of the PR's check suites (one more API surface for the same answer). Rejected: a separate label-removal job, which would add a call, a file and a shim for one DELETE.
 
 ### Trust model (unchanged)
 
