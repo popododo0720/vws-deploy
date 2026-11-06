@@ -12,13 +12,15 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 dir=${VWS_TEST_DIR:-tests/vws}
 max_jobs=${VWS_TEST_JOBS:-$(($(nproc) * 2))}
-[[ $max_jobs =~ ^[1-9][0-9]*$ ]] || { echo "VWS_TEST_JOBS must be a positive integer, got: ${max_jobs}" >&2; exit 2; }
+[[ $max_jobs =~ ^[1-9][0-9]{0,3}$ ]] || { echo "VWS_TEST_JOBS must be an integer from 1 to 9999, got: ${max_jobs}" >&2; exit 2; }
 logs=$(mktemp -d)
-# Each suite runs in its own process group (set -m), so a killed runner stops every suite and its children.
+# Each suite runs in its own process group (set -m), so a killed runner stops every suite it started and any
+# child a suite left behind.
 set -m
+groups=()
 cleanup() {
   local pid
-  for pid in $(jobs -pr); do kill -- "-${pid}" 2>/dev/null || true; done
+  for pid in "${groups[@]}"; do kill -- "-${pid}" 2>/dev/null || true; done
   rm -rf "$logs"
 }
 trap cleanup EXIT
@@ -30,6 +32,7 @@ for test in "$dir"/*.test.sh; do
   while (($(jobs -rp | wc -l) >= max_jobs)); do wait -n || true; done
   n=${#tests[@]}
   { rc=0; bash "$test" >"${logs}/${n}.log" 2>&1 || rc=$?; echo "$rc" >"${logs}/${n}.rc"; } &
+  groups+=("$!")
   tests+=("$test")
 done
 wait

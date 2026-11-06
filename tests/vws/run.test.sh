@@ -88,21 +88,22 @@ rm -f "$handshake"
 suite a-pass 'ok one; finish_tests'
 suite z-pass 'ok three; finish_tests'
 
-# VWS_TEST_JOBS must be a positive integer; anything else stops before any suite runs.
-for bad_jobs in 0 -1 x 2x 01; do
+# VWS_TEST_JOBS must be an integer from 1 to 9999; anything else stops before any suite runs.
+for bad_jobs in 0 -1 x 2x 01 10000 18446744073709551616; do
   OUT=$(VWS_TEST_JOBS="$bad_jobs" VWS_TEST_DIR="$suites" bash "$RUNNER" 2>&1) && RC=0 || RC=$?
   ERR=$OUT
   expect_rc "VWS_TEST_JOBS='${bad_jobs}' is refused" 2
-  expect_text "VWS_TEST_JOBS='${bad_jobs}' is named" "$OUT" "VWS_TEST_JOBS must be a positive integer"
+  expect_text "VWS_TEST_JOBS='${bad_jobs}' is named" "$OUT" "VWS_TEST_JOBS must be an integer from 1 to 9999"
 done
 
-# A killed runner stops the suites it started, and their children.
+# A killed runner stops the suites it started, their children, and a child that a finished suite (s0) left.
 hung="${WORK}/hung"
 mkdir -p "$hung"
+printf '#!/usr/bin/env bash\nbash -c "sleep 60; :" %q &\nexit 0\n' "${hung}/s0-leftover" >"${hung}/s0.test.sh"
 for i in 1 2 3; do
   printf '#!/usr/bin/env bash\n: >%q\nsleep 60\n' "${hung}/started-${i}" >"${hung}/s${i}.test.sh"
 done
-VWS_TEST_JOBS=3 VWS_TEST_DIR="$hung" bash "$RUNNER" >/dev/null 2>&1 &
+VWS_TEST_JOBS=4 VWS_TEST_DIR="$hung" bash "$RUNNER" >/dev/null 2>&1 &
 runner=$!
 for _ in $(seq 50); do [[ -f ${hung}/started-3 ]] && break; sleep 0.1; done
 kill "$runner"
