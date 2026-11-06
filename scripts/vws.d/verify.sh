@@ -68,12 +68,13 @@ vws_cmd_main() {
   [[ -f $map ]] || vws_die_env "feature map ${map} not found"
   if [[ $mode == check ]]; then
     ((${#results[@]} == 0)) || vws_usage "verify --check-feature-map takes no result files"
-    rc=0; python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" check "$map" || rc=$?
-    case $rc in
-      0) vws_emit OK feature-map "${map%.json}.md matches ${map}" ;;
-      1) vws_emit FAIL feature-map "${map%.json}.md is stale; run scripts/vws verify --update-feature-map" ;;
-      *) vws_die_env "feature map ${map} is unreadable" ;;
-    esac
+    local out
+    rc=0; out=$(python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" check "$map") || rc=$?
+    ((rc <= 1)) || vws_die_env "feature map ${map} or its phase1-features.json is unreadable"
+    ((rc == 1)) || { vws_emit OK feature-map "${map%.json}.md matches ${map}, which has every Phase 1 feature"; return 0; }
+    while IFS=$'\t' read -r level name msg; do
+      [[ -n $level ]] && vws_emit "$level" "$name" "$msg"
+    done <<<"$out"
     return 0
   fi
   ((${#results[@]})) || vws_usage "verify --update-feature-map needs at least one RESULT.json"
