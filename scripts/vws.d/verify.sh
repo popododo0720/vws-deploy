@@ -8,8 +8,9 @@
 # cluster whose kube-system UID is vwsTest.kubeSystemUID in the map.
 # --update-feature-map, vws-deploy#252. RESULT.json is a scenario result:
 #   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence": "link",
-#    "clusterUID": "kube-system namespace UID"}
-# clusterUID must equal vwsTest.kubeSystemUID in the map, else the result is refused (FAIL).
+#    "clusterUID": "kube-system namespace UID", "signature": "SSHSIG"}
+# clusterUID must equal vwsTest.kubeSystemUID in the map, and signature must verify against a key in
+# vwsTest.signers (vws-deploy#288), else the result is refused (FAIL).
 # Only a pass on vws-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
 # Exit: 0 ok/warn, 1 a result refused (FAIL), 2 usage or invalid result/fingerprint ("FAIL: <reason>",
 # map unchanged; includes finishedAt > 5 min in the future), 3 map unreadable.

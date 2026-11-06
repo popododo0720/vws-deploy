@@ -12,6 +12,19 @@ trap 'rm -rf "$WORK"' EXIT
 export VWS_FAKE_DIR="$FIXTURES"
 export VWS_FAKE_LOG="${WORK}/calls.log"
 
+# test_signer [NAME]: an ed25519 key ${WORK}/signer-NAME (default a); prints its vwsTest.signers line.
+test_signer() {
+  local key="${WORK}/signer-${1:-a}"
+  [[ -f $key ]] || ssh-keygen -q -t ed25519 -N '' -C "test-${1:-a}" -f "$key" </dev/null
+  printf 'vws-test %s' "$(cut -d' ' -f1,2 "${key}.pub")"
+}
+
+# sign_result FILE [NAME]: signs a result file in place with test_signer NAME's key.
+sign_result() {
+  test_signer "${2:-a}" >/dev/null
+  python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" sign "$1" "${WORK}/signer-${2:-a}"
+}
+
 reset_log() { : >"$VWS_FAKE_LOG"; : >"${VWS_FAKE_LOG}.stdin"; }
 
 # run_vws ARGS...: runs scripts/vws with the fixture commands. Sets OUT, ERR and RC.

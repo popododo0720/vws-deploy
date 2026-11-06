@@ -135,7 +135,14 @@ vws_sc_write_result() { # pass|fail
   jq -n --arg s "$vws_sc_name" --arg r "$1" --arg u "$vws_sc_uid" --arg e "$vws_sc_steps" \
     --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{scenario: $s, result: $r, cluster: "vws-test", finishedAt: $t, clusterUID: $u, evidence: $e}' \
-    >"${vws_sc_result}.tmp" && mv "${vws_sc_result}.tmp" "$vws_sc_result" || vws_die_env "cannot write ${vws_sc_result}"
+    >"${vws_sc_result}.tmp" || vws_die_env "cannot write ${vws_sc_result}"
+  if [[ -n ${VWS_RESULT_SIGNING_KEY:-} ]]; then
+    python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" sign "${vws_sc_result}.tmp" "$VWS_RESULT_SIGNING_KEY" ||
+      { rm -f "${vws_sc_result}.tmp"; vws_die_env "cannot sign ${vws_sc_result} with VWS_RESULT_SIGNING_KEY"; }
+  else
+    echo "vws: ${vws_sc_result} is unsigned (no VWS_RESULT_SIGNING_KEY); --update-feature-map refuses it" >&2
+  fi
+  mv "${vws_sc_result}.tmp" "$vws_sc_result" || vws_die_env "cannot write ${vws_sc_result}"
 }
 
 # vws_aws ARGS...: aws-cli against VWS only. It gets a throwaway HOME and config, no shared credentials,
