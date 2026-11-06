@@ -6,7 +6,7 @@
     {"feature": "EC2 user-data", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
     {"feature": "EBS volume create / attach / snapshot", "repo": "vws-storage", "issue": null, "scenario": null},
     {"feature": "Elastic IP allocate / associate", "repo": "vws-network", "issue": null, "scenario": null},
-    {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": null},
+    {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": "s3-basic"},
     {"feature": "IAM users and access keys", "repo": "vws-iam", "issue": "vws-iam#3", "scenario": null},
     {"feature": "IAM policy evaluation (Authorize)", "repo": "vws-iam", "issue": "vws-iam#4", "scenario": null},
     {"feature": "STS AssumeRole / GetSessionToken", "repo": "vws-iam", "issue": "vws-iam#5", "scenario": null},
