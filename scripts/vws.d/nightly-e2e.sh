@@ -13,8 +13,9 @@
 # $XDG_STATE_HOME/vws-nightly/<UTC time>) gets the scenario files of vws nightly and e2e/: one log per
 # step, steps.jsonl and summary.json. On a failure it opens one incident issue in REPO with the failing
 # step and the log tails (secret-looking env values redacted); a rerun of the same run reuses it. Then it posts
-# one lead-wake comment on the wake thread (--wake-thread, default $ORCHESTRATE_WAKE_THREAD) naming the step, the
-# failed scenarios and the log paths; a pass posts nothing (vws-deploy#290).
+# one lead-wake comment on the orchestrator's wake thread in vws-deploy (--wake-thread, else ORCHESTRATE_WAKE_THREAD
+# as the orchestrator reads it) naming the step, the failed scenarios and the log paths; STOP posts nothing, and a
+# pass posts nothing (vws-deploy#290).
 # Exit: 0 every step passed, 1 a step failed or the incident or wake could not be posted, 2 usage,
 # 3 environment (tool missing, lock held).
 # shellcheck disable=SC2034 # read by scripts/vws
@@ -134,10 +135,33 @@ vws_e2e_wake_body() { # RUN LOG_URL INCIDENT KEY
   printf '\nTriage from the incident and route the fix to its owner.\n\nIdempotency key: `%s`\n' "$4"
 }
 
+# The orchestrator's wake thread is always in this repo (STATUS_REPO in .github/orchestrate/rules/common.py).
+VWS_E2E_WAKE_REPO=popododo0720/vws-deploy
+
+vws_e2e_wake_cfg() { # KEY: the orchestrator's value of KEY, read now: its env file, then the environment wins
+  local dir=${ORCHESTRATE_CONFIG_DIR:-${HOME}/.config/vws-orchestrate} k v out=''
+  if [[ -f ${dir}/env ]]; then
+    while IFS='=' read -r k v; do
+      k=${k//[[:space:]]/}
+      [[ $k == "$1" ]] || continue
+      v=${v%$'\r'}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}; v=${v#[\"\']}; out=${v%[\"\']}
+    done <"${dir}/env"
+  fi
+  [[ -z ${!1+x} ]] || out=${!1}
+  printf '%s' "$out"
+}
+
+vws_e2e_wake_stop() { # prints why the orchestrator's wakes are silent, or nothing
+  local dir=${ORCHESTRATE_CONFIG_DIR:-${HOME}/.config/vws-orchestrate}
+  if [[ -e ${dir}/STOP ]]; then echo "the STOP file ${dir}/STOP is present"
+  elif [[ $(vws_e2e_wake_cfg ORCHESTRATE_WAKES) == off ]]; then echo "ORCHESTRATE_WAKES is off"
+  elif [[ $(vws_e2e_wake_cfg ORCHESTRATE_DISPATCH) == off ]]; then echo "ORCHESTRATE_DISPATCH is off"; fi
+}
+
 vws_e2e_wake() { # RUN LOG_URL INCIDENT REPO THREAD: one lead-wake comment per run on the wake thread
   local key me list i body="${vws_e2e_dir}/wake.md"
   key="sha256:$(printf 'nightly-e2e\n%s#%s' "$4" "$1" | sha256sum | cut -d' ' -f1)"
-  vws_e2e_wake_body "$1" "$2" "$3" "$key" >"$body" || return 1
+  vws_e2e_wake_body "$1" "$2" "$3" "$key" | vws_e2e_redact >"$body" || return 1
   for i in 1 2 3; do
     # Look before every post, so a retry after a post that timed out finds the comment it made. Only a
     # comment by this login counts: anyone can copy the key line.
@@ -154,7 +178,7 @@ vws_e2e_wake() { # RUN LOG_URL INCIDENT REPO THREAD: one lead-wake comment per r
 
 vws_cmd_main() {
   local cr='' log_url='' results='' timeout_s=1800 repo=popododo0720/vws-deploy run v want uid started incident
-  local thread=${ORCHESTRATE_WAKE_THREAD:-} wake
+  local thread='' wake stop
   local map="${VWS_ROOT}/docs/feature-map.json"
   while (($#)); do
     case $1 in
@@ -226,14 +250,19 @@ vws_cmd_main() {
       incident=''
       vws_emit FAIL e2e/incident "could not open the incident issue in ${repo}; body at ${vws_e2e_dir}/incident.md"
     fi
-    if [[ -z $thread ]]; then
+    # Read only now: the operator may set STOP or change the thread while the scenarios run.
+    [[ -n $thread ]] || thread=$(vws_e2e_wake_cfg ORCHESTRATE_WAKE_THREAD)
+    stop=$(vws_e2e_wake_stop)
+    if [[ -n $stop ]]; then
+      vws_emit WARN e2e/wake "wakes are off (${stop}); nothing posted"
+    elif [[ -z $thread ]]; then
       vws_emit WARN e2e/wake "no wake thread (--wake-thread or ORCHESTRATE_WAKE_THREAD); nobody is woken"
-    elif [[ ${ORCHESTRATE_WAKES:-on} == off || ${ORCHESTRATE_DISPATCH:-on} == off ]]; then
-      vws_emit WARN e2e/wake "wakes are off (STOP: ORCHESTRATE_WAKES or ORCHESTRATE_DISPATCH is off); nothing posted"
-    elif wake=$(vws_e2e_wake "$run" "$log_url" "$incident" "$repo" "$thread"); then
-      vws_emit OK e2e/wake "${repo}#${thread}: ${wake##*$'\n'}"
+    elif ! [[ $thread =~ ^[1-9][0-9]{0,9}$ ]]; then
+      vws_emit FAIL e2e/wake "ORCHESTRATE_WAKE_THREAD must be an issue or PR number, not ${thread:0:40}"
+    elif wake=$(vws_e2e_wake "$run" "$log_url" "$incident" "$VWS_E2E_WAKE_REPO" "$thread"); then
+      vws_emit OK e2e/wake "${VWS_E2E_WAKE_REPO}#${thread}: ${wake##*$'\n'}"
     else
-      vws_emit FAIL e2e/wake "could not post the lead wake on ${repo}#${thread}; body at ${vws_e2e_dir}/wake.md"
+      vws_emit FAIL e2e/wake "could not post the lead wake on ${VWS_E2E_WAKE_REPO}#${thread}; body at ${vws_e2e_dir}/wake.md"
     fi
   fi
   jq -s --arg run "$run" --arg s "$started" --arg t "$(date -u +%FT%TZ)" --arg url "$log_url" --arg i "$incident" \

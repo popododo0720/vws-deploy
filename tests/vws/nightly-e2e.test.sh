@@ -60,6 +60,7 @@ export PATH="${WORK}/bin:${PATH}" VWS_NIGHTLY_E2E_VWS="${WORK}/vws" VWS_NIGHTLY_
 export FAKE_VWS_LOG="${WORK}/vws.log" FAKE_GH_LOG="${WORK}/gh.log" FAKE_GH_BODY="${WORK}/body.md" FAKE_OS_LOG="${WORK}/os.log"
 export FAKE_GH_WAKE="${WORK}/wake.md"
 unset ORCHESTRATE_WAKE_THREAD ORCHESTRATE_WAKES ORCHESTRATE_DISPATCH
+orch="${WORK}/orchestrate"; mkdir -p "$orch"; export ORCHESTRATE_CONFIG_DIR=$orch
 export OS_CLOUD=other-project OS_AUTH_URL=https://keystone.invalid OS_PASSWORD=hunter22
 export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value API_TOKEN=abc GH_TOKEN=abc-longer-token
 export PRIVATE_KEY=$'-----BEGIN KEY-----\npemline1secret\npemline2secret\n-----END KEY-----'
@@ -142,6 +143,29 @@ expect_text "STOP (ORCHESTRATE_WAKES=off): WARN" "$OUT" "WARN  e2e/wake  wakes a
 if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "STOP: no wake is posted"; else bad "wake under STOP" "$(cat "$FAKE_GH_LOG")"; fi
 FAKE_nightly=fail ORCHESTRATE_DISPATCH=off ORCHESTRATE_WAKE_THREAD=339 e2e --results "${WORK}/r/20261105T130271Z"
 if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "ORCHESTRATE_DISPATCH=off: no wake is posted"; else bad "wake under dispatch off" "$(cat "$FAKE_GH_LOG")"; fi
+
+printf '# box config\nORCHESTRATE_WAKE_THREAD = "339"\nORCHESTRATE_WAKES=off\n' >"${orch}/env"
+FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130272Z"
+expect_text "STOP in the orchestrator's env file: WARN" "$OUT" "WARN  e2e/wake  wakes are off (ORCHESTRATE_WAKES is off)"
+if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "STOP in the env file: no wake is posted"; else bad "wake under file STOP" "$(cat "$FAKE_GH_LOG")"; fi
+printf 'ORCHESTRATE_WAKE_THREAD="339"\n' >"${orch}/env"
+FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130273Z" --repo popododo0720/vws-iam
+expect_text "the env file's wake thread is used" "$OUT" "OK    e2e/wake  popododo0720/vws-deploy#339:"
+expect_text "the wake goes to vws-deploy whatever --repo is" "$(cat "$FAKE_GH_LOG")" "api repos/popododo0720/vws-deploy/issues/339/comments -F body=@"
+ORCHESTRATE_WAKES=off FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130274Z"
+if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "the environment wins over the env file, as in the orchestrator"; else bad "env precedence" "$(cat "$FAKE_GH_LOG")"; fi
+touch "${orch}/STOP"
+FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130275Z" --wake-thread 339
+expect_text "the STOP file: WARN" "$OUT" "WARN  e2e/wake  wakes are off (the STOP file ${orch}/STOP is present)"
+if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "the STOP file: no wake is posted"; else bad "wake under STOP file" "$(cat "$FAKE_GH_LOG")"; fi
+rm -f "${orch}/STOP"
+printf 'ORCHESTRATE_WAKE_THREAD=abc\n' >"${orch}/env"
+FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130276Z"
+expect_text "a wake thread in the env file that is not a number: FAIL" "$OUT" "FAIL  e2e/wake  ORCHESTRATE_WAKE_THREAD must be an issue or PR number, not abc"
+rm -f "${orch}/env"
+
+url="https://logs.invalid/run?token=${GH_TOKEN}" FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130277Z" --wake-thread 339
+expect_text "a secret in the log URL is redacted in the wake" "$(cat "$FAKE_GH_WAKE")" "Run log: https://logs.invalid/run?token=[redacted]"
 
 ORCHESTRATE_WAKE_THREAD=339 FAKE_nightly=fail FAKE_GH_POST_FAIL=1 e2e --results "${WORK}/r/20261105T130280Z"
 expect_rc "a wake that cannot be posted: exit 1" 1
