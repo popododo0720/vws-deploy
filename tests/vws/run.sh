@@ -31,7 +31,7 @@ for test in "$dir"/*.test.sh; do
   [[ -f $test ]] || continue
   while (($(jobs -rp | wc -l) >= max_jobs)); do wait -n || true; done
   n=${#tests[@]}
-  { rc=0; bash "$test" >"${logs}/${n}.log" 2>&1 || rc=$?; echo "$rc" >"${logs}/${n}.rc"; } &
+  { rc=0; bash "$test" </dev/null >"${logs}/${n}.log" 2>&1 || rc=$?; echo "$rc" >"${logs}/${n}.rc"; } &
   groups+=("$!")
   tests+=("$test")
 done
