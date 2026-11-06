@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary: nightly full-stack e2e on vws-test: scope check, apply the CR, every scenario, the feature-map PR, an incident on failure
+# summary: nightly full-stack e2e on vws-test: scope check, apply the CR, every scenario, the feature-map PR, the results branch, an incident on failure
 # Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --cr FILE --log-url URL [--results DIR]
 #   [--timeout SECONDS] [--repo OWNER/NAME]
 # vws-deploy#253, design docs/design/nightly-e2e.md. Removes every OS_* variable, then runs in order:
@@ -7,8 +7,9 @@
 #   apply         vws apply --unattended -f CR (install or upgrade to what the CR pins)
 #   scenarios     vws nightly --results DIR --timeout SECONDS
 #   feature-map-pr vws nightly-pr --results DIR --log-url URL --repo REPO
-# A failed step skips the steps after it, except that feature-map-pr still runs after failed scenarios
-# so the passes are recorded. Each step has a hard limit (VWS_E2E_LIMITS). DIR (default
+#   publish       vws nightly-publish --results DIR (the results JSON to the nightly-results branch)
+# A failed step skips the steps after it, except that feature-map-pr and publish still run after failed
+# scenarios so the passes and the failures are recorded. Each step has a hard limit (VWS_E2E_LIMITS). DIR (default
 # $XDG_STATE_HOME/vws-nightly/<UTC time>) gets the scenario files of vws nightly and e2e/: one log per
 # step, steps.jsonl and summary.json. On a failure it opens one incident issue in REPO with the failing
 # step and the log tails (secret-looking env values redacted); a rerun of the same run reuses it.
@@ -21,7 +22,7 @@ VWS_NEED=(jq timeout flock gh kubectl)
 VWS_NIGHTLY_E2E_VWS=${VWS_NIGHTLY_E2E_VWS:-}
 # Seconds before the second incident attempt (doubled before the third). Tests set 0.
 VWS_NIGHTLY_E2E_BACKOFF=${VWS_NIGHTLY_E2E_BACKOFF:-5}
-declare -A VWS_E2E_LIMITS=([apply]=3600 [scenarios]=21600 [feature-map-pr]=600)
+declare -A VWS_E2E_LIMITS=([apply]=3600 [scenarios]=21600 [feature-map-pr]=600 [publish]=600)
 
 vws_e2e_dir='' vws_e2e_failed=''
 
@@ -168,9 +169,11 @@ vws_cmd_main() {
   if [[ -z $vws_e2e_failed ]]; then
     vws_e2e_step scenarios nightly --results "$results" --timeout "$timeout_s"
     vws_e2e_step feature-map-pr nightly-pr --results "$results" --log-url "$log_url" --repo "$repo"
+    vws_e2e_step publish nightly-publish --results "$results"
   else
     vws_e2e_record scenarios skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
     vws_e2e_record feature-map-pr skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
+    vws_e2e_record publish skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
   fi
 
   incident=''
