@@ -83,6 +83,12 @@ class CallPermissions(unittest.TestCase):
             with self.subTest(job=cid):
                 self.assertEqual(gaps(call.permissions, os.path.join(ROOT, call.path)), [])
 
+    def test_verify_reset_can_delete_a_pr_label(self):
+        # vws-deploy#327: with issues: write alone, DELETE .../issues/<pr>/labels/verify-approved is HTTP 403 on a PR.
+        want = {"issues": "write", "pull-requests": "write"}
+        self.assertEqual(needed(os.path.join(WFDIR, "repo-guard-verify-reset.yml")),
+                         {("verify-reset", s): l for s, l in want.items()})
+
     def test_gaps_sees_a_wider_sibling_job(self):
         # The startup_failure of run 39904989710: one file, a read-only call, and a write job beside it.
         d = self.enterContext(__import__("tempfile").TemporaryDirectory())
