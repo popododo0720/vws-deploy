@@ -68,8 +68,11 @@ its own", which is what a failed nightly is, and it trusts only the box login, w
 the nightly runs under. The comment carries an `Idempotency key:` line in the orchestrator's form,
 sha256 of the repo and the run, so a rerun of the same run finds its own comment and posts nothing;
 the orchestrator reads the key as one more of its own keys, and it cannot collide with a lead-wake
-key, which hashes `repo#N@head`. STOP (`ORCHESTRATE_WAKES=off` or `ORCHESTRATE_DISPATCH=off`) silences
-it like every other wake. The incident stays the record; the wake only points at it.
+key, which hashes `repo#N@head`. The thread and STOP come from the orchestrator's own config
+(`~/.config/vws-orchestrate/env` and its `STOP` file, the environment winning as in `load_config`),
+read when the run fails, so a STOP set during a six-hour scenarios step still silences the wake. The
+comment always goes to vws-deploy, where the thread lives, even when `--repo` points the incident
+elsewhere. The incident stays the record; the wake only points at it.
 
 Rejected:
 
