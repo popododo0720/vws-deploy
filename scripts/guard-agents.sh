@@ -15,7 +15,7 @@
 #   guard-agents.sh pr-normalize [FILE]     prints the pull request text (FILE or $PR_BODY) with each line "Part of
 #                                           <GUARD_PART_OF_OWNER>/vws-<repo>#N" rewritten to "Part of vws-<repo>#N"
 #   guard-agents.sh commit-msg FILE         the commit message has no closing keyword (Closes/Fixes/Resolves #N, owner/repo#N or an issue URL) and no Hangul
-#   guard-agents.sh pr-commits BASE HEAD    every commit in BASE..HEAD has a "<type>: summary" subject and "Part of #N", and passes commit-msg
+#   guard-agents.sh pr-commits BASE HEAD    BASE..HEAD has no merge commit, and every commit has a "<type>: summary" subject and "Part of #N", and passes commit-msg
 #   guard-agents.sh pr-size BASE HEAD       BASE...HEAD changes at most the .github/pr-size.conf limit (800) of
 #                                           lines outside generated, vendored, lockfile and testdata paths,
 #                                           unless $PR_BODY has a "Size-exception: <reason>" line (see cmd_pr_size)
@@ -496,13 +496,16 @@ cmd_pr_commits() {
   [[ -n $base && -n $head ]] || die "pr-commits: needs BASE and HEAD"
   tmp=$(mktemp)
   trap 'rm -f "$tmp"' RETURN
-  # Merge commits too: a merge message that closes an issue closes it like any other commit. A range git
-  # cannot list (a bad ref) fails instead of checking nothing.
-  local -a shas
+  # A range git cannot list (a bad ref) fails instead of checking nothing.
+  local -a shas merges
   mapfile -t shas < <(git rev-list "${base}..${head}" || echo "rev-list-failed")
   [[ ${shas[*]:-} != *rev-list-failed* ]] || die "pr-commits: cannot list the commits in ${base}..${head}"
   # An empty range checks nothing, so it fails too: a pull request always has at least one commit.
   [[ -n ${shas[*]:-} ]] || die "pr-commits: there are no commits in ${base}..${head}; nothing was checked"
+  # A pull request is linear: a merge commit (such as main merged into the branch) fails (vws-deploy#326).
+  mapfile -t merges < <(git rev-list --merges "${base}..${head}")
+  [[ -z ${merges[*]:-} ]] ||
+    die "pr-commits: merge commit(s) in ${base}..${head}: ${merges[*]}; rebase the branch on the base instead of merging"
   for sha in "${shas[@]}"; do
     [[ -n $sha ]] || continue
     subject=$(git log -1 --format=%s "$sha")
@@ -1145,7 +1148,7 @@ GH
   c4=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" commit -q --allow-empty -m "ci: u" -m "Resolved https://github.com/acme/repo/issues/4" -m "Part of #4"
   expect_fail "a commit that closes an issue by URL" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c4"
-  # Stored messages keep their # lines; merge commits are checked; a bad range fails (vws-deploy guard P2).
+  # Stored messages keep their # lines; a merge commit fails; a bad range fails (vws-deploy guard P2).
   local c5
   git -C "$repo" reset -q --hard "$c4"
   c5=$(git -C "$repo" rev-parse HEAD~1)
@@ -1156,8 +1159,17 @@ GH
   git -C "$repo" checkout -q -b side "$c5"
   git -C "$repo" commit -q --allow-empty -m "ci: side" -m "Part of #4"
   git -C "$repo" checkout -q commits
-  git -C "$repo" merge -q --no-ff -m "ci: merge side" -m "Part of #4" -m "Closes #4" side
-  expect_fail "a merge commit that closes an issue" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" merge -q --no-ff -m "ci: merge side" -m "Part of #4" side
+  # vws-deploy#326: a merge commit with a valid message still fails, and the error names it.
+  local merge_out
+  merge_out=$(bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5" 2>&1) &&
+    die "selftest: a merge commit in the range was accepted"
+  [[ $merge_out == *"merge commit(s) in ${c5}..HEAD: $(git -C "$repo" rev-parse HEAD); rebase"* ]] ||
+    die "selftest: a merge commit in the range did not fail with its SHA (${merge_out})"
+  echo "ok: a merge commit in the range fails and is named"
+  git -C "$repo" reset -q --hard side
+  expect_pass "a linear range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
+  git -C "$repo" checkout -q commits
   git -C "$repo" reset -q --hard "$c5"
   expect_fail "pr-commits on a range git cannot list" bash -c 'cd "$1" && bash "$2" pr-commits no-such-ref HEAD' _ "$repo" "$OLDPWD_SCRIPT"
   expect_fail "pr-commits on an empty range" bash -c 'cd "$1" && bash "$2" pr-commits "$3" HEAD' _ "$repo" "$OLDPWD_SCRIPT" "$c5"
