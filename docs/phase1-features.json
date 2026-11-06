@@ -1,0 +1,31 @@
+{
+  "source": "Phase 1 (core) of the owner's roadmap vws-deploy#132: EC2, EBS, VPC, IAM, the install wizard and stabilization; S3 moves to phase 2. IAM scope from vws-iam#1, EC2/EBS/VPC calls from vws-deploy#133. A change to this list needs the owner or tmp to approve the PR (vws-deploy#289). scripts/vws verify --check-feature-map fails when a phase1 name has no row in feature-map.json or a row is in neither list.",
+  "phase1": [
+    "EC2 RunInstances / TerminateInstances",
+    "EC2 DescribeInstances / StopInstances / StartInstances",
+    "EC2 key pair import",
+    "EC2 user-data",
+    "AMI / EBS snapshot import",
+    "EBS volume create / attach / snapshot",
+    "EBS volume detach / delete",
+    "VPC and subnet create / delete",
+    "Security group create / ingress rules",
+    "Elastic IP allocate / associate",
+    "Direct subnets as shared EC2 subnets and network interfaces",
+    "IAM users and access keys",
+    "IAM groups and roles",
+    "IAM policy evaluation (Authorize)",
+    "STS AssumeRole / GetSessionToken",
+    "IAM virtual MFA",
+    "Console login",
+    "Console EC2 Instances list and Launch Instance wizard",
+    "Console IAM pages",
+    "Install wizard (vws init)",
+    "Node reboot recovery"
+  ],
+  "later": [
+    {"feature": "S3 object put / get (RGW)", "reason": "vws-deploy#132 moves S3 out of core into the first official plugin (phase 2, vws-deploy#179). The row stays because the nightly runs its s3-basic scenario."},
+    {"feature": "S3 bucket operations", "reason": "Phase 2 with the rest of S3 (vws-deploy#132, #179)."},
+    {"feature": "Console S3 pages", "reason": "Phase 2 with the rest of S3; vws-console#69 and #83 are on the phase-2 hold in vws-deploy#132."}
+  ]
+}
