@@ -106,6 +106,8 @@ jobs:
             fi
             exit 1
           }
+          # A failed lookup (after its rate-limit retries) is a gate not re-run, too.
+          trap 'give_up "a GitHub API lookup failed (line ${LINENO})"' ERR
           pr=$(gh_api_retry "repos/${REPO}/pulls/${NUMBER}")
           head=$(jq -r '.head.sha' <<<"$pr")
           head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
