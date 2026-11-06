@@ -33,7 +33,7 @@ CALLS = {
                   {"issues": "write", "pull-requests": "write"}),
     "rerun": Call(".github/workflows/repo-guard-verify-rerun.yml",
                   "github.event_name == 'issue_comment' && github.event.issue.pull_request",
-                  {"actions": "write", "pull-requests": "read"}),
+                  {"actions": "write", "issues": "write", "pull-requests": "write"}),
 }
 PIN = re.compile(r"^popododo0720/vws-deploy/(\.github/workflows/[a-z-]+\.yml)@([0-9a-f]{40})$")
 # The only top-level keys. run-name is left out: it only changes the run title, which nothing reads, and every

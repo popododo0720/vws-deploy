@@ -15,7 +15,8 @@ permissions: {}
 jobs:
   # A comment event runs on the default branch, and its check would not attach to the PR head. So this job
   # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
-  # the comments again. It checks out nothing and runs no PR code; it may only re-run jobs (actions: write).
+  # the comments again. It checks out nothing and runs no PR code. It may only re-run jobs (actions: write)
+  # and remove the verify-approved label when it cannot re-run the gate (issues and pull-requests: write).
   # The job to re-run is the called one, "gate / verify-gate" ("caller job / called job"). The caller's bare
   # "verify-gate" shim depends on it, so GitHub re-runs the shim after it; re-running only the shim would
   # replay the old result.
@@ -24,7 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
-      pull-requests: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Re-run verify-gate for the PR head
         env:
@@ -90,23 +92,56 @@ jobs:
             done
           }
           # END gh-api-retry
-          head=$(gh_api_retry "repos/${REPO}/pulls/${NUMBER}" --jq '.head.sha')
-          # Several PRs can share a head SHA: prefer the newest run linked to this PR number. Fork PRs list no
-          # pull_requests on the run, so the newest run for the head is the fallback.
-          run=$(gh_api_retry "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=100" \
-            --jq "([.workflow_runs[] | select(any(.pull_requests[]?; .number == ${NUMBER}))][0].id) // .workflow_runs[0].id // empty")
-          if [[ -z $run ]]; then echo "no pull_request run for ${head} yet"; exit 0; fi
-          job=$(gh_api_retry "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "gate / verify-gate") | .id')
-          if [[ -z $job ]]; then echo "run ${run} has no verify-gate job"; exit 0; fi
+          # Any path that does not re-run the gate drops verify-approved, so a changed or withdrawn verdict never
+          # leaves an old green gate and label in place (vws-deploy#312). A label already gone is fine.
+          give_up() {
+            echo "$1" >&2
+            if out=$(gh_api_retry -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/verify-approved" 2>&1); then
+              echo "verify-approved removed: the gate was not re-run; re-verify and label again" >&2
+            elif [[ $out == *"HTTP 404"* ]]; then
+              echo "verify-approved was not set" >&2
+            else
+              echo "$out" >&2
+              echo "verify-approved could not be removed" >&2
+            fi
+            exit 1
+          }
+          pr=$(gh_api_retry "repos/${REPO}/pulls/${NUMBER}")
+          head=$(jq -r '.head.sha' <<<"$pr")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
+          head_ref=$(jq -r '.head.ref' <<<"$pr")
+          # Several PRs can share a head SHA, so the run is picked by this PR, never by the SHA alone: a run that
+          # lists this PR number, or, for a fork PR (whose runs list no pull_requests), a run from the PR's own
+          # head repo and branch. The list is newest first.
+          # The branch name goes to jq as data (--arg); a ref may contain a quote.
+          runs=$(gh_api_retry "repos/${REPO}/actions/workflows/repo-guard.yml/runs?event=pull_request&head_sha=${head}&per_page=100")
+          run=$(jq -r --argjson n "$NUMBER" --arg repo "$REPO" --arg hr "$head_repo" --arg ref "$head_ref" \
+            '[.workflow_runs[] | select(any(.pull_requests[]?; .number == $n)
+              or ((.pull_requests | length) == 0 and $hr != "" and $hr != $repo
+                  and .head_repository.full_name == $hr and .head_branch == $ref))][0].id // empty' <<<"$runs")
+          [[ -n $run ]] || give_up "no pull_request run of PR #${NUMBER} for ${head}"
           status=
           # A job that is still running cannot be re-run yet: wait for it (up to 15 minutes), then re-run.
-          # Giving up fails this job, so a changed verdict is never silently left unchecked.
+          # The job is looked up again each time: the run's jobs list is its newest attempt, and another re-run
+          # can start a newer attempt meanwhile; only a job of the newest attempt can be re-run.
           for _ in $(seq 1 30); do
+            job=$(gh_api_retry "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "gate / verify-gate") | .id')
+            [[ -n $job ]] || give_up "run ${run} has no verify-gate job"
             status=$(gh_api_retry "repos/${REPO}/actions/jobs/${job}" --jq '.status')
-            if [[ $status == completed ]] && gh_api_retry -X POST "repos/${REPO}/actions/jobs/${job}/rerun" >/dev/null; then
-              echo "verify-gate job ${job} re-run"; exit 0
+            if [[ $status == completed ]]; then
+              if out=$(gh_api_retry -X POST "repos/${REPO}/actions/jobs/${job}/rerun" 2>&1); then
+                echo "verify-gate job ${job} re-run"; exit 0
+              fi
+              # A newer attempt took over: look again. Any other refusal (HTTP 4xx, such as a run past its re-run
+              # window) does not change by waiting. A server error is retried.
+              if [[ $out == *"current attempt"* ]]; then
+                echo "verify-gate job ${job} is no longer the newest attempt; looking again"
+              elif [[ $out == *"(HTTP 4"* ]]; then
+                give_up "verify-gate job ${job} cannot be re-run: ${out}"
+              else
+                echo "verify-gate job ${job} re-run failed, retrying: ${out}"
+              fi
             fi
             sleep 30
           done
-          echo "verify-gate job ${job} could not be re-run (status ${status})" >&2
-          exit 1
+          give_up "verify-gate job ${job} could not be re-run within 15 minutes (status ${status})"
