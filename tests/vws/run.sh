@@ -6,17 +6,42 @@
 # the larger of its summary count and its FAIL lines; a suite that exits without a summary counts as one, and
 # one that exits 0 without a summary is named. No suites at all is a failure, so a wrong VWS_TEST_DIR cannot
 # pass. Any failure makes the exit code 1.
+# Suites run in parallel, VWS_TEST_JOBS at a time; output and totals stay in suite name order. The default is
+# twice nproc because the slow suites mostly sleep on fake-cluster polls (#322).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 dir=${VWS_TEST_DIR:-tests/vws}
-log=$(mktemp)
-trap 'rm -f "$log"' EXIT
-total_cases=0 total_failed=0 suites=0 bad_suites=() missing_summary=()
+max_jobs=${VWS_TEST_JOBS:-$(($(nproc) * 2))}
+[[ $max_jobs =~ ^[1-9][0-9]{0,3}$ ]] || { echo "VWS_TEST_JOBS must be an integer from 1 to 9999, got: ${max_jobs}" >&2; exit 2; }
+logs=$(mktemp -d)
+# Each suite runs in its own process group (set -m), so a killed runner stops every suite it started and any
+# child a suite left behind.
+set -m
+groups=()
+cleanup() {
+  local pid
+  for pid in "${groups[@]}"; do kill -- "-${pid}" 2>/dev/null || true; done
+  rm -rf "$logs"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+tests=()
 for test in "$dir"/*.test.sh; do
   [[ -f $test ]] || continue
+  while (($(jobs -rp | wc -l) >= max_jobs)); do wait -n || true; done
+  n=${#tests[@]}
+  { rc=0; bash "$test" </dev/null >"${logs}/${n}.log" 2>&1 || rc=$?; echo "$rc" >"${logs}/${n}.rc"; } &
+  groups+=("$!")
+  tests+=("$test")
+done
+wait
+total_cases=0 total_failed=0 suites=0 bad_suites=() missing_summary=()
+for n in "${!tests[@]}"; do
+  test=${tests[$n]} log="${logs}/${n}.log"
   echo "== ${test}"
-  rc=0
-  bash "$test" >"$log" 2>&1 || rc=$?
+  rc=1
+  [[ -s ${logs}/${n}.rc ]] && rc=$(<"${logs}/${n}.rc")
   cat "$log"
   summary=$(grep -E '^[0-9]+ cases, [0-9]+ failed$' "$log" | tail -n 1 || true)
   cases=0 failed=0
