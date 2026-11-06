@@ -89,6 +89,7 @@ na_case '.features[0].na = "x"' 1 "a row with a scenario and an na fails the che
 na_case '.features[2].na = ""' 1 "an empty na fails the check" "Console login: na must be a one-line reason"
 na_case '.features[2].na = "a | b"' 1 "an na with a table pipe fails the check" "Console login: na must be a one-line reason"
 na_case '.features[2].na = "a\nb"' 1 "a multi-line na fails the check" "Console login: na must be a one-line reason"
+na_case '.features[2].na = "a\u2028b"' 1 "an na with a Unicode line separator fails the check" "Console login: na must be a one-line reason"
 na_case '.features[2].na = 7' 1 "an na that is not a string fails the check" "Console login: na must be a one-line reason"
 na_case '.features[2].na = "   "' 1 "a blank na fails the check" "Console login: na must be a one-line reason"
 mv "${map}.na" "$map"

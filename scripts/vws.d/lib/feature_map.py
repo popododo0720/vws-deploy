@@ -160,7 +160,7 @@ def scenario_gaps(map_path, data):
     out = []
     for f in data["features"]:
         sc, na = f.get("scenario"), f.get("na")
-        if na is not None and not (isinstance(na, str) and na.strip() and "\n" not in na and "|" not in na):
+        if na is not None and not (isinstance(na, str) and na.strip() and na.splitlines() == [na] and "|" not in na):
             out.append(f"FAIL\tfeature-map\t{f['feature']}: na must be a one-line reason without |")
         elif sc and na:
             out.append(f"FAIL\tfeature-map\t{f['feature']}: has both a scenario and an na reason in {map_path}")
