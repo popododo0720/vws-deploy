@@ -17,7 +17,7 @@ anyone could write a passing result by hand and `vws verify --update-feature-map
   `vws-test`. `--update-feature-map` runs `ssh-keygen -Y verify -I vws-test -n
   vws-feature-map@vws-deploy` against those lines for every vws-test result. An unsigned result, a
   bad or tampered signature, a key not listed, or an empty list is refused with FAIL (exit 1) and
-  the map is not changed.
+  changes nothing in the map; other valid results in the same call are still recorded.
 - Only the public key is in the repo. Anyone can verify; only the holder of the private key can
   sign.
 
