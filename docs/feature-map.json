@@ -21,7 +21,7 @@
     {"feature": "Console login", "repo": "vws-console", "issue": null, "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
     {"feature": "Console EC2 Instances list and Launch Instance wizard", "repo": "vws-console", "issue": "vws-console#1", "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
     {"feature": "Console IAM pages", "repo": "vws-console", "issue": "vws-console#47", "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
-    {"feature": "Installer web wizard and TUI", "repo": "vws-deploy", "issue": "vws-deploy#139", "scenario": null, "na": "runs before the stack exists, so a scenario on an installed vws-test cannot reach it; the installer Go tests under installer/ cover it in CI"},
+    {"feature": "Installer web wizard and TUI", "repo": "vws-deploy", "issue": "vws-deploy#139", "scenario": null, "na": "no scenario yet; the installer runs before the stack and no nightly step bootstraps a cluster, so only the installer Go tests under installer/ (API and TUI) run, in CI"},
     {"feature": "Node reboot recovery", "repo": "vws-deploy", "issue": "vws-deploy#51", "scenario": null, "na": "no scenario yet; vws verify-reboot checks recovery only around a node reboot an operator makes"}
   ]
 }

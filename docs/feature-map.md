@@ -25,5 +25,5 @@ Last pass is a vws-test scenario run (KST). `unverified` means the feature has n
 | Console login | vws-console | - | N/A: browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet | unverified | - |
 | Console EC2 Instances list and Launch Instance wizard | vws-console | vws-console#1 | N/A: browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet | unverified | - |
 | Console IAM pages | vws-console | vws-console#47 | N/A: browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet | unverified | - |
-| Installer web wizard and TUI | vws-deploy | vws-deploy#139 | N/A: runs before the stack exists, so a scenario on an installed vws-test cannot reach it; the installer Go tests under installer/ cover it in CI | unverified | - |
+| Installer web wizard and TUI | vws-deploy | vws-deploy#139 | N/A: no scenario yet; the installer runs before the stack and no nightly step bootstraps a cluster, so only the installer Go tests under installer/ (API and TUI) run, in CI | unverified | - |
 | Node reboot recovery | vws-deploy | vws-deploy#51 | N/A: no scenario yet; vws verify-reboot checks recovery only around a node reboot an operator makes | unverified | - |
