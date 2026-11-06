@@ -279,6 +279,14 @@ esac"""
         self.assertEqual(calls.count("-X POST repos/o/r/actions/jobs/99/rerun"), 1)
         self.assertNotIn("DELETE", calls)
 
+    def test_failed_lookup_drops_the_label(self):
+        """A lookup that fails (here the jobs list, HTTP 502) leaves no stale approval behind."""
+        rc, calls, out = self.go(jobs='echo "gh: Server Error (HTTP 502)" >&2; exit 1')
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("lookup failed", out)
+
     def test_server_error_is_retried(self):
         flaky = 'if [ "$(count post)" -lt 2 ]; then echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi; exit 0'
         rc, calls, out = self.go(rerun=flaky)
