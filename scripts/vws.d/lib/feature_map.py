@@ -3,7 +3,7 @@
 
 Usage: feature_map.py update MAP RESULT.json...   (then renders MAP's .md sibling)
        feature_map.py render MAP
-       feature_map.py check MAP                    (exit 1 when the .md is stale)
+       feature_map.py check MAP                    (exit 1 when the .md is stale or MAP misses a Phase 1 feature)
        feature_map.py sign RESULT.json KEY         (adds "signature"; KEY is an ssh private key file)
 
 MAP is docs/feature-map.json, the only hand-edited source. lastPass and evidence are written only
@@ -24,6 +24,9 @@ finishedAt, result, clusterUID, evidence, signature), a finishedAt more than 5 m
 a vwsTest.kubeSystemUID that is not a string or null, or a vwsTest.signers that is not a list of
 one-line strings. Exit 2 prints a single "FAIL: <reason>" line, no
 traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. render/check: 0, 1 stale, 3. sign: 0, 1 signing failed, 2 usage.
+check also reads phase1-features.json next to MAP (vws-deploy#289), the owner-approved Phase 1 list:
+{"phase1": [names], "later": [{"feature", "reason"}]}. It fails (exit 1, one FAIL line each) when a
+Phase 1 name has no MAP row, or a MAP row is in neither list; an unreadable list exits 3.
 """
 import json
 import os
@@ -126,6 +129,28 @@ def load(path):
             raise ValueError(f"duplicate feature {feat['feature']}")
         names.add(feat["feature"])
     return data
+
+
+def phase1_path(map_path):
+    return os.path.join(os.path.dirname(map_path), "phase1-features.json")
+
+
+def phase1_gaps(map_path, data):
+    """FAIL lines for Phase 1 features missing from the map and map rows in neither list."""
+    with open(phase1_path(map_path), encoding="utf-8") as f:
+        p1 = json.load(f)
+    want, later = p1["phase1"], p1["later"]
+    if not isinstance(want, list) or not isinstance(later, list) or not all(
+            isinstance(x, dict) and isinstance(x.get("reason"), str) and x["reason"] for x in later):
+        raise ValueError(f"{phase1_path(map_path)}: phase1 must be a list and later a list of {{feature, reason}}")
+    names = want + [x.get("feature") for x in later]
+    if not all(isinstance(n, str) and n for n in names) or len(set(names)) != len(names):
+        raise ValueError(f"{phase1_path(map_path)}: feature names must be unique non-empty strings")
+    have = [f["feature"] for f in data["features"]]
+    out = [f"FAIL\tphase1\t{n}: Phase 1 feature has no row in {map_path}" for n in want if n not in have]
+    out += [f"FAIL\tphase1\t{n}: map row is neither phase1 nor later in {phase1_path(map_path)}"
+            for n in have if n not in names]
+    return out
 
 
 def md_path(map_path):
@@ -244,13 +269,18 @@ def main(argv):
                 return 2
             print("\n".join(out))
             return 1 if failed else 0
-        text = render(load(argv[1]))
+        data = load(argv[1])
+        text = render(data)
         if argv[0] == "render":
             write(md_path(argv[1]), text)
             return 0
+        out = phase1_gaps(argv[1], data)
         with open(md_path(argv[1]), encoding="utf-8") as f:
-            return 0 if f.read() == text else 1
-    except (OSError, ValueError, KeyError) as e:
+            if f.read() != text:
+                out.append(f"FAIL\tfeature-map\t{md_path(argv[1])} is stale; run scripts/vws verify --update-feature-map")
+        print("\n".join(out))
+        return 1 if out else 0
+    except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"feature-map: {e}", file=sys.stderr)
         return 3
 

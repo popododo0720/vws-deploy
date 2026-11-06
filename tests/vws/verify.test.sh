@@ -14,6 +14,8 @@ cat >"$map" <<'JSON'
   {"feature": "Console login", "repo": "vws-console", "scenario": null}
 ]}
 JSON
+p1="${WORK}/fm/phase1-features.json"
+echo '{"phase1": ["EC2 key pair import", "Console login"], "later": [{"feature": "STS", "reason": "test"}]}' >"$p1"
 jq --arg k "$(test_signer a)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"
 result() { # FILE SCENARIO RESULT CLUSTER TIME [CLUSTER_UID]
   jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" --arg u "${6-uid-vws-test}" \
@@ -41,6 +43,28 @@ expect_text "md marks unverified" "$md" "| Console login | vws-console | - | - |
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a fresh md passes the check" 0
 echo "edited" >>"${WORK}/fm/feature-map.md"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a hand-edited md fails the check" 1
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
+
+cp "$p1" "${p1}.orig"
+jq '.phase1 += ["IAM groups and roles"]' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a Phase 1 feature missing from the map fails the check" 1
+expect_text "the missing Phase 1 feature is named" "$OUT" "FAIL  phase1  IAM groups and roles: Phase 1 feature has no row in"
+jq '.later = []' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a map row in neither list fails the check" 1
+expect_text "the unclassified row is named" "$OUT" "FAIL  phase1  STS: map row is neither phase1 nor later"
+jq '.later += [{"feature": "Console login", "reason": "dup"}]' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a name in both lists is an unreadable list" 3
+jq '.later[0].reason = ""' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a later feature without a reason is an unreadable list" 3
+jq '.later = {}' "${p1}.orig" >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a later that is not a list is an unreadable list" 3
+echo '{"phase1": [' >"$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a truncated Phase 1 list is unreadable" 3
+rm "$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a missing Phase 1 list is unreadable" 3
+mv "${p1}.orig" "$p1"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "the restored list passes again" 0
+run_vws_real verify --check-feature-map; expect_rc "the repo feature map has every Phase 1 feature and a fresh md" 0
 
 echo '{"scenario": "x"}' >"${WORK}/fm/bad.json"
 run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/bad.json"; expect_rc "a result missing fields is invalid input" 2
