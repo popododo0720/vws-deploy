@@ -1,13 +1,13 @@
 {
   "vwsTest": {"kubeSystemUID": "18a8b0c5-891b-4a39-8cdd-3a18723047b9", "note": "kube-system namespace UID of vws-test (k3s v1.35.9, created 2026-10-12), read-only via kubectl get ns kube-system -o jsonpath={.metadata.uid}; signers are the allowed_signers lines (principal vws-test) whose key may sign results, empty until the vws-test runner key is listed (vws-deploy#288)", "signers": []},
   "features": [
-    {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": null},
+    {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": "ec2-volume-reboot"},
     {"feature": "EC2 DescribeInstances / StopInstances / StartInstances", "repo": "vws-console-api", "issue": null, "scenario": null},
     {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
     {"feature": "EC2 user-data", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": null},
     {"feature": "AMI / EBS snapshot import", "repo": "vws-compute", "issue": "vws-deploy#135", "scenario": null},
     {"feature": "EBS volume create / attach / snapshot", "repo": "vws-storage", "issue": null, "scenario": null},
-    {"feature": "EBS volume detach / delete", "repo": "vws-storage", "issue": null, "scenario": null},
+    {"feature": "EBS volume detach / delete", "repo": "vws-storage", "issue": null, "scenario": "ec2-volume-reboot"},
     {"feature": "VPC and subnet create / delete", "repo": "vws-network", "issue": "vws-network#5", "scenario": null},
     {"feature": "Security group create / ingress rules", "repo": "vws-network", "issue": "vws-network#117", "scenario": null},
     {"feature": "Elastic IP allocate / associate", "repo": "vws-network", "issue": null, "scenario": null},
