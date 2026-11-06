@@ -36,6 +36,26 @@ way:
 - `tests/vws/nightly-e2e.test.sh` puts a fake `openstack` first on PATH and fails if any step
   calls it.
 
+## Results branch (vws-deploy#290)
+
+Chosen: the raw scenario results go to their own orphan branch, `nightly-results`, as
+`metrics/nightly/<run>/NAME.json`, one fast-forward commit per run, written only by
+`vws nightly-publish` (the `publish` step). The feature map still goes to main by the reviewed
+nightly PR; the results branch is history, not a source of truth. Like `factory-metrics`, the
+branch refuses any commit the command did not write, because all bots share one login. The
+`metrics/` prefix and the `metrics:` subject keep each commit inside one scope of
+`scripts/scopes` (R2). No workflow runs on it: every `push` trigger filters on `main` or on `v*` tags.
+
+Rejected:
+
+- **The `factory-metrics` branch.** `.github/metrics/metrics.py` refuses a branch with a commit
+  it did not write (`metrics_foreign_commit`). Sharing the branch means loosening that check for a
+  second writer, which weakens the one control that keeps the metrics data to one script.
+- **Results committed to main by the nightly PR.** A file per night on main grows main with data
+  nobody reviews, and the AC asks for the results off main.
+- **Logs on the branch.** Scenario logs and step output can hold endpoint replies; only the result
+  JSON (scenario, result, time, cluster UID, signature) is published.
+
 ## Left for later parts
 
 - Building the CR that pins main of every service and the pinned proto tag. The command takes the

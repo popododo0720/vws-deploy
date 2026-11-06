@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vws nightly-e2e: runs scope, apply, scenarios and feature-map-pr in order on vws-test only, writes a
+# vws nightly-e2e: runs scope, apply, scenarios, feature-map-pr and publish in order on vws-test only, writes a
 # JSON summary, opens one incident on a failure (reused on a rerun) and never reaches OpenStack.
 set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
@@ -59,17 +59,18 @@ summary() { jq -r "$2" "${WORK}/$1/e2e/summary.json"; }
 r="r/20261105T130000Z"
 e2e --results "${WORK}/$r" --timeout 60
 expect_rc "every step passes: exit 0" 0
-if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'apply\nnightly\nnightly-pr' ]]; then ok "apply, nightly and nightly-pr run once, in order"
+if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'apply\nnightly\nnightly-pr\nnightly-publish' ]]; then ok "apply, nightly, nightly-pr and nightly-publish run once, in order"
 else bad "step order" "$(cat "$FAKE_VWS_LOG")"; fi
 expect_text "apply gets the CR unattended" "$(cat "$FAKE_VWS_LOG")" "apply --unattended -f ${cr}"
 expect_text "nightly writes into the run directory" "$(cat "$FAKE_VWS_LOG")" "nightly --results ${WORK}/$r --timeout 60"
+expect_text "nightly-publish gets the run" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results ${WORK}/$r"
 expect_text "nightly-pr gets the run and the log URL" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results ${WORK}/$r --log-url ${url} --repo popododo0720/vws-deploy"
 if ! grep -q '^env ' "$FAKE_VWS_LOG"; then ok "no step inherits an OS_* variable"; else bad "OS env leaked" "$(cat "$FAKE_VWS_LOG")"; fi
 if [[ ! -s $FAKE_OS_LOG ]]; then ok "no step calls openstack"; else bad "openstack called" "$(cat "$FAKE_OS_LOG")"; fi
 assert_no_changes "the scope check only reads the cluster"
 expect_text "the scope check reads kube-system" "$(cat "$VWS_FAKE_LOG")" "get ns kube-system"
-if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass" ]]; then
-  ok "summary.json records the run and four passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
+if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass,pass" ]]; then
+  ok "summary.json records the run and five passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
 if [[ ! -s $FAKE_GH_LOG ]]; then ok "a passing run opens no incident"; else bad "gh on pass" "$(cat "$FAKE_GH_LOG")"; fi
 
 FAKE_CALL_OPENSTACK=1 e2e --results "${WORK}/r/20261105T130100Z"
@@ -80,6 +81,7 @@ FAKE_nightly=fail e2e --results "${WORK}/$r"
 expect_rc "a failed scenario: exit 1" 1
 expect_text "the failed step is named" "$OUT" "FAIL  e2e/scenarios  vws nightly exited 1; FAIL  nightly  broken"
 expect_text "feature-map-pr still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results"
+expect_text "publish still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results"
 expect_text "the incident is reported" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/9001"
 expect_text "the incident has the incident label and names the step" "$(cat "$FAKE_GH_LOG")" \
   "issue create --repo popododo0720/vws-deploy --label incident --title incident: nightly e2e 20261105T130200Z failed --body-file"
@@ -103,6 +105,13 @@ FAKE_apply=fail e2e --results "${WORK}/r/20261105T130300Z"
 expect_rc "a failed apply: exit 1" 1
 if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == apply ]]; then ok "a failed apply skips the scenarios and the PR"; else bad "after apply" "$(cat "$FAKE_VWS_LOG")"; fi
 expect_text "the skipped steps are WARN" "$OUT" "WARN  e2e/scenarios  skipped after apply failed"
+expect_text "a skipped publish is WARN" "$OUT" "WARN  e2e/publish  skipped after apply failed"
+
+r="r/20261105T130350Z"
+FAKE_nightly_publish=fail e2e --results "${WORK}/$r"
+expect_rc "a failed publish: exit 1" 1
+expect_text "the failed publish is named" "$OUT" "FAIL  e2e/publish  vws nightly-publish exited 1"
+expect_text "a failed publish opens an incident on that step" "$(cat "$FAKE_GH_BODY")" "failed at step \`publish\`"
 
 printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
 r="r/20261105T130400Z"
