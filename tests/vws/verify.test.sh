@@ -11,7 +11,7 @@ cat >"$map" <<'JSON'
 {"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
   {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": "ec2-keypair"},
   {"feature": "STS", "repo": "vws-iam", "issue": "vws-iam#5", "scenario": "sts-assume-role", "lastPass": "2026-10-14T00:00:00Z", "evidence": "old"},
-  {"feature": "Console login", "repo": "vws-console", "scenario": null}
+  {"feature": "Console login", "repo": "vws-console", "scenario": null, "na": "browser UI"}
 ]}
 JSON
 p1="${WORK}/fm/phase1-features.json"
@@ -38,7 +38,7 @@ expect_text "another cluster is ignored" "$OUT" "result is from 'kind', not vws-
 expect_text "unverified feature is flagged" "$OUT" "WARN  unverified  Console login"
 md=$(cat "${WORK}/fm/feature-map.md")
 expect_text "md shows the pass in KST" "$md" "| EC2 key pair import | vws-console-api | vws-console-api#128 | \`scripts/vws verify scenario ec2-keypair\` | 2026-10-14 15:30 KST |"
-expect_text "md marks unverified" "$md" "| Console login | vws-console | - | - | unverified | - |"
+expect_text "md marks unverified with the na reason" "$md" "| Console login | vws-console | - | N/A: browser UI | unverified | - |"
 
 # The fixture names scenarios that have no scenario file.
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a scenario with no scenario file fails the check" 1
@@ -46,12 +46,12 @@ expect_text "the missing scenario is named" "$OUT" "scenario ec2-keypair in ${ma
 expect_text "every missing scenario is named" "$OUT" "scenario sts-assume-role in ${map} does not exist"
 expect_text "the md itself is current" "$OUT" "${WORK}/fm/feature-map.md matches"
 cp "$map" "${map}.scenarios"
-jq '.features[0].scenario = "../s3-basic" | .features[1].scenario = null' "${map}.scenarios" >"$map"
+jq '.features[0].scenario = "../s3-basic" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a path as a scenario name fails the check" 1
 expect_text "the path is named" "$OUT" "scenario ../s3-basic in ${map} does not exist"
 # From here to the restore, the map names only s3-basic, which exists.
-jq '.features[0].scenario = "s3-basic" | .features[1].scenario = null' "${map}.scenarios" >"$map"
+jq '.features[0].scenario = "s3-basic" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a fresh md passes the check" 0
 echo "edited" >>"${WORK}/fm/feature-map.md"
@@ -77,6 +77,21 @@ rm "$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a missing Phase 1 list is unreadable" 3
 mv "${p1}.orig" "$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "the restored list passes again" 0
+cp "$map" "${map}.na"
+na_case() { # JQ RC NAME [TEXT]
+  jq "$1" "${map}.na" >"$map"
+  python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
+  run_vws_real verify --check-feature-map --map "$map"; expect_rc "$3" "$2"
+  [[ -z ${4-} ]] || expect_text "$3 (named)" "$OUT" "$4"
+}
+na_case 'del(.features[2].na)' 1 "a row with no scenario and no na fails the check" "Console login: no scenario and no na reason"
+na_case '.features[0].na = "x"' 1 "a row with a scenario and an na fails the check" "has both a scenario and an na reason"
+na_case '.features[2].na = ""' 1 "an empty na fails the check" "Console login: na must be a one-line reason"
+na_case '.features[2].na = "a | b"' 1 "an na with a table pipe fails the check" "Console login: na must be a one-line reason"
+na_case '.features[2].na = "a\nb"' 1 "a multi-line na fails the check" "Console login: na must be a one-line reason"
+na_case '.features[2].na = 7' 1 "an na that is not a string fails the check" "Console login: na must be a one-line reason"
+na_case '.features[2].na = "   "' 1 "a blank na fails the check" "Console login: na must be a one-line reason"
+mv "${map}.na" "$map"
 mv "${map}.scenarios" "$map"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map; expect_rc "the repo feature map has every Phase 1 feature and a fresh md" 0
