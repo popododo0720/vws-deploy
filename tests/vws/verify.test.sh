@@ -14,9 +14,11 @@ cat >"$map" <<'JSON'
   {"feature": "Console login", "repo": "vws-console", "scenario": null}
 ]}
 JSON
+jq --arg k "$(test_signer a)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"
 result() { # FILE SCENARIO RESULT CLUSTER TIME [CLUSTER_UID]
   jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" --arg u "${6-uid-vws-test}" \
     '{scenario: $s, result: $r, cluster: $c, finishedAt: $t, clusterUID: $u, evidence: "https://example.invalid/\($s)"}' >"${WORK}/fm/$1"
+  sign_result "${WORK}/fm/$1"
 }
 result pass.json ec2-keypair pass vws-test 2026-10-14T06:30:00Z
 result fail.json sts-assume-role fail vws-test 2026-10-14T07:00:00Z
@@ -64,6 +66,43 @@ run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/good.json"; ex
 if jq -e '.features[0].lastPass == "2026-10-14T07:30:00Z" and .vwsTest.kubeSystemUID == "uid-vws-test"' "$map" >/dev/null; then
   ok "a matching clusterUID records the pass and keeps the fingerprint"; else bad "matching pass" "$(cat "$map")"; fi
 
+# Signature (vws-deploy#288): only a result signed by a key in vwsTest.signers is recorded.
+refused() { # NAME FILE NEEDLE [MAP]
+  local m_before
+  m_before=$(cat "${4:-$map}")
+  run_vws_real verify --update-feature-map --map "${4:-$map}" "$2"
+  expect_rc "$1 is refused" 1
+  expect_text "$1 names the reason" "$OUT" "$3"
+  if [[ $(cat "${4:-$map}") == "$m_before" ]]; then ok "$1 leaves the map unchanged"; else bad "$1 map unchanged" "$(cat "${4:-$map}")"; fi
+}
+result signed.json ec2-keypair pass vws-test 2026-10-14T08:00:00Z
+jq '.evidence = "https://example.invalid/forged"' "${WORK}/fm/signed.json" >"${WORK}/fm/tampered.json"
+refused "a tampered field" "${WORK}/fm/tampered.json" "signature does not verify against vwsTest.signers"
+jq '.finishedAt = "2026-10-14T09:00:00Z"' "${WORK}/fm/signed.json" >"${WORK}/fm/tampered-time.json"
+refused "a tampered finishedAt" "${WORK}/fm/tampered-time.json" "signature does not verify"
+jq 'del(.signature)' "${WORK}/fm/signed.json" >"${WORK}/fm/unsigned.json"
+refused "a missing signature" "${WORK}/fm/unsigned.json" "unsigned; refused"
+jq '.signature = "not an sshsig"' "${WORK}/fm/signed.json" >"${WORK}/fm/garbage-sig.json"
+refused "a garbage signature" "${WORK}/fm/garbage-sig.json" "signature does not verify"
+jq 'del(.signature)' "${WORK}/fm/signed.json" >"${WORK}/fm/other-signer.json"; sign_result "${WORK}/fm/other-signer.json" b
+refused "the wrong signer" "${WORK}/fm/other-signer.json" "signature does not verify against vwsTest.signers"
+jq '.vwsTest.signers = []' "$map" >"${WORK}/fm/nosigners.json"
+refused "an empty signers list" "${WORK}/fm/signed.json" "no trusted signer (vwsTest.signers)" "${WORK}/fm/nosigners.json"
+# Rotation: with both keys listed either verifies; once the old key is removed its results are refused.
+jq --arg b "$(test_signer b)" '.vwsTest.signers += [$b]' "$map" >"${WORK}/fm/rotate.json"
+cp "${WORK}/fm/rotate.json" "${WORK}/fm/rotate-orig.json"
+run_vws_real verify --update-feature-map --map "${WORK}/fm/rotate.json" "${WORK}/fm/signed.json" "${WORK}/fm/other-signer.json"
+expect_rc "during rotation both keys verify" 0
+jq --arg b "$(test_signer b)" '.vwsTest.signers = [$b]' "${WORK}/fm/rotate-orig.json" >"${WORK}/fm/rotated.json"
+refused "a result by a removed key" "${WORK}/fm/signed.json" "signature does not verify" "${WORK}/fm/rotated.json"
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/signed.json"; expect_rc "a valid signature is accepted" 0
+if jq -e '.features[0].lastPass == "2026-10-14T08:00:00Z"' "$map" >/dev/null; then ok "a signed pass is recorded"; else bad "signed pass" "$(cat "$map")"; fi
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/signed.json"; expect_rc "recording the same signed result again is a no-op" 0
+expect_text "the re-run says so" "$OUT" "already has a pass at or after 2026-10-14T08:00:00Z"
+if python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" sign "${WORK}/fm/unsigned.json" "${WORK}/no-such-key" 2>"${WORK}/sign.err"; then
+  bad "a missing key cannot sign" "$(cat "${WORK}/fm/unsigned.json")"; else ok "a missing key cannot sign"; fi
+expect_text "the sign error names the file" "$(cat "${WORK}/sign.err")" "FAIL: cannot sign ${WORK}/fm/unsigned.json"
+
 # Invalid input: wrong types, a future finishedAt or a non-string fingerprint exit 2 with one
 # "FAIL: <reason>" line, no traceback, and the map and md unchanged.
 invalid() { # NAME MAP FILE NEEDLE
@@ -93,6 +132,12 @@ jq '.vwsTest.kubeSystemUID = 7' "$map" >"${WORK}/fm/numfp.json"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "${WORK}/fm/numfp.json" 2>/dev/null || true
 result recent.json ec2-keypair pass vws-test "$recent"
 invalid "a non-string fingerprint" "${WORK}/fm/numfp.json" "${WORK}/fm/recent.json" "kubeSystemUID must be a string or null"
+jq -n --arg t "$recent" '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: $t, clusterUID: "uid-vws-test", signature: 5}' >"${WORK}/fm/numsig.json"
+invalid "a non-string signature" "$map" "${WORK}/fm/numsig.json" "signature must be a string"
+jq '.vwsTest.signers = "vws-test ssh-ed25519 AAAA"' "$map" >"${WORK}/fm/strsigners.json"
+invalid "a signers string, not a list" "${WORK}/fm/strsigners.json" "${WORK}/fm/recent.json" "vwsTest.signers must be a list"
+jq '.vwsTest.signers = ["vws-test ssh-ed25519 AAAA\nvws-test ssh-ed25519 BBBB"]' "$map" >"${WORK}/fm/nlsigners.json"
+invalid "a multi-line signers entry" "${WORK}/fm/nlsigners.json" "${WORK}/fm/recent.json" "one-line allowed_signers strings"
 skew=$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%SZ)
 result skew.json sts-assume-role fail vws-test "$skew"
 run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/skew.json"; expect_rc "a finishedAt within the 5 minute skew is accepted" 0

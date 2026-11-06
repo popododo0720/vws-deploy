@@ -4,30 +4,40 @@
 Usage: feature_map.py update MAP RESULT.json...   (then renders MAP's .md sibling)
        feature_map.py render MAP
        feature_map.py check MAP                    (exit 1 when the .md is stale)
+       feature_map.py sign RESULT.json KEY         (adds "signature"; KEY is an ssh private key file)
 
 MAP is docs/feature-map.json, the only hand-edited source. lastPass and evidence are written only
 here, from a scenario result with result "pass" and cluster "vws-test" (vws-deploy#252). A result
 for an unknown scenario, another cluster, or an older time changes nothing.
 Provenance: the result must also carry "clusterUID", the kube-system namespace UID of the cluster it
 ran on, equal to MAP's "vwsTest": {"kubeSystemUID": ...}. A missing, unconfigured or different UID is
-refused (FAIL). This stops results from another cluster or a typo'd file; it is not a signature, so a
-file written by hand with the committed UID copied in is still accepted. Output lines are
-"LEVEL<TAB>NAME<TAB>MESSAGE" for scripts/vws.d/verify.sh to emit.
+refused (FAIL). This stops results from another cluster or a typo'd file.
+Signature (vws-deploy#288): the result must also carry "signature", an SSHSIG (ssh-keygen -Y sign,
+namespace NAMESPACE) over canonical(result without "signature"), made by a key that MAP's
+"vwsTest": {"signers": [...]} lists for principal PRINCIPAL. Those lines are the trust root, in
+ssh allowed_signers format. An unsigned result, a bad signature, an unlisted key or an empty signers
+list is refused (FAIL). Output lines are "LEVEL<TAB>NAME<TAB>MESSAGE" for scripts/vws.d/verify.sh to emit.
 
 Exit codes (update): 0 recorded or ignored; 1 a result was refused or unreadable (FAIL lines);
 2 invalid input: a result field with the wrong type, missing or malformed (scenario, cluster,
-finishedAt, result, clusterUID, evidence), a finishedAt more than 5 minutes in the future, or a
-vwsTest.kubeSystemUID that is not a string or null. Exit 2 prints a single "FAIL: <reason>" line, no
-traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. render/check: 0, 1 stale, 3.
+finishedAt, result, clusterUID, evidence, signature), a finishedAt more than 5 minutes in the future,
+a vwsTest.kubeSystemUID that is not a string or null, or a vwsTest.signers that is not a list of
+one-line strings. Exit 2 prints a single "FAIL: <reason>" line, no
+traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. render/check: 0, 1 stale, 3. sign: 0, 1 signing failed, 2 usage.
 """
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9), "KST")
 CLUSTER = "vws-test"
 CLOCK_SKEW = timedelta(minutes=5)
+PRINCIPAL = "vws-test"
+NAMESPACE = "vws-feature-map@vws-deploy"
+SSH_TIMEOUT = 30
 
 
 class InvalidInput(Exception):
@@ -43,7 +53,7 @@ def check_result(rpath, r):
             raise InvalidInput(f"{rpath}: {key} is missing")
         if not isinstance(r[key], str) or not r[key]:
             raise InvalidInput(f"{rpath}: {key} must be a non-empty string, got {type(r[key]).__name__}")
-    for key in ("clusterUID", "evidence"):
+    for key in ("clusterUID", "evidence", "signature"):
         if r.get(key) is not None and not isinstance(r[key], str):
             raise InvalidInput(f"{rpath}: {key} must be a string, got {type(r[key]).__name__}")
     try:
@@ -53,6 +63,48 @@ def check_result(rpath, r):
     if when > datetime.now(timezone.utc) + CLOCK_SKEW:
         raise InvalidInput(f"{rpath}: finishedAt {r['finishedAt']} is in the future")
     return r["scenario"], when
+
+
+def canonical(r):
+    """The signed bytes: the result without "signature", keys sorted, no whitespace."""
+    body = {k: v for k, v in r.items() if k != "signature"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def ssh_keygen(args, data):
+    try:
+        p = subprocess.run(["ssh-keygen", "-Y", *args], input=data, capture_output=True, timeout=SSH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"ssh-keygen: {e}"
+    msg = (p.stderr or p.stdout).decode(errors="replace").strip().replace("\n", "; ")
+    return (p.stdout if p.returncode == 0 else None), msg
+
+
+def verify_signature(r, signers):
+    """None when r["signature"] is a valid SSHSIG by a key in signers, else the reason."""
+    if not r.get("signature"):
+        return "unsigned"
+    with tempfile.TemporaryDirectory() as d:
+        allowed, sig = os.path.join(d, "allowed_signers"), os.path.join(d, "result.sig")
+        with open(allowed, "w", encoding="utf-8") as f:
+            f.write("".join(line + "\n" for line in signers))
+        with open(sig, "w", encoding="utf-8") as f:
+            f.write(r["signature"])
+        ok, msg = ssh_keygen(["verify", "-f", allowed, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", sig], canonical(r))
+    return None if ok is not None else f"signature does not verify against vwsTest.signers ({msg[:200]})"
+
+
+def sign(rpath, key):
+    with open(rpath, encoding="utf-8") as f:
+        r = json.load(f)
+    if not isinstance(r, dict):
+        raise InvalidInput(f"{rpath}: result is {type(r).__name__}, not an object")
+    sig, msg = ssh_keygen(["sign", "-f", key, "-n", NAMESPACE], canonical(r))
+    if sig is None:
+        return f"cannot sign {rpath}: {msg[:200]}"
+    r["signature"] = sig.decode()
+    write(rpath, json.dumps(r, indent=2, ensure_ascii=False) + "\n")
+    return None
 
 
 def parse_time(s):
@@ -120,6 +172,9 @@ def update(map_path, results):
     want_uid = vws_test.get("kubeSystemUID")
     if want_uid is not None and not isinstance(want_uid, str):
         raise InvalidInput(f"{map_path}: vwsTest.kubeSystemUID must be a string or null, got {type(want_uid).__name__}")
+    signers = vws_test.get("signers") or []
+    if not isinstance(signers, list) or not all(isinstance(x, str) and x.strip() and "\n" not in x for x in signers):
+        raise InvalidInput(f"{map_path}: vwsTest.signers must be a list of one-line allowed_signers strings")
     out, failed = [], False
     for rpath in results:
         try:
@@ -140,6 +195,12 @@ def update(map_path, results):
         elif r.get("clusterUID") != want_uid:
             out.append(f"FAIL\tfeature-map\t{sc}: clusterUID {r.get('clusterUID')!r} does not match the vws-test fingerprint; refused")
             failed = True
+        elif not signers:
+            out.append(f"FAIL\tfeature-map\t{sc}: no trusted signer (vwsTest.signers) in {map_path}; refused")
+            failed = True
+        elif (why := verify_signature(r, signers)) is not None:
+            out.append(f"FAIL\tfeature-map\t{sc}: {rpath}: {why}; refused")
+            failed = True
         elif r.get("result") != "pass":
             out.append(f"WARN\tfeature-map\t{sc}: result {r.get('result')!r}; last pass kept")
         else:
@@ -159,10 +220,19 @@ def update(map_path, results):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[0] not in ("update", "render", "check"):
+    if len(argv) < 2 or argv[0] not in ("update", "render", "check", "sign") or (argv[0] == "sign" and len(argv) != 3):
         print(__doc__, file=sys.stderr)
         return 2
     try:
+        if argv[0] == "sign":
+            try:
+                err = sign(argv[1], argv[2])
+            except (InvalidInput, OSError, ValueError) as e:
+                err = f"cannot sign {argv[1]}: {e}"
+            if err:
+                print(f"FAIL: {err}", file=sys.stderr)
+                return 1
+            return 0
         if argv[0] == "update":
             try:
                 out, failed = update(argv[1], argv[2:])

@@ -16,6 +16,8 @@ cat >"$map" <<'JSON'
   {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": "s3-basic"}
 ]}
 JSON
+jq --arg k "$(test_signer)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"
+export VWS_RESULT_SIGNING_KEY="${WORK}/signer-a"
 export VWS_VERIFY_ENDPOINT=http://vws.example.invalid:7480 VWS_VERIFY_ACCESS_KEY_ID=AKIDVERIFY
 export VWS_VERIFY_SECRET_ACCESS_KEY=sekret-value-must-not-leak VWS_LEAK_CANARY=1
 s3="${VWS_FAKE_LOG}.s3"
@@ -52,6 +54,14 @@ no_secret "a passing run"
 run_vws_real verify --update-feature-map --map "$map" "${WORK}/r1.json"
 expect_rc "the feature map accepts the result" 0
 if jq -e '.features[0].lastPass != null' "$map" >/dev/null; then ok "the pass is recorded"; else bad "pass recorded" "$(cat "$map")"; fi
+VWS_RESULT_SIGNING_KEY='' run_vws_real verify scenario s3-basic --map "$map" --result "${WORK}/unsigned.json"
+expect_rc "a run without a signing key still passes" 0
+expect_text "it warns that the result is unsigned" "$ERR" "unsigned (no VWS_RESULT_SIGNING_KEY)"
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/unsigned.json"
+expect_rc "the feature map refuses an unsigned run" 1
+VWS_RESULT_SIGNING_KEY="${WORK}/no-such-key" run_vws_real verify scenario s3-basic --map "$map" --result "${WORK}/nokey.json"
+expect_rc "an unreadable signing key is an environment error" 3
+if [[ ! -e ${WORK}/nokey.json && ! -e ${WORK}/nokey.json.tmp ]]; then ok "a failed signature leaves no result"; else bad "no result" "$(ls "${WORK}")"; fi
 
 run_vws_real verify scenario s3-basic --map "$map"
 expect_rc "a second run passes too" 0

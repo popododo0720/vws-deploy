@@ -16,6 +16,7 @@ write_map() {
   {"feature": "Console login", "repo": "vws-console", "scenario": null}
 ]}
 JSON
+  jq --arg k "$(test_signer)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"
 }
 # The fake runner: NAME --result FILE. FAKE_MODE_<name> picks pass, fail, hang, none or crash.
 runner="${WORK}/runner"
@@ -34,10 +35,12 @@ case $mode in
 esac
 jq -n --arg s "$name" --arg r "$mode" '{scenario: $s, result: $r, cluster: "vws-test",
   finishedAt: "2026-10-30T13:00:00Z", clusterUID: "uid-vws-test", evidence: "https://example.invalid/\($s)"}' >"$out"
+python3 "$FAKE_FM" sign "$out" "$FAKE_KEY"
 [[ $mode == pass ]]
 SH
 chmod +x "$runner"
 export VWS_NIGHTLY_RUNNER="$runner" FAKE_RUNS="${WORK}/runs"
+export FAKE_FM="${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" FAKE_KEY="${WORK}/signer-a"
 
 write_map; : >"$FAKE_RUNS"
 run_vws_real nightly --map "$map" --results "${WORK}/r1"
