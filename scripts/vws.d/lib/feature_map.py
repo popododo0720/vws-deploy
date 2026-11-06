@@ -3,7 +3,7 @@
 
 Usage: feature_map.py update MAP RESULT.json...   (then renders MAP's .md sibling)
        feature_map.py render MAP
-       feature_map.py check MAP                    (exit 1 when the .md is stale or MAP misses a Phase 1 feature)
+       feature_map.py check MAP                    (exit 1 when the .md is stale, MAP misses a Phase 1 feature or a row has no scenario or na)
        feature_map.py sign RESULT.json KEY         (adds "signature"; KEY is an ssh private key file)
 
 MAP is docs/feature-map.json, the only hand-edited source. lastPass and evidence are written only
@@ -27,6 +27,8 @@ traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. ren
 check also reads phase1-features.json next to MAP (vws-deploy#289), the owner-approved Phase 1 list:
 {"phase1": [names], "later": [{"feature", "reason"}]}. It fails (exit 1, one FAIL line each) when a
 Phase 1 name has no MAP row, or a MAP row is in neither list; an unreadable list exits 3.
+check also fails on a row with neither a "scenario" nor an "na" reason, or with both (vws-deploy#290);
+the md shows the reason as "N/A: <na>" in the Verify command column.
 """
 import json
 import os
@@ -153,6 +155,20 @@ def phase1_gaps(map_path, data):
     return out
 
 
+def scenario_gaps(map_path, data):
+    """FAIL lines for rows with neither a scenario nor an `na` reason, or with both."""
+    out = []
+    for f in data["features"]:
+        sc, na = f.get("scenario"), f.get("na")
+        if na is not None and not (isinstance(na, str) and na.strip() and na.splitlines() == [na] and "|" not in na):
+            out.append(f"FAIL\tfeature-map\t{f['feature']}: na must be a one-line reason without |")
+        elif sc and na:
+            out.append(f"FAIL\tfeature-map\t{f['feature']}: has both a scenario and an na reason in {map_path}")
+        elif not sc and not na:
+            out.append(f"FAIL\tfeature-map\t{f['feature']}: no scenario and no na reason in {map_path}")
+    return out
+
+
 def md_path(map_path):
     return os.path.splitext(map_path)[0] + ".md"
 
@@ -162,14 +178,14 @@ def render(data):
         "# Feature map",
         "",
         "Generated from docs/feature-map.json by `scripts/vws verify --update-feature-map`. Do not edit by hand.",
-        "Last pass is a vws-test scenario run (KST). `unverified` means no scenario exists yet; `never passed` means a scenario exists but no passing vws-test result was recorded.",
+        "Last pass is a vws-test scenario run (KST). `unverified` means the feature has no scenario, and the Verify command column gives the reason; `never passed` means a scenario exists but no passing vws-test result was recorded.",
         "",
         "| Feature | Repo | Issue | Verify command | Last pass (KST) | Evidence |",
         "|---|---|---|---|---|---|",
     ]
     for f in data["features"]:
         sc = f.get("scenario")
-        cmd = f"`scripts/vws verify scenario {sc}`" if sc else "-"
+        cmd = f"`scripts/vws verify scenario {sc}`" if sc else f"N/A: {f['na']}" if f.get("na") else "-"
         if not sc:
             last = "unverified"
         elif f.get("lastPass"):
@@ -274,7 +290,7 @@ def main(argv):
         if argv[0] == "render":
             write(md_path(argv[1]), text)
             return 0
-        out = phase1_gaps(argv[1], data)
+        out = phase1_gaps(argv[1], data) + scenario_gaps(argv[1], data)
         with open(md_path(argv[1]), encoding="utf-8") as f:
             if f.read() != text:
                 out.append(f"FAIL\tfeature-map\t{md_path(argv[1])} is stale; run scripts/vws verify --update-feature-map")
