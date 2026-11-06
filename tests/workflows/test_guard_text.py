@@ -236,8 +236,14 @@ class Commits(unittest.TestCase):
         self.merge_side("ci: merge side", "Part of #4", "Closes #4")
         self.assertRejected(self.base, "a merge commit that closes #4")
 
-    def test_merge_commit_without_closing_keyword_passes(self):
+    def test_merge_commit_without_closing_keyword_fails(self):
+        # vws-deploy#326: vws-console#78 had a merge commit with a valid message and passed pr-hygiene.
         self.merge_side("ci: merge side", "Part of #4")
+        self.assertIn("merge commit(s)", self.assertRejected(self.base, "a merge commit in the range"))
+
+    def test_linear_range_passes(self):
+        self.commit("ci: x", "Part of #4")
+        self.commit("ci: y", "Part of #4")
         self.assertAccepted(self.base)
 
     def test_range_that_cannot_be_listed_fails(self):
