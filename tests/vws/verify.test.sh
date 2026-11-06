@@ -100,4 +100,15 @@ run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/skew.json"; ex
 # The repository's own map renders to the committed md.
 run_vws_real verify --check-feature-map; expect_rc "docs/feature-map.md is current" 0
 
+# Every scenario a map names is one `vws verify list` knows (vws-deploy#262), so a typo cannot stay "never passed".
+unknown_scenarios() { # MAP
+  run_vws_real verify list
+  jq -r '.features[].scenario // empty' "$1" | sort -u | comm -23 - <(awk '$1 == "OK" {print $2}' <<<"$OUT" | sort -u)
+}
+missing=$(unknown_scenarios "${VWS_TEST_ROOT}/docs/feature-map.json")
+if [[ -z $missing ]] && jq -e 'any(.features[]; .scenario == "s3-basic")' "${VWS_TEST_ROOT}/docs/feature-map.json" >/dev/null; then
+  ok "docs/feature-map.json names only known scenarios, s3-basic among them"; else bad "known scenarios" "unknown: ${missing:-none}"; fi
+jq '.features[0].scenario = "s3-basik"' "${VWS_TEST_ROOT}/docs/feature-map.json" >"${WORK}/fm/typo.json"
+expect_text "a typo'd scenario name is caught" "$(unknown_scenarios "${WORK}/fm/typo.json")" "s3-basik"
+
 finish_tests
