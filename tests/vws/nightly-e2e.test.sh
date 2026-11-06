@@ -144,9 +144,9 @@ if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "STOP: no wake is posted"; else bad
 FAKE_nightly=fail ORCHESTRATE_DISPATCH=off ORCHESTRATE_WAKE_THREAD=339 e2e --results "${WORK}/r/20261105T130271Z"
 if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "ORCHESTRATE_DISPATCH=off: no wake is posted"; else bad "wake under dispatch off" "$(cat "$FAKE_GH_LOG")"; fi
 
-printf '# box config\nORCHESTRATE_WAKE_THREAD = "339"\nORCHESTRATE_WAKES=off\n' >"${orch}/env"
+printf '# box config\nORCHESTRATE_WAKE_THREAD = "339"\nORCHESTRATE_WAKES=off' >"${orch}/env"
 FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130272Z"
-expect_text "STOP in the orchestrator's env file: WARN" "$OUT" "WARN  e2e/wake  wakes are off (ORCHESTRATE_WAKES is off)"
+expect_text "STOP in the orchestrator's env file, on a last line without a newline: WARN" "$OUT" "WARN  e2e/wake  wakes are off (ORCHESTRATE_WAKES is off)"
 if ! grep -q '^api ' "$FAKE_GH_LOG"; then ok "STOP in the env file: no wake is posted"; else bad "wake under file STOP" "$(cat "$FAKE_GH_LOG")"; fi
 printf 'ORCHESTRATE_WAKE_THREAD="339"\n' >"${orch}/env"
 FAKE_nightly=fail e2e --results "${WORK}/r/20261105T130273Z" --repo popododo0720/vws-iam

@@ -141,7 +141,7 @@ VWS_E2E_WAKE_REPO=popododo0720/vws-deploy
 vws_e2e_wake_cfg() { # KEY: the orchestrator's value of KEY, read now: its env file, then the environment wins
   local dir=${ORCHESTRATE_CONFIG_DIR:-${HOME}/.config/vws-orchestrate} k v out=''
   if [[ -f ${dir}/env ]]; then
-    while IFS='=' read -r k v; do
+    while IFS='=' read -r k v || [[ -n $k ]]; do
       k=${k//[[:space:]]/}
       [[ $k == "$1" ]] || continue
       v=${v%$'\r'}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}; v=${v#[\"\']}; out=${v%[\"\']}
