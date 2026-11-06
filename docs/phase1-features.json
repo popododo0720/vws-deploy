@@ -20,7 +20,7 @@
     "Console login",
     "Console EC2 Instances list and Launch Instance wizard",
     "Console IAM pages",
-    "Install wizard (vws init)",
+    "Installer web wizard and TUI",
     "Node reboot recovery"
   ],
   "later": [

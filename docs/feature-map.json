@@ -21,7 +21,7 @@
     {"feature": "Console login", "repo": "vws-console", "issue": null, "scenario": null},
     {"feature": "Console EC2 Instances list and Launch Instance wizard", "repo": "vws-console", "issue": "vws-console#1", "scenario": null},
     {"feature": "Console IAM pages", "repo": "vws-console", "issue": "vws-console#47", "scenario": null},
-    {"feature": "Install wizard (vws init)", "repo": "vws-deploy", "issue": "vws-deploy#139", "scenario": null},
+    {"feature": "Installer web wizard and TUI", "repo": "vws-deploy", "issue": "vws-deploy#139", "scenario": null},
     {"feature": "Node reboot recovery", "repo": "vws-deploy", "issue": "vws-deploy#51", "scenario": null}
   ]
 }

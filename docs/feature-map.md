@@ -25,5 +25,5 @@ Last pass is a vws-test scenario run (KST). `unverified` means no scenario exist
 | Console login | vws-console | - | - | unverified | - |
 | Console EC2 Instances list and Launch Instance wizard | vws-console | vws-console#1 | - | unverified | - |
 | Console IAM pages | vws-console | vws-console#47 | - | unverified | - |
-| Install wizard (vws init) | vws-deploy | vws-deploy#139 | - | unverified | - |
+| Installer web wizard and TUI | vws-deploy | vws-deploy#139 | - | unverified | - |
 | Node reboot recovery | vws-deploy | vws-deploy#51 | - | unverified | - |
