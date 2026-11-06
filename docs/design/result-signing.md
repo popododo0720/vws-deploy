@@ -49,5 +49,5 @@ with the new key, then removes the old line. A removed key's results are refused
 - A PR can still change `vwsTest.signers`. Review of `docs/feature-map.json` is the control;
   `--update-feature-map` writes only `lastPass` and `evidence`, so a nightly PR never changes
   `vwsTest`.
-- Until a real key is listed (vws-deploy#288 follow-up), `vwsTest.signers` is empty and every
+- Until a real key is listed (vws-deploy#697), `vwsTest.signers` is empty and every
   result is refused. That is the intended fail-closed state.
