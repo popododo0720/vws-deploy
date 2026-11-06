@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# summary: nightly full-stack e2e on vws-test: scope check, apply the CR, every scenario, the feature-map PR, the results branch, an incident on failure
+# summary: nightly full-stack e2e on vws-test: scope check, apply the CR, every scenario, the feature-map PR, the results branch, an incident and a lead wake on failure
 # Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --cr FILE --log-url URL [--results DIR]
-#   [--timeout SECONDS] [--repo OWNER/NAME]
+#   [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]
 # vws-deploy#253, design docs/design/nightly-e2e.md. Removes every OS_* variable, then runs in order:
 #   scope         the cluster's kube-system UID is vwsTest.kubeSystemUID in docs/feature-map.json
 #   apply         vws apply --unattended -f CR (install or upgrade to what the CR pins)
@@ -12,8 +12,11 @@
 # scenarios so the passes and the failures are recorded. Each step has a hard limit (VWS_E2E_LIMITS). DIR (default
 # $XDG_STATE_HOME/vws-nightly/<UTC time>) gets the scenario files of vws nightly and e2e/: one log per
 # step, steps.jsonl and summary.json. On a failure it opens one incident issue in REPO with the failing
-# step and the log tails (secret-looking env values redacted); a rerun of the same run reuses it.
-# Exit: 0 every step passed, 1 a step failed or the incident could not be opened, 2 usage,
+# step and the log tails (secret-looking env values redacted); a rerun of the same run reuses it. Then it posts
+# one lead-wake comment on the orchestrator's wake thread in vws-deploy (--wake-thread, else ORCHESTRATE_WAKE_THREAD
+# as the orchestrator reads it) naming the step, the failed scenarios and the log paths; STOP posts nothing, and a
+# pass posts nothing (vws-deploy#290).
+# Exit: 0 every step passed, 1 a step failed or the incident or wake could not be posted, 2 usage,
 # 3 environment (tool missing, lock held).
 # shellcheck disable=SC2034 # read by scripts/vws
 VWS_NEED=(jq timeout flock gh kubectl)
@@ -113,12 +116,73 @@ vws_e2e_incident() { # RUN LOG_URL REPO: prints the URL of the open incident for
   return 1
 }
 
+vws_e2e_wake_body() { # RUN LOG_URL INCIDENT KEY
+  local head f
+  head=$(git -C "$VWS_ROOT" rev-parse HEAD 2>/dev/null) || head=unknown
+  jq -r --arg run "$1" --arg url "$2" --arg inc "${3:-none}" --arg dir "$vws_e2e_dir" --arg step "$vws_e2e_failed" \
+    --arg head "$head" --arg key "$4" '
+    (map(select(.name == $step)) | first) as $f |
+    "<!-- vws-orchestrate:lead-wake -->",
+    "vws nightly-e2e: run \($run) on vws-test failed at step `\($step)` (main at `\($head)`).", "",
+    "Reason: step `\($step)` exit \($f.exit): \($f.message | gsub("[\r\n`]"; " ")).",
+    "Step log: `\($dir)/\($step).log`", "Run log: \($url)", "Incident: \($inc)"' -s "${vws_e2e_dir}/steps.jsonl"
+  if [[ $vws_e2e_failed == scenarios ]]; then
+    for f in "${vws_e2e_dir%/e2e}"/*.json; do
+      [[ -f $f ]] || continue
+      [[ $(jq -r '.result // ""' "$f" 2>/dev/null) == pass ]] || printf -- '- scenario `%s` failed, log `%s`\n' "$(basename "$f" .json)" "${f%.json}.log"
+    done
+  fi
+  printf '\nTriage from the incident and route the fix to its owner.\n\nIdempotency key: `%s`\n' "$4"
+}
+
+# The orchestrator's wake thread is always in this repo (STATUS_REPO in .github/orchestrate/rules/common.py).
+VWS_E2E_WAKE_REPO=popododo0720/vws-deploy
+
+vws_e2e_wake_cfg() { # KEY: the orchestrator's value of KEY, read now: its env file, then the environment wins
+  local dir=${ORCHESTRATE_CONFIG_DIR:-${HOME}/.config/vws-orchestrate} k v out=''
+  if [[ -f ${dir}/env ]]; then
+    while IFS='=' read -r k v || [[ -n $k ]]; do
+      k=${k//[[:space:]]/}
+      [[ $k == "$1" ]] || continue
+      v=${v%$'\r'}; v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}; v=${v#[\"\']}; out=${v%[\"\']}
+    done <"${dir}/env"
+  fi
+  [[ -z ${!1+x} ]] || out=${!1}
+  printf '%s' "$out"
+}
+
+vws_e2e_wake_stop() { # prints why the orchestrator's wakes are silent, or nothing
+  local dir=${ORCHESTRATE_CONFIG_DIR:-${HOME}/.config/vws-orchestrate}
+  if [[ -e ${dir}/STOP ]]; then echo "the STOP file ${dir}/STOP is present"
+  elif [[ $(vws_e2e_wake_cfg ORCHESTRATE_WAKES) == off ]]; then echo "ORCHESTRATE_WAKES is off"
+  elif [[ $(vws_e2e_wake_cfg ORCHESTRATE_DISPATCH) == off ]]; then echo "ORCHESTRATE_DISPATCH is off"; fi
+}
+
+vws_e2e_wake() { # RUN LOG_URL INCIDENT REPO THREAD: one lead-wake comment per run on the wake thread
+  local key me list i body="${vws_e2e_dir}/wake.md"
+  key="sha256:$(printf 'nightly-e2e\n%s#%s' "$4" "$1" | sha256sum | cut -d' ' -f1)"
+  vws_e2e_wake_body "$1" "$2" "$3" "$key" | vws_e2e_redact >"$body" || return 1
+  for i in 1 2 3; do
+    # Look before every post, so a retry after a post that timed out finds the comment it made. Only a
+    # comment by this login counts: anyone can copy the key line.
+    if me=$(timeout 60 gh api user --jq .login) \
+      && list=$(timeout 60 gh api --paginate "repos/$4/issues/$5/comments" \
+        --jq ".[] | select(.user.login == \"${me}\") | .body"); then
+      if grep -qxF "Idempotency key: \`${key}\`" <<<"$list"; then printf 'already posted\n'; return 0; fi
+      if timeout 60 gh api "repos/$4/issues/$5/comments" -F "body=@${body}" --jq .html_url; then return 0; fi
+    fi
+    ((i == 3)) || sleep $((VWS_NIGHTLY_E2E_BACKOFF * i))
+  done
+  return 1
+}
+
 vws_cmd_main() {
   local cr='' log_url='' results='' timeout_s=1800 repo=popododo0720/vws-deploy run v want uid started incident
+  local thread='' wake stop
   local map="${VWS_ROOT}/docs/feature-map.json"
   while (($#)); do
     case $1 in
-      --cr | --log-url | --results | --timeout | --repo)
+      --cr | --log-url | --results | --timeout | --repo | --wake-thread)
         (($# >= 2)) || vws_usage "$1 needs a value"
         case $1 in
           --cr) cr=$2 ;;
@@ -126,6 +190,7 @@ vws_cmd_main() {
           --results) results=$2 ;;
           --timeout) timeout_s=$2 ;;
           --repo) repo=$2 ;;
+          --wake-thread) thread=$2 ;;
         esac
         shift 2 ;;
       *) vws_usage "nightly-e2e: unknown argument $1" ;;
@@ -136,6 +201,7 @@ vws_cmd_main() {
   [[ $log_url =~ ^https://[^[:space:]\`\<\>]{1,2000}$ ]] || vws_usage "--log-url must be an https URL without spaces"
   [[ $timeout_s =~ ^[1-9][0-9]{0,5}$ ]] || vws_usage "--timeout must be whole seconds from 1 to 999999, not ${timeout_s}"
   [[ $repo =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || vws_usage "--repo must be OWNER/NAME, not ${repo}"
+  [[ -z $thread || $thread =~ ^[1-9][0-9]{0,9}$ ]] || vws_usage "--wake-thread must be an issue or PR number, not ${thread}"
   [[ -n $results ]] || results="${XDG_STATE_HOME:-${HOME}/.local/state}/vws-nightly/$(date -u +%Y%m%dT%H%M%SZ)"
   run=$(basename "$results")
   [[ $run =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || vws_usage "--results must be a run directory named like 20261031T130000Z, not ${run}"
@@ -183,6 +249,20 @@ vws_cmd_main() {
     else
       incident=''
       vws_emit FAIL e2e/incident "could not open the incident issue in ${repo}; body at ${vws_e2e_dir}/incident.md"
+    fi
+    # Read only now: the operator may set STOP or change the thread while the scenarios run.
+    [[ -n $thread ]] || thread=$(vws_e2e_wake_cfg ORCHESTRATE_WAKE_THREAD)
+    stop=$(vws_e2e_wake_stop)
+    if [[ -n $stop ]]; then
+      vws_emit WARN e2e/wake "wakes are off (${stop}); nothing posted"
+    elif [[ -z $thread ]]; then
+      vws_emit WARN e2e/wake "no wake thread (--wake-thread or ORCHESTRATE_WAKE_THREAD); nobody is woken"
+    elif ! [[ $thread =~ ^[1-9][0-9]{0,9}$ ]]; then
+      vws_emit FAIL e2e/wake "ORCHESTRATE_WAKE_THREAD must be an issue or PR number, not ${thread:0:40}"
+    elif wake=$(vws_e2e_wake "$run" "$log_url" "$incident" "$VWS_E2E_WAKE_REPO" "$thread"); then
+      vws_emit OK e2e/wake "${VWS_E2E_WAKE_REPO}#${thread}: ${wake##*$'\n'}"
+    else
+      vws_emit FAIL e2e/wake "could not post the lead wake on ${VWS_E2E_WAKE_REPO}#${thread}; body at ${vws_e2e_dir}/wake.md"
     fi
   fi
   jq -s --arg run "$run" --arg s "$started" --arg t "$(date -u +%FT%TZ)" --arg url "$log_url" --arg i "$incident" \

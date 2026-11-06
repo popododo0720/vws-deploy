@@ -56,6 +56,34 @@ Rejected:
 - **Logs on the branch.** Scenario logs and step output can hold endpoint replies; only the result
   JSON (scenario, result, time, cluster UID, signature) is published.
 
+## Failure wake (vws-deploy#290)
+
+The issue asks that a FAIL posts one comment (scenario, step, log path) on the orchestrator's thread
+and wakes an agent, and that a PASS posts nothing.
+
+Chosen: after the incident, the run posts one comment on the verify-wake thread
+(`ORCHESTRATE_WAKE_THREAD`, PR #339) whose first line is `<!-- vws-orchestrate:lead-wake -->`. dr
+eggbot's `vws-lead-wake-on-339` routine already consumes that marker for "a failure no rule moves on
+its own", which is what a failed nightly is, and it trusts only the box login, which is the login
+the nightly runs under. The comment carries an `Idempotency key:` line in the orchestrator's form,
+sha256 of the repo and the run, so a rerun of the same run finds its own comment and posts nothing;
+the orchestrator reads the key as one more of its own keys, and it cannot collide with a lead-wake
+key, which hashes `repo#N@head`. The thread and STOP come from the orchestrator's own config
+(`~/.config/vws-orchestrate/env` and its `STOP` file, the environment winning as in `load_config`),
+read when the run fails, so a STOP set during a six-hour scenarios step still silences the wake. The
+comment always goes to vws-deploy, where the thread lives, even when `--repo` points the incident
+elsewhere. The incident stays the record; the wake only points at it.
+
+Rejected:
+
+- **A new marker such as `<!-- vws-nightly:fail -->`.** No routine consumes it, and
+  docs/factory-orchestrator.md "Wake consumers" forbids a wake without one. Adding a consumer is a
+  routine change outside this repo.
+- **A comment on the incident or the status issue.** An incident comment wakes nobody, and the
+  status issue never carries wakes.
+- **A grok-wake.** It means "take this issue" for a Grok owner bot and holds a Grok slot; a nightly
+  failure needs triage first.
+
 ## Left for later parts
 
 - Building the CR that pins main of every service and the pinned proto tag. The command takes the

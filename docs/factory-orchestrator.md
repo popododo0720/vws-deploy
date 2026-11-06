@@ -165,7 +165,7 @@ A new bot does not ship until its consumer is enabled.
 | First line | Consumer | Routine |
 |---|---|---|
 | `<!-- vws-orchestrate:verify-wake -->` | vws-verify | its verify-queue routine |
-| `<!-- vws-orchestrate:lead-wake -->` | dr eggbot | `vws-lead-wake-on-339` |
+| `<!-- vws-orchestrate:lead-wake -->` | dr eggbot | `vws-lead-wake-on-339` (also posted by `vws nightly-e2e` on a failed nightly, vws-deploy#290) |
 | `<!-- vws-orchestrate:rebuild-wake -->` | the bot on the PR's `Agent:` line, else dr eggbot | the owner's rebuild routine (vws-platform: `factory-orchestrator-failure`) |
 | `<!-- vws-orchestrate:grok-wake -->` | the bot on the ``Owner `<bot>` `` line | `factory-grok-wake`, one per Grok owner bot |
 
