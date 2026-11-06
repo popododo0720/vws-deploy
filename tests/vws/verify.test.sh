@@ -40,6 +40,19 @@ md=$(cat "${WORK}/fm/feature-map.md")
 expect_text "md shows the pass in KST" "$md" "| EC2 key pair import | vws-console-api | vws-console-api#128 | \`scripts/vws verify scenario ec2-keypair\` | 2026-10-14 15:30 KST |"
 expect_text "md marks unverified" "$md" "| Console login | vws-console | - | - | unverified | - |"
 
+# The fixture names scenarios that have no scenario file.
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a scenario with no scenario file fails the check" 1
+expect_text "the missing scenario is named" "$OUT" "scenario ec2-keypair in ${map} does not exist"
+expect_text "every missing scenario is named" "$OUT" "scenario sts-assume-role in ${map} does not exist"
+expect_text "the md itself is current" "$OUT" "${WORK}/fm/feature-map.md matches"
+cp "$map" "${map}.scenarios"
+jq '.features[0].scenario = "../s3-basic" | .features[1].scenario = null' "${map}.scenarios" >"$map"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
+run_vws_real verify --check-feature-map --map "$map"; expect_rc "a path as a scenario name fails the check" 1
+expect_text "the path is named" "$OUT" "scenario ../s3-basic in ${map} does not exist"
+# From here to the restore, the map names only s3-basic, which exists.
+jq '.features[0].scenario = "s3-basic" | .features[1].scenario = null' "${map}.scenarios" >"$map"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a fresh md passes the check" 0
 echo "edited" >>"${WORK}/fm/feature-map.md"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a hand-edited md fails the check" 1
@@ -64,6 +77,8 @@ rm "$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a missing Phase 1 list is unreadable" 3
 mv "${p1}.orig" "$p1"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "the restored list passes again" 0
+mv "${map}.scenarios" "$map"
+python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map; expect_rc "the repo feature map has every Phase 1 feature and a fresh md" 0
 
 echo '{"scenario": "x"}' >"${WORK}/fm/bad.json"
