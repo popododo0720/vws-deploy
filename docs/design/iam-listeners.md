@@ -67,7 +67,7 @@ Teaching the CR a port field would give the listen port a second owner. The port
 
 | Gap | Standing |
 | --- | --- |
-| live AWS CLI `iam create-user` and `list-users` | console-api#198. Those operations return `InvalidAction` over gRPC. This chart does not implement them |
+| live AWS CLI `iam create-user` and `list-users` | console-api#325 serves them over gRPC, and `services.console-api.imageTag` is `sha-d3a4057`, which includes it. The previous pin `sha-c09cba3` returned `InvalidAction`. Roles and managed policies over gRPC are still console-api#198. No live run yet |
 | `sts get-caller-identity` with a non-root key | this repo does not apply to a cluster |
 | AWS error shapes | handlers are in vws-console-api, not this chart |
 | the default install does not start iam | vws-iam#113 published `sha-74a29dc` (digest `sha256:6c301b75fd46584fd4d6c86f77be9d4389e0492a210d34bc31ab5a34fb9acc5d`, go1.26.9). An anonymous manifest request returned HTTP 200 on 2026-10-16. `services.iam.imageTag` is that tag. `enabled` stays false, so a default install does not pull it |

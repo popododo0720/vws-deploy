@@ -28,5 +28,6 @@ On 2026-11-02 an anonymous manifest request returned HTTP 200 for these floor bu
 | `ghcr.io/popododo0720/vws/console-api` | `sha-ac413c5` | `sha256:779d710a4b7d2226bee1adbd6c55f0067d03a96958578d90e3321758f5310e84` |
 | `ghcr.io/popododo0720/vws/compute` | `sha-f609a2e` | `sha256:d8ebeacba67126c06b24b45ee851244fb822ca3fd1c579033f41d3ee21195653` |
 
-The chart pins on that date (`console-api` `sha-c09cba3`, `compute` `sha-1b62a87`) are both before
-their thresholds, so the rule does not apply yet.
+The chart pins on that date (`console-api` `sha-c09cba3`, `compute` `sha-1b62a87`) were both before
+their thresholds. On 2026-11-06 console-api moved to `sha-d3a4057` (vws-deploy#310), still before
+`ac413c5`, so the rule does not apply yet.

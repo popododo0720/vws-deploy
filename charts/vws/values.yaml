@@ -149,15 +149,20 @@ services:
   console-api:
     external: true
     # imageTag pins this service's image to one build instead of global.tag / Chart appVersion
-    # (vws-deploy#280). sha-c09cba3 is console-api main on 2026-10-22: #299 makes AttachVolume answer
-    # attaching and DescribeVolumes read the attach from the instance spec, and #302 keeps
-    # DetachVolume replay records across label writes. It reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and
-    # VWS_SECRET_KEY from env, so the chart's flags and env do not change, and it makes no Kubernetes
-    # API call, so it needs no Role. vws-console-api publish.yml pushed
-    # ghcr.io/popododo0720/vws/console-api:sha-c09cba3 (sha256:036dce4c…, revision c09cba3) on merge.
-    # spec.version does not move it. Moving this past vws-console-api ac413c5 (#457) also moves
-    # compute.imageTag; see docs/image-pins.md.
-    imageTag: sha-c09cba3
+    # (vws-deploy#280). sha-d3a4057 is console-api main on 2026-10-23 (#325): with -iam=grpc it
+    # serves CreateUser, ListUsers and the other IAM user and group actions over vws-iam gRPC, which
+    # the previous pin sha-c09cba3 answered with InvalidAction (vws-deploy#310). It keeps #299
+    # (AttachVolume answers attaching) and #302 (DetachVolume replay records). The three commits
+    # since c09cba3 add no flag and no env read, so the chart's flags and env do not change. It
+    # reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and VWS_SECRET_KEY from env and makes no Kubernetes API
+    # call, so it needs no Role. Its vendored vws/iam/v1 user, group, auth and access key protos
+    # equal those of the iam pin sha-74a29dc. vws-console-api publish.yml pushed
+    # ghcr.io/popododo0720/vws/console-api:sha-d3a4057
+    # (sha256:48fc6ba1544ada28ecba5c244e9bd0f12e189ff0b12d849ed3e704f5e8853983); an anonymous
+    # manifest request returned HTTP 200 and this digest on 2026-11-06. spec.version does not move
+    # it. Moving this past vws-console-api ac413c5 (#457) also moves compute.imageTag; see
+    # docs/image-pins.md.
+    imageTag: sha-d3a4057
     # Exactly one replica: console-api holds sessions in memory, so a second pod or an HPA would
     # split them (popododo0720/vws-console-api#95). A one-replica Deployment is rendered with
     # strategy Recreate, so a rollout stops the old pod before the new one starts. The schema,
