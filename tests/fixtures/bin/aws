@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Fake aws-cli for tests/vws. It never talks to a network. It keeps a small S3 in ${VWS_FAKE_LOG}.s3/:
 # a bucket is a directory and an object a file, with the S3 error codes for a missing bucket or key.
+# It keeps a small EC2 in ${VWS_FAKE_LOG}.ec2/, one JSON file per instance or volume. A describe moves a
+# transient state (pending, creating, attaching, detaching, shutting-down) to its end state after it reports it,
+# unless $VWS_FAKE_DIR/aws/ec2.stuck exists.
 # Every call is appended to $VWS_FAKE_LOG as: aws<TAB><service>_<operation><TAB>all arguments<TAB>endpoint.
 # A file $VWS_FAKE_DIR/aws/<service>_<operation>.fail makes the call fail with its text on stderr (exit 254).
+# A file <service>_<operation>.lost makes the call take effect and then fail the same way (a lost reply).
 set -euo pipefail
 : "${VWS_FAKE_LOG:?}" "${VWS_FAKE_DIR:?}"
 # The caller must pass a clean environment (env -i): a variable the test exported must not arrive.
@@ -17,7 +21,9 @@ for arg in "$@"; do
   esac
 done
 op="${args[0]}_${args[1]}"
-printf 'aws\t%s\t%s\t%s\n' "$op" "${args[*]}" "$AWS_ENDPOINT_URL" >>"$VWS_FAKE_LOG"
+endpoint=${AWS_ENDPOINT_URL:-}
+[[ $op != ec2_* ]] || endpoint=${AWS_ENDPOINT_URL_EC2:-}
+printf 'aws\t%s\t%s\t%s\n' "$op" "${args[*]}" "$endpoint" >>"$VWS_FAKE_LOG"
 # <op>.sleep holds seconds to wait first, so a test can signal a run mid-call.
 [[ ! -f ${VWS_FAKE_DIR}/aws/${op}.sleep ]] || sleep "$(cat "${VWS_FAKE_DIR}/aws/${op}.sleep")"
 if [[ -f ${VWS_FAKE_DIR}/aws/${op}.fail ]]; then
@@ -28,6 +34,46 @@ opt() { local i; for ((i = 2; i < ${#args[@]} - 1; i++)); do [[ ${args[i]} != "$
 s3="${VWS_FAKE_LOG}.s3"
 bucket=$(opt --bucket) key=$(opt --key)
 err() { echo "An error occurred ($1) when calling the $2 operation: fake" >&2; exit 254; }
+if [[ -f ${VWS_FAKE_DIR}/aws/${op}.lost ]]; then
+  trap 'cat "${VWS_FAKE_DIR}/aws/${op}.lost" >&2; exit 254' EXIT
+fi
+
+ec2="${VWS_FAKE_LOG}.ec2"
+ec2_new() { # PREFIX: a new ID
+  local n
+  mkdir -p "$ec2"
+  n=$(($(cat "${ec2}/.seq" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"${ec2}/.seq"
+  printf '%s-%08x' "$1" "$n"
+}
+ec2_tag() { sed -n 's/.*Value=\([^},]*\).*/\1/p' <<<"$1"; }
+ec2_need() { [[ -f ${ec2}/$1.json ]] || err "$2" "$3"; } # ID CODE OP: a NotFound error unless ID exists
+ec2_state() { jq -r .State "${ec2}/$1.json"; }
+ec2_set() { # ID JQ-FILTER
+  jq -c "$2" "${ec2}/$1.json" >"${ec2}/$1.tmp" && mv "${ec2}/$1.tmp" "${ec2}/$1.json"
+}
+# ec2_list PREFIX KEY: the resources named by --<key>-ids or --filters Name=tag:Name,Values=V, then the
+# transient states move on.
+ec2_list() {
+  local f ids want
+  ids=$(opt "--$2-ids") want=$(opt --filters)
+  want=${want#Name=tag:Name,Values=}
+  for f in "${ec2}/$1"-*.json; do
+    [[ -f $f ]] || continue
+    if [[ -n $ids ]]; then [[ ${f##*/} == "$ids.json" ]] || continue
+    elif [[ -n $want ]]; then [[ $(jq -r .Tag "$f") == "$want" ]] || continue; fi
+    jq -c 'del(.Tag)' "$f"
+    [[ ! -f ${VWS_FAKE_DIR}/aws/ec2.stuck ]] || continue
+    jq -c '
+      if (.State | type) == "object" then
+        if .State.Name == "pending" then .State.Name = "running"
+        elif .State.Name == "shutting-down" then .State.Name = "terminated" else . end
+      elif .State == "creating" then .State = "available"
+      elif .State == "detaching" then .State = "available" | .Attachments = []
+      elif .Attachments[0].State? == "attaching" then .State = "in-use" | .Attachments[0].State = "attached"
+      else . end' "$f" >"${f%.json}.tmp" && mv "${f%.json}.tmp" "$f"
+  done
+}
 need_bucket() { [[ -d ${s3}/${bucket} ]] || err NoSuchBucket "$1"; }
 case $op in
   s3api_create-bucket)
@@ -52,5 +98,48 @@ case $op in
   s3api_delete-bucket)
     need_bucket DeleteBucket
     rmdir "${s3}/${bucket}" 2>/dev/null || err BucketNotEmpty DeleteBucket ;;
+  ec2_run-instances)
+    id=$(ec2_new i)
+    jq -cn --arg id "$id" --arg tag "$(ec2_tag "$(opt --tag-specifications)")" \
+      '{InstanceId: $id, State: {Name: "pending"}, Placement: {AvailabilityZone: "vws-1a"}, Tag: $tag}' >"${ec2}/${id}.json"
+    jq -c '{Instances: [del(.Tag)]}' "${ec2}/${id}.json" ;;
+  ec2_describe-instances)
+    [[ -z $(opt --instance-ids) ]] || ec2_need "$(opt --instance-ids)" InvalidInstanceID.NotFound DescribeInstances
+    ec2_list i instance | jq -sc '{Reservations: [{Instances: .}]}' ;;
+  ec2_reboot-instances) # the next describe reports pending once, as a KubeVirt VM restart does
+    id=$(opt --instance-ids)
+    ec2_need "$id" InvalidInstanceID.NotFound RebootInstances
+    ec2_set "$id" '.State.Name = "pending"' ;;
+  ec2_terminate-instances)
+    id=$(opt --instance-ids)
+    ec2_need "$id" InvalidInstanceID.NotFound TerminateInstances
+    ec2_set "$id" 'if .State.Name == "terminated" then . else .State.Name = "shutting-down" end'
+    echo '{"TerminatingInstances": []}' ;;
+  ec2_create-volume)
+    id=$(ec2_new vol)
+    jq -cn --arg id "$id" --arg tag "$(ec2_tag "$(opt --tag-specifications)")" --arg az "$(opt --availability-zone)" \
+      '{VolumeId: $id, State: "creating", AvailabilityZone: $az, Attachments: [], Tag: $tag}' >"${ec2}/${id}.json"
+    jq -c 'del(.Tag)' "${ec2}/${id}.json" ;;
+  ec2_describe-volumes)
+    [[ -z $(opt --volume-ids) ]] || ec2_need "$(opt --volume-ids)" InvalidVolume.NotFound DescribeVolumes
+    ec2_list vol volume | jq -sc '{Volumes: .}' ;;
+  ec2_attach-volume)
+    id=$(opt --volume-id) inst=$(opt --instance-id)
+    ec2_need "$id" InvalidVolume.NotFound AttachVolume
+    [[ $(ec2_state "$id") == available ]] || err IncorrectState AttachVolume
+    ec2_need "$inst" InvalidInstanceID.NotFound AttachVolume
+    ec2_set "$id" ".Attachments = [{InstanceId: \"${inst}\", Device: \"$(opt --device)\", State: \"attaching\"}]"
+    echo '{"State": "attaching"}' ;;
+  ec2_detach-volume)
+    id=$(opt --volume-id)
+    ec2_need "$id" InvalidVolume.NotFound DetachVolume
+    [[ $(ec2_state "$id") == in-use ]] || err IncorrectState DetachVolume
+    ec2_set "$id" '.State = "detaching" | .Attachments[0].State = "detaching"'
+    echo '{"State": "detaching"}' ;;
+  ec2_delete-volume)
+    id=$(opt --volume-id)
+    ec2_need "$id" InvalidVolume.NotFound DeleteVolume
+    [[ $(ec2_state "$id") == available ]] || err VolumeInUse DeleteVolume
+    rm "${ec2}/${id}.json" ;;
   *) echo "fake aws: no fake for ${op}" >&2; exit 1 ;;
 esac
