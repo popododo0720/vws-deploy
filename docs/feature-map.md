@@ -5,13 +5,13 @@ Last pass is a vws-test scenario run (KST). `unverified` means no scenario exist
 
 | Feature | Repo | Issue | Verify command | Last pass (KST) | Evidence |
 |---|---|---|---|---|---|
-| EC2 RunInstances / TerminateInstances | vws-console-api | - | - | unverified | - |
+| EC2 RunInstances / TerminateInstances | vws-console-api | - | `scripts/vws verify scenario ec2-volume-reboot` | never passed | - |
 | EC2 DescribeInstances / StopInstances / StartInstances | vws-console-api | - | - | unverified | - |
 | EC2 key pair import | vws-console-api | vws-console-api#128 | - | unverified | - |
 | EC2 user-data | vws-console-api | vws-console-api#128 | - | unverified | - |
 | AMI / EBS snapshot import | vws-compute | vws-deploy#135 | - | unverified | - |
 | EBS volume create / attach / snapshot | vws-storage | - | - | unverified | - |
-| EBS volume detach / delete | vws-storage | - | - | unverified | - |
+| EBS volume detach / delete | vws-storage | - | `scripts/vws verify scenario ec2-volume-reboot` | never passed | - |
 | VPC and subnet create / delete | vws-network | vws-network#5 | - | unverified | - |
 | Security group create / ingress rules | vws-network | vws-network#117 | - | unverified | - |
 | Elastic IP allocate / associate | vws-network | - | - | unverified | - |
