@@ -19,15 +19,15 @@ columns are one run each, named by head SHA.
 Cause: test growth run serially. In run 42212058830 (8b77f45, 2026-11-06) the Check
 step took 300s and `scripts/guard.sh all` 288s of it. Timed locally per subcommand,
 `guard.sh vws` took 180s, `agents` 27s and `placeholders` 10s; everything else was under 6s.
-`guard.sh vws` runs `tests/vws/run.sh`: 25 suites, 1502 cases. The slow suites wait on
+`guard.sh vws` runs `tests/vws/run.sh`: 25 suites, 1487 cases at 8b77f45. The slow suites wait on
 fake-cluster polls rather than compute: `verify-reboot.test.sh` takes 37s of wall time and 6s
 of CPU.
 
 Fix (this change): `tests/vws/run.sh` runs the suites in parallel, twice `nproc` at a time, and
 prints their output in name order. Measured on this box pinned to 4 CPUs (`taskset -c 0-3`, the
 size of a public `ubuntu-latest` runner): the harness went from 178s with one job to 71s with 4
-and 56s with 8 (the new default), with the same 1502 cases and the same output apart from one
-printed duration. On all 8 CPUs, `guard.sh vws` went from 180s to 52s.
+and 56s with 8 (the new default). On the same tree, the serial and parallel runs report the same
+cases and the same output apart from one printed duration. On all 8 CPUs, `guard.sh vws` went from 180s to 52s.
 
 What stays above the 7s baseline is justified: 178d757 checked a chart with helm lint and
 kubeconform only. Since then the check has gained the CRD envtest (6s), the platform bundle
