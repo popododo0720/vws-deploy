@@ -42,7 +42,7 @@ jobs:
   rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     uses: PFXrepo-guard-verify-rerun.ymlAT
-    permissions: {actions: write, pull-requests: read}
+    permissions: {actions: write, issues: write, pull-requests: write}
   pr-hygiene:
     needs: hygiene
     if: always() && github.event_name == 'pull_request'

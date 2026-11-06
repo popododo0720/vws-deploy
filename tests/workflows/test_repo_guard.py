@@ -156,43 +156,143 @@ esac'''
 
 class CommentRerun(unittest.TestCase):
     ENV = {"GH_TOKEN": "x", "REPO": "o/r", "NUMBER": "7"}
-    GH = """case "$*" in
-  *pulls/7*) echo abc123 ;;
-  *workflows/repo-guard.yml/runs*) echo 55 ;;
-  *runs/55/jobs*) echo 99 ;;
-  "api repos/o/r/actions/jobs/99 --jq .status")
-     n=$(cat "$0.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$0.n"
-     if [ "$n" -lt %d ]; then echo in_progress; else echo completed; fi ;;
-  *jobs/99/rerun*) exit 0 ;;
+    PR = '{"head": {"sha": "abc123", "ref": "feat", "repo": {"full_name": "o/r"}}}'
+    FORK_PR = '{"head": {"sha": "abc123", "ref": "feat", "repo": {"full_name": "fork/r"}}}'
+    # Newest first, as the API lists them: another PR (#8) with the same head SHA has the newest run.
+    RUNS = ('{"workflow_runs": ['
+            '{"id": 66, "pull_requests": [{"number": 8}], "head_repository": {"full_name": "o/r"}, "head_branch": "other"},'
+            '{"id": 77, "pull_requests": [], "head_repository": {"full_name": "fork/r"}, "head_branch": "x"},'
+            '{"id": 55, "pull_requests": [{"number": 7}], "head_repository": {"full_name": "o/r"}, "head_branch": "feat"}]}')
+    FORK_RUNS = ('{"workflow_runs": ['
+                 '{"id": 66, "pull_requests": [{"number": 8}], "head_repository": {"full_name": "o/r"}, "head_branch": "feat"},'
+                 '{"id": 88, "pull_requests": [], "head_repository": {"full_name": "fork/r"}, "head_branch": "other"},'
+                 '{"id": 55, "pull_requests": [], "head_repository": {"full_name": "fork/r"}, "head_branch": "feat"}]}')
+
+    def gh(self, busy=0, rerun="exit 0", pr=PR, runs=RUNS, jobs="echo 99"):
+        """busy: how many status reads say in_progress. rerun: the POST's body, given the job id in $job."""
+        return f"""count() {{ n=$(cat "$0.$1" 2>/dev/null || echo 0); echo $((n + 1)) >"$0.$1"; echo "$n"; }}
+case "$*" in
+  "api repos/o/r/pulls/7") echo '{pr}' ;;
+  *workflows/repo-guard.yml/runs*) echo '{runs}' ;;
+  *runs/55/jobs*) {jobs} ;;
+  "api repos/o/r/actions/jobs/"*" --jq .status")
+     if [ "$(count status)" -lt {busy} ]; then echo in_progress; else echo completed; fi ;;
+  *"-X POST"*) job=${{4#repos/o/r/actions/jobs/}}; job=${{job%/rerun}}; {rerun} ;;
+  *"-X DELETE"*) exit 0 ;;
+  *) exit 1 ;;
 esac"""
+
+    def go(self, **kw):
+        return Stub(self, self.gh(**kw)).run(self.script(), self.ENV)
+
+    def script(self):
+        return step("verify-rerun", "Re-run verify-gate for the PR head")["run"]
 
     def test_triggers(self):
         self.assertEqual(sorted(ON["issue_comment"]["types"]), ["created", "deleted", "edited"])
         for job in ("pr-hygiene", "verify-gate"):
             self.assertIn("github.event_name == 'pull_request'", WF["jobs"][job]["if"])
         self.assertIn("issue_comment", WF["jobs"]["verify-rerun"]["if"])
-        self.assertEqual(WF["jobs"]["verify-rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
+        self.assertEqual(WF["jobs"]["verify-rerun"]["permissions"],
+                         {"actions": "write", "issues": "write", "pull-requests": "write"})
 
     def test_reruns_the_called_gate_job_not_the_shim(self):
         # The caller's bare "verify-gate" shim only reads the result of "gate / verify-gate"; re-running the
         # shim alone would replay the old result, so the called job is the one re-run.
-        rc, calls, out = Stub(self, self.GH % 0).run(self.script(), self.ENV)
+        rc, calls, out = self.go()
         self.assertEqual(rc, 0, out)
         self.assertIn('.name == "gate / verify-gate"', calls)
 
-    def script(self):
-        return step("verify-rerun", "Re-run verify-gate for the PR head")["run"]
-
     def test_waits_for_running_job_then_reruns(self):
-        rc, calls, out = Stub(self, self.GH % 3).run(self.script(), self.ENV)
+        rc, calls, out = self.go(busy=3)
         self.assertEqual(rc, 0, out)
         self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
         self.assertIn("head_sha=abc123", calls)
+        self.assertNotIn("DELETE", calls)
 
-    def test_gives_up_with_failure(self):
-        rc, calls, _ = Stub(self, self.GH % 1000).run(self.script(), self.ENV)
+    def test_two_prs_with_the_same_head_sha(self):
+        """vws-deploy#312 AC1: the newest run for the SHA is PR #8's; PR #7's run is the one re-run."""
+        rc, calls, out = self.go()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("runs/55/jobs", calls)
+        self.assertNotIn("runs/66", calls)
+
+    def test_fork_pr_picks_its_own_head_branch(self):
+        """A fork PR's runs list no pull_requests: the run from its head repo and branch, not the newest."""
+        rc, calls, out = self.go(pr=self.FORK_PR, runs=self.FORK_RUNS)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("runs/55/jobs", calls)
+        self.assertNotIn("runs/66", calls)
+        self.assertNotIn("runs/88", calls)
+
+    def test_no_run_of_this_pr_drops_the_label(self):
+        """Only another PR's run has the SHA: nothing is re-run, and the label goes."""
+        runs = '{"workflow_runs": [{"id": 66, "pull_requests": [{"number": 8}], "head_repository": {"full_name": "o/r"}, "head_branch": "feat"}]}'
+        rc, calls, out = self.go(runs=runs)
         self.assertNotEqual(rc, 0)
-        self.assertNotIn("rerun", calls.replace("verify-rerun", ""))
+        self.assertNotIn("runs/66", calls)
+        self.assertNotIn("POST", calls)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+
+    def test_quote_in_a_fork_branch_is_data(self):
+        pr = '{"head": {"sha": "abc123", "ref": "a\\\" or true or \\\"", "repo": {"full_name": "fork/r"}}}'
+        rc, calls, out = self.go(pr=pr, runs=self.FORK_RUNS)
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotIn("/jobs", calls)
+        self.assertIn("DELETE", calls)
+
+    def test_gives_up_and_drops_the_label(self):
+        """vws-deploy#312 AC2: the wait window ran out, so the label goes and the log says so."""
+        rc, calls, out = self.go(busy=1000)
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("could not be re-run within 15 minutes", out)
+        self.assertIn("verify-approved removed", out)
+
+    def test_past_the_rerun_window_drops_the_label_at_once(self):
+        """vws-deploy#312 AC2: GitHub refuses the re-run (HTTP 403); waiting cannot change that."""
+        msg = 'echo "gh: Unable to re-run this workflow run because it was created over a month ago (HTTP 403)" >&2; exit 1'
+        rc, calls, out = self.go(rerun=msg)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(calls.count("-X POST"), 1)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("created over a month ago", out)
+        self.assertIn("verify-approved removed", out)
+
+    def test_label_already_gone_still_fails_the_job(self):
+        stub = self.gh(busy=1000).replace('*"-X DELETE"*) exit 0', '*"-X DELETE"*) echo "gh: Label does not exist (HTTP 404)" >&2; exit 1')
+        rc, _, out = Stub(self, stub).run(self.script(), self.ENV)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("verify-approved was not set", out)
+
+    def test_newer_attempt_already_ran(self):
+        """vws-proto run 41954745801: another re-run made attempt 2 (job 98) after job 99 was read. Job 99 is
+        refused with "Only jobs from the current attempt can be re-run"; the newest attempt's job is re-run and
+        the job passes instead of retrying the stale id for 15 minutes."""
+        jobs = 'if [ "$(count jobs)" -lt 1 ]; then echo 99; else echo 98; fi'
+        refuse = ('if [ "$job" = 99 ]; then echo "gh: Only jobs from the current attempt can be re-run (HTTP 403)" >&2; '
+                  'exit 1; fi; exit 0')
+        rc, calls, out = self.go(jobs=jobs, rerun=refuse)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X POST repos/o/r/actions/jobs/98/rerun", calls)
+        self.assertEqual(calls.count("-X POST repos/o/r/actions/jobs/99/rerun"), 1)
+        self.assertNotIn("DELETE", calls)
+
+    def test_failed_lookup_drops_the_label(self):
+        """A lookup that fails (here the jobs list, HTTP 502) leaves no stale approval behind."""
+        rc, calls, out = self.go(jobs='echo "gh: Server Error (HTTP 502)" >&2; exit 1')
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("lookup failed", out)
+
+    def test_server_error_is_retried(self):
+        flaky = 'if [ "$(count post)" -lt 2 ]; then echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi; exit 0'
+        rc, calls, out = self.go(rerun=flaky)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls.count("-X POST"), 3)
+        self.assertNotIn("DELETE", calls)
 
 
 class Reusable(unittest.TestCase):

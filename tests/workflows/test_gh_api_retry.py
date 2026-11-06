@@ -507,8 +507,8 @@ class RerunAndReset(unittest.TestCase):
         gh = textwrap.dedent("""\
             echo "$*" >>"$GH_LOG"
             case "$*" in
-              *pulls/7*) echo abc ;;
-              *workflows/repo-guard.yml/runs*) echo 55 ;;
+              *pulls/7*) echo '{"head": {"sha": "abc", "ref": "b", "repo": {"full_name": "o/r"}}}' ;;
+              *workflows/repo-guard.yml/runs*) echo '{"workflow_runs": [{"id": 55, "pull_requests": [{"number": 7}]}]}' ;;
               *runs/55/jobs*) echo 99 ;;
               *jobs/99*--jq*.status|*jobs/99*--jq*'.status'*)
                 n=$(cat "$0.n" 2>/dev/null || echo 0)
