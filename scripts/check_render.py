@@ -734,6 +734,40 @@ def check_loopback_policy(name: str, spec: dict, policy: dict | None, release: s
     return errors
 
 
+def portforward_rules(name: str) -> list[dict]:
+    pod = [f"{name}-0"]
+    return [
+        {"apiGroups": [""], "resources": ["pods"], "resourceNames": pod, "verbs": ["get"]},
+        {"apiGroups": [""], "resources": ["pods/portforward"], "resourceNames": pod, "verbs": ["create"]},
+    ]
+
+
+def check_portforward(docs: list[dict], values: dict) -> list[str]:
+    """A loopback service has Role <name>-portforward with get and port-forward on <name>-0 only and no
+    binding of it; no other Role or ClusterRole grants pods/portforward (#391)."""
+    loops = {n for n, sp in values["services"].items() if service_rendered(sp) and (sp or {}).get("loopback")}
+    homes = {d["metadata"]["name"]: d["metadata"].get("namespace") for d in docs if d.get("kind") == "StatefulSet" and d["metadata"]["name"] in loops}
+    errors: list[str] = []
+    found: set[str] = set()
+    for doc in docs:
+        kind, name = doc.get("kind"), doc["metadata"].get("name")
+        if kind in ("RoleBinding", "ClusterRoleBinding") and (doc.get("roleRef") or {}).get("name") in {f"{n}-portforward" for n in loops}:
+            errors.append(f"R11: {kind} {name} binds {doc['roleRef']['name']}; the cluster admin binds it, not the chart")
+        if kind not in ("Role", "ClusterRole"):
+            continue
+        loop = name.removesuffix("-portforward") if kind == "Role" and name.endswith("-portforward") else None
+        if loop in loops and doc["metadata"].get("namespace") == homes.get(loop):
+            if loop in found:
+                errors.append(f"R11: Role {name} renders twice in {homes[loop]}")
+            found.add(loop)
+            if doc.get("rules") != portforward_rules(loop):
+                errors.append(f"R11: Role {name} must be get and create pods/portforward on {loop}-0 only, got {doc.get('rules')}")
+        elif any("pods/portforward" in (rule.get("resources") or []) for rule in doc.get("rules") or []):
+            errors.append(f"R11: {kind} {name} grants pods/portforward; only a loopback service's <name>-portforward may")
+    errors.extend(f"R11: loopback {n} has no Role {n}-portforward" for n in sorted(loops - found))
+    return errors
+
+
 def check_image_command(name: str, spec: dict, container: dict, values: dict) -> list[str]:
     """image is <global.registry>/<imageName or service name>:<tag>; command is spec.command or absent."""
     errors: list[str] = []
@@ -1011,7 +1045,8 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             errors.append(f"R4: {name} state must be a volume size or be omitted, not null")
             continue
         stateful = "state" in spec
-        workload_kind = "StatefulSet" if stateful else "Deployment"
+        loopback = bool(spec.get("loopback"))
+        workload_kind = "StatefulSet" if stateful or loopback else "Deployment"
         workload = by_kind.get(workload_kind, {}).get(name)
         if workload is None:
             errors.append(f"R4: missing {workload_kind} {name}")
@@ -1099,6 +1134,15 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             peers = by_kind.get("Service", {}).get(f"{name}-peers")
             if peers is None or (peers.get("spec") or {}).get("clusterIP") != "None":
                 errors.append(f"R4: StatefulSet {name} needs a headless peers Service")
+        elif loopback:
+            # One replica keeps the pod name <name>-0, the only pod the portforward Role names.
+            if wspec.get("replicas") != 1:
+                errors.append(f"R4: StatefulSet {name} (loopback) must have one replica, so its pod is {name}-0")
+            extra = sorted({"serviceName", "volumeClaimTemplates", "persistentVolumeClaimRetentionPolicy"} & set(wspec))
+            if extra:
+                errors.append(f"R4: StatefulSet {name} (loopback) has no state and no Service, but sets {extra}")
+            if any(mount.get("name") == "state" for mount in container.get("volumeMounts") or []):
+                errors.append(f"R4: StatefulSet {name} (loopback) must not mount a state volume")
         else:
             strategy = wspec.get("strategy") or {}
             if name in SINGLE_REPLICA:
@@ -1116,6 +1160,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
                 errors.append(f"R4: Deployment {name} must not mount a state volume")
     errors.extend(check_collector(docs, values))
     errors.extend(check_volume_types(docs, values))
+    errors.extend(check_portforward(docs, values))
     return errors
 
 
@@ -1130,7 +1175,7 @@ def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) 
     """The first loopback mutation that check() accepts, as an error message; empty when all fail."""
     spec = values["services"][loop]
     page = int(spec.get("port", 8080))
-    workload = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == loop)
+    workload = next(d for d in docs if d.get("kind") == "StatefulSet" and d["metadata"]["name"] == loop)
     labels = workload["spec"]["template"]["metadata"]["labels"]
 
     def edit(kind, change, name=loop):
@@ -1150,7 +1195,20 @@ def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) 
         return edit("NetworkPolicy", change)
 
     def container(change):
-        return edit("Deployment", lambda d: change(d["spec"]["template"]["spec"]["containers"][0]))
+        return edit("StatefulSet", lambda d: change(d["spec"]["template"]["spec"]["containers"][0]))
+
+    def portforward(change):
+        return edit("Role", lambda d: change(d["rules"]), f"{loop}-portforward")
+
+    def binding(kind):
+        return copy.deepcopy(docs) + [{"kind": kind, "metadata": {"name": "ops", "namespace": workload["metadata"]["namespace"]},
+                                       "roleRef": {"kind": "Role", "name": f"{loop}-portforward"}, "subjects": []}]
+
+    def workload_spec(change):
+        return edit("StatefulSet", lambda d: change(d["spec"]))
+
+    wide = {"kind": "Role", "metadata": {"name": "ops", "namespace": workload["metadata"]["namespace"]},
+            "rules": [{"apiGroups": [""], "resources": ["pods/portforward"], "verbs": ["create"]}]}
 
     cases = [
         ("a Service of the same name", service(loop)),
@@ -1163,6 +1221,19 @@ def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) 
         ("another command", container(lambda c: c.update({"command": ["/bin/sh"]}))),
         ("another image repository", container(lambda c: c.update({"image": c["image"].replace("/" + spec.get("imageName", loop) + ":", "/other:")}))),
         ("a Role with another API group", edit("Role", lambda d: d["rules"][0].update({"apiGroups": ["other.example"]}), f"{release}-{loop}")),
+        ("a portforward Role on another pod", portforward(lambda r: r[1].update({"resourceNames": ["storage-0"]}))),
+        ("a portforward Role with no pod name", portforward(lambda r: r[1].pop("resourceNames"))),
+        ("a portforward Role with a third rule", portforward(lambda r: r.append({"apiGroups": [""], "resources": ["pods/exec"], "resourceNames": [f"{loop}-0"], "verbs": ["create"]}))),
+        ("no portforward Role", [d for d in docs if not (d.get("kind") == "Role" and d["metadata"]["name"] == f"{loop}-portforward")]),
+        ("a RoleBinding of the portforward Role", binding("RoleBinding")),
+        ("a ClusterRoleBinding of the portforward Role", binding("ClusterRoleBinding")),
+        ("another Role with pods/portforward", copy.deepcopy(docs) + [wide]),
+        ("the portforward Role in another namespace", edit("Role", lambda d: d["metadata"].update({"namespace": "other"}), f"{loop}-portforward")),
+        ("a second portforward Role in another namespace", copy.deepcopy(docs) + [{**copy.deepcopy(next(d for d in docs if d.get("kind") == "Role" and d["metadata"]["name"] == f"{loop}-portforward")), "metadata": {"name": f"{loop}-portforward", "namespace": "other"}}]),
+        ("two replicas", workload_spec(lambda w: w.update({"replicas": 2}))),
+        ("a serviceName", workload_spec(lambda w: w.update({"serviceName": f"{loop}-peers"}))),
+        ("a state volume", workload_spec(lambda w: w.update({"volumeClaimTemplates": [{"metadata": {"name": "state"}}]}))),
+        ("a Deployment instead", [{**d, "kind": "Deployment"} if d.get("kind") == "StatefulSet" and d["metadata"]["name"] == loop else d for d in docs]),
     ]
     for label, broken in cases:
         if not check(broken, values, release):
@@ -1244,10 +1315,10 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         if not any(f"external Service {exposed} publishes" in e for e in check(broken, values, release)):
             return [f"R15: the metrics port on external Service {exposed} did not fail (#623)"]
 
-    stateful_doc = _first(docs, "StatefulSet")
-    if stateful_doc is not None:
+    with_state = next((d["metadata"]["name"] for d in docs if d.get("kind") == "StatefulSet" and "volumeClaimTemplates" in d["spec"]), None)
+    if with_state is not None:
         broken = copy.deepcopy(docs)
-        _first(broken, "StatefulSet")["spec"].pop("volumeClaimTemplates", None)
+        next(d for d in broken if d.get("kind") == "StatefulSet" and d["metadata"]["name"] == with_state)["spec"].pop("volumeClaimTemplates")
         if not check(broken, values, release):
             return ["R4: removing the state volume did not fail"]
 

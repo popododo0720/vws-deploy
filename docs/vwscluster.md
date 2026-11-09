@@ -61,11 +61,13 @@ It is off by default because the installer package on GHCR is private, so the po
 Reach it with the operator's own kube credentials. The page has no Service and no login of its own: it listens on `127.0.0.1:8080` in the pod, and `kubectl port-forward` is the only way in.
 
 ```sh
-kubectl -n vws port-forward deploy/admin 8080:8080
+kubectl -n vws port-forward pod/admin-0 8080:8080
 # open http://localhost:8080/
 ```
 
-- Port-forward needs `create` on `pods/portforward` in the release namespace. The `vws-operator` Role does not have it (`bootstrap/bootstrap.yaml`), so use credentials that do.
+- `admin` is a StatefulSet with one replica, so its pod is always `admin-0`. Name the pod, not `deploy/admin` or `sts/admin`: resolving a workload needs rights the grant below leaves out.
+- The chart renders Role `admin-portforward` with `get` on pod `admin-0` and `create` on `pods/portforward` for `admin-0`, and nothing else. It renders no RoleBinding, because who runs the page is a site decision. The cluster admin binds it once per person or group: `kubectl -n vws create rolebinding admin-portforward --role=admin-portforward --user=<name>`. Port-forward goes through the kubelet, not the pod network, so no NetworkPolicy limits it; that is why the Role names one pod.
+- After a node loss, the StatefulSet starts `admin-0` elsewhere only once the Node object is deleted or the pod is force-deleted. The page holds no state, and `vws reconfigure` still saves the mapping meanwhile.
 - The page answers only `Host: localhost` or a loopback IP and refuses a cross-origin form post, so another site open in the same browser cannot drive the port-forward.
 - The pod's NetworkPolicy opens only the health port (`8081`, `/healthz` and `/readyz` for the kubelet). No other pod reaches the page.
 

@@ -1,7 +1,9 @@
 {{/*
 One bundle per key in the services map: ServiceAccount, Service, workload, PDB.
 state present -> StatefulSet, one retained volume, headless peers Service.
-state absent -> Deployment, at least two replicas.
+loopback -> StatefulSet with one replica and no volume, so its pod is always <name>-0, and Role
+<name>-portforward for that pod only (#391).
+otherwise -> Deployment, at least two replicas.
 rbac present -> API token, a Lease Role for leader election, and the listed rules:
 a rule with a namespace becomes a Role and RoleBinding in that namespace, a rule without one goes into a ClusterRole.
 A rule's namespace is a key of values namespaces ("release" is the release namespace). Every such
@@ -41,7 +43,6 @@ metadata:
 {{- /* enabled false: a service whose image is not published yet stays out of the render (#243). */}}
 {{- if ne $spec.enabled false }}
 {{- $stateful := hasKey $spec "state" }}
-{{- $replicas := $spec.replicas | default (ternary 1 2 $stateful) }}
 {{- $port := int ($spec.port | default 8080) }}
 {{- $healthPort := int ($spec.healthPort | default 0) }}
 {{- if and $healthPort (eq $healthPort $port) }}
@@ -51,9 +52,10 @@ metadata:
 {{- /* loopback (the admin page, #391): the service listens on 127.0.0.1 and has no auth, so it gets no
 Service and its NetworkPolicy admits only the health port. Nothing that opens it up may be set. */}}
 {{- $loopback := $spec.loopback | default false }}
-{{- if and $loopback (or $external $spec.allowFrom $spec.scrapeMetrics $spec.httpProbes $spec.state $spec.portEnv (not $healthPort)) }}
-  {{- fail (printf "R10: services.%s.loopback needs healthPort and none of external, allowFrom, scrapeMetrics, httpProbes, state, portEnv" $name) }}
+{{- if and $loopback (or $external $spec.allowFrom $spec.scrapeMetrics $spec.httpProbes $spec.state $spec.portEnv (not $healthPort) (ne (int ($spec.replicas | default 1)) 1)) }}
+  {{- fail (printf "R10: services.%s.loopback needs healthPort, one replica and none of external, allowFrom, scrapeMetrics, httpProbes, state, portEnv" $name) }}
 {{- end }}
+{{- $replicas := $spec.replicas | default (ternary 1 2 (or $stateful $loopback)) }}
 {{- $cpu := $spec.cpu | default "100m" }}
 {{- $memory := $spec.memory | default "256Mi" }}
 {{- $startup := int ($spec.startupSeconds | default 60) }}
@@ -154,6 +156,8 @@ spec:
       port: {{ $healthPort }}
       targetPort: metrics
 {{- end }}
+{{- end }}
+{{- if or $stateful $loopback }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -163,7 +167,9 @@ metadata:
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
 spec:
+  {{- if $stateful }}
   serviceName: {{ $name }}-peers
+  {{- end }}
   replicas: {{ $replicas }}
   podManagementPolicy: Parallel
   updateStrategy:
@@ -171,11 +177,14 @@ spec:
   selector:
     matchLabels:
       {{- include "vws.selector" $ctx | nindent 6 }}
+  {{- if $stateful }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Retain
     whenScaled: Retain
+  {{- end }}
   template:
     {{- include "vws.podTemplate" $ctx | nindent 4 }}
+  {{- if $stateful }}
   volumeClaimTemplates:
     - metadata:
         name: state
@@ -189,6 +198,7 @@ spec:
         {{- with $.Values.global.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}
+  {{- end }}
 {{- else }}
 ---
 apiVersion: apps/v1
@@ -232,6 +242,33 @@ spec:
   selector:
     matchLabels:
       {{- include "vws.selector" $ctx | nindent 6 }}
+{{- /* loopback: the operator reaches the page with kubectl port-forward, which goes through the
+kubelet and no NetworkPolicy, so the grant names the one pod. No RoleBinding: the cluster admin binds
+the Role to the people who run the page (docs/vwscluster.md). */}}
+{{- if $loopback }}
+{{- range $other := keys $.Values.services }}
+  {{- if eq (printf "%s-%s" $.Release.Name $other) (printf "%s-portforward" $name) }}
+    {{- fail (printf "R11: Role %s-portforward would collide with the Role of service %s in release %s" $name $other $.Release.Name) }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-portforward
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" $ctx | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: [{{ printf "%s-0" $name | quote }}]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    resourceNames: [{{ printf "%s-0" $name | quote }}]
+    verbs: ["create"]
+{{- end }}
 {{- if $rbac }}
 {{- $cluster := list }}
 {{- $byNamespace := dict }}

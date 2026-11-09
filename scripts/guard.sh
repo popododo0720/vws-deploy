@@ -798,10 +798,15 @@ PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true > "$tmp/admin.yaml"
   python3 scripts/check_render.py "$tmp/admin.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  admin:\n    enabled: true\n') ||
     die "R10: check_render rejects the admin render"
-  for open_it in loopback=false external=true flags.listen=0.0.0.0:8080 'allowFrom={console}'; do
+  for open_it in loopback=false external=true flags.listen=0.0.0.0:8080 'allowFrom={console}' replicas=2; do
     ! helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
       --set "services.admin.${open_it}" >/dev/null 2>&1 || die "R10: a loopback admin with ${open_it} was accepted"
   done
+  # Release admin with a service portforward would render two Roles named admin-portforward.
+  local collide
+  collide=$(helm template admin charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
+    --set services.portforward.port=8080 2>&1) && die "R11: a service Role named like admin-portforward was accepted"
+  [[ $collide == *'R11: Role admin-portforward would collide'* ]] || die "R11: the admin-portforward collision failed for another reason: $collide"
   python3 - "$tmp/iam.yaml" <<'PY' || die "R15: Service iam port is not 9095"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
