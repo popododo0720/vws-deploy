@@ -82,3 +82,25 @@ reads the mapping at run time instead of only from flags.
    httpGet probes target the pod IP, so probes use a separate port that serves only `/healthz`
    and `/readyz` (or exec probes); the page and its write endpoints stay on loopback.
 5. Docs: `docs/vwscluster.md` and `docs/vws-cli.md` for the admin page.
+
+## PR 3 as built (#391)
+
+PR 1 (the vws-storage reader) has not landed, so PR 3 ships only the ConfigMap. It departs from
+step 1 above in three ways:
+
+- The ConfigMap has no value of its own. The template builds it from
+  `services.storage.repeatedFlags.kube-volume-type`, the list `vws render` already fills from
+  `spec.storage.volumeTypes` (#611). The flags and the ConfigMap cannot drift, and R5 and R14 keep
+  one source.
+- The data has one key per mapped type, and the value is the flag value after `TYPE=`:
+  `gp3: ceph-block/Block/ceph-block` for `-kube-volume-type=gp3=ceph-block/Block/ceph-block`.
+  vws-storage can parse it with its flag parser. An unmapped type has no key.
+- The ConfigMap renders whenever storage renders, with `data: {}` when nothing is mapped. `admin`
+  gets `update` and no `create`, because R11 cannot narrow `create` by name. So the object must exist
+  before the first save.
+
+The vws-storage flag that names the ConfigMap and its `configmaps` get and watch rule wait for
+PR 1. Before then, vws-storage rejects an unknown flag at start, and the rule would grant a right
+that no code calls (guardrail 4). `scripts/check_render.py` fails a render whose
+`vws-volume-types` data differs from the storage `-kube-volume-type` args, or that has no such
+ConfigMap while storage renders.

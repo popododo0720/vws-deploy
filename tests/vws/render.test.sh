@@ -160,6 +160,15 @@ args=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WOR
 if [ "$args" = "$(printf '%s\n' '            - -kube-volume-type=gp2=fast-rbd' '            - -kube-volume-type=gp3=ceph-block/Block/ceph-block' '            - -kube-volume-type=sc1=cold.nfs/Filesystem')" ]; then
   ok "the chart gives vws-storage one -kube-volume-type arg per type"; else bad "chart kube-volume-type args" "$args"; fi
 if ! grep -q 'kube-volume-type' "${WORK}/small.yaml"; then ok "without volumeTypes no -kube-volume-type renders"; else bad "no volumeTypes" "$(cat "${WORK}/small.yaml")"; fi
+# The same mapping goes into ConfigMap vws-volume-types for the admin page and the vws-storage reader;
+# it exists with empty data when nothing is mapped, since the admin page may update but not create it.
+volume_types_cm() { # VALUES: data of ConfigMap vws-volume-types in the chart rendered with VALUES
+  helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "$1" | python3 -c 'import sys, yaml
+print([d.get("data") for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "vws-volume-types"])'
+}
+expect_text "ConfigMap vws-volume-types holds one key per mapped type" "$(volume_types_cm "${WORK}/volume-types.out")" \
+  "[{'gp2': 'fast-rbd', 'gp3': 'ceph-block/Block/ceph-block', 'sc1': 'cold.nfs/Filesystem'}]"
+expect_text "without volumeTypes ConfigMap vws-volume-types has empty data" "$(volume_types_cm "${WORK}/small.yaml")" "[{}]"
 for case in \
   'vt-unknown-type|s["volumeTypes"] = {"gp4": {"storageClass": "fast-rbd"}}' \
   'vt-no-class|s["volumeTypes"] = {"gp3": {"volumeMode": "Block"}}' \

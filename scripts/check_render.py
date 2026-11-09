@@ -791,6 +791,10 @@ VWS_ENV = {
     "VWS_IAM_KEK", "VWS_IAM_KEK_ID", "VWS_CONSOLE_API_URL", "VWS_CONSOLE_API_TOKEN",
 }
 COLLECTOR = "otel-collector"
+# The EBS volume type mapping the admin page edits and vws-storage will read (vws-deploy#391). Its data
+# is storage's -kube-volume-type list, TYPE -> CLASS[/MODE[/SNAPSHOTCLASS]], and it renders whenever
+# storage does, because the admin page may update it but not create it.
+VOLUME_TYPES = "vws-volume-types"
 COLLECTOR_KINDS = ("ServiceAccount", "ConfigMap", "Service", "Deployment", "NetworkPolicy")
 
 
@@ -851,8 +855,8 @@ def check_collector(docs: list[dict], values: dict) -> list[str]:
     errors: list[str] = []
     mine = [d for d in docs if d.get("metadata", {}).get("name") == COLLECTOR]
     for doc in docs:
-        if doc.get("kind") == "ConfigMap" and doc["metadata"].get("name") != COLLECTOR:
-            errors.append(f"R10: ConfigMap {doc['metadata'].get('name')} is not the collector config")
+        if doc.get("kind") == "ConfigMap" and doc["metadata"].get("name") not in (COLLECTOR, VOLUME_TYPES):
+            errors.append(f"R10: ConfigMap {doc['metadata'].get('name')} is not the collector or volume type config")
         for subject in doc.get("subjects") or []:
             if subject.get("name") == COLLECTOR:
                 errors.append(f"R25: {doc['kind']} {doc['metadata'].get('name')} grants the collector API rights")
@@ -896,6 +900,25 @@ def check_collector(docs: list[dict], values: dict) -> list[str]:
 
 def service_rendered(spec) -> bool:
     return isinstance(spec, dict) and spec.get("enabled", True) is not False
+
+
+def check_volume_types(docs: list[dict], values: dict) -> list[str]:
+    storage = values["services"].get("storage")
+    maps = [d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"].get("name") == VOLUME_TYPES]
+    if not service_rendered(storage):
+        return [f"R5: ConfigMap {VOLUME_TYPES} renders without storage"] if maps else []
+    if len(maps) != 1:
+        return [f"R5: storage renders, want one ConfigMap {VOLUME_TYPES}, got {len(maps)}"]
+    items = ((storage or {}).get("repeatedFlags") or {}).get("kube-volume-type") or []
+    if not all(isinstance(item, str) and "=" in item for item in items):
+        return [f"R14: storage -kube-volume-type items must be TYPE=CLASS[/MODE[/SNAPSHOTCLASS]]: {items}"]
+    want = dict(item.split("=", 1) for item in items)
+    if len(want) != len(items):
+        return [f"R14: storage -kube-volume-type names a type twice: {items}"]
+    got = maps[0].get("data") or {}
+    if got != want:
+        return [f"R14: ConfigMap {VOLUME_TYPES} data {got} does not equal storage -kube-volume-type {want}"]
+    return []
 
 
 def check(docs: list[dict], values: dict, release: str) -> list[str]:
@@ -1031,6 +1054,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             if any(mount.get("name") == "state" for mount in container.get("volumeMounts") or []):
                 errors.append(f"R4: Deployment {name} must not mount a state volume")
     errors.extend(check_collector(docs, values))
+    errors.extend(check_volume_types(docs, values))
     return errors
 
 
@@ -1053,6 +1077,17 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][with_rbac]["rbac"].append(named)
         if not any("with resourceNames" in e for e in check(docs, broken_values, release)):
             return ["R11: create narrowed by resourceNames did not fail"]
+
+    volume_types = [d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == VOLUME_TYPES]
+    if volume_types:
+        broken = copy.deepcopy(docs)
+        # A key with "=" never comes from the flags, which split at the first "=".
+        mutated = next(d for d in broken if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == VOLUME_TYPES)
+        mutated["data"] = {**(mutated.get("data") or {}), "self=test": "x"}
+        if not any(f"ConfigMap {VOLUME_TYPES} data" in e for e in check(broken, values, release)):
+            return [f"R14: {VOLUME_TYPES} data that differs from the flags did not fail"]
+        if not any(f"one ConfigMap {VOLUME_TYPES}" in e for e in check([d for d in docs if d not in volume_types], values, release)):
+            return [f"R5: a render without {VOLUME_TYPES} did not fail"]
 
     deployment = _first(docs, "Deployment")
     if deployment is not None:
