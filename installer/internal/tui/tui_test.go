@@ -445,7 +445,8 @@ func TestWizardHandsOutCredentialOnce(t *testing.T) {
 		t.Fatalf("secret password %d chars, consumed %v", len(pw), consumed)
 	}
 	for _, want := range []string{
-		"(shown once)", "user:     root", "admin user: root", "password: " + pw, "Secret vws-initial-admin", "vws installer finish",
+		"(shown once)", "user:     root", "admin user: root", "password: " + pw,
+		"Secret vws-initial-admin", "vws installer finish",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
