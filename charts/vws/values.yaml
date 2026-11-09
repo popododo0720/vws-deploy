@@ -125,8 +125,9 @@ services:
   # EBS volume type mapping. It is `vws-installer admin`, a subcommand of the installer image, so
   # imageName names that repository and command replaces the image entrypoint (scripts/vws). loopback:
   # the page has no auth of its own and listens on 127.0.0.1 only, so the chart renders no Service and
-  # the NetworkPolicy admits only the health port for kubelet probes. The operator reaches the page with
-  # kubectl port-forward to the pod. enabled stays false because the installer package on GHCR is private
+  # the NetworkPolicy admits only the health port for kubelet probes. It runs as a one-replica StatefulSet
+  # so the pod is admin-0, and the operator reaches the page with kubectl port-forward pod/admin-0 through
+  # Role admin-portforward, which the cluster admin binds (docs/vwscluster.md). enabled stays false because the installer package on GHCR is private
   # (an anonymous token request answers "authentication required" on 2026-11-09), the same as iam: it
   # needs a public package or an image pull secret first.
   admin:

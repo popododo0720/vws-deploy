@@ -587,6 +587,9 @@
               "flags"
             ],
             "properties": {
+              "replicas": {
+                "const": 1
+              },
               "flags": {
                 "required": [
                   "listen"
