@@ -77,12 +77,12 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 | Call | Resource | Verbs | Namespace |
 | --- | --- | --- | --- |
 | `kubectl get vwsclusters vws -o json` (the page and the resourceVersion of a save), `kubectl patch vwsclusters vws --type=json` (a save) | VWSCluster (the group is read from `charts/vws/crds/vwsclusters.yaml`, R18) vwsclusters, `resourceNames: [vws]` | get, patch | the release namespace (`-namespace`) |
-| `kubectl patch configmaps vws-volume-types --type=json` (adds `/data`) | `""` configmaps, `resourceNames: [vws-volume-types]` | patch | the release namespace |
+| `kubectl patch configmaps vws-volume-types --type=json` (adds `/data`) | `""` configmaps, `resourceNames: [vws-volume-types]` | get, patch | the release namespace |
 | `kubectl get storageclasses -o jsonpath` (the class list and the check that a class exists) | `storage.k8s.io` storageclasses | list | cluster |
 | `kubectl get volumesnapshotclasses -o jsonpath` (the same for snapshot classes) | `snapshot.storage.k8s.io` volumesnapshotclasses | list | cluster |
 
 - `get` on a list kind (no name) is the `list` verb, so the class rules have `list` and no `get`.
-- The ConfigMap is never read or created by the page: the chart renders it (even empty), so `patch` with `resourceNames` is enough and R11 needs no `create`.
+- The page never creates the ConfigMap: the chart renders it (even empty), so R11 needs no `create`. The page does not read it either, but `kubectl patch` (v1.35.0) gets the object before it sends the patch, so the rule has `get` as well as `patch`.
 - No Secrets, Deployments or RBAC. The page runs `kubectl` in the installer image with the pod's ServiceAccount token.
 - Like every service with `rbac`, the chart also renders the `admin-leader` Lease Role. The page does not use leader election.
 - To reach the page the operator needs `create` on `pods/portforward` for the admin pod. The operator Role in `bootstrap/bootstrap.yaml` does not have it yet.

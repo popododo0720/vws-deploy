@@ -169,8 +169,9 @@ PR 4b wires the page into the chart as `services.admin`. It departs from the des
 - The `vwsclusters` rule names its group as `{crd: vwsclusters}`. The template and
   `scripts/check_render.py` read `spec.group` from `charts/vws/crds/vwsclusters.yaml`, because R18
   allows that group to be written only there. The CRD header no longer says no service reads it.
-- RBAC is what the page calls: `get` and `patch` on VWSCluster `vws`, `patch` on ConfigMap
-  `vws-volume-types` (no `get`, the page never reads it), `list` on storageclasses and
+- RBAC is what the page calls: `get` and `patch` on VWSCluster `vws`, `get` and `patch` on
+  ConfigMap `vws-volume-types` (the page never reads it, but `kubectl patch` gets the object before
+  it sends the patch), `list` on storageclasses and
   volumesnapshotclasses (`kubectl get KIND -o jsonpath` is a list). The design said `update` on the
   ConfigMap and get/list on the classes; PR 4a replaced the first and the code needs only list.
 - The leader-election Lease Role is still rendered, as for every service with `rbac`. The page does
