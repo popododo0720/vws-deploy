@@ -30,6 +30,7 @@ A deterministic script that runs five routine factory steps on GitHub state. It 
 | Z, superseded close (vws-deploy#377) | An open non-draft PR into `main` whose title is `-vN of #M` or whose visible body has one claim line alone (`Rework of #M`, `Rebuild of #M`, `Rebuilt of #M`, `Supersedes #M` or `Replaces #M`, an optional period), from a trusted author, or whose Done report answers a dispatch on the older PR and names it, closes that source PR with one comment linking the newer PR. Free prose is never a claim: a body that says `this replaces #M's list` leaves #M open. Only the named source is closed: an issue, a closed or draft PR, the status issue, the verify-wake thread, a self reference, a cross-repo reference, a report for another item's dispatch, an untrusted author, and a source named by a PR that is not newer are never touched. One close per source (a report link wins over a body reference, then the first by key). `apply` re-reads both PRs and skips when the target is no longer an open non-draft PR or a factory thread, when the author is no longer trusted, or when the newer PR no longer names the source; a report link is not re-read beyond the two PR states. The comment carries an idempotency key, so a retried tick does not post it twice. The note is `superseded_close`. |
 | L, lead wake (vws-deploy#397) | Posts **one** comment on the wake thread (`ORCHESTRATE_WAKE_THREAD`; unset means no lead wake and the note `lead_wake_off`; never the status issue) per PR head that no rule moves on its own: an open, non-draft PR on `main` that is `verify-approved` but conflicts with main (`mergeable` false), or is `verify-approved` (not `blocked`, `hold` or `do-not-merge`, at the read head) but Rule D skips it with `part_of_owner_repo` (vws-deploy#504: the reason names the PR URL and the allowed forms, and the wake asks for a body edit, not a rebuild), or whose newest vws-verify verdict on its current head is a FAIL with no B2 rework and no B4 Grok rework wake this tick: a conflict-only verdict, a Grok PR (`grok` on the PR or on the issue its `Part of` names) that B4 does not wake, or a PR no `ready`+`deepseek` item owns. The first line is `<!-- vws-orchestrate:lead-wake -->`; the comment names `repo#N`, the head sha and the reason. The idempotency key is sha256 of `repo#N@head`, so a head is woken once and a new push can wake again; apply re-reads the thread and skips a key that is already there. dr eggbot's GitHub-trigger routine on that thread matches the marker and rebuilds the PR onto main as a new -vN PR (no force-push) or routes the FAIL to its owner. Logged as `lead_wake_posted`. |
 | T, AC tick (vws-deploy#486) | A PR merged into `main` after the rule started, with a `Part of` issue and `AC: <n>` lines, gets box n of that issue ticked with `(evidence: <PR URL> merged <sha>)`. One comment carries the marker. The issue gets `ac-partial` while boxes stay open and is closed as completed when none are left. `ORCHESTRATE_AC_TICK` (`apply` by default, so an unset value applies) switches it; the #415 Now block shows it as `AC tick: <mode>`. See "The AC tick rule" below. |
+| S, spec first (vws-deploy#348) | A queued DeepSeek task (rule B) or allowlisted Grok task (rule G) gets one `spec_<state>` note from `spec_state()`; under `enforce` only `ok` and `exempt` are dispatched or woken. A PR or commit spec adds a `Spec:` line to the dispatch comment or grok-wake. `ORCHESTRATE_SPEC_FIRST` (`off` by default) switches it. See "Spec first" below. |
 | V, verify labels (vws-deploy#487) | `needs-verify` and `verify-approved` follow each open PR's current head in every vws-* repo, with or without `verify-queue.yml`. See "The verify labels rule" below. Runs after every other rule, so it takes the writes left under `ORCHESTRATE_MAX_WRITES`; `ORCHESTRATE_VERIFY_LABELS=off` stops it. |
 
 Code: `.github/orchestrate/orchestrate.py` and `.github/orchestrate/rules/*.py` (Python 3 stdlib; see
@@ -580,6 +581,52 @@ next heading), or `AC: none - <reason>`. `scripts/guard-agents.sh pr-body` requi
   and its `ac-pending` job (this rule replaces it; `tests/workflows/test_post_merge.py` `Retired` keeps it
   gone) and created `ac-partial` in every non-archived vws-* repo; `.github/labels.yml` defines both labels.
 
+## Spec first (vws-deploy#348)
+
+AGENTS.md R27 and its "Spec first" section state the rule for authors: Grok writes the issue's
+acceptance criteria and, where feasible, a failing test, and links it with one `Spec:` line. The
+orchestrator only reads it:
+
+- `parse_spec()` takes the issue body's one `Spec:` line (two or more are unreadable), parsed as strictly
+  as `Depends on`: `Spec: https://github.com/popododo0720/<repo>/pull/<n>`,
+  `Spec: https://github.com/popododo0720/<repo>/commit/<40-hex sha>` or
+  `Spec: exempt (<reason>): <one line>` with `<reason>` one of `docs`, `ci`, `config`, `revert`,
+  `live-only`, `test-in-ac`.
+- `collect_specs()` runs only when `ORCHESTRATE_SPEC_FIRST` is not `off`. For every open `ready`+`deepseek`
+  or `ready`+`grok` issue with a PR or commit spec in an orchestrator repo it reads the spec head's CI
+  (`commits/<sha>/check-runs` and `commits/<sha>/status`). A spec PR missing from the snapshot adds one
+  `GET pulls/<n>`. All three paths were already in `ALLOWED`; `test_spec_first.AllowlistUnchanged` keeps
+  the table equal to main. A read error marks that spec unreadable and never fails the tick.
+- `spec_state()` (pure) returns one of:
+
+  | State | When |
+  | --- | --- |
+  | `missing_ac` | no `- [ ]` or `- [x]` line under an `## Acceptance criteria` heading before the next heading |
+  | `missing_spec` | no `Spec:` line |
+  | `exempt` | `Spec: exempt (<listed reason>): ...` |
+  | `bad_exempt` | an exempt line with an unknown reason |
+  | `spec_unreadable` | a malformed line, a spec outside the orchestrator repos, or a read error |
+  | `spec_not_red` | the spec head's `ci_verdict()` is not `failing` (the verify checks are ignored as usual) |
+  | `ok` | the spec head's CI is red |
+
+- `decide()` asks `spec_gate()` once per queued issue, before any slot is counted. A rework (rule B2) is
+  the PR already built from the issue and is not checked again.
+
+  | `ORCHESTRATE_SPEC_FIRST` | Effect |
+  | --- | --- |
+  | `off` (default) | no spec reads, no note, output equal to main (`test_decide.SpecFirst` golden test) |
+  | `warn` | dispatch as before and note `spec_<state>` |
+  | `enforce` | note `spec_<state>`; a state other than `ok` or `exempt` is not dispatched or woken |
+
+  The value is read from the box env file every tick; any other value fails the config load.
+- With a PR or commit spec, the dispatch comment gets the line
+  `Spec: <url> - build on it, keep the spec commit unchanged, and make its test pass.` after its first
+  line, which stays `@deepseek-dev please take this issue ...` for the poller. A grok-wake gets the same line.
+- vws-verify checks the implementer's PR against the spec (the spec commit is an ancestor of the head and
+  unchanged, carries `Spec-by: grok`, and its test passes); that is verify's checklist, not code here.
+- Not done yet: the board `Spec` field (the board-sync series) and the box switch to `warn`, then
+  `enforce` after the rollout bar in vws-deploy#348.
+
 ## Infra retries (provider errors)
 
 DeepSeek's provider sometimes fails before the task starts (2026-10-21: a 429 at 07:12Z and a 503 at
@@ -849,6 +896,7 @@ Config keys and defaults:
 - `ORCHESTRATE_MERGE_CI_TIMEOUT_HOURS=2`
 - `ORCHESTRATE_MERGE_MAX_ATTEMPTS=2`
 - `ORCHESTRATE_AC_TICK=apply` (unset means `apply`, vws-deploy#526; rule T: `off` reads nothing, `dry-run` plans and logs, `apply` writes; writes need `apply` here and in `ORCHESTRATE_MODE`)
+- `ORCHESTRATE_SPEC_FIRST=off` (vws-deploy#348: `off`, `warn` or `enforce`; `off` reads no spec, `warn` notes `spec_<state>`, `enforce` also holds a task whose state is not `ok` or `exempt`; see "Spec first")
 - `ORCHESTRATE_BOARD=dry-run` (board_sync: `off`, `dry-run` or `apply`; writes need `apply` here and in `ORCHESTRATE_MODE`)
 - `ORCHESTRATE_BOARD_PROJECT=PVT_kwHOBK54jM4BoB_Z` (the ProjectV2 node id of the board)
 - `ORCHESTRATE_BOARD_EVERY=6` (sync at most every N ticks, plus the tick after a managed label change)
