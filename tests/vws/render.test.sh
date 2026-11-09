@@ -893,7 +893,7 @@ yaml.safe_dump_all(docs, open(sys.argv[1] + ".open", "w"))
 PY2
 out=$(python3 "${VWS_TEST_ROOT}/scripts/check_render.py" "${WORK}/metrics-np.out.open" "${VWS_TEST_ROOT}/charts/vws/values.yaml" vws "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" "${WORK}/metrics-np.yaml" 2>&1 || true)
 expect_text "metrics np: /metrics open to every namespace fails" "$out" "R10: NetworkPolicy storage must admit /metrics only from global.metricsScraper"
-printf 'services:\n  network:\n    scrapeMetrics: true\n' >"${WORK}/metrics-nohealth.yaml"
+printf 'services:\n  network:\n    healthPort: null\n    scrapeMetrics: true\n' >"${WORK}/metrics-nohealth.yaml"
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/metrics-nohealth.yaml" >/dev/null 2>"${WORK}/metrics-nohealth.err"; then
   bad "metrics np: scrapeMetrics without healthPort fails" "rendered"
 else
