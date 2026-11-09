@@ -613,6 +613,22 @@ def spec_state(item, spec_info):
     return "ok" if spec_info.get("ci") == "failing" else "spec_not_red"
 
 
+def spec_gate(item, snapshot, cfg):
+    """Pure (vws-deploy#348): how ORCHESTRATE_SPEC_FIRST treats one queued issue. {"note": a spec_<state>
+    note or None under off, "hold": True only under enforce when the state is not ok or exempt, "line": the
+    dispatch-comment Spec line ("" under off or without a PR/commit spec)}."""
+    mode = cfg.get("ORCHESTRATE_SPEC_FIRST", "off")
+    if mode == "off":
+        return {"note": None, "hold": False, "line": ""}
+    spec = parse_spec(item.get("body"))
+    st = spec_state(item, snapshot.get("specs", {}).get(spec["url"]) if spec["url"] else None)
+    k = f"{item['repo']}#{item['number']}"
+    note = {"kind": st if st.startswith("spec_") else f"spec_{st}", "target": k}
+    line = (f"Spec: {spec['url']} - build on it, keep the spec commit unchanged, and make its test pass."
+            if spec["kind"] in ("pr", "commit") else "")
+    return {"note": note, "hold": mode == "enforce" and st not in ("ok", "exempt"), "line": line}
+
+
 def ac_tick_body(body, boxes, pr_url, sha):
     """Pure: tick the listed boxes of an issue body, each with an evidence suffix ac-lint.sh accepts.
     {"body", "ticked": boxes newly ticked, "open": boxes still open after, "error": "" | ac_no_section |
