@@ -48,6 +48,8 @@ func run(args []string) error {
 			return runTUI(args[1:])
 		case "print-url":
 			return runPrintURL(args[1:], os.Stdout)
+		case "admin":
+			return runAdmin(args[1:])
 		}
 	}
 	return serve(args)

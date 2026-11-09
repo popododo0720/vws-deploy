@@ -75,3 +75,36 @@ esac
 		t.Fatalf("the password reached kubectl's arguments:\n%s", raw)
 	}
 }
+
+func TestKubeAdmin(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	kubectl := fakeBin(t, dir, "kubectl", `printf '%s|' "$@" >> `+args+`; echo >> `+args+`
+case "$3" in
+get) [ "$4" = storageclasses ] && echo 'a b' || echo '{}' ;;
+patch) echo 'Error from server: the server rejected our request due to an error in our request' >&2; exit 1 ;;
+esac
+`)
+	k := Kube{Kubectl: kubectl, Namespace: "vws"}
+	ctx := context.Background()
+	if names, err := k.Names(ctx, "storageclasses"); err != nil || strings.Join(names, ",") != "a,b" {
+		t.Fatalf("Names: %v %v", names, err)
+	}
+	if _, err := k.Get(ctx, "vwsclusters", "vws"); err != nil {
+		t.Fatal(err)
+	}
+	err := k.Patch(ctx, "configmaps", "vws-volume-types", []byte(`[{"op":"add"}]`))
+	if err == nil || !strings.Contains(err.Error(), "rejected our request") {
+		t.Fatalf("Patch must report kubectl's stderr: %v", err)
+	}
+	raw, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "-n|vws|get|storageclasses|-o|jsonpath={.items[*].metadata.name}|\n" +
+		"-n|vws|get|vwsclusters|vws|-o|json|\n" +
+		"-n|vws|patch|configmaps|vws-volume-types|--type=json|--field-manager=vws-admin|-p|[{\"op\":\"add\"}]|\n"
+	if string(raw) != want {
+		t.Fatalf("kubectl calls:\n%s\nwant\n%s", raw, want)
+	}
+}

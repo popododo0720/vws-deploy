@@ -39,3 +39,14 @@ func TestPrintURL(t *testing.T) {
 		t.Fatal("print-url without a running API did not fail")
 	}
 }
+
+func TestAdminListensOnLoopbackOnly(t *testing.T) {
+	for addr, ok := range map[string]bool{
+		"127.0.0.1:8080": true, "[::1]:8080": true,
+		"0.0.0.0:8080": false, ":8080": false, "10.0.0.5:8080": false, "localhost:8080": false,
+	} {
+		if err := loopback(addr); (err == nil) != ok {
+			t.Errorf("loopback(%q) = %v", addr, err)
+		}
+	}
+}

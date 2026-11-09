@@ -22,8 +22,9 @@ const module = "github.com/popododo0720/vws-deploy/installer"
 // its layer here.
 var layers = map[string][]string{
 	"cmd/vws-installer": {
-		"internal/api", "internal/client", "internal/cluster", "internal/preflight", "internal/tui",
+		"internal/admin", "internal/api", "internal/client", "internal/cluster", "internal/preflight", "internal/tui",
 	},
+	"internal/admin":     {"internal/api"},
 	"internal/api":       {"internal/cluster"},
 	"internal/preflight": {"internal/api", "internal/cluster"},
 	"internal/cluster":   {},

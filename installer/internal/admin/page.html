@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VWS admin: EBS volume types</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 2rem; color: #1b1f24; background: #fff; }
+table { border-collapse: collapse; }
+th, td { border-bottom: 1px solid #d0d7de; padding: .4rem .8rem; text-align: left; }
+.unmapped { color: #6e7781; font-style: italic; }
+.error { color: #b42318; }
+.saved { color: #1a7f37; }
+</style>
+</head>
+<body>
+<h1>EBS volume types</h1>
+<p>Each EBS volume type is served by one StorageClass. A type with no StorageClass is not mapped,
+and vws-storage refuses to create a volume of that type, except standard and gp2, which then use
+the storage default classes. An empty volume mode or snapshot class takes the storage default.</p>
+{{if .Saved}}<p class="saved">Saved to VWSCluster vws and ConfigMap vws-volume-types. vws-storage
+uses the new mapping after the next vws apply.</p>{{end}}
+{{range .Errors}}<p class="error">{{.}}</p>{{end}}
+{{if eq .Driver "nfs"}}
+<p>Storage driver nfs serves every type from vws-nfs. The mapping cannot be changed.</p>
+{{else if .ResourceVersion}}
+<form method="post" action="/">
+<input type="hidden" name="resourceVersion" value="{{.ResourceVersion}}">
+<table>
+<tr><th>Type</th><th>StorageClass</th><th>Volume mode</th><th>VolumeSnapshotClass</th><th>State</th></tr>
+{{range .Rows}}
+<tr>
+<td>{{.Type}}</td>
+<td><input name="{{.Type}}.storageClass" value="{{.StorageClass}}" list="storageclasses"></td>
+<td><select name="{{.Type}}.volumeMode">
+<option value=""{{if eq .VolumeMode ""}} selected{{end}}>default</option>
+<option{{if eq .VolumeMode "Block"}} selected{{end}}>Block</option>
+<option{{if eq .VolumeMode "Filesystem"}} selected{{end}}>Filesystem</option>
+</select></td>
+<td><input name="{{.Type}}.volumeSnapshotClass" value="{{.VolumeSnapshotClass}}"></td>
+<td>{{if .StorageClass}}mapped{{else}}<span class="unmapped">not mapped</span>{{end}}</td>
+</tr>
+{{end}}
+</table>
+<datalist id="storageclasses">{{range .StorageClasses}}<option value="{{.}}">{{end}}</datalist>
+<p><button type="submit">Save</button></p>
+</form>
+{{end}}
+</body>
+</html>
