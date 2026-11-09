@@ -792,6 +792,16 @@ PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.iam.enabled=true > "$tmp/iam.yaml"
   python3 scripts/check_render.py "$tmp/iam.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  iam:\n    enabled: true\n') ||
     die "R16: check_render rejects the vws-iam render"
+  # admin (#391): off by default (the installer image is private on GHCR); on, it is loopback, so no Service,
+  # a NetworkPolicy for the health port only, and the schema refuses anything that opens it up.
+  ! grep -q 'name: admin$' "$tmp/default.yaml" || die "R10: the default render has the admin page, whose image is private"
+  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true > "$tmp/admin.yaml"
+  python3 scripts/check_render.py "$tmp/admin.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  admin:\n    enabled: true\n') ||
+    die "R10: check_render rejects the admin render"
+  for open_it in loopback=false external=true flags.listen=0.0.0.0:8080 'allowFrom={console}'; do
+    ! helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
+      --set "services.admin.${open_it}" >/dev/null 2>&1 || die "R10: a loopback admin with ${open_it} was accepted"
+  done
   python3 - "$tmp/iam.yaml" <<'PY' || die "R15: Service iam port is not 9095"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]

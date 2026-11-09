@@ -48,12 +48,18 @@ metadata:
   {{- fail (printf "R15: services.%s.healthPort must differ from port %d" $name $port) }}
 {{- end }}
 {{- $external := $spec.external | default false }}
+{{- /* loopback (the admin page, #391): the service listens on 127.0.0.1 and has no auth, so it gets no
+Service and its NetworkPolicy admits only the health port. Nothing that opens it up may be set. */}}
+{{- $loopback := $spec.loopback | default false }}
+{{- if and $loopback (or $external $spec.allowFrom $spec.scrapeMetrics $spec.httpProbes $spec.state $spec.portEnv (not $healthPort)) }}
+  {{- fail (printf "R10: services.%s.loopback needs healthPort and none of external, allowFrom, scrapeMetrics, httpProbes, state, portEnv" $name) }}
+{{- end }}
 {{- $cpu := $spec.cpu | default "100m" }}
 {{- $memory := $spec.memory | default "256Mi" }}
 {{- $startup := int ($spec.startupSeconds | default 60) }}
 {{- /* Kubelet probes at t=0 and then every 5s, and kills at (threshold-1)*5. */}}
 {{- $threshold := add (div (add $startup 4) 5) 1 }}
-{{- $image := printf "%s/%s:%s" $.Values.global.registry $name ($spec.imageTag | default ($.Values.global.tag | default $.Chart.AppVersion)) }}
+{{- $image := printf "%s/%s:%s" $.Values.global.registry ($spec.imageName | default $name) ($spec.imageTag | default ($.Values.global.tag | default $.Chart.AppVersion)) }}
 {{- $rbac := hasKey $spec "rbac" }}
 {{- $args := include "vws.args" (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPort) | fromJsonArray }}
 {{- $extraPorts := include "vws.extraPorts" (dict "flags" ($spec.flags | default dict) "port" $port) | fromJsonArray }}
@@ -84,7 +90,7 @@ renamed service, release namespace or port moves with it. */}}
 {{- if and $httpProbes $healthPort }}
   {{- fail (printf "R15: services.%s sets both httpProbes and healthPort" $name) }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "rootPassword" $rootPassword "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image "observability" ($spec.observability | default dict) }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "rootPassword" $rootPassword "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image "observability" ($spec.observability | default dict) "command" ($spec.command | default list) }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -94,6 +100,7 @@ metadata:
   labels:
     {{- include "vws.labels" $ctx | nindent 4 }}
 automountServiceAccountToken: {{ $rbac }}
+{{- if not $loopback }}
 ---
 apiVersion: v1
 kind: Service
@@ -122,6 +129,7 @@ the load balancer from publishing the port, so only an in-cluster Service carrie
     - name: metrics
       port: {{ $healthPort }}
       targetPort: metrics
+{{- end }}
 {{- end }}
 {{- if $stateful }}
 ---
@@ -228,11 +236,12 @@ spec:
 {{- $cluster := list }}
 {{- $byNamespace := dict }}
 {{- range $spec.rbac }}
+  {{- $rule := include "vws.rule" (dict "root" $ "rule" .) | fromJson }}
   {{- if .namespace }}
     {{- $target := include "vws.ns" (dict "root" $ "key" .namespace) }}
-    {{- $byNamespace = set $byNamespace $target (append (get $byNamespace $target | default (list)) (omit . "namespace")) }}
+    {{- $byNamespace = set $byNamespace $target (append (get $byNamespace $target | default (list)) (omit $rule "namespace")) }}
   {{- else }}
-    {{- $cluster = append $cluster . }}
+    {{- $cluster = append $cluster $rule }}
   {{- end }}
 {{- end }}
 {{- if $cluster }}
@@ -322,7 +331,9 @@ subjects:
     name: {{ $name }}
     namespace: {{ $.Release.Namespace }}
 {{- end }}
-{{- /* One NetworkPolicy per service with allowFrom or scrapeMetrics (#243, #620). allowFrom
+{{- /* One NetworkPolicy per service with allowFrom, scrapeMetrics or loopback (#243, #620, #391). loopback
+admits only healthPort, from every source, because kubelet probes come from the node and the page port
+(127.0.0.1) is not reachable from a pod anyway. allowFrom
 limits the service port to those services' pods. scrapeMetrics limits the health listener, which
 serves /metrics (vws-lib obs), to global.metricsScraper; without allowFrom the service and extra
 ports stay open to every source, so the policy changes only who reaches /metrics. */}}
@@ -330,7 +341,7 @@ ports stay open to every source, so the policy changes only who reaches /metrics
 {{- if and $scrape (not $healthPort) }}
   {{- fail (printf "R10: services.%s.scrapeMetrics needs healthPort" $name) }}
 {{- end }}
-{{- if or $spec.allowFrom $scrape }}
+{{- if or $spec.allowFrom $scrape $loopback }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -356,11 +367,16 @@ spec:
       ports:
         - port: {{ $port }}
     {{- else }}
+    {{- if $loopback }}
+    - ports:
+        - port: {{ $healthPort }}
+    {{- else }}
     - ports:
         - port: {{ $port }}
         {{- range $extra := $extraPorts }}
         - port: {{ int $extra.port }}
         {{- end }}
+    {{- end }}
     {{- end }}
     {{- if $scrape }}
     {{- $scraper := required "R10: scrapeMetrics needs global.metricsScraper" $.Values.global.metricsScraper }}

@@ -88,6 +88,23 @@ spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV
 {{- toJson $args }}
 {{- end -}}
 
+{{/*
+One rbac rule with its apiGroups resolved: a string stays, {crd: <name>} becomes the spec.group of
+crds/<name>.yaml, so the VWSCluster API group is written in that CRD only (R18).
+Call with (dict "root" $ "rule" $rule). Returns the rule as JSON.
+*/}}
+{{- define "vws.rule" -}}
+{{- $groups := list }}
+{{- range .rule.apiGroups }}
+  {{- if kindIs "map" . }}
+    {{- $groups = append $groups (index ($.root.Files.Get (printf "crds/%s.yaml" .crd) | fromYaml) "spec" "group") }}
+  {{- else }}
+    {{- $groups = append $groups . }}
+  {{- end }}
+{{- end }}
+{{- toJson (merge (dict "apiGroups" $groups) (omit .rule "apiGroups")) }}
+{{- end -}}
+
 {{/* The file -root-password-file reads: key password of services.*.rootPasswordSecret. */}}
 {{- define "vws.rootPasswordFile" -}}/etc/vws/root-password/password{{- end -}}
 
@@ -238,6 +255,10 @@ spec:
     - name: {{ .name }}
       image: {{ .image }}
       imagePullPolicy: IfNotPresent
+      {{- if .command }}
+      command:
+        {{- toYaml .command | nindent 8 }}
+      {{- end }}
       {{- if .args }}
       args:
         {{- toYaml .args | nindent 8 }}
