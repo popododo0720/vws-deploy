@@ -85,7 +85,7 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 - The page never creates the ConfigMap: the chart renders it (even empty), so R11 needs no `create`. The page does not read it either, but `kubectl patch` (v1.35.0) gets the object before it sends the patch, so the rule has `get` as well as `patch`.
 - No Secrets, Deployments or RBAC. The page runs `kubectl` in the installer image with the pod's ServiceAccount token.
 - Like every service with `rbac`, the chart also renders the `admin-leader` Lease Role. The page does not use leader election.
-- To reach the page the operator needs `create` on `pods/portforward` for the admin pod. The operator Role in `bootstrap/bootstrap.yaml` does not have it yet.
+- Role `admin-portforward` is for people, not the service: `get` on `pods` and `create` on `pods/portforward`, both `resourceNames: [admin-0]` (the one pod of the `admin` StatefulSet). The chart renders no binding of it; the cluster admin binds it (`docs/vwscluster.md`). A subresource request carries the pod name in its URL, so `resourceNames` narrows this `create` (checked on a throwaway kube-apiserver v1.35.0, `docs/design/admin-volume-types.md`). `scripts/check_render.py` fails a render where that Role names another pod, has another rule, gets a binding, or where any other Role grants `pods/portforward`.
 
 ## Decision change: no `vws-volumes` namespace
 

@@ -316,3 +316,26 @@ The implementation PR must handle:
   a RoleBinding.
 - `docs/vwscluster.md`, `docs/rbac.md` and `docs/service-config.md` change from `deploy/admin`
   and "use credentials that do" to `pod/admin-0` and the binding command.
+
+## PR 6 as built (#391): the port-forward grant
+
+Built as proposed above, with these details:
+
+- `loopback` renders a StatefulSet with no `serviceName`, no `volumeClaimTemplates` and no
+  `persistentVolumeClaimRetentionPolicy`. kubeconform at `KUBERNETES_VERSION` 1.35.0 accepts a
+  StatefulSet without `serviceName`. The default render (admin off) is byte-identical to the one
+  before this PR.
+- One replica is enforced twice: the schema sets `replicas` to `const: 1` under `loopback`, and the
+  template fails a loopback service with any other count. `scripts/guard.sh config` renders
+  `replicas=2` and expects a failure.
+- The Role is `<service>-portforward` for every loopback service, so the pod name and the Role name
+  follow the service key (R5).
+- `scripts/check_render.py` `check_portforward` fails a render where the Role is missing, names
+  another pod, has no `resourceNames` or a third rule, is bound by a RoleBinding or
+  ClusterRoleBinding, or where any other Role or ClusterRole grants `pods/portforward`. The loopback
+  workload check fails a Deployment, two replicas, a `serviceName` or a state volume. Each case is
+  in the self-test (`loopback_mutations`).
+
+Not run: binding the Role and running `kubectl port-forward pod/admin-0` on a real cluster. It needs
+the installer package on GHCR to be pullable and a cluster; the walk-through is the hold issue linked
+from the PR.
