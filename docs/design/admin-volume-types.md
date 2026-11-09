@@ -244,6 +244,8 @@ throwaway kube-apiserver with `HOME` on a read-only directory and with `HOME` un
 working directory. All exited 0 and wrote nothing, with no warning on stderr: kubectl skips the
 cache when it cannot write it. So the chart needs no cache volume and no `HOME`. The run used a
 token and `--server`, not the in-cluster config; the cache path is the same code either way.
+The walk-through on a real cluster, a page save inside the pod included, is
+https://github.com/popododo0720/vws-deploy/issues/739 (hold).
 
 Still open before box 3 can be ticked: the installer package on GHCR, `pods/portforward` for the
 operator, and the vws-storage reader (popododo0720/vws-storage#222). With the reader, a save
