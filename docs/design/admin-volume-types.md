@@ -143,3 +143,51 @@ Still open after PR 4a:
   reaches it at the next `vws apply`, which renders the flags from the CR and rolls the pod. The
   page says so after a save.
 - PR 5 (docs).
+
+## PR 4b as built (#391)
+
+PR 4b wires the page into the chart as `services.admin`. It departs from the design in these ways:
+
+- `enabled: false`. The installer package on GHCR is private (an anonymous token request answers
+  "authentication required" on 2026-11-09), so a default pod would sit in ImagePullBackOff. iam is
+  off for the same reason. The default render is byte-identical to the one before this PR.
+- `imageName: installer` and `command: [/opt/vws/bin/vws-installer, admin]`. The page is a
+  subcommand of the installer image, whose entrypoint is `scripts/vws`, so the chart needs a
+  repository name other than the service name and a `command`. `args` stay exactly the flags (R14).
+  `imageTag` pins `sha-d543fa640b164ec436a3cda9c6217a18e00ddc4b` (index digest
+  `sha256:fed9ac13593da64b234740643f6faf1249fe09e222e02536ab6369ba75ab2bad`, installer-publish run
+  42644159420). Rejected: a second image for the page, as in PR 4a.
+- `loopback: true` is a schema key, not an `allowFrom` variant. It requires `healthPort` and
+  `-listen` on 127.0.0.1, and refuses `external`, `allowFrom`, `scrapeMetrics`, `httpProbes`,
+  `state` and `portEnv`. It renders no Service. Rejected: a `-peers` Service, which `state` would
+  need and loopback forbids.
+- The `http` containerPort stays, because R15 makes it the service port and `kubectl port-forward`
+  targets it. Nothing but the pod loopback reaches it.
+- The NetworkPolicy has one ingress rule: the health port, no `from`. Kubelet probes come from the
+  node, so the health port must stay open to every source (#650: a deny-all policy must not block
+  the probe port). The page port needs no rule: it is bound to 127.0.0.1.
+- The `vwsclusters` rule names its group as `{crd: vwsclusters}`. The template and
+  `scripts/check_render.py` read `spec.group` from `charts/vws/crds/vwsclusters.yaml`, because R18
+  allows that group to be written only there. The CRD header no longer says no service reads it.
+- RBAC is what the page calls: `get` and `patch` on VWSCluster `vws`, `patch` on ConfigMap
+  `vws-volume-types` (no `get`, the page never reads it), `list` on storageclasses and
+  volumesnapshotclasses (`kubectl get KIND -o jsonpath` is a list). The design said `update` on the
+  ConfigMap and get/list on the classes; PR 4a replaced the first and the code needs only list.
+- The leader-election Lease Role is still rendered, as for every service with `rbac`. The page does
+  not use it, and it grants a Lease named `admin` only.
+- `scripts/guard.sh config` renders admin enabled and runs `check_render.py` on it. Its self-test
+  breaks the render in ten ways (a Service under any name, no policy, a policy with a `from`, on the
+  page port or with a second rule, no command, another command, another image repository, another
+  Role group) and a non-loopback `-listen`.
+
+Still open before `admin` can be enabled:
+
+- The installer package must be public or the chart needs an image pull secret.
+- The operator needs `pods/portforward` on the admin pod. The operator Role has none.
+- `vws reconfigure` and `vws-admin` write the same field. The handoff between the field managers
+  is not settled (see "Still open after PR 4a").
+- The vws-storage reader (popododo0720/vws-storage#222), so a save reaches vws-storage without a
+  `vws apply`.
+- Not run: kubectl needs a discovery cache directory under a read-only root filesystem with no
+  `HOME`. Unverified until a live run.
+- PR 5 (docs: `docs/vwscluster.md`, `docs/vws-cli.md`).
