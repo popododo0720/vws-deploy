@@ -347,7 +347,18 @@ services:
       size: 20Gi
   storage:
     external: true
+    # imageTag pins storage to vws-storage 070b210 (main, 2026-11-09), a build with vws-lib v0.3.0
+    # (opt-in Prometheus /metrics). An anonymous manifest request returned HTTP 200 and
+    # sha256:1028f0e2df19f3d02d197a6164ba14547ebf7e87953276a44d23db0b013473a4 on 2026-11-09. Every
+    # flag below is in its cmd/vws-storage/main.go. spec.version does not move it.
+    imageTag: sha-070b210
     port: 7400
+    # healthPort is the vws-lib obs health listener (VWS_HEALTH_ADDR). /healthz says only that the
+    # process runs; /readyz is internal/health Monitor.Ready, the same aggregate (engine, store, kube)
+    # as the gRPC vws.storage.v1.Ready readiness it replaces. 7401 is taken by -fake-object-addr.
+    # scrapeMetrics admits it only from global.metricsScraper (#620).
+    healthPort: 7402
+    scrapeMetrics: true
     flags:
       listen: 0.0.0.0:7400
       # The sqlite file lives on the retained state volume. Empty -db is an in-memory store that
@@ -369,9 +380,6 @@ services:
         endpoint: ""
         bucketPrefix: ""
         existingSecret: ceph-rgw-s3
-    # gRPC readiness name of vws-storage#39 (internal/health ReadyService). Always rendered (#110):
-    # startup and liveness ask the empty name, readiness asks this one.
-    grpcReadinessService: vws.storage.v1.Ready
     rbac:
     # readiness gets these cluster-scoped objects (vws-storage#39 internal/backend/kube/ready.go).
     - apiGroups: [""]

@@ -499,7 +499,10 @@ images() {
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml")
 expect_text "image pin: console-api renders sha-d3a4057" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-d3a4057'"
 expect_text "image pin: compute renders sha-1b62a87" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-1b62a87'"
-expect_text "image pin: other services keep appVersion" "$got" "'storage=ghcr.io/popododo0720/vws/storage:0.1.0'"
+expect_text "image pin: storage renders sha-070b210" "$got" "'storage=ghcr.io/popododo0720/vws/storage:sha-070b210'"
+# Every vws service is pinned now (#620); storage without its pin shows the appVersion fallback.
+got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.storage.imageTag=null)
+expect_text "image pin: a service without imageTag keeps appVersion" "$got" "'storage=ghcr.io/popododo0720/vws/storage:0.1.0'"
 got=$(helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" | python3 -c '
 import sys, yaml
 names = set()
@@ -519,7 +522,7 @@ expect_text "image pin: console-api has no Role or RoleBinding" "$got" "[]"
 got=$(images -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.iam.enabled=true)
 expect_text "image pin: iam renders sha-74a29dc" "$got" "'iam=ghcr.io/popododo0720/vws/iam:sha-74a29dc'"
 run_vws_real render "${EX}/ha.yaml" "${WORK}/pin.yaml"; expect_rc "image pin: ha example renders" 0
-got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9)
+got=$(images -f "${WORK}/pin.yaml" --set global.tag=9.9.9 --set services.storage.imageTag=null)
 expect_text "image pin: global.tag moves other services" "$got" "'storage=ghcr.io/popododo0720/vws/storage:9.9.9'"
 expect_text "image pin: global.tag does not move compute" "$got" "'compute=ghcr.io/popododo0720/vws/compute:sha-1b62a87'"
 expect_text "image pin: global.tag does not move console-api" "$got" "'console-api=ghcr.io/popododo0720/vws/console-api:sha-d3a4057'"
@@ -857,7 +860,6 @@ services:
     scrapeMetrics: true
   storage:
     healthPort: 7401
-    grpcReadinessService: null
     scrapeMetrics: true
 YAML
 helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${WORK}/metrics-np.yaml" >"${WORK}/metrics-np.out"

@@ -776,9 +776,18 @@ PY
   python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
   grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
   ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
-  grep -q -e 'service: vws.storage.v1.Ready' "$tmp/default.yaml" || die "R15: the default render lacks storage gRPC readiness (#110)"
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
-  grep -q -e 'service: vws.storage.v1.Ready' "$tmp/health.yaml" || die "R15: global.pendingFlags=true does not render storage gRPC readiness"
+  # storage readiness is the aggregate (engine, store, kube), never a bare port check (#110, #620).
+  for f in default grpc health; do
+    python3 - "$tmp/$f.yaml" <<'PY' || die "R15: the $f render's storage readiness is not httpGet /readyz on metrics (#110, #620)"
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get("kind") in ("Deployment", "StatefulSet") and d["metadata"]["name"] == "storage":
+        got = (d["spec"]["template"]["spec"]["containers"][0].get("readinessProbe") or {}).get("httpGet") or {}
+        sys.exit(0 if got.get("path") == "/readyz" and got.get("port") == "metrics" else 1)
+sys.exit(1)
+PY
+  done
   python3 - "$tmp/default.yaml" <<'PY' || die "R14: storage has no virtualmachines list in the VM namespace (#123, vws-storage#68)"
 import sys, yaml
 ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-storage" and d["metadata"].get("namespace") == "vws-vms"

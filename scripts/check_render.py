@@ -482,7 +482,7 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
         want = ready if kind == "readinessProbe" else None
         if grpc.get("service") != want:
             errors.append(f"R15: {name} {kind} grpc service is {grpc.get('service')!r}, want {want!r}")
-    for group, resource in READY_NEEDS_GET.get(name, []) if ready else []:
+    for group, resource in READY_NEEDS_GET.get(name, []):
         rules = [r for r in spec.get("rbac") or [] if "namespace" not in r and group in r["apiGroups"] and resource in r["resources"]]
         if not any("get" in r["verbs"] for r in rules):
             errors.append(f"R11: {name} readiness gets cluster-scoped {group}/{resource} but has no ClusterRole get on it")
@@ -1627,7 +1627,19 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         )
         if not check(docs, broken_values, release):
             return ["R15: healthPort equal to port did not fail"]
-    # gRPC health names and the readiness ClusterRole (vws-storage#39), when rendered.
+    # The readiness ClusterRole (vws-storage#39), whatever the probe, when rendered.
+    for hname, needs in READY_NEEDS_GET.items():
+        if not service_rendered(values["services"].get(hname)):
+            continue
+        for group, resource in needs:
+            for how in ("drop", "list"):
+                broken_values = copy.deepcopy(values)
+                for rule in broken_values["services"][hname]["rbac"]:
+                    if "namespace" not in rule and group in rule["apiGroups"] and resource in rule["resources"]:
+                        rule["verbs"] = ["list"] if how == "drop" else ["get", "list"]
+                if not check(docs, broken_values, release):
+                    return [f"R11: {hname} readiness rule on {resource} ({how}) did not fail"]
+    # gRPC health names, when rendered.
     for hname, hspec in values["services"].items():
         if not service_rendered(hspec):
             continue
@@ -1660,14 +1672,6 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                               ("a tcpSocket readiness for a gRPC service (#110)", tcp_ready)):
             if not check(hmutate(change), values, release):
                 return [f"R15: {label} did not fail"]
-        for group, resource in READY_NEEDS_GET.get(hname, []):
-            for how in ("drop", "list"):
-                broken_values = copy.deepcopy(values)
-                for rule in broken_values["services"][hname]["rbac"]:
-                    if "namespace" not in rule and group in rule["apiGroups"] and resource in rule["resources"]:
-                        rule["verbs"] = ["list"] if how == "drop" else ["get", "list"]
-                if not check(docs, broken_values, release):
-                    return [f"R11: {hname} readiness rule on {resource} ({how}) did not fail"]
         broken_values = copy.deepcopy(values)
         broken_values["services"][target]["flags"]["listen"] = "0.0.0.0:9"
         if not check(docs, broken_values, release):
