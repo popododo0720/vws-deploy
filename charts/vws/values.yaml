@@ -153,12 +153,13 @@ services:
       resources: [vwsclusters]
       resourceNames: [vws]
       verbs: [get, patch]
-    # The save patches /data of the ConfigMap the chart renders; it never gets or creates it.
+    # The save patches /data of the ConfigMap the chart renders and never creates it. kubectl patch
+    # gets the object before it sends the patch (kubectl v1.35.0), so the rule needs get too.
     - namespace: release
       apiGroups: [""]
       resources: [configmaps]
       resourceNames: [vws-volume-types]
-      verbs: [patch]
+      verbs: [get, patch]
     # check and the page's class list: `get storageclasses` and `get volumesnapshotclasses` are lists
     # (-o jsonpath over .items), so the verb is list.
     - apiGroups: [storage.k8s.io]
