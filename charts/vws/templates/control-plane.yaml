@@ -549,3 +549,27 @@ spec:
         - port: 4317
         - port: 4318
 {{- end }}
+{{- /* vws-volume-types: the EBS volume type mapping, built from storage's -kube-volume-type list so the
+two cannot drift. One key per mapped type, value CLASS[/MODE[/SNAPSHOTCLASS]]. It renders with empty
+data when nothing is mapped, because the admin page may update it but not create it
+(docs/design/admin-volume-types.md, vws-deploy#391). */}}
+{{- $storage := index .Values.services "storage" }}
+{{- if and $storage (ne $storage.enabled false) }}
+{{- $types := index ($storage.repeatedFlags | default dict) "kube-volume-type" | default list }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vws-volume-types
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "vws.labels" (dict "root" $ "name" "storage") | nindent 4 }}
+{{- if $types }}
+data:
+  {{- range $types }}
+  {{ regexFind "^[^=]*" . }}: {{ regexReplaceAll "^[^=]*=" . "" | quote }}
+  {{- end }}
+{{- else }}
+data: {}
+{{- end }}
+{{- end }}
