@@ -27,7 +27,7 @@ The API group is written in **one place only**: `spec.group` in `charts/vws/crds
 | `spec.storage.storageClass` | required with `existing`, forbidden otherwise (every generic CSI driver is `existing`) | same as above |
 | `spec.storage.volumeMode` | only with `existing`, `Block` (default) or `Filesystem` | `Filesystem` gives `kube-volume-mode=Filesystem` and `list` on storage's `datavolumes.cdi.kubevirt.io` rule (vws-storage#73) |
 | `spec.storage.nfs.{server,share}` | both required with `nfs`, forbidden otherwise. `share` starts with `/` | parameters of StorageClass `vws-nfs`. `vws apply` installs csi-driver-nfs and that StorageClass as part of the platform bundle (#170, `docs/platform-bundle.md`). With any other driver neither is installed |
-| `spec.storage.volumeTypes.<type>.{storageClass,volumeMode,volumeSnapshotClass}` | `<type>` is one of `standard`, `gp2`, `gp3`, `io1`, `io2`, `st1`, `sc1`; any may be left unmapped. `storageClass` is required and a DNS-1123 name, `volumeMode` is `Block` or `Filesystem`, `volumeSnapshotClass` a DNS-1123 name or empty; an omitted mode or snapshot class takes the storage default. Forbidden with `nfs`. `vws apply` fails before the chart when a named StorageClass or VolumeSnapshotClass does not exist (#391) | `services.storage.repeatedFlags.kube-volume-type`: one vws-storage `-kube-volume-type=TYPE=CLASS[/MODE[/SNAPSHOTCLASS]]` per mapped type, in EBS order, empty trailing fields left out (vws-storage#123). A `Filesystem` type adds `list` to storage's `datavolumes.cdi.kubevirt.io` rule. The chart also writes the mapping to ConfigMap `vws-volume-types` in the release namespace, one key per mapped type with the flag value after `TYPE=`, and `data: {}` when nothing is mapped (`docs/design/admin-volume-types.md`). vws-storage does not read it yet. A changed mapping applies with `vws apply` as a vws-storage rollout; the cluster is not restarted |
+| `spec.storage.volumeTypes.<type>.{storageClass,volumeMode,volumeSnapshotClass}` | `<type>` is one of `standard`, `gp2`, `gp3`, `io1`, `io2`, `st1`, `sc1`; any may be left unmapped. `storageClass` is required and a DNS-1123 name, `volumeMode` is `Block` or `Filesystem`, `volumeSnapshotClass` a DNS-1123 name or empty; an omitted mode or snapshot class takes the storage default. Forbidden with `nfs`. `vws apply` fails before the chart when a named StorageClass or VolumeSnapshotClass does not exist (#391) | `services.storage.repeatedFlags.kube-volume-type`: one vws-storage `-kube-volume-type=TYPE=CLASS[/MODE[/SNAPSHOTCLASS]]` per mapped type, in EBS order, empty trailing fields left out (vws-storage#123). A `Filesystem` type adds `list` to storage's `datavolumes.cdi.kubevirt.io` rule. The chart also writes the mapping to ConfigMap `vws-volume-types` in the release namespace, one key per mapped type with the flag value after `TYPE=`, and `data: {}` when nothing is mapped (`docs/design/admin-volume-types.md`). vws-storage does not read it yet. A changed mapping applies with `vws apply` as a vws-storage rollout; the cluster is not restarted. The admin page also edits it ("Admin page for the volume type mapping" below) |
 | `spec.storage.s3.rgw.{enabled,endpoint,bucketPrefix,existingSecret}` | RGW object backend (#108). `bucketPrefix` matches `^([a-z0-9][a-z0-9-]{0,17})?$`; `existingSecret` is a Secret name in the release namespace (keys `access-key`, `secret-key`) | `services.storage.s3.rgw` as is. Without it the object backend stays off (default fake). `vws apply` does not remove RGW settings |
 | `spec.network.driver` | only `kube-ovn` | changes nothing |
 | `spec.network.nodes`, `spec.network.direct` | per-NIC node networks and direct provider networks. Rules and examples in `docs/node-network.md` (#125) | Kube-OVN and Ceph bundle settings and `services.network.flags` |
@@ -42,6 +42,46 @@ The API group is written in **one place only**: `spec.group` in `charts/vws/crds
 - `nfs` and `Filesystem` need an image with vws-storage#73's `-kube-volume-mode` flag. Older images do not start with the unknown flag. The default (`Block`) renders no flag.
 - The NFS export must already exist and be mountable from every node.
 - With `existing`, the VolumeSnapshotClass (`kube-snapshot-class`) is not changed (needs checking: whether the CR should carry a snapshot class matching the existing StorageClass).
+
+## Admin page for the volume type mapping (#391)
+
+The admin page lists and edits `spec.storage.volumeTypes` after install. It is not part of vws-console, which stays the AWS console clone. It is `vws-installer admin` in the installer image, rendered as `services.admin` (design and reasons: `docs/design/admin-volume-types.md`).
+
+Turn it on in the CR and apply:
+
+```yaml
+spec:
+  services:
+    admin:
+      enabled: true
+```
+
+It is off by default because the installer package on GHCR is private, so the pod cannot pull it without credentials (`charts/vws/values.yaml` `services.admin`).
+
+Reach it with the operator's own kube credentials. The page has no Service and no login of its own: it listens on `127.0.0.1:8080` in the pod, and `kubectl port-forward` is the only way in.
+
+```sh
+kubectl -n vws port-forward deploy/admin 8080:8080
+# open http://localhost:8080/
+```
+
+- Port-forward needs `create` on `pods/portforward` in the release namespace. The `vws-operator` Role does not have it (`bootstrap/bootstrap.yaml`), so use credentials that do.
+- The page answers only `Host: localhost` or a loopback IP and refuses a cross-origin form post, so another site open in the same browser cannot drive the port-forward.
+- The pod's NetworkPolicy opens only the health port (`8081`, `/healthz` and `/readyz` for the kubelet). No other pod reaches the page.
+
+What it shows: one row per EBS type (`standard`, `gp2`, `gp3`, `io1`, `io2`, `st1`, `sc1`) with StorageClass, volumeMode and VolumeSnapshotClass. An empty StorageClass means the type is unmapped; clearing a row unmaps it.
+
+What a save does:
+
+1. It checks the same rules as `vws apply`: the CRD rules (`volumeMode` is `Block` or `Filesystem`, DNS-1123 names, no mapping with `nfs`) and that every named StorageClass and VolumeSnapshotClass exists. It refuses the first `Filesystem` type, because that needs a storage RBAC rule only `vws reconfigure` and `vws apply` render. Any error is shown and nothing is written.
+2. It writes VWSCluster `vws` with a JSON patch as field manager `vws-admin` that first tests the `metadata.resourceVersion` the page loaded. If the CR changed since then (a CLI save or another page save), the save writes nothing and asks to reload.
+3. It then writes the same mapping to ConfigMap `vws-volume-types`. If that write fails, save again; the next `vws apply` also renders the ConfigMap from the CR.
+
+When it takes effect: vws-storage reads the mapping only from its `-kube-volume-type` flags at start (the ConfigMap reader is popododo0720/vws-storage#222). Until that lands, run `vws apply` after a save. It renders the flags from the CR and rolls the vws-storage pods; the cluster is not restarted. The page says so after a save.
+
+The CLI and the page write the same field. `vws reconfigure` (and `init`, `upgrade`, `rollback`, `restore`) saves an existing CR with the same resourceVersion test and replaces the whole spec. A CLI save over a page save it has not read exits 3; run it again. A type the page added goes when the CLI spec drops it (`docs/vws-cli.md` `vws init`).
+
+The page reaches the API with in-cluster kubectl under a read-only root filesystem. kubectl skips its discovery cache when it cannot write it (checked with the image's kubectl v1.35.0, `docs/design/admin-volume-types.md` "PR 5 as built").
 
 ## Profiles
 

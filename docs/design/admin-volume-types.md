@@ -229,3 +229,23 @@ the status subresource. Neither replaces the spec or touches `spec.storage.volum
 Still open: the installer package on GHCR, `pods/portforward` for the operator, the vws-storage
 reader (popododo0720/vws-storage#222), the kubectl discovery cache under a read-only root, and
 PR 5 (docs).
+
+## PR 5 as built (#391): docs
+
+`docs/vwscluster.md` "Admin page for the volume type mapping" says how to turn the page on, reach
+it, what a save checks and writes, and when vws-storage sees the change. `docs/vws-cli.md`
+`vws apply` says it is the step that reaches vws-storage after a page save. The page is
+`vws-installer admin`, not a `scripts/vws` command, so it has no `### vws` entry (R17).
+
+The kubectl discovery cache is no longer open. kubectl v1.35.0, the binary the installer image
+installs (`KUBERNETES_VERSION`, `KUBECTL_SHA256`), ran the page's three calls (`get configmaps -o
+json`, `patch --type=json --field-manager=vws-admin`, `get storageclasses -o jsonpath`) against a
+throwaway kube-apiserver with `HOME` on a read-only directory and with `HOME` unset in a read-only
+working directory. All exited 0 and wrote nothing, with no warning on stderr: kubectl skips the
+cache when it cannot write it. So the chart needs no cache volume and no `HOME`. The run used a
+token and `--server`, not the in-cluster config; the cache path is the same code either way.
+
+Still open before box 3 can be ticked: the installer package on GHCR, `pods/portforward` for the
+operator, and the vws-storage reader (popododo0720/vws-storage#222). With the reader, a save
+applies with no `vws apply`; without it, a save applies at the next `vws apply` as a vws-storage
+rollout, which already meets "without restarting the cluster".
