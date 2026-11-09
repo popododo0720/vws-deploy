@@ -82,6 +82,17 @@ def load_docs(text: str) -> list[dict]:
     return [doc for doc in yaml.safe_load_all(text) if doc]
 
 
+def resolve_crd_groups(values: dict, crds: Path) -> None:
+    """Replace each {crd: NAME} apiGroups item of services.*.rbac by spec.group of crds/NAME.yaml,
+    the one file that writes the VWSCluster API group (R18). The template resolves the same way."""
+    for spec in (values.get("services") or {}).values():
+        for rule in (spec or {}).get("rbac") or []:
+            rule["apiGroups"] = [
+                yaml.safe_load((crds / f"{g['crd']}.yaml").read_text())["spec"]["group"] if isinstance(g, dict) else g
+                for g in rule["apiGroups"]
+            ]
+
+
 def check_rbac(name: str, spec: dict, by_kind: dict, pod: dict, release: str, ns: str, nsmap: dict) -> list[str]:
     errors: list[str] = []
     want = f"{release}-{name}"
@@ -403,10 +414,14 @@ def check_listen(name: str, spec: dict, pod: dict, container: dict) -> list[str]
     port = int(spec.get("port", 8080))
     health = int(spec["healthPort"]) if spec.get("healthPort") else 0
     listen = (spec.get("flags") or {}).get("listen")
+    # loopback (#391): the page has no auth, so it listens on 127.0.0.1 and nothing else reaches it.
+    want_host = "127.0.0.1" if spec.get("loopback") else "0.0.0.0"
+    if spec.get("loopback") and not health:
+        errors.append(f"R15: {name} is loopback and needs healthPort for its probes")
     if listen is not None:
         host, _, number = str(listen).rpartition(":")
-        if host != "0.0.0.0" or not number.isdigit() or int(number) != port:
-            errors.append(f"R15: {name} -listen={listen} must be 0.0.0.0:{port}, the service port")
+        if host != want_host or not number.isdigit() or int(number) != port:
+            errors.append(f"R15: {name} -listen={listen} must be {want_host}:{port}, the service port")
     ports = [p for p in container.get("ports") or []]
     want_ports = [port] + ([health] if health else [])
     if [p.get("containerPort") for p in ports] != want_ports:
@@ -693,6 +708,47 @@ def check_kek(name: str, spec: dict, container: dict) -> list[str]:
     return errors
 
 
+def check_loopback_service(name: str, by_kind: dict, labels: dict) -> list[str]:
+    """A loopback service has no Service, under any name: nothing may select its pods (#391)."""
+    return [
+        f"R10: {name} is loopback but Service {svc} selects its pods"
+        for svc, doc in sorted(by_kind.get("Service", {}).items())
+        if (doc.get("spec") or {}).get("selector") and (doc["spec"]["selector"].items() <= labels.items())
+    ]
+
+
+def check_loopback_policy(name: str, spec: dict, policy: dict | None, release: str) -> list[str]:
+    """Exactly one ingress rule, no from, only healthPort: kubelet probes reach /healthz and /readyz and
+    nothing reaches the page port (#391)."""
+    if policy is None:
+        return [f"R10: {name} is loopback but has no NetworkPolicy"]
+    pspec = policy.get("spec") or {}
+    rules = pspec.get("ingress") or []
+    want_pod = {"app.kubernetes.io/name": name, "app.kubernetes.io/instance": release}
+    errors: list[str] = []
+    if (pspec.get("podSelector") or {}).get("matchLabels") != want_pod or pspec.get("policyTypes") != ["Ingress"]:
+        errors.append(f"R10: NetworkPolicy {name} must select {name} for Ingress")
+    want_ports = [{"port": int(spec.get("healthPort") or 0)}]
+    if len(rules) != 1 or "from" in rules[0] or rules[0].get("ports") != want_ports:
+        errors.append(f"R10: NetworkPolicy {name} (loopback) must have one rule with no from and ports {want_ports}, got {rules}")
+    return errors
+
+
+def check_image_command(name: str, spec: dict, container: dict, values: dict) -> list[str]:
+    """image is <global.registry>/<imageName or service name>:<tag>; command is spec.command or absent."""
+    errors: list[str] = []
+    repo = container.get("image", "").rpartition(":")[0]
+    want_repo = f"{(values.get('global') or {}).get('registry')}/{spec.get('imageName') or name}"
+    if repo != want_repo:
+        errors.append(f"R5: {name} image {container.get('image')} must be {want_repo}:<tag>")
+    want_command = spec.get("command")
+    if container.get("command") != want_command:
+        errors.append(f"R14: {name} command {container.get('command')} does not match values {want_command}")
+    if want_command and not str(want_command[0]).startswith("/"):
+        errors.append(f"R14: {name} command {want_command[0]} must be an absolute path")
+    return errors
+
+
 def check_network_policy(name: str, spec: dict, by_kind: dict, release: str, values: dict, nsmap: dict) -> list[str]:
     """One NetworkPolicy per service with allowFrom or scrapeMetrics (#243, #620).
 
@@ -704,6 +760,8 @@ def check_network_policy(name: str, spec: dict, by_kind: dict, release: str, val
     allow = spec.get("allowFrom")
     scrape = bool(spec.get("scrapeMetrics"))
     policy = by_kind.get("NetworkPolicy", {}).get(name)
+    if spec.get("loopback"):
+        return check_loopback_policy(name, spec, policy, release)
     if not allow and not scrape:
         return [f"R10: NetworkPolicy {name} without allowFrom or scrapeMetrics in values"] if policy else []
     if policy is None:
@@ -982,7 +1040,9 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
             if pspec.get("maxUnavailable") != 1 or "minAvailable" in pspec:
                 errors.append(f"R4: PodDisruptionBudget {name} must set maxUnavailable 1")
         service = by_kind.get("Service", {}).get(name)
-        if service is None:
+        if spec.get("loopback"):
+            errors.extend(check_loopback_service(name, by_kind, wspec["template"]["metadata"].get("labels") or {}))
+        elif service is None:
             errors.append(f"R4: missing Service {name}")
         else:
             want = "LoadBalancer" if spec.get("external") else "ClusterIP"
@@ -992,6 +1052,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         nsmap = {**(values.get("namespaces") or {}), "release": release_ns}
         errors.extend(check_rbac(name, spec, by_kind, pod, release, release_ns, nsmap))
         errors.extend(check_flags(name, spec, container, values, nsmap))
+        errors.extend(check_image_command(name, spec, container, values))
         errors.extend(check_ensure_get(name, spec))
         errors.extend(check_listen(name, spec, pod, container))
         errors.extend(check_service_ports(name, spec, by_kind))
@@ -1063,6 +1124,54 @@ def _first(docs: list[dict], kind: str) -> dict | None:
         if doc.get("kind") == kind:
             return doc
     return None
+
+
+def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) -> str:
+    """The first loopback mutation that check() accepts, as an error message; empty when all fail."""
+    spec = values["services"][loop]
+    page = int(spec.get("port", 8080))
+    workload = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == loop)
+    labels = workload["spec"]["template"]["metadata"]["labels"]
+
+    def edit(kind, change, name=loop):
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") == kind and doc["metadata"]["name"] == name:
+                change(doc)
+        return broken
+
+    def service(name):
+        extra = {"kind": "Service", "metadata": {"name": name, "namespace": workload["metadata"]["namespace"]},
+                 "spec": {"selector": {k: labels[k] for k in ("app.kubernetes.io/name", "app.kubernetes.io/instance")},
+                          "ports": [{"name": "http", "port": page, "targetPort": "http"}]}}
+        return copy.deepcopy(docs) + [extra]
+
+    def policy(change):
+        return edit("NetworkPolicy", change)
+
+    def container(change):
+        return edit("Deployment", lambda d: change(d["spec"]["template"]["spec"]["containers"][0]))
+
+    cases = [
+        ("a Service of the same name", service(loop)),
+        ("another Service that selects its pods", service(f"{loop}-extra")),
+        ("no NetworkPolicy", [d for d in docs if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == loop)]),
+        ("a NetworkPolicy with a from", policy(lambda d: d["spec"]["ingress"][0].update({"from": [{"podSelector": {}}]}))),
+        ("a NetworkPolicy on the page port", policy(lambda d: d["spec"]["ingress"][0].update({"ports": [{"port": page}]}))),
+        ("a NetworkPolicy with a second rule", policy(lambda d: d["spec"]["ingress"].append({"ports": [{"port": page}]}))),
+        ("no command", container(lambda c: c.pop("command"))),
+        ("another command", container(lambda c: c.update({"command": ["/bin/sh"]}))),
+        ("another image repository", container(lambda c: c.update({"image": c["image"].replace("/" + spec.get("imageName", loop) + ":", "/other:")}))),
+        ("a Role with another API group", edit("Role", lambda d: d["rules"][0].update({"apiGroups": ["other.example"]}), f"{release}-{loop}")),
+    ]
+    for label, broken in cases:
+        if not check(broken, values, release):
+            return f"R10: loopback {loop} with {label} did not fail"
+    broken_values = copy.deepcopy(values)
+    broken_values["services"][loop]["flags"]["listen"] = f"0.0.0.0:{page}"
+    if not any("must be 127.0.0.1" in e for e in check(docs, broken_values, release)):
+        return f"R15: loopback {loop} with -listen on 0.0.0.0 did not fail"
+    return ""
 
 
 def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
@@ -1424,8 +1533,9 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         for label, change in changes:
             if not check(health_mutate(change), values, release):
                 return [f"R15: {label} did not fail"]
-        # An external Service carries no metrics port (#623); the case above covers it.
-        if not values["services"][health_name].get("external"):
+        # An external Service carries no metrics port (#623); the case above covers it. A loopback
+        # service has no Service at all.
+        if not values["services"][health_name].get("external") and not values["services"][health_name].get("loopback"):
             broken = copy.deepcopy(docs)
             for doc in broken:
                 if doc.get("kind") == "Service" and doc["metadata"]["name"] == health_name:
@@ -1774,6 +1884,14 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
                 if not check(broken, values, release):
                     return [f"R10: {svc} NetworkPolicy narrowing the listener without allowFrom did not fail"]
 
+    # loopback (#391): no Service under any name, a NetworkPolicy that admits only healthPort, a
+    # loopback -listen, the entrypoint command, the image repository and the CRD group of the Role.
+    loop = next((n for n, sp in values["services"].items() if service_rendered(sp) and (sp or {}).get("loopback")), None)
+    if loop is not None:
+        failure = loopback_mutations(docs, values, release, loop)
+        if failure:
+            return [failure]
+
     broken = copy.deepcopy(docs)
     for doc in broken:
         if doc.get("kind") == "Namespace":
@@ -1971,6 +2089,7 @@ def main(argv: list[str]) -> int:
     values = yaml.safe_load(Path(args[1]).read_text())
     for override in args[3:]:
         values = deep_merge(values, yaml.safe_load(Path(override).read_text()))
+    resolve_crd_groups(values, Path(args[1]).parent / "crds")
     errors = self_test(docs, values, args[2])
     if profile == PLACEHOLDER_PROFILE:
         errors += placeholder_errors(values, docs)

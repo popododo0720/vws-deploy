@@ -1,7 +1,8 @@
 # VWSCluster: the deployment settings of one VWS install, and the only VWS CRD (AGENTS.md R18,
 # docs/vwscluster.md). spec.group below is the one place the API group is written; scripts read it
 # from here. It is temporary until a domain is secured (vws-deploy#43 decision 9).
-# No controller watches it. No service reads it. It holds no secret, only Secret names.
+# No controller watches it. Only services.admin reads it and patches spec.storage.volumeTypes
+# (vws-deploy#391). It holds no secret, only Secret names.
 # Helm installs files in crds/ once and never deletes them, so an uninstall keeps the CR.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

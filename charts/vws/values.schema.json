@@ -283,8 +283,27 @@
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "string",
-            "pattern": "^[^*]*$"
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[^*]*$"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "crd"
+                ],
+                "properties": {
+                  "crd": {
+                    "enum": [
+                      "vwsclusters"
+                    ],
+                    "description": "The API group of a chart CRD, read from crds/<crd>.yaml spec.group, so the VWSCluster group is written in one file only (R18)."
+                  }
+                }
+              }
+            ]
           }
         },
         "resources": {
@@ -335,6 +354,29 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
           "description": "Image tag of this service only; overrides global.tag and Chart appVersion (vws-deploy#280)."
+        },
+        "imageName": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Repository under global.registry; absent means the service name. Never a full image reference."
+        },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": [
+            {
+              "type": "string",
+              "pattern": "^/"
+            }
+          ],
+          "additionalItems": {
+            "type": "string"
+          },
+          "description": "Container command, replacing the image entrypoint, such as the installer image's vws-installer admin subcommand. The first item is an absolute path. args stay exactly the flags (R14)."
+        },
+        "loopback": {
+          "type": "boolean",
+          "description": "The service listens on 127.0.0.1 only and has no auth of its own (the admin page, vws-deploy#391). The chart renders no Service, and the NetworkPolicy admits only healthPort for kubelet probes. Needs healthPort and flags.listen on 127.0.0.1."
         },
         "port": {
           "type": "integer",
@@ -525,6 +567,71 @@
                 "maximum": 1,
                 "minimum": 1
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "loopback"
+            ],
+            "properties": {
+              "loopback": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "healthPort",
+              "flags"
+            ],
+            "properties": {
+              "flags": {
+                "required": [
+                  "listen"
+                ],
+                "properties": {
+                  "listen": {
+                    "type": "string",
+                    "pattern": "^127\\.0\\.0\\.1:[0-9]+$"
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "external"
+                  ]
+                },
+                {
+                  "required": [
+                    "allowFrom"
+                  ]
+                },
+                {
+                  "required": [
+                    "scrapeMetrics"
+                  ]
+                },
+                {
+                  "required": [
+                    "httpProbes"
+                  ]
+                },
+                {
+                  "required": [
+                    "state"
+                  ]
+                },
+                {
+                  "required": [
+                    "portEnv"
+                  ]
+                }
+              ]
             }
           }
         },

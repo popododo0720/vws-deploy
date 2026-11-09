@@ -121,6 +121,52 @@ services:
     replicas: 2
     kekSecret: vws-iam-kek
     allowFrom: [console-api]
+  # admin (vws-deploy#391 AC3, docs/design/admin-volume-types.md): the page that lists and edits the
+  # EBS volume type mapping. It is `vws-installer admin`, a subcommand of the installer image, so
+  # imageName names that repository and command replaces the image entrypoint (scripts/vws). loopback:
+  # the page has no auth of its own and listens on 127.0.0.1 only, so the chart renders no Service and
+  # the NetworkPolicy admits only the health port for kubelet probes. The operator reaches the page with
+  # kubectl port-forward to the pod. enabled stays false because the installer package on GHCR is private
+  # (an anonymous token request answers "authentication required" on 2026-11-09), the same as iam: it
+  # needs a public package or an image pull secret first.
+  admin:
+    enabled: false
+    loopback: true
+    imageName: installer
+    command: [/opt/vws/bin/vws-installer, admin]
+    # sha-d543fa6 is vws-deploy main at d543fa6. installer-publish run 42644159420 pushed
+    # ghcr.io/popododo0720/vws/installer:sha-d543fa640b164ec436a3cda9c6217a18e00ddc4b
+    # (index digest sha256:fed9ac13593da64b234740643f6faf1249fe09e222e02536ab6369ba75ab2bad) on 2026-11-09.
+    imageTag: sha-d543fa640b164ec436a3cda9c6217a18e00ddc4b
+    port: 8080
+    # /healthz and /readyz come from obs.Setup on VWS_HEALTH_ADDR (vws-lib), a port apart from the page.
+    healthPort: 8081
+    flags:
+      listen: 127.0.0.1:8080
+      namespace: {namespace: release}
+    # The kubectl calls of installer/internal/cluster/admin.go and installer/internal/admin/admin.go.
+    # VWSCluster vws: get for the page and its resourceVersion, patch for the save (--type=json, no
+    # create, so resourceNames holds). The group is read from crds/vwsclusters.yaml (R18).
+    rbac:
+    - namespace: release
+      apiGroups: [{crd: vwsclusters}]
+      resources: [vwsclusters]
+      resourceNames: [vws]
+      verbs: [get, patch]
+    # The save patches /data of the ConfigMap the chart renders; it never gets or creates it.
+    - namespace: release
+      apiGroups: [""]
+      resources: [configmaps]
+      resourceNames: [vws-volume-types]
+      verbs: [patch]
+    # check and the page's class list: `get storageclasses` and `get volumesnapshotclasses` are lists
+    # (-o jsonpath over .items), so the verb is list.
+    - apiGroups: [storage.k8s.io]
+      resources: [storageclasses]
+      verbs: [list]
+    - apiGroups: [snapshot.storage.k8s.io]
+      resources: [volumesnapshotclasses]
+      verbs: [list]
   console:
     external: true
     # portEnv names the env the image reads its listen port from (the Next.js server reads PORT). The
