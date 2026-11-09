@@ -83,9 +83,9 @@ rules = _load_rules()
 from orchestrate_rules.common import (  # noqa: E402
     ACTIONS_APP_ID, AC_ISSUE_BOX_RE, AC_TICK_LABELS, DEFAULTS, EXCLUSIONS_KEY, MANAGED_LABELS, MERGEABLE_OK,
     NEEDS_VERIFY, OPT_OUT_LABELS, PART_OF_HINT, PART_OF_RE, STATUS_EVENT_KEY_RE, STATUS_REPO, URL_RE, VERIFY_CHECK,
-    ac_boxes, ac_own_ticks, ac_recoverable, ac_tick_body, classify_comment, grok_allowlist, grok_busy, grok_held,
+    SPEC_FIRST_MODES, ac_boxes, ac_own_ticks, ac_recoverable, ac_tick_body, classify_comment, grok_allowlist, grok_busy, grok_held,
     grok_link, grok_owners, head_check_reasons, iso, latest_runs, num, parse_ac, parse_deps, rework_prs, run_order,
-    run_state, scrub, status_target, utc, vws_pr_key, wake_target,
+    parse_spec, run_state, scrub, status_target, utc, vws_pr_key, wake_target,
 )
 from orchestrate_rules.hold_release import HOLD_LABEL, held_for, held_for_trusted  # noqa: E402
 from orchestrate_rules.superseded import superseded_numbers  # noqa: E402
@@ -190,6 +190,8 @@ def load_config(paths, environ):
         raise ValueError("ORCHESTRATE_MERGE must be off, dry-run or apply")
     if cfg["ORCHESTRATE_AC_TICK"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_AC_TICK must be off, dry-run or apply")
+    if cfg["ORCHESTRATE_SPEC_FIRST"] not in SPEC_FIRST_MODES:
+        raise ValueError("ORCHESTRATE_SPEC_FIRST must be off, warn or enforce")
     if cfg["ORCHESTRATE_BOARD"] not in ("off", "dry-run", "apply"):
         raise ValueError("ORCHESTRATE_BOARD must be off, dry-run or apply")
     if not re.fullmatch(r"PVT_[A-Za-z0-9_-]+", cfg["ORCHESTRATE_BOARD_PROJECT"]):
@@ -204,7 +206,7 @@ def load_config(paths, environ):
         raise ValueError(f"ORCHESTRATE_BOARD_TOKEN_FILE must be an absolute path, got {tf!r}")
     text_keys = ("ORCHESTRATE_MODE", "ORCHESTRATE_SCOPE", "ORCHESTRATE_EXTRA_REPOS", "ORCHESTRATE_STATUS_ISSUE",
                  "ORCHESTRATE_WAKE_THREAD",
-                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_WAKES", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
+                 "ORCHESTRATE_FAILURE_ALERT", "ORCHESTRATE_DISPATCH", "ORCHESTRATE_WAKES", "ORCHESTRATE_VERIFY_LABELS", "ORCHESTRATE_MERGE", "ORCHESTRATE_AC_TICK", "ORCHESTRATE_SPEC_FIRST", "ORCHESTRATE_BOARD", "ORCHESTRATE_BOARD_PROJECT", "ORCHESTRATE_GROK_ALLOWLIST",
                  "ORCHESTRATE_GROK_OWNERS", "ORCHESTRATE_BOARD_TOKEN_FILE",
                  "ORCHESTRATE_DEEPSEEK_LOGINS", "ORCHESTRATE_GROK_LOGINS", "ORCHESTRATE_VERIFY_LOGIN",
                  "ORCHESTRATE_VERIFY_USER_ID")
@@ -1001,11 +1003,41 @@ def collect(gh, repo_names, now, cfg, run_id, state=None, history=None):
         collect_merge(gh, snap, repo_names, state)
     if cfg.get("ORCHESTRATE_AC_TICK", "apply") != "off":
         collect_ac(gh, snap, repo_names, state, now, cfg)
+    if cfg.get("ORCHESTRATE_SPEC_FIRST", "off") != "off":
+        collect_specs(gh, snap, repo_names)
     allow = grok_allowlist(cfg.get("ORCHESTRATE_GROK_ALLOWLIST", ""))[0]
     for k, it in sorted(snap["items"].items()):
         if k in allow and it["state"] == "open" and not it["is_pr"] and "grok" in it["labels"]:
             it["grok_activity"] = grok_activity(gh, k, it, cfg)
     return snap
+
+
+def collect_specs(gh, snap, repo_names):
+    """vws-deploy#348: snap["specs"][<spec url>] = {"ci": ci_verdict()} or {"unreadable": True} for the
+    `Spec:` PR or commit of every open ready+deepseek or ready+grok issue. A spec PR that is open in the
+    snapshot costs only its two head CI reads; any other PR adds one pulls read. Every path is already in
+    ALLOWED. A read error marks the spec unreadable and never fails the tick; a spec outside repo_names
+    is never read."""
+    snap["specs"] = {}
+    for k, it in sorted(snap["items"].items()):
+        labels = set(it["labels"])
+        if it["is_pr"] or it["state"] != "open" or "ready" not in labels or not labels & {"deepseek", "grok"}:
+            continue
+        spec = parse_spec(it["body"])
+        if spec["kind"] not in ("pr", "commit") or spec["url"] in snap["specs"] or spec["repo"] not in repo_names:
+            continue
+        try:
+            sha = spec["ref"]
+            if spec["kind"] == "pr":
+                pr = snap["items"].get(f"{spec['repo']}#{spec['ref']}")
+                if pr and pr["is_pr"] and pr["head_sha"]:
+                    sha = pr["head_sha"]
+                else:
+                    pull, _ = gh.get(f"repos/{OWNER}/{spec['repo']}/pulls/{spec['ref']}")
+                    sha = pull["head"]["sha"]
+            snap["specs"][spec["url"]] = {"ci": ci_verdict(*ci_reads(gh, spec["repo"], sha))}
+        except (GhError, PermissionError, KeyError, TypeError):
+            snap["specs"][spec["url"]] = {"unreadable": True}
 
 
 def collect_ac(gh, snap, repo_names, state, now, cfg):
