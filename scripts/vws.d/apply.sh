@@ -95,7 +95,7 @@ vws_cmd_main() {
   done
   # After the bundle, which makes ceph-block: the classes of spec.storage.volumeTypes must exist (#391).
   vws_check_volume_types "$cr"
-  ((vws_fail_count == 0)) || { rm -rf "$tmp"; vws_emit FAIL apply "a mapped volume type class is missing; the chart was not changed"; vws_finish; }
+  ((vws_fail_count == 0)) || { rm -rf "$tmp"; vws_emit FAIL apply "a mapped volume type class is missing or could not be checked; the chart was not changed"; vws_finish; }
 
   # --description carries the spec this revision came from, so vws rollback can put the CR back in
   # step with the release (vws-deploy#60). A spec longer than VWS_SPEC_DESCRIPTION_MAX characters is

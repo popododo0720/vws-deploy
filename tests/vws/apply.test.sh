@@ -76,6 +76,19 @@ run_vws_real apply;                              expect_rc "a missing mapped cla
 expect_text "a missing StorageClass is named" "$OUT" "gp3: StorageClass fast-ssd"
 expect_text "a missing VolumeSnapshotClass is named" "$OUT" "io2: VolumeSnapshotClass io-snap"
 if ! grep -q 'upgrade --install vws' "$VWS_FAKE_LOG"; then ok "a missing mapped class runs no helm upgrade"; else bad "missing class helm" "$(calls)"; fi
+# A failed VolumeSnapshotClass list is that error, not every mapped class missing (#604).
+echo 'Error from server (Forbidden): volumesnapshotclasses.snapshot.storage.k8s.io is forbidden' >"${VWS_FAKE_DIR}/kubectl/get_volumesnapshotclass.fail"
+run_vws_real apply;                              expect_rc "a failed VolumeSnapshotClass list exits 1" 1
+expect_text "the list error is named" "$OUT" "cannot list VolumeSnapshotClasses (Error from server (Forbidden)"
+expect_text "the mapped snapshot class is named as not checked" "$OUT" "so io2: VolumeSnapshotClass io-snap is not checked"
+expect_text "a missing StorageClass is still named with a failed list" "$OUT" "; missing gp3: StorageClass fast-ssd"
+if [[ $OUT != *"missing io2: VolumeSnapshotClass"* && $OUT != *", io2: VolumeSnapshotClass io-snap"* ]]; then
+  ok "a failed list does not call the snapshot class missing"; else bad "list failure as missing" "$OUT"; fi
+if ! grep -q 'upgrade --install vws' "$VWS_FAKE_LOG"; then ok "a failed list runs no helm upgrade"; else bad "failed list helm" "$(calls)"; fi
+cr_set '.spec.storage.volumeTypes = {gp3: {storageClass: "ceph-block"}}'
+installer_template
+run_vws_real apply;                              expect_rc "no mapped snapshot class: a failed list does not stop apply" 0
+rm "${VWS_FAKE_DIR}/kubectl/get_volumesnapshotclass.fail"
 
 installer_scenario description-cap
 run_vws_real apply;                              expect_rc "a short spec: apply exits 0" 0
