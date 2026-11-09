@@ -636,6 +636,31 @@
           }
         },
         {
+          "description": "The admin page entrypoint (vws-installer admin) has no auth of its own, so a service that runs it must be loopback, under any service name (vws-deploy#391).",
+          "if": {
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "contains": {
+                  "const": "admin"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "loopback"
+            ],
+            "properties": {
+              "loopback": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
           "if": {
             "required": [
               "kubeconfigSecret"
