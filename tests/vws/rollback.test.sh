@@ -6,14 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/vws/installer_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/installer_lib.sh"
 
-last_saved_spec() {
-  python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
-import json, re, sys, yaml
-specs = [d["spec"] for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read())
-         for d in [yaml.safe_load(doc) if doc.strip() else None] if isinstance(d, dict) and d.get("kind") == "VWSCluster"]
-print(json.dumps(specs[-1], sort_keys=True) if specs else "")
-PY
-}
+last_saved_spec() { saved_specs | tail -1; }
 recorded_spec() { # REVISION
   jq -r --argjson r "$1" '.[] | select(.revision == $r) | .description | ltrimstr("vws-spec:")' "${VWS_FAKE_DIR}/helm/history.json" | jq -S -c .
 }
@@ -38,8 +31,15 @@ if [[ $have == "$want" ]]; then ok "the CR spec is revision 2's spec"; else bad 
 expect_text "the CR status is written" "$(calls)" "patch vwsclusters vws --subresource=status"
 for l in "${LIMITS[@]}"; do expect_text "limit printed after --yes: ${l:0:30}" "$OUT" "$l"; done
 first_rollback=$(grep -n $'^helm\trollback' "$VWS_FAKE_LOG" | cut -d: -f1)
-first_save=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | cut -d: -f1)
+first_save=$(grep -n $'^kubectl\tpatch\t.* vwsclusters vws --type=json' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
 if ((first_rollback < first_save)); then ok "helm rolls back before the CR changes"; else bad "order" "$(calls)"; fi
+
+# The CR changed after rollback read it (an admin page save, #391): the save is refused, exit 3.
+installer_scenario save-refused
+echo 'testing value /metadata/resourceVersion failed' >"${VWS_FAKE_DIR}/kubectl/patch_vwsclusters.fail"
+run_vws_real --yes rollback;                      expect_rc "a CR changed since it was read exits 3" 3
+expect_text "the refusal says why and what to do" "$ERR" "it may have changed since it was read, for example by the admin page); run vws reconfigure"
+if [[ $(save_tests) == 4711 ]]; then ok "rollback tests the resourceVersion it read"; else bad "rollback resourceVersion" "$(save_tests)"; fi
 
 installer_scenario unchanged
 run_vws_real --yes rollback --to 3;               expect_rc "rollback to the current revision exits 0" 0
@@ -68,7 +68,7 @@ assert_no_changes "no record changes nothing"
 installer_scenario helm-fails
 rm "${VWS_FAKE_DIR}/helm/rollback.json"
 run_vws_real --yes rollback;                      expect_rc "a failing helm rollback exits 1" 1
-if ! grep -q $'^kubectl\tapply' "$VWS_FAKE_LOG"; then ok "a failing helm rollback leaves the CR alone"; else bad "CR touched" "$(calls)"; fi
+if [[ -z $(saved_specs) ]]; then ok "a failing helm rollback leaves the CR alone"; else bad "CR touched" "$(calls)"; fi
 
 installer_scenario dry
 run_vws_real --dry-run --yes rollback;            expect_rc "--dry-run exits 0" 0

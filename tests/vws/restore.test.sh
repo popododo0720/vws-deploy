@@ -29,8 +29,10 @@ assert_no_changes "without --yes nothing changes"
 run_vws_real --dry-run restore "${WORK}/b";             expect_rc "--dry-run exits 0" 0
 assert_no_changes "--dry-run changes nothing"
 # The CR now differs from the backup: overwrite.
-jq '.spec.version = "old-fake"' "${WORK}/cr-kept.json" >"${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
+jq '.spec.version = "old-fake" | .metadata.resourceVersion = "9000"' "${WORK}/cr-kept.json" >"${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 run_vws_real --yes restore "${WORK}/b";                 expect_rc "--yes exits 0" 0
+# The backup's resourceVersion is stale; the save tests the live CR's (#391).
+if [[ $(jq -r '.metadata.resourceVersion' "${WORK}/b/vwscluster.json") != 9000 && $(save_tests) == 9000 ]]; then ok "the save tests the live resourceVersion"; else bad "restore resourceVersion" "$(save_tests)"; fi
 expect_text "the CRD is applied" "$(cat "${VWS_FAKE_LOG}.stdin")" "CustomResourceDefinition"
 expect_text "the CR is saved" "$OUT" "VWSCluster vws saved from the backup"
 expect_text "apply runs" "$(calls)" "upgrade --install vws"

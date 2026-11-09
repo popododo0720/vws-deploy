@@ -27,7 +27,7 @@ vws_restore_changed_configmaps() {
 }
 
 vws_cmd_main() {
-  local dir='' cr current spec crd changed=() name snaps level message json rc=0 cr_changed=0
+  local dir='' cr current base spec crd changed=() name snaps level message json rc=0 cr_changed=0
   while (($#)); do
     case $1 in
       -*) vws_usage "usage: vws restore DIR [--yes]" ;;
@@ -71,7 +71,9 @@ vws_cmd_main() {
   # 3. Apply.
   vws_apply_crd
   if ((cr_changed)); then
-    vws_save_spec "$cr" "$spec" || vws_die_env "cannot save VWSCluster vws"
+    # The live CR gives the resourceVersion to test; the backup's own is stale.
+    if [[ -n $current ]]; then base=$current; else base=$(jq -c 'del(.metadata.resourceVersion)' <<<"$cr"); fi
+    vws_save_spec "$base" "$spec" || vws_die_env "$VWS_SAVE_FAILED"
     vws_emit OK restore "VWSCluster vws saved from the backup"
   fi
   vws_run_apply || rc=$?

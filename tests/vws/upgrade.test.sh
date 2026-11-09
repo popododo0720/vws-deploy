@@ -6,21 +6,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/vws/installer_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/installer_lib.sh"
 
-# saved_specs: the spec of every CR document written through "kubectl apply -f -", one line each.
-saved_specs() {
-  python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
-import json, re, sys, yaml
-# Split on every "--- <verb>" marker: a create (the apiCredentials Secret) follows the CR apply.
-for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read()):
-    try:
-        d = yaml.safe_load(doc)
-    except yaml.YAMLError:
-        continue
-    if isinstance(d, dict) and d.get("kind") == "VWSCluster":
-        print(json.dumps(d["spec"], sort_keys=True))
-PY
-}
-
 # with_doctor_fixtures: add the healthy status/doctor answers (tests/fixtures/status/ok) to the scenario.
 with_doctor_fixtures() {
   # doctor reads the CRD list (status/ok), not the single CRD installer_scenario writes (#114).
@@ -52,15 +37,9 @@ run_vws_real upgrade --to v2;                     expect_rc "an upgrade without 
 first_apply=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1)
 wait_line=$(grep -n $'^kubectl\twait.*condition=Established crd --all' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
 helm_line=$(grep -n $'^helm\tupgrade' "$VWS_FAKE_LOG" | head -1 | cut -d: -f1 || true)
-# The CR save is the first apply whose document is the VWSCluster. The CRD wait must come before it,
-# so a bundle wait later in the apply cannot stand in for the CRD wait.
-cr_apply=$(awk '
-  /^--- apply$/ { n++; next }
-  /^--- / { next }
-  /"kind": "VWSCluster"/ && n { print n; exit }
-' "${VWS_FAKE_LOG}.stdin")
-cr_line=''
-[[ -z $cr_apply ]] || cr_line=$(grep -n $'^kubectl\tapply' "$VWS_FAKE_LOG" | sed -n "${cr_apply}p" | cut -d: -f1)
+# The CR save is the JSON patch of VWSCluster vws. The CRD wait must come before it, so a bundle
+# wait later in the apply cannot stand in for the CRD wait.
+cr_line=$(grep -n -m1 $'^kubectl\tpatch\t.* vwsclusters vws --type=json' "$VWS_FAKE_LOG" | cut -d: -f1 || true)
 if [[ -n $first_apply && -n $wait_line && -n $cr_line && -n $helm_line ]] &&
   ((first_apply < wait_line && wait_line < cr_line && cr_line < helm_line)); then
   ok "the iam CRDs are applied and Established before the CR and helm"
