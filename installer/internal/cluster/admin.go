@@ -12,6 +12,10 @@ import (
 // fields of VWSCluster vws and ConfigMap vws-volume-types show who changed the mapping.
 const AdminFieldManager = "vws-admin"
 
+// requestTimeout bounds each kubectl call of the page; a failed save is shown and the operator
+// saves again, so there is no retry here.
+const requestTimeout = "20s"
+
 // Kube is the admin page's kubectl adapter in one namespace (docs/design/admin-volume-types.md).
 type Kube struct {
 	Kubectl   string
@@ -37,7 +41,8 @@ func (k Kube) Patch(ctx context.Context, kind, name string, patch []byte) error 
 }
 
 func (k Kube) run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, k.Kubectl, append([]string{"-n", k.Namespace}, args...)...)
+	cmd := exec.CommandContext(ctx, k.Kubectl,
+		append([]string{"-n", k.Namespace, "--request-timeout=" + requestTimeout}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
