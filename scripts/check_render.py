@@ -746,6 +746,7 @@ def check_portforward(docs: list[dict], values: dict) -> list[str]:
     """A loopback service has Role <name>-portforward with get and port-forward on <name>-0 only and no
     binding of it; no other Role or ClusterRole grants pods/portforward (#391)."""
     loops = {n for n, sp in values["services"].items() if service_rendered(sp) and (sp or {}).get("loopback")}
+    homes = {d["metadata"]["name"]: d["metadata"].get("namespace") for d in docs if d.get("kind") == "StatefulSet" and d["metadata"]["name"] in loops}
     errors: list[str] = []
     found: set[str] = set()
     for doc in docs:
@@ -755,7 +756,9 @@ def check_portforward(docs: list[dict], values: dict) -> list[str]:
         if kind not in ("Role", "ClusterRole"):
             continue
         loop = name.removesuffix("-portforward") if kind == "Role" and name.endswith("-portforward") else None
-        if loop in loops:
+        if loop in loops and doc["metadata"].get("namespace") == homes.get(loop):
+            if loop in found:
+                errors.append(f"R11: Role {name} renders twice in {homes[loop]}")
             found.add(loop)
             if doc.get("rules") != portforward_rules(loop):
                 errors.append(f"R11: Role {name} must be get and create pods/portforward on {loop}-0 only, got {doc.get('rules')}")
@@ -1225,6 +1228,8 @@ def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) 
         ("a RoleBinding of the portforward Role", binding("RoleBinding")),
         ("a ClusterRoleBinding of the portforward Role", binding("ClusterRoleBinding")),
         ("another Role with pods/portforward", copy.deepcopy(docs) + [wide]),
+        ("the portforward Role in another namespace", edit("Role", lambda d: d["metadata"].update({"namespace": "other"}), f"{loop}-portforward")),
+        ("a second portforward Role in another namespace", copy.deepcopy(docs) + [{**copy.deepcopy(next(d for d in docs if d.get("kind") == "Role" and d["metadata"]["name"] == f"{loop}-portforward")), "metadata": {"name": f"{loop}-portforward", "namespace": "other"}}]),
         ("two replicas", workload_spec(lambda w: w.update({"replicas": 2}))),
         ("a serviceName", workload_spec(lambda w: w.update({"serviceName": f"{loop}-peers"}))),
         ("a state volume", workload_spec(lambda w: w.update({"volumeClaimTemplates": [{"metadata": {"name": "state"}}]}))),

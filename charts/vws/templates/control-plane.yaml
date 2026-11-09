@@ -246,6 +246,11 @@ spec:
 kubelet and no NetworkPolicy, so the grant names the one pod. No RoleBinding: the cluster admin binds
 the Role to the people who run the page (docs/vwscluster.md). */}}
 {{- if $loopback }}
+{{- range $other := keys $.Values.services }}
+  {{- if eq (printf "%s-%s" $.Release.Name $other) (printf "%s-portforward" $name) }}
+    {{- fail (printf "R11: Role %s-portforward would collide with the Role of service %s in release %s" $name $other $.Release.Name) }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
