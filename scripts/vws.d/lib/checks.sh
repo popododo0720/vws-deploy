@@ -160,18 +160,28 @@ vws_check_storage() {
 
 # vws_check_volume_types CR_JSON: every StorageClass and VolumeSnapshotClass that spec.storage.volumeTypes
 # names exists (vws-deploy#391). The CRD checks the names; only the cluster knows whether they exist.
+# A failed VolumeSnapshotClass list is reported as that error, not as every mapped class missing (#604).
 vws_check_volume_types() {
-  local cr=$1 classes snaps missing
+  local cr=$1 classes snaps err listerr='' missing unchecked
   jq -e '(.spec.storage.volumeTypes // {}) | length > 0' <<<"$cr" >/dev/null || return 0
   classes=$(vws_kubectl get storageclass -o json 2>/dev/null) || vws_die_env "cannot list StorageClasses"
-  snaps=$(vws_kubectl get volumesnapshotclass -o json 2>/dev/null || echo '{"items":[]}')
+  err=$(mktemp)
+  if ! snaps=$(vws_kubectl get volumesnapshotclass -o json 2>"$err"); then
+    listerr=$(head -1 "$err")
+    snaps=null
+  fi
+  rm -f "$err"
   missing=$(jq -r --argjson sc "$classes" --argjson vs "$snaps" '
-    [$sc.items[].metadata.name] as $s | [$vs.items[].metadata.name] as $v |
+    [$sc.items[].metadata.name] as $s | [($vs // {items: []}).items[].metadata.name] as $v |
     [.spec.storage.volumeTypes | to_entries[] | .key as $t | .value |
       (.storageClass as $c | select($s | index([$c]) | not) | "\($t): StorageClass \($c)"),
-      ((.volumeSnapshotClass // "") as $c | select($c != "" and ($v | index([$c]) | not)) | "\($t): VolumeSnapshotClass \($c)")]
+      ((.volumeSnapshotClass // "") as $c | select($vs != null and $c != "" and ($v | index([$c]) | not)) | "\($t): VolumeSnapshotClass \($c)")]
     | join(", ")' <<<"$cr")
-  if [[ -z $missing ]]; then
+  unchecked=$(jq -r '[.spec.storage.volumeTypes | to_entries[] | select((.value.volumeSnapshotClass // "") != "")
+    | "\(.key): VolumeSnapshotClass \(.value.volumeSnapshotClass)"] | join(", ")' <<<"$cr")
+  if [[ $snaps == null && -n $unchecked ]]; then
+    vws_emit FAIL volume-types "cannot list VolumeSnapshotClasses (${listerr:-no error text}), so ${unchecked} is not checked${missing:+; missing ${missing}}"
+  elif [[ -z $missing ]]; then
     vws_emit OK volume-types "every class in spec.storage.volumeTypes exists"
   else
     vws_emit FAIL volume-types "missing ${missing}"
