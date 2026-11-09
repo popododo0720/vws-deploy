@@ -104,3 +104,42 @@ PR 1. Before then, vws-storage rejects an unknown flag at start, and the rule wo
 that no code calls (guardrail 4). `scripts/check_render.py` fails a render whose
 `vws-volume-types` data differs from the storage `-kube-volume-type` args, or that has no such
 ConfigMap while storage renders.
+
+## PR 4a as built (#391)
+
+PR 4 is split. This part is only the page code, `vws-installer admin` in `installer/`. It is not
+wired into the chart yet. It departs from the steps above in four ways:
+
+- `admin` is a subcommand of the vws-installer binary, not a new image. The installer image
+  already has kubectl, and a second image would need its own build, publish and digest pin.
+  Rejected: a separate `cmd/vws-admin` binary and image, which repeats `installer-image.yml` and
+  `installer-publish.yml` for one page.
+- A save writes with `kubectl patch --type=json --field-manager=vws-admin`, not server-side apply.
+  With apply, unmapping a type that field manager `vws` also owns would leave the type in place.
+  The patch replaces `spec.storage.volumeTypes` whole and starts with a `test` of
+  `metadata.resourceVersion`, so a save over a CR that changed since the page loaded fails and
+  writes nothing. The ConfigMap gets one `add` of `/data`. So the RBAC is `patch` on both objects,
+  not `update` on the ConfigMap.
+- The page refuses a mapping that adds the first `Filesystem` type. That type needs the
+  datavolumes list rule that only `vws apply` renders (`render.py` `volume_type_flags`).
+- The page checks `Host` (localhost or a loopback IP only, against DNS rebinding) and uses
+  `http.CrossOriginProtection`, because a browser page from any site can post a form to a
+  port-forwarded localhost port. `-listen` must be a loopback IP. /healthz and /readyz come from
+  `obs.Setup` on `VWS_HEALTH_ADDR`, a separate port, as step 4 asks.
+
+The CR is written before the ConfigMap. If the ConfigMap write fails, a re-save or the next
+`vws apply` (which reads the CR from the cluster) renders the same data, so the two converge.
+
+Still open after PR 4a:
+
+- PR 4b: `services.admin` in values.yaml (the installer image, probes on the health port, PDB,
+  RBAC `get`/`patch` `vwsclusters` `[vws]` and `configmaps` `[vws-volume-types]`, `list`
+  `storageclasses` and `volumesnapshotclasses`), no Service, and the deny-all-ingress
+  NetworkPolicy that still lets the kubelet reach the health port.
+- `vws init` and `vws reconfigure` save the CR with server-side apply as `vws` and no
+  `--force-conflicts` (`applyrun.sh` `vws_save_spec`). After an admin save, a reconfigure that
+  changes a type the page wrote can hit a field conflict. PR 4b or a CLI PR must settle that.
+- PR 1 (the vws-storage reader). Until it lands, vws-storage reads only its flags, so a save
+  reaches it at the next `vws apply`, which renders the flags from the CR and rolls the pod. The
+  page says so after a save.
+- PR 5 (docs).

@@ -359,12 +359,13 @@ func decodeStorage(raw json.RawMessage, _ Input) (any, []FieldError) {
 	if v.VolumeMode != "" && v.VolumeMode != "Block" && v.VolumeMode != "Filesystem" {
 		out = append(out, FieldError{Field: "spec.storage.volumeMode", Code: "unsupported", Message: "Block or Filesystem"})
 	}
-	return v, append(out, checkVolumeTypes(v)...)
+	return v, append(out, CheckVolumeTypes(v)...)
 }
 
-// checkVolumeTypes applies the CRD rules of spec.storage.volumeTypes, so the wizard reports a bad
-// mapping on its step instead of at install. Whether the classes exist is checked by vws apply.
-func checkVolumeTypes(v Storage) []FieldError {
+// CheckVolumeTypes applies the CRD rules of spec.storage.volumeTypes, so the wizard reports a bad
+// mapping on its step instead of at install, and the admin page before it saves. Whether the
+// classes exist is checked by vws apply and by the admin page.
+func CheckVolumeTypes(v Storage) []FieldError {
 	if len(v.VolumeTypes) == 0 {
 		return nil
 	}
