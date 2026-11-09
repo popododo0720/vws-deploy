@@ -671,6 +671,10 @@ cmd_agents() {
   [[ -f installer/internal/archtest/arch_test.go ]] || die "R26: installer/internal/archtest/arch_test.go is missing"
   grep -q -x -F '        run: ../scripts/guard-agents.sh archtest ../AGENTS.md' .github/workflows/ci.yml ||
     die "R26: the ci installer job does not run scripts/guard-agents.sh archtest"
+  [[ $(grep -c -E '^def (spec_state|spec_gate)\(' .github/orchestrate/rules/common.py) == 2 ]] ||
+    die "R27: .github/orchestrate/rules/common.py lost spec_state() or spec_gate()"
+  (cd tests/orchestrate && python3 -m unittest test_spec_first test_decide.SpecFirst >/dev/null 2>&1) ||
+    die "R27: the spec-first tests fail (cd tests/orchestrate && python3 -m unittest test_spec_first test_decide.SpecFirst -v)"
   scripts/guard-agents.sh selftest >/dev/null || die "R13: scripts/guard-agents.sh accepted a bad input"
   scripts/guard-agents.sh correct . || die "R21: the /correct loop, incident template or incident label is missing"
   grep -q 'guard-agents.sh pr-base' "$rg_hy" || die "R13: repo-guard-pr-hygiene.yml does not check the base"
