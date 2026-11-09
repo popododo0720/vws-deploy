@@ -134,10 +134,14 @@ jobs:
               if out=$(gh_api_retry -X POST "repos/${REPO}/actions/jobs/${job}/rerun" 2>&1); then
                 echo "verify-gate job ${job} re-run"; exit 0
               fi
-              # A newer attempt took over: look again. Any other refusal (HTTP 4xx, such as a run past its re-run
-              # window) does not change by waiting. A server error is retried.
+              # A newer attempt took over: look again. Its run is still running (another job of it, or the run
+              # the verdict's label event started; vws-deploy#721): wait for it to finish, then re-run. Any other
+              # refusal (HTTP 4xx, such as a run past its re-run window) does not change by waiting. A server
+              # error is retried.
               if [[ $out == *"current attempt"* ]]; then
                 echo "verify-gate job ${job} is no longer the newest attempt; looking again"
+              elif [[ $out == *"already running"* ]]; then
+                echo "the run of verify-gate job ${job} is still running; waiting to re-run it"
               elif [[ $out == *"(HTTP 4"* ]]; then
                 give_up "verify-gate job ${job} cannot be re-run: ${out}"
               else
