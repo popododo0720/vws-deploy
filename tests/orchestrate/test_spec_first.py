@@ -1,5 +1,5 @@
-"""vws-deploy#348 part 1: spec_state() and the collect() spec reads. ORCHESTRATE_SPEC_FIRST defaults to off,
-and decide() does not read the state yet (part 2), so nothing here changes a tick's plan."""
+"""vws-deploy#348 part 1: spec_state() and the collect() spec reads. ORCHESTRATE_SPEC_FIRST defaults to off;
+decide() under warn and enforce is tested in test_decide.SpecFirst."""
 import hashlib
 import json
 import unittest

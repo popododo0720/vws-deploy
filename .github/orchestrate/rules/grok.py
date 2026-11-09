@@ -18,7 +18,7 @@ from trusted_read import (
 
 from .common import (
     DEFAULTS, OPT_OUT_LABELS, ac_boxes, ac_partial_slice, active_repos, decision, dep_state, find_cycles, grok_allowlist, grok_bot, grok_busy, grok_held, grok_open_pr,
-    grok_cap_parked, grok_link, grok_parked_blocked, grok_parked_verify, num, parse_deps, ready_time, reset_time, utc, wake_target,
+    grok_cap_parked, grok_link, grok_parked_blocked, grok_parked_verify, num, parse_deps, ready_time, reset_time, spec_gate, utc, wake_target,
 )
 
 NAME = "grok"
@@ -30,7 +30,7 @@ def grok_key(k, since):
     return "sha256:" + hashlib.sha256(f"grok-wake\n{k}\n{int(since)}".encode()).hexdigest()
 
 
-def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
+def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via="", spec_line=""):
     who = f"Owner `{owner}` ({via})" if owner else "No owner resolved, so the lead (dr eggbot)"
     return "\n".join([GROK_WAKE_MARKER, f"vws-orchestrate: Grok task {k} {it['url']}", "",
                       f"{who}: please take this issue: one small PR per its acceptance criteria, "
@@ -39,7 +39,7 @@ def grok_wake_body(it, k, key, slot, cap, run_id, owner="", via=""):
                       f"(soft-CAP: blocked/hold/do-not-merge/needs-human, or every linked open PR on "
                       f"needs-verify|verify-approved, stops counting toward the CAP without removing `grok`; "
                       f"an assigned claim with no PR idle for ORCHESTRATE_GROK_IDLE_MIN frees it too).",
-                      "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
+                      *(["", spec_line] if spec_line else []), "", f"Idempotency key: `{key}`", f"Run id: `{run_id}`", f"{GROK_ASSIGN_MARKER}{k} -->"])
 
 
 AC_CHECKBOX_RE = re.compile(r"^[ \t]*[-*] \[([ xX])\]", re.M)
@@ -166,6 +166,11 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
         notes += [{"kind": "dep_unmet", "target": k, "dep": d, "state": dep_state(d, snapshot, repos)} for d in unmet]
         if unmet or bad_deps or k in cycles:
             continue
+        gate = spec_gate(it, snapshot, cfg) if not it["is_pr"] else {"note": None, "hold": False}
+        if gate["note"]:
+            notes.append(gate["note"])
+        if gate["hold"]:
+            continue
         security = "security" in labels or re.search(r"(?i)\bsecurity\b", it.get("title") or "")
         prio = 0 if "priority/blocker" in labels else 1 if security else 2
         queue.append((prio, ready_time(it), it["repo"], it["number"], k))
@@ -197,7 +202,8 @@ def decide_grok(snapshot, cfg, posted, repos, cycles, notes, now=None, released_
                else f"{q[4]}: allowlisted ready+grok, Grok slot {slot} of {cap}")
         actions.append({"type": "grok_wake", "target": wake_target(cfg), "item": q[4], "key": key, "owner": owner,
                         "allow_assigned": continuing, "woken": sorted(woken), "released": sorted(freed),
-                        "reason": why, "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via)})
+                        "reason": why, "body": grok_wake_body(it, q[4], key, slot, cap, snapshot["run_id"], owner, via,
+                                                              "" if it["is_pr"] else spec_gate(it, snapshot, cfg)["line"])})
     return actions
 
 

@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from orch_testlib import CFG, NOW, dispatch, event, item, orch, ready_task, report, snapshot, ts
+from orch_testlib import CFG, NOW, comment, dispatch, event, item, orch, ready_task, report, snapshot, ts
 
 EXCL = {"https://github.com/popododo0720/vws-iam/issues/123#issuecomment-6309297481"}
 
@@ -628,3 +628,123 @@ class StaleInReview(unittest.TestCase):
         owned = {"owned_labels": {"in-review": ["vws-iam#1"]}}
         self.assertEqual(kinds(run(snapshot(merged, pr), owned)), [])
         self.assertEqual(kinds(run(snapshot(merged, pr), {})), [])
+
+
+SPEC_AC = "## Acceptance criteria\n- [ ] `make check` exits 0\n\n"
+SPEC_PR = "https://github.com/popododo0720/vws-iam/pull/400"
+SPEC_COMMIT = "https://github.com/popododo0720/vws-iam/commit/" + "a" * 40
+SPEC_LINE = f"Spec: {SPEC_PR} - build on it, keep the spec commit unchanged, and make its test pass."
+
+
+class SpecFirst(unittest.TestCase):
+    """vws-deploy#348 part 2: ORCHESTRATE_SPEC_FIRST in decide(). off plans as main does, warn dispatches and
+    notes spec_<state>, enforce dispatches only ok and exempt."""
+
+    CASES = [
+        # name, issue body, snapshot specs, note kind, dispatched under enforce
+        ("no AC section", f"Spec: {SPEC_PR}\n", {SPEC_PR: {"ci": "failing"}}, "spec_missing_ac", False),
+        ("AC heading without a checkbox", f"## Acceptance criteria\nmake check passes\n\nSpec: {SPEC_PR}\n",
+         {SPEC_PR: {"ci": "failing"}}, "spec_missing_ac", False),
+        ("no Spec line", SPEC_AC, {}, "spec_missing_spec", False),
+        ("spec PR red", SPEC_AC + f"Spec: {SPEC_PR}\n", {SPEC_PR: {"ci": "failing"}}, "spec_ok", True),
+        ("spec PR green", SPEC_AC + f"Spec: {SPEC_PR}\n", {SPEC_PR: {"ci": "ok"}}, "spec_not_red", False),
+        ("spec PR pending", SPEC_AC + f"Spec: {SPEC_PR}\n", {SPEC_PR: {"ci": "pending"}}, "spec_not_red", False),
+        ("spec commit red", SPEC_AC + f"Spec: {SPEC_COMMIT}\n", {SPEC_COMMIT: {"ci": "failing"}}, "spec_ok", True),
+        ("spec unreadable", SPEC_AC + f"Spec: {SPEC_PR}\n", {SPEC_PR: {"unreadable": True}}, "spec_unreadable", False),
+        ("spec outside the repos", SPEC_AC + "Spec: https://github.com/popododo0720/vws-gone/pull/3\n", {},
+         "spec_unreadable", False),
+        ("two Spec lines", SPEC_AC + f"Spec: {SPEC_PR}\nSpec: {SPEC_COMMIT}\n", {SPEC_PR: {"ci": "failing"}},
+         "spec_unreadable", False),
+        *[(f"exempt {r}", SPEC_AC + f"Spec: exempt ({r}): no unit seam\n", {}, "spec_exempt", True)
+          for r in orch.SPEC_EXEMPT_REASONS],
+        ("unknown exempt reason", SPEC_AC + "Spec: exempt (lazy): no time\n", {}, "spec_bad_exempt", False),
+    ]
+
+    def tick(self, mode, body, specs, *extra):
+        snap = snapshot(ready_task("vws-iam", 1, body=body), *extra)
+        snap["specs"] = specs
+        return run(snap, cfg=dict(CFG, ORCHESTRATE_SPEC_FIRST=mode))
+
+    def spec_notes(self, r):
+        return [n for n in r["notes"] if n["kind"].startswith("spec_")]
+
+    def test_every_case_under_every_mode(self):
+        for name, body, specs, note, enforced in self.CASES:
+            for mode in orch.SPEC_FIRST_MODES:
+                with self.subTest(name, mode=mode):
+                    r = self.tick(mode, body, specs)
+                    dispatched = mode != "enforce" or enforced
+                    self.assertEqual(kinds(r), [("dispatch", "vws-iam#1")] if dispatched else [])
+                    self.assertEqual(self.spec_notes(r), [] if mode == "off" else [{"kind": note, "target": "vws-iam#1"}])
+
+    def test_off_is_main(self):
+        # The Spec line and the note exist only under warn and enforce; off ignores even a read spec.
+        body = SPEC_AC + f"Spec: {SPEC_PR}\n"
+        off = self.tick("off", body, {SPEC_PR: {"ci": "ok"}})
+        self.assertEqual(json.dumps(off, sort_keys=True), json.dumps(run(snapshot(ready_task("vws-iam", 1, body=body))), sort_keys=True))
+        self.assertNotIn("Spec:", off["actions"][0]["body"])
+
+    def test_dispatch_comment_has_the_spec_line(self):
+        for mode in ("warn", "enforce"):
+            with self.subTest(mode=mode):
+                body = self.tick(mode, SPEC_AC + f"Spec: {SPEC_PR}\n", {SPEC_PR: {"ci": "failing"}})["actions"][0]["body"]
+                self.assertTrue(body.startswith("@deepseek-dev please take this issue"))
+                self.assertEqual(orch.classify_comment(body), ("dispatch", {}))
+                self.assertIn(f"\n\n{SPEC_LINE}\n\n", body)
+                self.assertTrue(body.endswith("<!-- orchestrate:dispatch -->"))
+
+    def test_exempt_dispatch_has_no_spec_line(self):
+        body = self.tick("warn", SPEC_AC + "Spec: exempt (docs): a README fix\n", {})["actions"][0]["body"]
+        self.assertNotIn("Spec:", body)
+
+    def test_held_task_frees_its_slot(self):
+        # One per repo: a held vws-iam#1 must not keep vws-iam#2 out under enforce.
+        ok = ready_task("vws-iam", 2, 5, body=SPEC_AC + "Spec: exempt (ci): workflow only\n")
+        r = self.tick("enforce", SPEC_AC, {}, ok)
+        self.assertEqual(kinds(r), [("dispatch", "vws-iam#2")])
+        self.assertEqual(self.spec_notes(r), [{"kind": "spec_missing_spec", "target": "vws-iam#1"},
+                                              {"kind": "spec_exempt", "target": "vws-iam#2"}])
+
+    def test_infra_retry_is_checked_again(self):
+        # A re-dispatch after a provider failure is a dispatch too, so enforce holds it (open question 2).
+        target = "https://github.com/popododo0720/vws-iam/issues/1#issuecomment-1"
+        failed = comment(2, "vws-iam", 1, f"[deepseek-dev] Failed for {target}: provider 503 (SERVER)", 3)
+        snap = snapshot(ready_task("vws-iam", 1, body=SPEC_AC, comments=[dispatch(1, "vws-iam", 1, 4), failed]))
+        snap["specs"] = {}
+        warn = run(snap, cfg=dict(CFG, ORCHESTRATE_SPEC_FIRST="warn"))
+        retry = [a for a in warn["actions"] if a["type"] == "dispatch"]
+        self.assertEqual(len(retry), 1)
+        self.assertIn("Retry 1/", retry[0]["body"])
+        self.assertEqual([a for a in run(snap, cfg=dict(CFG, ORCHESTRATE_SPEC_FIRST="enforce"))["actions"]
+                          if a["type"] == "dispatch"], [])
+
+    def test_snapshot_without_specs_is_unreadable(self):
+        # A snapshot from a collect that ran under off has no specs key; switching to enforce holds, never crashes.
+        r = run(snapshot(ready_task("vws-iam", 1, body=SPEC_AC + f"Spec: {SPEC_PR}\n")),
+                cfg=dict(CFG, ORCHESTRATE_SPEC_FIRST="enforce"))
+        self.assertEqual(kinds(r), [])
+        self.assertEqual(self.spec_notes(r), [{"kind": "spec_unreadable", "target": "vws-iam#1"}])
+
+    def test_grok_wake_is_gated_the_same_way(self):
+        cfg = dict(CFG, ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1")
+        for name, body, specs, note, enforced in self.CASES:
+            for mode in orch.SPEC_FIRST_MODES:
+                with self.subTest(name, mode=mode):
+                    snap = snapshot(item("vws-iam", 1, labels=("ready", "grok"), body=body,
+                                         events=[event("labeled", "ready", 10)]))
+                    snap["specs"] = specs
+                    r = run(snap, cfg=dict(cfg, ORCHESTRATE_SPEC_FIRST=mode))
+                    woken = [a["item"] for a in r["actions"] if a["type"] == "grok_wake"]
+                    self.assertEqual(woken, ["vws-iam#1"] if mode != "enforce" or enforced else [])
+                    self.assertEqual(self.spec_notes(r), [] if mode == "off" else [{"kind": note, "target": "vws-iam#1"}])
+
+    def test_grok_wake_body_has_the_spec_line(self):
+        snap = snapshot(item("vws-iam", 1, labels=("ready", "grok"), body=SPEC_AC + f"Spec: {SPEC_PR}\n",
+                             events=[event("labeled", "ready", 10)]))
+        snap["specs"] = {SPEC_PR: {"ci": "failing"}}
+        cfg = dict(CFG, ORCHESTRATE_GROK_ALLOWLIST="vws-iam#1")
+        for mode, want in (("off", False), ("warn", True), ("enforce", True)):
+            with self.subTest(mode=mode):
+                body = [a for a in run(snap, cfg=dict(cfg, ORCHESTRATE_SPEC_FIRST=mode))["actions"]
+                        if a["type"] == "grok_wake"][0]["body"]
+                self.assertEqual(f"\n\n{SPEC_LINE}\n\n" in body, want)

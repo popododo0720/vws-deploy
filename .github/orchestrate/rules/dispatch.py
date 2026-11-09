@@ -8,7 +8,7 @@ from trusted_read import (
 )
 
 from .common import (
-    CI_FAIL_CAP, INFRA_MAX_RETRIES, decision, num, open_pr_links, quote, reset_time, scrub,
+    CI_FAIL_CAP, INFRA_MAX_RETRIES, decision, num, open_pr_links, quote, reset_time, scrub, spec_gate,
 )
 from .deepseek import (
     rework_plan, triage,
@@ -63,6 +63,16 @@ def decide(snapshot, state, cfg, now):
         queue = [q for q in queue if q[4] == scope]
     if in_flight:
         notes.append({"kind": "in_flight", "targets": in_flight})
+    # Spec first (vws-deploy#348): every queued issue gets its spec note before any slot is counted, and
+    # under enforce a task without a red spec or a listed exemption never takes one. A rework is the PR
+    # already built from the issue, so it is not checked again.
+    gates = {}
+    for q in queue:
+        if q[0] != 1 and not items[q[4]]["is_pr"] and q[4] not in gates:
+            gates[q[4]] = spec_gate(items[q[4]], snapshot, cfg)
+            if gates[q[4]]["note"]:
+                notes.append(gates[q[4]]["note"])
+    queue = [q for q in queue if not gates.get(q[4], {}).get("hold")]
     # Dependent tasks never run together without an extra guard: a queued task has every Depends on
     # target met (closed as completed or merged), while an in-flight or same-tick target is an open item,
     # so its dependents are blocked above.
@@ -102,8 +112,10 @@ def decide(snapshot, state, cfg, now):
                             "body": rework_body(pr, v, cf)})
             continue
         retry_line = f"Retry {q[5]}/{INFRA_MAX_RETRIES} after provider error.\n\n" if q[5] else ""
+        spec_line = gates.get(q[4], {}).get("line")
+        spec_line = f"{spec_line}\n\n" if spec_line else ""
         actions.append({"type": "dispatch", "target": q[4],
                         "reason": (f"infra retry {q[5]}/{INFRA_MAX_RETRIES}, " if q[5] else "next in queue, ")
                         + f"DeepSeek slot {slots_used + picked} of {cap}",
-                        "body": f"{DISPATCH_TEXT}\n\n{retry_line}<!-- orchestrate:dispatch -->"})
+                        "body": f"{DISPATCH_TEXT}\n\n{spec_line}{retry_line}<!-- orchestrate:dispatch -->"})
     return decision(actions, notes)
