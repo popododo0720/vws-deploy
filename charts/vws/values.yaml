@@ -419,7 +419,18 @@ services:
     # created with one key, the kubeconfig) and flags.kubeconfig (the file path; its directory is the
     # read-only mount). The chart never creates that Secret and no credential goes in values.
     # The target is the in-cluster ServiceAccount, see docs/service-config.md.
+    # imageTag pins network to vws-network 3890d27 (vws-network#166, 2026-11-09), the first build
+    # with vws-lib v0.3.0 (opt-in Prometheus /metrics). An anonymous manifest request returned
+    # HTTP 200 and sha256:93f34fe50c8870d6b3f7425778192dce733dc64bd492eb124d73a04b299fba92 on
+    # 2026-11-09. Every flag below is in its cmd/vws-network/main.go. spec.version does not move it.
+    imageTag: sha-3890d27
     port: 8080
+    # healthPort is the vws-lib obs health listener (VWS_HEALTH_ADDR): /healthz, /readyz (svc.Ready,
+    # the same check as its grpc.health.v1) and, with OTEL_METRICS_EXPORTER=prometheus, /metrics.
+    # scrapeMetrics admits it only from global.metricsScraper (#620). Kubelet probes come from the
+    # node IP, which Kube-OVN v1.16 allows into every pod under a NetworkPolicy (CreateNodeACL).
+    healthPort: 8081
+    scrapeMetrics: true
     flags:
       listen: 0.0.0.0:8080
       # The sqlite file lives on the retained state volume mounted at /var/lib/vws.
