@@ -251,3 +251,68 @@ Still open before box 3 can be ticked: the installer package on GHCR, `pods/port
 operator, and the vws-storage reader (popododo0720/vws-storage#222). With the reader, a save
 applies with no `vws apply`; without it, a save applies at the next `vws apply` as a vws-storage
 rollout, which already meets "without restarting the cluster".
+
+## PR 6 proposal (#391): the port-forward grant
+
+The page is reached only with `kubectl port-forward` (step 2). The operator's credentials need
+`create` on `pods/portforward` for the admin pod, and `get` on that pod, which kubectl reads first.
+Today nothing in the repo grants it, and `docs/vwscluster.md` says to use credentials that have it.
+vws-verify asked on #614 (review of #650) to narrow the grant instead of making it namespace-wide.
+
+Why it must be narrow: port-forward goes through the kubelet to the pod's network namespace, not
+through the pod network, so no NetworkPolicy applies. A namespace-wide grant reaches every port of
+every pod in the release namespace, the loopback listeners and the databases included.
+
+Chosen:
+
+- `admin` runs as a StatefulSet with one replica, so its pod is always `admin-0`. A Deployment pod
+  has a random name, and RBAC `resourceNames` matches only an exact name.
+- When `admin` is enabled, the chart renders Role `admin-portforward` in the release namespace with
+  two rules: `get` on `pods` and `create` on `pods/portforward`, both `resourceNames: [admin-0]`.
+  It renders no RoleBinding. The cluster admin binds the Role to the people who run the page
+  (`kubectl -n vws create rolebinding admin-portforward --role=admin-portforward --user=<name>`).
+  Who operates the page is a site decision the chart cannot know.
+- The operator reaches the page with `kubectl -n vws port-forward pod/admin-0 8080:8080`, not
+  `deploy/admin`, because resolving a workload needs `get` on it and `list` on pods.
+
+Checked on a throwaway kube-apiserver v1.35.0 (`--authorization-mode RBAC`, the envtest binaries
+of `scripts/crd-check.sh`), with that Role bound to a user: `auth can-i` answered yes for
+`create pods/admin-0 --subresource=portforward` and `get pods/admin-0`, and no for
+`create pods/storage-0 --subresource=portforward`, `create pods --subresource=portforward` (no
+name), `get pods/storage-0`, `list pods`, `create pods/admin-0 --subresource=exec` and
+`get deployments.apps/admin`. So `resourceNames` does narrow `create` here: the subresource request
+carries the pod name in its URL. R11 still refuses `create` with `resourceNames` in `services.*.rbac`.
+This Role is for people, not a service, so it is not in `services.*.rbac` and gets its own check.
+
+Rejected:
+
+- A namespace-wide `pods/portforward` rule: reaches every pod, as above.
+- The grant in the `vws-operator` Role (`bootstrap/bootstrap.yaml`): that Role is bound to the
+  `vws-installer` ServiceAccount. A person runs `kubectl port-forward` from their own machine with
+  their own kubeconfig, so the grant would not reach them.
+- A RoleBinding rendered from a values list of users or groups: puts site identities in values
+  and in the CR, and a stale list keeps access after a person leaves. One `kubectl create
+  rolebinding` by the cluster admin is the same step with no new field.
+- A namespace of its own for `admin`, with a namespace-wide grant there: the chart renders every
+  workload in the release namespace, and moving one service out changes R14 and the Helm release
+  shape for one rule.
+- A bare Pod named `admin`: no controller brings it back after a node loss.
+
+Costs of the StatefulSet:
+
+- After a node loss, the StatefulSet does not start `admin-0` elsewhere until the Node object is
+  deleted or the pod is force-deleted (at most one pod per name). The page is down until then. It
+  holds no state, so nothing is lost, and the CLI still saves the mapping.
+- `admin` goes from two replicas to one. The page serves one operator at a time and a save tests
+  the resourceVersion, so a second replica adds no safety.
+
+The implementation PR must handle:
+
+- The template makes a StatefulSet only for `state` today, with a volume and a `-peers` headless
+  Service. `loopback` refuses both. The PR adds a StatefulSet with no volume and no Service for
+  `loopback`, and checks with kubeconform whether `serviceName` may be left out.
+- `scripts/guard.sh recovery` (R4) and `scripts/check_render.py` must accept that StatefulSet only
+  for `loopback`, and fail a render where the Role names another pod, has a third rule, or gets
+  a RoleBinding.
+- `docs/vwscluster.md`, `docs/rbac.md` and `docs/service-config.md` change from `deploy/admin`
+  and "use credentials that do" to `pod/admin-0` and the binding command.
