@@ -168,6 +168,8 @@ DEFAULTS = {
     # vws-deploy#486: tick a merged PR's AC: boxes on its Part of issue (off, dry-run = plan only, apply).
     "ORCHESTRATE_AC_TICK": "apply",
     "ORCHESTRATE_BOARD": "dry-run",
+    # vws-deploy#348: spec first. off = no spec reads; warn = log spec_<state>; enforce = hold (decide, a later PR).
+    "ORCHESTRATE_SPEC_FIRST": "off",
     "ORCHESTRATE_BOARD_PROJECT": "PVT_kwHOBK54jM4BoB_Z",
     "ORCHESTRATE_BOARD_EVERY": "6",
     "ORCHESTRATE_BOARD_WRITES": "50",
@@ -565,6 +567,50 @@ def ac_boxes(body):
         if m:
             out.append({"n": len(out) + 1, "checked": m.group(2) != " ", "text": m.group(4), "line": i})
     return out
+
+
+# vws-deploy#348: the issue's one `Spec:` line, parsed as strictly as `Depends on`.
+SPEC_LINE_RE = re.compile(r"(?im)^\s*spec:[ \t]*(.*?)[ \t]*\r?$")
+SPEC_PR_RE = re.compile(rf"https://github\.com/{OWNER}/(vws-[a-z0-9-]+)/pull/([1-9][0-9]*)")
+SPEC_COMMIT_RE = re.compile(rf"https://github\.com/{OWNER}/(vws-[a-z0-9-]+)/commit/([0-9a-f]{{40}})")
+SPEC_EXEMPT_RE = re.compile(r"exempt \(([^()]*)\):[ \t]*(\S.*)")
+SPEC_EXEMPT_REASONS = ("docs", "ci", "config", "revert", "live-only", "test-in-ac")
+SPEC_FIRST_MODES = ("off", "warn", "enforce")
+SPEC_STATES = ("ok", "exempt", "missing_ac", "missing_spec", "bad_exempt", "spec_unreadable", "spec_not_red")
+
+
+def parse_spec(body):
+    """The `Spec:` line of an issue body: {"kind": none | pr | commit | exempt | bad_exempt | bad, "url",
+    "repo", "ref" (PR number or commit sha), "reason"}. Two or more Spec lines are "bad"."""
+    lines = SPEC_LINE_RE.findall(body or "")
+    out = {"kind": "none", "url": "", "repo": "", "ref": "", "reason": ""}
+    if len(lines) != 1:
+        return dict(out, kind="none" if not lines else "bad")
+    v = lines[0]
+    for kind, rx in (("pr", SPEC_PR_RE), ("commit", SPEC_COMMIT_RE)):
+        m = rx.fullmatch(v)
+        if m:
+            return dict(out, kind=kind, url=v, repo=m.group(1), ref=m.group(2))
+    m = SPEC_EXEMPT_RE.fullmatch(v)
+    if m:
+        return dict(out, kind="exempt" if m.group(1) in SPEC_EXEMPT_REASONS else "bad_exempt", reason=m.group(1))
+    return dict(out, kind="bad_exempt" if v.startswith("exempt") else "bad")
+
+
+def spec_state(item, spec_info):
+    """Pure (vws-deploy#348): one of SPEC_STATES for a task. spec_info is the snapshot's read of the item's
+    spec URL, {"ci": ci_verdict()} or {"unreadable": True}; None when collect did not read it (outside the
+    orchestrator repos, or ORCHESTRATE_SPEC_FIRST=off)."""
+    if not ac_boxes(item.get("body")):
+        return "missing_ac"
+    spec = parse_spec(item.get("body"))
+    if spec["kind"] == "none":
+        return "missing_spec"
+    if spec["kind"] in ("exempt", "bad_exempt"):
+        return spec["kind"]
+    if spec["kind"] == "bad" or not spec_info or spec_info.get("unreadable"):
+        return "spec_unreadable"
+    return "ok" if spec_info.get("ci") == "failing" else "spec_not_red"
 
 
 def ac_tick_body(body, boxes, pr_url, sha):
