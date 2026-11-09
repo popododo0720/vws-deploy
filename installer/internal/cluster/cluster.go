@@ -25,7 +25,6 @@ type Node struct {
 // Result is what a finished install hands to GET /result.
 type Result struct {
 	ConsoleURL string
-	AdminUser  string
 }
 
 // Cluster reads the nodes and runs the install of one VWSCluster CR (JSON).

@@ -485,6 +485,11 @@
           "type": "boolean",
           "description": "false leaves the service out of the render (a service whose image is not published yet). Absent means true."
         },
+        "rootPasswordSecret": {
+          "type": "string",
+          "enum": ["vws-initial-admin"],
+          "description": "Only vws-initial-admin: the installer and vws installer finish read that name. Secret in the release namespace with keys username (root) and password: the console-api account root's console password (vws-deploy#208). Mounted read-only (key password only) and passed as the derived -root-password-file only when flags.iam is fake or grpc; with -iam static console sign-in is off and nothing renders. vws apply creates it once when missing and never rotates it."
+        },
         "kekSecret": {
           "type": "string",
           "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$",

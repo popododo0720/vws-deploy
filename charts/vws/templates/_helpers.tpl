@@ -50,6 +50,15 @@ Call with (dict "root" $ "spec" $spec "iamEnabled" $iamEnabled "iamPort" $iamPor
 {{- else if hasKey $flags "iam-endpoint" }}
   {{- fail "R14: -iam-endpoint requires -iam=grpc" }}
 {{- end }}
+{{- /* rootPasswordSecret (vws-deploy#208): the account root's console password, as a file of the
+read-only Secret mount in vws.podTemplate. Only when -iam serves sign-in (fake or grpc); with static
+console-api ignores the file, so nothing renders. */}}
+{{- if hasKey $flags "root-password-file" }}
+  {{- fail "R14: -root-password-file is derived from services.*.rootPasswordSecret" }}
+{{- end }}
+{{- if and .spec.rootPasswordSecret (has $iamFlag (list "fake" "grpc")) }}
+  {{- $_ := set $flags "root-password-file" (include "vws.rootPasswordFile" .) }}
+{{- end }}
 {{- /* apiCredentials: no credential flag. console-api reads VWS_CONSOLE_TOKEN, VWS_ACCESS_KEY and
 VWS_SECRET_KEY from the secretKeyRef env of vws.podTemplate, so no value is in values, args, the pod
 spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV>). */}}
@@ -78,6 +87,9 @@ spec or the process arguments (vws-console-api: flag, then <ENV>_FILE, then <ENV
 {{- end }}
 {{- toJson $args }}
 {{- end -}}
+
+{{/* The file -root-password-file reads: key password of services.*.rootPasswordSecret. */}}
+{{- define "vws.rootPasswordFile" -}}/etc/vws/root-password/password{{- end -}}
 
 {{/*
 Call with (dict "flags" $flags "port" $port).
@@ -329,6 +341,11 @@ spec:
           mountPath: {{ .kube.dir }}
           readOnly: true
         {{- end }}
+        {{- if .rootPassword }}
+        - name: root-password
+          mountPath: {{ include "vws.rootPasswordFile" . | dir }}
+          readOnly: true
+        {{- end }}
   volumes:
     - name: tmp
       emptyDir: {}
@@ -340,6 +357,15 @@ spec:
         items:
           - key: {{ .kube.key }}
             path: {{ .kube.key }}
+    {{- end }}
+    {{- with .rootPassword }}
+    - name: root-password
+      secret:
+        secretName: {{ . }}
+        defaultMode: 0440
+        items:
+          - key: password
+            path: {{ include "vws.rootPasswordFile" $ | base }}
     {{- end }}
 {{- end -}}
 

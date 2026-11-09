@@ -209,6 +209,20 @@ def apply_iam_endpoint(flags: dict, values: dict) -> list[str]:
     return errors
 
 
+# The file -root-password-file reads: key password of services.*.rootPasswordSecret (vws-deploy#208).
+ROOT_PASSWORD_FILE = "/etc/vws/root-password/password"
+# console-api -iam modes that serve console sign-in (cmd/vws-console-api/main.go signInEnabled).
+SIGN_IN_IAM = ("fake", "grpc")
+
+
+def apply_root_password(flags: dict, spec: dict) -> list[str]:
+    if "root-password-file" in flags:
+        return ["R14: -root-password-file is derived from services.*.rootPasswordSecret"]
+    if spec.get("rootPasswordSecret") and flags.get("iam") in SIGN_IN_IAM:
+        flags["root-password-file"] = ROOT_PASSWORD_FILE
+    return []
+
+
 def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[str]]:
     """The args a service must get from values, and the errors found while resolving them."""
     flags = dict(spec.get("flags") or {})
@@ -222,6 +236,7 @@ def want_args(spec: dict, values: dict, nsmap: dict) -> tuple[list[str], list[st
         if rgw.get("bucketPrefix"):
             flags["s3-bucket-prefix"] = rgw["bucketPrefix"]
     errors.extend(apply_iam_endpoint(flags, values))
+    errors.extend(apply_root_password(flags, spec))
     for key in sorted(flags):
         value = flags[key]
         if isinstance(value, dict):
@@ -572,6 +587,28 @@ def check_kubeconfig(name: str, spec: dict, pod: dict, container: dict) -> list[
     for env in container.get("env") or []:
         if "KUBECONFIG" in env.get("name", "").upper() or ("TOKEN" in env.get("name", "").upper() and "secretKeyRef" not in (env.get("valueFrom") or {})):
             errors.append(f"R16: {name} passes a credential through env {env.get('name')}")
+    return errors
+
+
+def check_root_password(name: str, spec: dict, pod: dict, container: dict) -> list[str]:
+    """rootPasswordSecret: only key password, read-only, mode 0440, and only while sign-in is on (#208)."""
+    mounts = [m for m in container.get("volumeMounts") or [] if m.get("name") == "root-password"]
+    volumes = [v for v in pod.get("volumes") or [] if v.get("name") == "root-password"]
+    want = f"-root-password-file={ROOT_PASSWORD_FILE}" in (container.get("args") or [])
+    errors = [f"R16: {name} passes a password through env {e.get('name')}"
+              for e in container.get("env") or [] if "PASSWORD" in e.get("name", "").upper()]
+    if not want:
+        if mounts or volumes:
+            errors.append(f"R16: {name} mounts a root password that values do not ask for")
+        return errors
+    directory, _, key = ROOT_PASSWORD_FILE.rpartition("/")
+    if len(mounts) != 1 or mounts[0].get("mountPath") != directory or mounts[0].get("readOnly") is not True:
+        errors.append(f"R16: {name} must mount the root password Secret read-only at {directory}")
+    vol = (volumes[0].get("secret") or {}) if len(volumes) == 1 else {}
+    if vol.get("secretName") != spec.get("rootPasswordSecret"):
+        errors.append(f"R16: {name} root password volume must be Secret {spec.get('rootPasswordSecret')}")
+    elif vol.get("items") != [{"key": "password", "path": key}] or vol.get("defaultMode") != 0o440:
+        errors.append(f"R16: {name} must project only key password of the Secret, mode 0440")
     return errors
 
 
@@ -938,6 +975,7 @@ def check(docs: list[dict], values: dict, release: str) -> list[str]:
         errors.extend(check_health(name, spec, wspec["template"], container))
         errors.extend(check_console_api(name, spec, values))
         errors.extend(check_kubeconfig(name, spec, pod, container))
+        errors.extend(check_root_password(name, spec, pod, container))
         errors.extend(check_s3(name, spec, container))
         errors.extend(check_api(name, spec, container, values, release_ns))
         errors.extend(check_port_env(name, spec, container))
@@ -1514,6 +1552,46 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
         broken_values["services"][kube].pop("kubeconfigSecret")
         if not check(docs, broken_values, release):
             return ["R16: a kubeconfig volume that values do not ask for did not fail"]
+
+    # rootPasswordSecret (#208): the mount comes only from values, and only while sign-in is on.
+    for svc, spec in values["services"].items():
+        if not (service_rendered(spec) and (spec or {}).get("rootPasswordSecret")):
+            continue
+        signin = ((spec or {}).get("flags") or {}).get("iam") in SIGN_IN_IAM
+
+        def mutate_root(change, svc=svc):
+            broken = copy.deepcopy(docs)
+            for doc in broken:
+                if doc.get("kind") in ("Deployment", "StatefulSet") and doc["metadata"]["name"] == svc:
+                    change(doc["spec"]["template"]["spec"])
+            return broken
+
+        def root_volume(pod):
+            return next(v for v in pod["volumes"] if v["name"] == "root-password")
+
+        def root_mount(pod):
+            return next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == "root-password")
+
+        if signin:
+            cases = {
+                "another Secret": lambda pod: root_volume(pod)["secret"].update(secretName="other"),
+                "a writable mount": lambda pod: root_mount(pod).pop("readOnly"),
+                "the username key projected": lambda pod: root_volume(pod)["secret"]["items"].append({"key": "username", "path": "username"}),
+                "a world-readable mode": lambda pod: root_volume(pod)["secret"].update(defaultMode=0o644),
+                "a password in env": lambda pod: pod["containers"][0]["env"].append({"name": "VWS_ROOT_PASSWORD", "value": "x"}),
+                "no mount": lambda pod: pod["containers"][0]["volumeMounts"].remove(root_mount(pod)),
+            }
+        else:
+            cases = {"a mount while sign-in is off": lambda pod: (
+                pod["containers"][0]["volumeMounts"].append({"name": "root-password", "mountPath": "/etc/vws/root-password", "readOnly": True}),
+                pod["volumes"].append({"name": "root-password", "secret": {"secretName": spec["rootPasswordSecret"]}}))}
+        for label, change in cases.items():
+            if not check(mutate_root(change), values, release):
+                return [f"R16: {svc} root password {label} did not fail"]
+        broken_values = copy.deepcopy(values)
+        broken_values["services"][svc].setdefault("flags", {})["root-password-file"] = "/tmp/pw"
+        if not any("derived from services.*.rootPasswordSecret" in err for err in check(docs, broken_values, release)):
+            return [f"R14: {svc} -root-password-file in values did not fail"]
 
     # s3.rgw: the keys come only from secretKeyRef, and enabled needs every value.
     rgw_name = next(

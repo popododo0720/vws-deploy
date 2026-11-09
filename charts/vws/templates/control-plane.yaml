@@ -69,6 +69,8 @@ implements grpc.health.v1 (vws-storage#39, merged), so no gate (#110). */}}
 {{- $grpcReady := $spec.grpcReadinessService | default "" }}
 {{- $rgw := ($spec.s3 | default dict).rgw | default dict }}
 {{- $rgwSecret := "" }}{{ if $rgw.enabled }}{{ $rgwSecret = $rgw.existingSecret }}{{ end }}
+{{- $rootPassword := "" }}
+{{- if has (printf "-root-password-file=%s" (include "vws.rootPasswordFile" .)) $args }}{{ $rootPassword = $spec.rootPasswordSecret }}{{ end }}
 {{- $apiSecret := "" }}{{ with $spec.apiCredentials }}{{ $apiSecret = .existingSecret }}{{ end }}
 {{- /* apiClient: the URL and the token Secret come from the named service's own values, so a
 renamed service, release namespace or port moves with it. */}}
@@ -82,7 +84,7 @@ renamed service, release namespace or port moves with it. */}}
 {{- if and $httpProbes $healthPort }}
   {{- fail (printf "R15: services.%s sets both httpProbes and healthPort" $name) }}
 {{- end }}
-{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image "observability" ($spec.observability | default dict) }}
+{{- $ctx := dict "portEnv" ($spec.portEnv | default "") "healthPort" $healthPort "httpProbes" $httpProbes "apiSecret" $apiSecret "kekSecret" ($spec.kekSecret | default "") "apiClient" $apiClient "rgwSecret" $rgwSecret "grpcReady" $grpcReady "kube" $kube "rootPassword" $rootPassword "args" $args "rbac" $rbac "name" $name "root" $ "stateful" $stateful "port" $port "cpu" $cpu "memory" $memory "threshold" $threshold "image" $image "observability" ($spec.observability | default dict) }}
 ---
 apiVersion: v1
 kind: ServiceAccount

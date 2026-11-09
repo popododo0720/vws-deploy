@@ -176,6 +176,14 @@ services:
     # without all three. vws apply creates the Secret once with random values when it is missing.
     apiCredentials:
       existingSecret: vws-console-api-credentials
+    # rootPasswordSecret (vws-deploy#208): Secret vws-initial-admin, keys username (root) and
+    # password. vws apply creates it once with a random 24-character password when sign-in is on,
+    # before helm, and never rotates it; the installer hands it out once (POST /result/credential).
+    # Only when flags.iam is fake or grpc (console sign-in on), the chart mounts the password key
+    # read-only and passes the derived -root-password-file, so user root signs in with it. With the
+    # default -iam static, sign-in is off and nothing renders. The schema allows only this name, the
+    # one the installer and vws installer finish read. See docs/design/initial-admin.md.
+    rootPasswordSecret: vws-initial-admin
     # Image defaults are -backend=fake and 127.0.0.1 listeners (vws-console-api
     # cmd/vws-console-api/main.go:40-50), so the default render served a fake cloud that the
     # Service could not reach (#84). Backend addresses are the in-namespace Service names.
