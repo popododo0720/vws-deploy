@@ -192,3 +192,40 @@ Still open before `admin` can be enabled:
 - Not run: kubectl needs a discovery cache directory under a read-only root filesystem with no
   `HOME`. Unverified until a live run.
 - PR 5 (docs: `docs/vwscluster.md`, `docs/vws-cli.md`).
+
+## PR 4c as built (#391): the vws and vws-admin handoff
+
+`vws init`, `reconfigure`, `upgrade`, `rollback` and `restore` saved the CR with server-side apply
+as field manager `vws` and no `--force-conflicts`. The page writes with a JSON patch as
+`vws-admin`, an Update. Two things broke after a page save:
+
+- A CLI change to a type the page wrote was a field conflict, so the save failed.
+- A CLI spec that drops a type the page added left it in the CR. Server-side apply removes only
+  fields no other manager owns, so the CR and the spec the operator wrote differ.
+
+Chosen: the CLI saves an existing CR the way the page does. `vws_save_spec`
+(`scripts/vws.d/lib/applyrun.sh`) sends a JSON patch as field manager `vws`: a `test` of the
+`metadata.resourceVersion` it read, then one `replace` of `/spec`. The whole spec is what the
+operator wrote, whoever owned a field before, and a save over a CR that changed since the read
+(a page save in the meantime) fails, writes nothing and exits 3 with a message to run the command
+again. Each side owns what it wrote last, and neither overwrites a change it has not seen.
+Creating the CR (no CR yet) stays server-side apply. The revert after a failed apply reads the CR
+again first, because the save and the apply status moved the resourceVersion. `restore` tests the
+live CR's resourceVersion, not the stale one in the backup.
+
+Rejected:
+
+- `--force-conflicts` on the server-side apply: fixes the conflict but not the dropped type, and
+  it overwrites a page save the CLI never read.
+- Server-side apply with `metadata.resourceVersion` set (a precondition) and `--force-conflicts`:
+  stops the lost update, but a dropped type the page owns still stays.
+- `kubectl replace` with the full object: needs the `update` verb and sends metadata the CLI does
+  not own; the patch needs only `patch`, which the operator Role has.
+
+Not changed: the preflight of `vws apply` writes `spec.network.vmMTU` and `underlayMTU` with a
+merge patch when the tunnel NIC needs a lower MTU (`lib/checks.sh`, #236), and `vws apply` writes
+the status subresource. Neither replaces the spec or touches `spec.storage.volumeTypes`.
+
+Still open: the installer package on GHCR, `pods/portforward` for the operator, the vws-storage
+reader (popododo0720/vws-storage#222), the kubectl discovery cache under a read-only root, and
+PR 5 (docs).
