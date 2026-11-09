@@ -279,6 +279,26 @@ esac"""
         self.assertEqual(calls.count("-X POST repos/o/r/actions/jobs/99/rerun"), 1)
         self.assertNotIn("DELETE", calls)
 
+    def test_run_already_running_waits_then_reruns(self):
+        """vws-deploy#721: on #720 the re-run got HTTP 403 "already running" (the run the verdict's label event
+        started) and the label was dropped. Now the job waits for the run and re-runs the gate; the label stays."""
+        refuse = ('if [ "$(count post)" -lt 2 ]; then echo "gh: The workflow run containing this job is already '
+                  'running (HTTP 403)" >&2; exit 1; fi; exit 0')
+        rc, calls, out = self.go(rerun=refuse)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls.count("-X POST repos/o/r/actions/jobs/99/rerun"), 3)
+        self.assertNotIn("DELETE", calls)
+        self.assertIn("still running; waiting to re-run it", out)
+
+    def test_run_running_past_the_window_drops_the_label(self):
+        """vws-deploy#721: a run that stays running for the whole 15-minute window still drops the label."""
+        refuse = 'echo "gh: The workflow run containing this job is already running (HTTP 403)" >&2; exit 1'
+        rc, calls, out = self.go(rerun=refuse)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(calls.count("-X POST"), 30)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("could not be re-run within 15 minutes", out)
+
     def test_failed_lookup_drops_the_label(self):
         """A lookup that fails (here the jobs list, HTTP 502) leaves no stale approval behind."""
         rc, calls, out = self.go(jobs='echo "gh: Server Error (HTTP 502)" >&2; exit 1')
