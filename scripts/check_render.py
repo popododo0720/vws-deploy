@@ -1081,7 +1081,9 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     volume_types = [d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == VOLUME_TYPES]
     if volume_types:
         broken = copy.deepcopy(docs)
-        next(d for d in broken if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == VOLUME_TYPES)["data"] = {"gp3": "x"}
+        # A key with "=" never comes from the flags, which split at the first "=".
+        mutated = next(d for d in broken if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == VOLUME_TYPES)
+        mutated["data"] = {**(mutated.get("data") or {}), "self=test": "x"}
         if not any(f"ConfigMap {VOLUME_TYPES} data" in e for e in check(broken, values, release)):
             return [f"R14: {VOLUME_TYPES} data that differs from the flags did not fail"]
         if not any(f"one ConfigMap {VOLUME_TYPES}" in e for e in check([d for d in docs if d not in volume_types], values, release)):
