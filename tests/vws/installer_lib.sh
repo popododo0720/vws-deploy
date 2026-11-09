@@ -42,3 +42,22 @@ temp_binding() {
 }
 
 calls() { cat "$VWS_FAKE_LOG"; }
+
+# saved_specs: the spec of every save of an existing VWSCluster vws (the JSON patch of
+# vws_save_spec), one sorted JSON line each, in call order.
+saved_specs() {
+  python3 - "$VWS_FAKE_LOG" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    tool, verb, args = (line.rstrip("\n").split("\t", 2) + ["", ""])[:3]
+    if tool == "kubectl" and verb == "patch" and " vwsclusters vws --type=json --field-manager=vws -p " in args:
+        ops = json.loads(args.split(" -p ", 1)[1])
+        print(json.dumps(next(o["value"] for o in ops if o["op"] == "replace" and o["path"] == "/spec"), sort_keys=True))
+PY
+}
+
+# save_tests: the resourceVersion each save of an existing VWSCluster vws tests, one per line.
+save_tests() {
+  grep $'^kubectl\tpatch\t.* vwsclusters vws --type=json --field-manager=vws -p ' "$VWS_FAKE_LOG" | sed 's/.* -p //' |
+    jq -r '.[0] | select(.op == "test" and .path == "/metadata/resourceVersion") | .value' || true
+}

@@ -59,11 +59,25 @@ vws_apply_crd() {
     vws_die_env "CRDs from charts/vws/crds are not Established"
 }
 
-# vws_save_spec CR_JSON SPEC_JSON: server-side apply the VWSCluster of CR_JSON with that spec.
+# vws_save_spec CR_JSON SPEC_JSON: make SPEC_JSON the whole spec of VWSCluster vws, as field
+# manager vws. A CR_JSON read from the cluster has a resourceVersion: a JSON patch tests it, then
+# replaces /spec. So a save over a CR that changed since it was read (an admin page save, #391)
+# fails and writes nothing, and a field another manager wrote (vws-admin) goes when SPEC_JSON drops
+# it; server-side apply would keep it. A CR_JSON without one (no CR yet) is created server-side.
 vws_save_spec() {
+  local rv
+  rv=$(jq -r '.metadata.resourceVersion // empty' <<<"$1")
+  if [[ -n $rv ]]; then
+    vws_kubectl patch vwsclusters vws --type=json --field-manager=vws -p "$(jq -nc --arg rv "$rv" --argjson s "$2" \
+      '[{op: "test", path: "/metadata/resourceVersion", value: $rv}, {op: "replace", path: "/spec", value: $s}]')" >/dev/null
+    return
+  fi
   jq --argjson s "$2" '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec: $s}' <<<"$1" |
     vws_kubectl apply --server-side --field-manager=vws -f - >/dev/null
 }
+
+# VWS_SAVE_FAILED: the message of a failed vws_save_spec.
+VWS_SAVE_FAILED="cannot save VWSCluster vws (it may have changed since it was read, for example by the admin page; run the command again)"
 
 # vws_run_apply: run vws apply --unattended as a child and fold its result lines into this
 # command's results (text and -o json alike). Exit 2 or 3 of the child is passed on; returns the
@@ -88,12 +102,14 @@ vws_run_apply() {
 vws_apply_spec() {
   local name=$1 cr=$2 new=$3 rc=0
   vws_apply_crd
-  vws_save_spec "$cr" "$new" || vws_die_env "cannot save VWSCluster vws"
+  vws_save_spec "$cr" "$new" || vws_die_env "$VWS_SAVE_FAILED"
   vws_emit OK "$name" "saved VWSCluster vws; applying"
   vws_run_apply || rc=$?
   # shellcheck disable=SC2154 # vws_fail_count is set by lib/common.sh
   if ((rc != 0 || vws_fail_count > 0)); then
-    vws_save_spec "$cr" "$(jq -c '.spec' <<<"$cr")" ||
+    # The save and the apply status changed the resourceVersion, so the revert reads it again.
+    local now
+    { now=$(vws_kubectl get vwsclusters vws -o json 2>/dev/null) && vws_save_spec "$now" "$(jq -c '.spec' <<<"$cr")"; } ||
       vws_die_env "apply failed and the previous VWSCluster spec could not be saved again; restore it by hand"
     vws_emit FAIL "$name" "apply failed (the release was rolled back by --atomic); the VWSCluster spec is back to the previous value; next: vws status, then fix and retry"
   fi

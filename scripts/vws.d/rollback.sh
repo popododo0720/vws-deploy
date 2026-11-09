@@ -12,6 +12,8 @@ VWS_NEED=(jq python3 sha256sum kubectl helm)
 source "${VWS_ROOT}/scripts/vws.d/lib/hash.sh"
 # shellcheck source=scripts/vws.d/lib/installer.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/installer.sh"
+# shellcheck source=scripts/vws.d/lib/applyrun.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
 vws_rollback_tmp=''
 
@@ -82,9 +84,8 @@ vws_cmd_main() {
 
   vws_helm rollback vws "$to" --wait --timeout 15m >/dev/null 2>"$err" ||
     { vws_emit FAIL rollback "helm rollback failed: $(head -1 "$err"); the CR is unchanged; next: check the release history"; return 0; }
-  jq --argjson s "$spec" '{apiVersion, kind, metadata: {name: .metadata.name, namespace: .metadata.namespace}, spec: $s}' <<<"$cr" |
-    vws_kubectl apply --server-side --field-manager=vws -f - >/dev/null ||
-    vws_die_env "the release is at revision ${to} but the CR could not be saved; run vws reconfigure with the spec above"
+  vws_save_spec "$cr" "$spec" ||
+    vws_die_env "the release is at revision ${to} but the CR could not be saved (it may have changed since it was read, for example by the admin page); run vws reconfigure with the spec above"
   # Status: the values hash of the restored spec, the generation the save produced.
   jq --argjson s "$spec" '{apiVersion, kind, metadata: {name: .metadata.name}, spec: $s}' <<<"$cr" >"${vws_rollback_tmp}/cr.yaml"
   values="${vws_rollback_tmp}/values.yaml"

@@ -26,6 +26,29 @@ run_vws_real init <<<$'single-node\nrook-ceph\n\n198.18.0.0/24\nhttps://console.
 expect_text "interactive answers equal to --from are unchanged" "$OUT" "unchanged"
 assert_no_changes "interactive same spec changes nothing"
 
+# #391: the admin page (field manager vws-admin) mapped io1. An init that drops io1 replaces the
+# whole spec, so io1 goes; server-side apply as vws would keep a field vws-admin owns.
+installer_scenario admin-type
+python3 - "${EX}/single-node.yaml" "${WORK}/no-io1.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" <<'PY'
+import json, sys, yaml
+cr = yaml.safe_load(open(sys.argv[1]))
+cr["spec"]["storage"]["volumeTypes"] = {"gp3": {"storageClass": "ceph-block"}}
+json.dump(cr, open(sys.argv[2], "w"))
+live = json.loads(json.dumps(cr))
+live["spec"]["storage"]["volumeTypes"]["io1"] = {"storageClass": "ceph-block", "volumeSnapshotClass": "ceph-block"}
+live["metadata"].update(namespace="vws", resourceVersion="4711", managedFields=[{"manager": "vws-admin", "operation": "Update"}])
+json.dump(live, open(sys.argv[3], "w"))
+PY
+run_vws_real init --from "${WORK}/no-io1.json";  expect_rc "dropping a type the admin page mapped exits 0" 0
+have=$(saved_specs | jq -c '.storage.volumeTypes')
+if [[ $have == '{"gp3":{"storageClass":"ceph-block"}}' ]]; then ok "the saved spec has no io1"; else bad "io1 dropped" "$have"; fi
+ops=$(grep $'^kubectl\tpatch\t.* vwsclusters vws --type=json' "$VWS_FAKE_LOG" | sed 's/.* -p //' | jq -c '[.[] | {op, path, value: (if .op == "test" then .value else null end)}]')
+if [[ $ops == '[{"op":"test","path":"/metadata/resourceVersion","value":"4711"},{"op":"replace","path":"/spec","value":null}]' ]]; then ok "the save is a resourceVersion test and one whole-spec replace"; else bad "patch ops" "$ops"; fi
+if grep -qE '^kind: VWSCluster|"kind": "VWSCluster"' "${VWS_FAKE_LOG}.stdin"; then bad "an existing CR is not saved server-side" "$(grep -m1 -E '^kind: VWSCluster' "${VWS_FAKE_LOG}.stdin")"; else ok "an existing CR is not saved server-side"; fi
+echo 'testing value /metadata/resourceVersion failed' >"${VWS_FAKE_DIR}/kubectl/patch_vwsclusters.fail"
+run_vws_real init --from "${WORK}/no-io1.json";  expect_rc "a CR changed since it was read exits 3" 3
+expect_text "the refusal names the admin page" "$ERR" "for example by the admin page; run the command again"
+
 installer_scenario other
 run_vws_real init <<<$'ha\nexisting\nfast-rbd\n0.1.0\n198.18.1.0/24\nhttps://console.example.invalid\n'; expect_rc "interactive init with new answers saves" 0
 assert_changes "new answers apply the CR"

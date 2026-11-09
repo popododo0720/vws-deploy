@@ -14,18 +14,20 @@ expect_template() {
   python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/render.py" "${WORK}/want.json" "${WORK}/want-values.yaml"
   "$REAL_HELM" template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${WORK}/want-values.yaml" >"${VWS_FAKE_DIR}/helm/template.json"
 }
-cr_writes() { grep -c $'^kubectl\tapply' "$VWS_FAKE_LOG" || true; }
+cr_writes() { grep -c -e $'^kubectl\tapply' -e $'^kubectl\tpatch' "$VWS_FAKE_LOG" || true; }
 
 installer_scenario set
 expect_template '.spec.version = "v2"'
 run_vws_real reconfigure --set spec.version=v2;   expect_rc "--set exits 0" 0
 expect_text "the change is summarised" "$OUT" 'spec.version: (unset) -> "v2"'
-expect_text "the CR is saved server-side" "$(calls)" "apply --server-side --field-manager=vws"
+expect_text "the CR is saved as field manager vws" "$(calls)" "patch vwsclusters vws --type=json --field-manager=vws"
+expect_text "the save is the new spec" "$(saved_specs)" '"version": "v2"'
+if [[ $(save_tests) == 4711 ]]; then ok "the save tests the resourceVersion it read"; else bad "resourceVersion test" "$(save_tests)"; fi
 expect_text "apply runs after the save" "$(calls)" "upgrade --install vws"
 # The CRDs go in before the CR, so a field a newer chart added is not rejected (#112).
-crd_line=$(grep -n -m1 -E '^kind: CustomResourceDefinition' "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
-cr_line=$(grep -n -m1 -E '"kind": "VWSCluster"' "${VWS_FAKE_LOG}.stdin" | cut -d: -f1 || true)
-if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRDs are applied before the CR is saved"; else bad "CRD before CR" "$(head -5 "${VWS_FAKE_LOG}.stdin")"; fi
+crd_line=$(grep -n -m1 $'^kubectl\tapply' "$VWS_FAKE_LOG" | cut -d: -f1 || true)
+cr_line=$(grep -n -m1 $'^kubectl\tpatch\t.* vwsclusters vws --type=json' "$VWS_FAKE_LOG" | cut -d: -f1 || true)
+if [[ -n $crd_line && -n $cr_line ]] && ((crd_line < cr_line)); then ok "the CRDs are applied before the CR is saved"; else bad "CRD before CR" "$(calls)"; fi
 expect_text "apply results are folded in" "$OUT" "OK    helm"
 
 installer_scenario same
@@ -99,19 +101,28 @@ rm "${VWS_FAKE_DIR}/helm/upgrade.json"
 run_vws_real reconfigure --set version=v2;        expect_rc "a failing apply exits 1" 1
 expect_text "the failing apply is reported" "$OUT" "FAIL  helm"
 expect_text "the previous spec is restored" "$OUT" "the VWSCluster spec is back to the previous value"
-specs=$(python3 - "${VWS_FAKE_LOG}.stdin" <<'PY'
-import json, re, sys, yaml
-for doc in re.split(r"(?m)^--- [a-z]+\n", open(sys.argv[1]).read()):
-    try:
-        d = yaml.safe_load(doc)
-    except yaml.YAMLError:
-        continue
-    if isinstance(d, dict) and d.get("kind") == "VWSCluster":
-        print(json.dumps(d["spec"], sort_keys=True))
-PY
-)
+specs=$(saved_specs)
 first=$(head -1 <<<"$specs"); last=$(tail -1 <<<"$specs")
 if [[ $first == *'"version": "v2"'* && $last != *'"version"'* && $(wc -l <<<"$specs") -eq 2 ]]; then ok "saved new, then saved the previous spec again"; else bad "restore order" "$specs"; fi
+
+# The CR changed after reconfigure read it (an admin page save): the test op fails, so nothing is
+# written and no apply runs.
+installer_scenario changed
+expect_template '.spec.version = "v2"'
+echo 'The request is invalid: the server rejected our request due to an error in our request (testing value /metadata/resourceVersion failed)' \
+  >"${VWS_FAKE_DIR}/kubectl/patch_vwsclusters.fail"
+run_vws_real reconfigure --set version=v2;        expect_rc "a CR changed since it was read exits 3" 3
+expect_text "the refusal says why and what to do" "$ERR" "it may have changed since it was read, for example by the admin page; run the command again"
+if grep -q $'^helm\tupgrade' "$VWS_FAKE_LOG"; then bad "no apply after a refused save" "$(calls)"; else ok "no apply after a refused save"; fi
+
+# A failing apply reverts with the resourceVersion read after the save, not the one before it.
+installer_scenario revert-reads
+expect_template '.spec.version = "v2"'
+rm "${VWS_FAKE_DIR}/helm/upgrade.json"
+run_vws_real reconfigure --set version=v2;        expect_rc "a failing apply exits 1" 1
+saves=$(grep -n $'^kubectl\tpatch\t.* vwsclusters vws --type=json' "$VWS_FAKE_LOG" | cut -d: -f1)
+reads=$(grep -n $'^kubectl\tget\t.* get vwsclusters vws' "$VWS_FAKE_LOG" | cut -d: -f1 | tail -1)
+if [[ $(wc -l <<<"$saves") -eq 2 ]] && (($(head -1 <<<"$saves") < reads && reads < $(tail -1 <<<"$saves"))); then ok "the revert reads the CR again before it saves"; else bad "revert read" "$(calls)"; fi
 
 installer_scenario no-cr
 rm "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"

@@ -78,7 +78,12 @@ PY
     return 0
   fi
   vws_apply_crd
-  vws_kubectl apply --server-side --field-manager=vws -f - <"$file" >/dev/null || { rm -f "$file"; vws_die_env "cannot save VWSCluster vws"; }
+  if [[ -n $current ]]; then
+    vws_save_spec "$current" "$(python3 -c 'import json,sys,yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1]))["spec"]))' "$file")" ||
+      { rm -f "$file"; vws_die_env "$VWS_SAVE_FAILED"; }
+  else
+    vws_kubectl apply --server-side --field-manager=vws -f - <"$file" >/dev/null || { rm -f "$file"; vws_die_env "cannot save VWSCluster vws"; }
+  fi
   rm -f "$file"
   vws_emit OK init "saved VWSCluster vws in ${VWS_NAMESPACE}"
 }
