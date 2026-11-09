@@ -798,7 +798,7 @@ PY
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true > "$tmp/admin.yaml"
   python3 scripts/check_render.py "$tmp/admin.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  admin:\n    enabled: true\n') ||
     die "R10: check_render rejects the admin render"
-  for open_it in external=true flags.listen=0.0.0.0:8080 'allowFrom={console}'; do
+  for open_it in loopback=false external=true flags.listen=0.0.0.0:8080 'allowFrom={console}'; do
     ! helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
       --set "services.admin.${open_it}" >/dev/null 2>&1 || die "R10: a loopback admin with ${open_it} was accepted"
   done
