@@ -343,8 +343,9 @@ services:
       apiGroups: [""]
       resources: [configmaps]
       verbs: [get, list, create, update, delete]
-    state:
-      size: 20Gi
+    # Two replicas share the kube store (ConfigMaps) and a Lease: every replica serves gRPC,
+    # and only the leader runs Repair and the controllers (vws-compute#138, vws-deploy#723).
+    replicas: 2
   storage:
     external: true
     # imageTag pins storage to vws-storage 070b210 (main, 2026-11-09), a build with vws-lib v0.3.0

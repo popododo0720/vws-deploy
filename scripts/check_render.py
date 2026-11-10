@@ -1245,6 +1245,56 @@ def loopback_mutations(docs: list[dict], values: dict, release: str, loop: str) 
     return ""
 
 
+
+def check_compute_ha(docs: list[dict], values: dict) -> list[str]:
+    """Compute replicas, PDB and topology spread when it is a stateless Deployment (#723)."""
+    spec = (values.get("services") or {}).get("compute") or {}
+    if not service_rendered(spec) or "state" in spec:
+        return []
+    by_kind: dict[str, dict[str, dict]] = {}
+    for doc in docs:
+        kind = doc.get("kind")
+        name = (doc.get("metadata") or {}).get("name")
+        if kind and name and kind not in by_kind.get(kind, {}):
+            by_kind.setdefault(kind, {})[name] = doc
+    errors: list[str] = []
+    workload = by_kind.get("Deployment", {}).get("compute")
+    want = int(spec.get("replicas") or 2)
+    if workload is None:
+        errors.append("R4: compute must render as a Deployment with configurable replicas")
+    else:
+        got = (workload.get("spec") or {}).get("replicas")
+        if got != want:
+            errors.append(f"R4: Deployment compute replicas are {got}, want {want}")
+        pod = ((workload.get("spec") or {}).get("template") or {}).get("spec") or {}
+        spread = pod.get("topologySpreadConstraints") or []
+        anti = ((pod.get("affinity") or {}).get("podAntiAffinity") or {})
+        want_when = (
+            "DoNotSchedule"
+            if (values.get("global") or {}).get("topologySpread", "soft") == "hard"
+            else "ScheduleAnyway"
+        )
+        matching = [
+            c
+            for c in spread
+            if c.get("topologyKey") == "kubernetes.io/hostname"
+            and c.get("maxSkew") == 1
+            and c.get("whenUnsatisfiable") == want_when
+        ]
+        if not matching and not anti:
+            errors.append(
+                f"R4: compute needs topology spread (whenUnsatisfiable {want_when}) or anti-affinity"
+            )
+    pdb = by_kind.get("PodDisruptionBudget", {}).get("compute")
+    if pdb is None:
+        errors.append("R4: missing PodDisruptionBudget compute")
+    else:
+        pspec = pdb.get("spec") or {}
+        if pspec.get("maxUnavailable") != 1:
+            errors.append("R4: PodDisruptionBudget compute must set maxUnavailable 1")
+    return errors
+
+
 def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     base = check(docs, values, release)
     if base:
@@ -2059,6 +2109,18 @@ def self_test(docs: list[dict], values: dict, release: str) -> list[str]:
     )
     if not any("restartPolicy" in item or "livenessProbe" in item for item in synthetic):
         return ["R4: synthetic deployment did not fail the recovery check"]
+    compute_ha = check_compute_ha(docs, values)
+    if compute_ha:
+        return compute_ha
+    compute = next((d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "compute"), None)
+    if compute is not None and "state" not in ((values.get("services") or {}).get("compute") or {}):
+        broken = copy.deepcopy(docs)
+        for doc in broken:
+            if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "compute":
+                (doc["spec"]["template"]["spec"]).pop("topologySpreadConstraints", None)
+                (doc["spec"]["template"]["spec"]).pop("affinity", None)
+        if not check_compute_ha(broken, values):
+            return ["R4: compute without topology spread or anti-affinity did not fail"]
     return []
 
 

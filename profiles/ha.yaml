@@ -14,12 +14,12 @@ services:
     replicas: 1
     cpu: 500m
     memory: 1Gi
-  # Stateful services run one replica: the services have no multi-replica state (vws-deploy#43 decision 2).
+  # Storage and network run one replica: they have no multi-replica state (vws-deploy#43 decision 2).
   compute:
+    # Two replicas share the kube store; default 2 also in ha (vws-deploy#723).
+    replicas: 2
     cpu: 500m
     memory: 1Gi
-    state:
-      size: 20Gi
   storage:
     cpu: 500m
     memory: 1Gi
