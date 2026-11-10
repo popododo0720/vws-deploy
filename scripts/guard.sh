@@ -1446,45 +1446,62 @@ cmd_bootstrap() {
   rm -rf "$tmp"
 }
 
-# secrets_check ROOT: no PVE API token or AWS access key literal in any file, and the systemd units
-# under packaging/ load secrets only through LoadCredential= (R10).
+# secrets_check ROOT: no PVE API token or AWS access key literal in any tracked file, and the
+# systemd units under packaging/ load secrets only through LoadCredential= (R10, issue #763 AC1).
 secrets_check() {
   python3 - "$1" <<'PY'
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-skip = {".git", "build", ".cache", ".tmp-tools"}
+tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout
+rels = [Path(p) for p in tracked.split("\0") if p]
 literals = [("a PVE API token", re.compile("PVEAPIToken" + "=")), ("an AWS access key", re.compile("AKIA" + "[0-9A-Z]{16}"))]
 env_line = re.compile(r"^\s*(Environment|EnvironmentFile)\s*=\s*(.*)$")
 secret_key = re.compile(r"secret|token|passw|credential|private|api_?key|access_?key", re.I)
 failed = False
-for path in sorted(root.rglob("*")):
-    rel = path.relative_to(root)
-    if not path.is_file() or skip & set(rel.parts):
+for rel in rels:
+    path = root / rel
+    if not path.is_file():
         continue
     text = path.read_text(errors="ignore")
     for what, pattern in literals:
         if pattern.search(text):
             print(f"R10: {what} literal in {rel}; load it with LoadCredential=", file=sys.stderr)
             failed = True
-    if rel.parts[0] == "packaging" and path.suffix in (".service", ".target"):
+    unit_kinds = ("service", "target", "socket", "mount", "swap", "timer", "path", "slice", "scope", "automount", "device")
+    drop_in = path.suffix == ".conf" and any(part.endswith(tuple(f".{kind}.d" for kind in unit_kinds)) for part in rel.parts[:-1])
+    if rel.parts[0] == "packaging" and (path.suffix.lstrip(".") in unit_kinds or drop_in):
+        logical = ""
+        start = 1
         for number, line in enumerate(text.splitlines(), 1):
-            match = env_line.match(line)
+            if line.lstrip().startswith(("#", ";")):
+                continue
+            if not logical:
+                start = number
+            logical += line
+            if logical.endswith("\\"):
+                logical = logical[:-1] + " "
+                continue
+            match = env_line.match(logical)
             if match and (match[1] == "EnvironmentFile" or secret_key.search(match[2])):
-                print(f"R10: {rel}:{number} {match[1]}= may carry a secret; use LoadCredential=", file=sys.stderr)
+                print(f"R10: {rel}:{start} {match[1]}= may carry a secret; use LoadCredential=", file=sys.stderr)
                 failed = True
+            logical = ""
 sys.exit(1 if failed else 0)
 PY
 }
 
 cmd_secrets() {
-  local tmp
+  local tmp unit
   secrets_check . || die "R10: secret literals or unit secrets"
   tmp=$(mktemp -d)
+  git -C "$tmp" init -q
   mkdir -p "$tmp/packaging"
   printf '[Service]\nLoadCredential=pve-token:/etc/vws/pve-token\nEnvironment=VWS_LOG_LEVEL=info\n' > "$tmp/packaging/vws.service"
+  git -C "$tmp" add packaging
   secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: a clean unit was rejected"; }
   printf '[Service]\nEnvironment=PVE_TOKEN=x\n' > "$tmp/packaging/vws.service"
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a unit with a secret Environment= was accepted"; }
@@ -1493,7 +1510,20 @@ cmd_secrets() {
   printf '[Service]\nEnvironmentFile=/etc/vws/env\n' > "$tmp/packaging/vws.service"
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: an EnvironmentFile= was accepted"; }
   rm "$tmp/packaging/vws.service"
+  for unit in vws.socket vws.mount vws.swap vws.timer vws.path vws.slice vws.scope vws.automount vws.device vws.target vws.service.d/override.conf; do
+    mkdir -p "$tmp/packaging/$(dirname "$unit")"
+    printf '[Service]\nEnvironment=VWS_LOG_LEVEL=info \\\n# continued directives skip comments\n DB_PASSWORD=x\n' > "$tmp/packaging/$unit"
+    git -C "$tmp" add "packaging/$unit"
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a continued secret Environment= in $unit was accepted"; }
+    printf '[Service]\nLoadCredential=db-password:/etc/vws/password\nEnvironment=VWS_LOG_LEVEL=info \\\n VWS_MODE=dev\n' > "$tmp/packaging/$unit"
+    secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: clean credentials in $unit were rejected"; }
+    printf '[Service]\nEnvironmentFile=\\\n /etc/vws/env\n' > "$tmp/packaging/$unit"
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a continued EnvironmentFile= in $unit was accepted"; }
+    rm "$tmp/packaging/$unit"
+  done
   printf 'Authorization: %s\n' "PVEAPIToken""=user@pve!ci=abc" > "$tmp/note.txt"
+  secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: an untracked literal was rejected"; }
+  git -C "$tmp" add note.txt
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a PVE API token literal was accepted"; }
   printf 'key %s\n' "AKIA""ABCDEFGHIJKLMNOP" > "$tmp/note.txt"
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: an AWS access key literal was accepted"; }
