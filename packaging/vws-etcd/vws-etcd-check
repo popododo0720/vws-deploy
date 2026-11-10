@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Usage: vws-etcd-check [MAX_BYTES]
+# Checks what the vws-etcd cluster holds against docs/design/etcd.md: every key is under /vws/iam/
+# (vws-iam) or /vws/admin/ (the admin registry), and no value is larger than MAX_BYTES (default 65536).
+# It prints each key that breaks a rule with its size, never a value. Read only.
+# etcdctl reads ETCDCTL_ENDPOINTS (one https URL), ETCDCTL_CACERT, ETCDCTL_CERT and ETCDCTL_KEY;
+# ETCDCTL_COMMAND_TIMEOUT bounds the read (default 60s).
+# Exit 0 when every key passes, 1 when one fails or the read fails, 2 on bad arguments.
+set -euo pipefail
+(($# <= 1)) || { echo "usage: vws-etcd-check [MAX_BYTES]" >&2; exit 2; }
+max=${1:-65536}
+[[ $max =~ ^[1-9][0-9]{0,8}$ ]] || { echo "vws-etcd: MAX_BYTES must be an integer from 1 to 999999999, got ${max}" >&2; exit 2; }
+[[ ${ETCDCTL_ENDPOINTS:-} =~ ^https://[^,]+$ ]] || { echo "vws-etcd: ETCDCTL_ENDPOINTS must be one https URL" >&2; exit 2; }
+all=$(ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s} etcdctl get '' --from-key -w json) ||
+  { echo "vws-etcd: reading the keys failed" >&2; exit 1; }
+# Sizes come from the base64 length, so a value is never decoded.
+report=$(jq -r --argjson max "$max" '
+  [.kvs[]? | (.value // "") as $v
+   | {k: (.key | @base64d),
+      n: (($v | length) / 4 * 3 - (if ($v | endswith("==")) then 2 elif ($v | endswith("=")) then 1 else 0 end))}]
+  | (map(select((.k | startswith("/vws/iam/") or startswith("/vws/admin/")) | not)
+         | "outside /vws/iam/ and /vws/admin/: \(.k | @json) (\(.n) bytes)")
+     + map(select(.n > $max) | "over \($max) bytes: \(.k | @json) (\(.n) bytes)")
+     + ["\(length) keys"])
+  | .[]' <<<"$all")
+keys=$(tail -n 1 <<<"$report")
+bad=$(head -n -1 <<<"$report")
+if [[ -n $bad ]]; then
+  printf 'vws-etcd: %s\n' "$bad" >&2
+  echo "vws-etcd: ${keys}, $(wc -l <<<"$bad") failed" >&2
+  exit 1
+fi
+echo "vws-etcd: ${keys}, all under /vws/iam/ or /vws/admin/ and at most ${max} bytes"
