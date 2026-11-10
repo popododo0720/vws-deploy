@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Usage: vws-etcd-tls OUTDIR NAME=IPV4[:PEERPORT][,...]   (the member list of vws-etcd-config)
+# Writes the TLS material of a vws-etcd cluster:
+#   OUTDIR/ca.crt, OUTDIR/ca.key   the cluster CA; ca.key stays on the operator host, never on a member
+#   OUTDIR/<name>/                 ca.crt, member.crt, member.key for each member (server and peer,
+#                                  CN vws-etcd-member, SAN = the member IP and name)
+#   OUTDIR/client/                 ca.crt, client.crt, client.key (CN vws-etcd-client) for vws-iam,
+#                                  the admin registry, vws backup and the snapshot timer
+# The CN split matters: peers accept only CN vws-etcd-member (peer allowed-cn in vws-etcd-config),
+# so a leaked client certificate cannot join the cluster as a member.
+# An existing CA and existing directories are kept, so a rerun with one more member only adds that
+# member. Keys are 0600 (umask 077). Each directory appears complete or not at all. A second run on the
+# same OUTDIR while one is running exits 1 (OUTDIR/.lock), so two runs cannot make two CAs.
+set -euo pipefail
+(($# == 2)) || { echo "usage: vws-etcd-tls OUTDIR NAME=IPV4[:PEERPORT][,...]" >&2; exit 2; }
+# shellcheck source=packaging/vws-etcd/members.sh
+source "$(dirname "${BASH_SOURCE[0]}")/members.sh"
+out=$1
+vws_etcd_members "$2"
+command -v openssl >/dev/null || { echo "vws-etcd: openssl is not on PATH" >&2; exit 3; }
+umask 077
+mkdir -p "$out"
+exec 9>"$out/.lock"
+flock -n 9 || { echo "vws-etcd: another vws-etcd-tls is writing ${out}" >&2; exit 1; }
+work=$(mktemp -d "${out}/.work.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+if [[ ! -f $out/ca.key ]]; then
+  openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+    -subj /CN=vws-etcd-ca -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
+    -keyout "$work/ca.key" -out "$work/ca.crt" 2>/dev/null
+  mv "$work/ca.crt" "$out/ca.crt"
+  mv "$work/ca.key" "$out/ca.key"
+fi
+
+# leaf DIR BASE CN EXTENDED_KEY_USAGE SAN: a key and a CA-signed certificate in DIR/BASE.{key,crt}.
+leaf() {
+  local dir=$1 base=$2 cn=$3 eku=$4 san=$5
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=${cn}" \
+    -keyout "$dir/$base.key" -out "$work/$base.csr" 2>/dev/null
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\n%s\n' \
+    "$eku" "${san:+subjectAltName=$san}" >"$work/$base.ext"
+  openssl x509 -req -in "$work/$base.csr" -CA "$out/ca.crt" -CAkey "$out/ca.key" -days 825 \
+    -set_serial "0x$(openssl rand -hex 16)" -extfile "$work/$base.ext" -out "$dir/$base.crt" 2>/dev/null
+  cp "$out/ca.crt" "$dir/ca.crt"
+}
+
+for i in "${!vws_etcd_names[@]}"; do
+  name=${vws_etcd_names[i]}
+  [[ ! -e $out/$name ]] || continue
+  mkdir "$work/$name"
+  leaf "$work/$name" member vws-etcd-member serverAuth,clientAuth "IP:${vws_etcd_ips[i]},DNS:${name}"
+  mv "$work/$name" "$out/$name"
+  echo "vws-etcd: wrote ${out}/${name}"
+done
+if [[ ! -e $out/client ]]; then
+  mkdir "$work/client"
+  leaf "$work/client" client vws-etcd-client clientAuth ''
+  mv "$work/client" "$out/client"
+  echo "vws-etcd: wrote ${out}/client"
+fi

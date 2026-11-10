@@ -9,8 +9,9 @@
 # The CR and helm files must pass the lib/redact.py scan with zero hits, or nothing is written (1);
 # when the scanner cannot run, nothing is written (3). Helm keeps its release in Secrets: run this
 # with credentials that can read them.
-# shellcheck disable=SC2034 # read by scripts/vws
-VWS_NEED=(jq python3 sha256sum kubectl helm)
+# vws backup --etcd [--out FILE] writes a vws-etcd snapshot instead (lib/etcd.sh).
+# shellcheck source=scripts/vws.d/lib/etcd.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/etcd.sh"
 
 VWS_BACKUP_SELECTOR=app.kubernetes.io/part-of=vws
 vws_backup_tmp=''
@@ -21,6 +22,12 @@ vws_backup_limits() {
 }
 
 vws_cmd_main() {
+  if [[ ${1:-} == --etcd ]]; then
+    shift
+    vws_etcd_backup "$@"
+    return 0
+  fi
+  vws_need jq python3 sha256sum kubectl helm
   local out='' etcd='' release dir err cr json age sums now fresh=false exists=false hits name
   while (($#)); do
     case $1 in

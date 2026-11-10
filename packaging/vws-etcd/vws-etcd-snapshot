@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Usage: vws-etcd-snapshot DIR KEEP
+# What the backup timer runs: saves a snapshot of the member in ETCDCTL_ENDPOINTS as
+# DIR/vws-etcd-<UTC>.db (0600), then deletes the oldest vws-etcd-*.db files in DIR until KEEP remain.
+# Other files in DIR are never touched. etcdctl reads ETCDCTL_ENDPOINTS (one https URL),
+# ETCDCTL_CACERT, ETCDCTL_CERT and ETCDCTL_KEY (the vws-etcd-tls client certificate);
+# ETCDCTL_COMMAND_TIMEOUT bounds the save (default 60s).
+# A failed save deletes nothing. Exit 2 on bad arguments, 1 when the save fails.
+set -euo pipefail
+(($# == 2)) || { echo "usage: vws-etcd-snapshot DIR KEEP" >&2; exit 2; }
+dir=$1 keep=$2
+[[ $keep =~ ^[1-9][0-9]{0,3}$ ]] || { echo "vws-etcd: KEEP must be an integer from 1 to 9999, got ${keep}" >&2; exit 2; }
+[[ ${ETCDCTL_ENDPOINTS:-} =~ ^https://[^,]+$ ]] || { echo "vws-etcd: ETCDCTL_ENDPOINTS must be one https URL" >&2; exit 2; }
+umask 077
+mkdir -p "$dir"
+file="${dir}/vws-etcd-$(date -u +%Y%m%dT%H%M%SZ).db"
+[[ ! -e $file ]] || { echo "vws-etcd: ${file} exists" >&2; exit 1; }
+part=$(mktemp "${file}.XXXXXX.part")
+trap 'rm -f "$part"' EXIT
+ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s} etcdctl snapshot save "$part" >/dev/null || { echo "vws-etcd: snapshot save failed" >&2; exit 1; }
+ln "$part" "$file" || { echo "vws-etcd: ${file} appeared during the save; nothing was replaced" >&2; exit 1; }
+echo "vws-etcd: wrote ${file}"
+mapfile -t old < <(find "$dir" -maxdepth 1 -type f -name 'vws-etcd-*Z.db' -printf '%f\n' | sort | head -n "-${keep}")
+for name in "${old[@]}"; do
+  rm -f -- "${dir}/${name}"
+  echo "vws-etcd: removed ${dir}/${name}"
+done

@@ -8,8 +8,9 @@
 # vws doctor. Parts that already match are unchanged; a second restore of the same backup changes
 # nothing. State volumes are not restored from VolumeSnapshots: the names are printed with a manual
 # procedure (replacing a PVC risks data loss; out of the MVP).
-# shellcheck disable=SC2034 # read by scripts/vws
-VWS_NEED=(jq python3 sha256sum kubectl helm)
+# vws restore --etcd SNAPSHOT ... writes a fresh vws-etcd member from a snapshot instead (lib/etcd.sh).
+# shellcheck source=scripts/vws.d/lib/etcd.sh
+source "${VWS_ROOT}/scripts/vws.d/lib/etcd.sh"
 # shellcheck source=scripts/vws.d/lib/applyrun.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/applyrun.sh"
 
@@ -27,6 +28,12 @@ vws_restore_changed_configmaps() {
 }
 
 vws_cmd_main() {
+  if [[ ${1:-} == --etcd ]]; then
+    shift
+    vws_etcd_restore "$@"
+    return 0
+  fi
+  vws_need jq python3 sha256sum kubectl helm
   local dir='' cr current base spec crd changed=() name snaps level message json rc=0 cr_changed=0
   while (($#)); do
     case $1 in

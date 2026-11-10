@@ -8,3 +8,4 @@ repo .gitignore LICENSE
 platform platform/
 installer installer/
 metrics metrics/
+packaging packaging/
