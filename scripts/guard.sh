@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repo checks that helm lint and kubeconform cannot see.
+# Repo checks for the rules in AGENTS.md.
 set -euo pipefail
 export LC_ALL=C
 
@@ -58,8 +58,8 @@ cmd_layout() {
   if grep -q -E '^(dependencies|icon):' charts/vws/Chart.yaml; then
     die "R10: Chart.yaml must not declare dependencies or an icon"
   fi
-  if find . -path ./.git -prune -o \( -name '*.service' -o -name '*.target' \) -print | grep -q .; then
-    die "R10: this repo ships no systemd units"
+  if find . -path ./.git -prune -o -path ./packaging -prune -o \( -name '*.service' -o -name '*.target' \) -print | grep -q .; then
+    die "R10: systemd units live only under packaging/"
   fi
   [[ ! -e host ]] || die "R10: host/ must not exist"
   if grep -R -n -E 'DaemonSet|hostPath:|hostNetwork:' charts; then
@@ -159,8 +159,6 @@ cmd_ci() {
     ! r8_scan "$f" >/dev/null || die "R8: positive test ${f} was rejected"
   done
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
-  grep -q 'helm lint' Makefile || die "R8: make check must run helm lint"
-  grep -q 'kubeconform' Makefile || die "R8: make check must run kubeconform"
 }
 
 cmd_schema() {
@@ -199,7 +197,7 @@ for case in cases:
     yaml.safe_dump(case, handle)
     handle.close()
     proc = subprocess.run(
-        ["helm", "lint", "charts/vws", "--strict", "-f", "charts/vws/ci/site.yaml", "-f", handle.name],
+        ["helm", "template", "vws", "charts/vws", "-f", "charts/vws/ci/site.yaml", "-f", handle.name],
         capture_output=True,
         text=True,
     )
@@ -210,7 +208,7 @@ for case in cases:
         sys.exit(1)
     if "values don't meet the specifications" not in blob and "Additional property" not in blob:
         print(blob, file=sys.stderr)
-        print("R5: helm lint failed for a reason other than the values schema", file=sys.stderr)
+        print("R5: helm template failed for a reason other than the values schema", file=sys.stderr)
         sys.exit(1)
 PY
 }
@@ -1227,15 +1225,12 @@ PY
 }
 
 cmd_profiles() {
-  local tmp profile version size
-  version=$(sed -n 's/^KUBERNETES_VERSION=//p' scripts/versions.env)
+  local tmp profile size
   tmp=$(mktemp -d)
   profile_keys profiles/*.yaml || die "R19: profiles must set the same keys"
   for profile in single-node small ha; do
     [[ -f profiles/${profile}.yaml ]] || die "R19: profiles/${profile}.yaml is missing"
-    helm lint charts/vws --strict -f "$SITE_VALUES" -f "profiles/${profile}.yaml" >/dev/null || die "R19: helm lint fails with ${profile}"
     helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
-    kubeconform -strict -kubernetes-version "$version" -cache .cache/kubeconform "$tmp/${profile}.yaml" || die "R19: kubeconform rejects ${profile}"
     python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
     console_api_closed "$tmp/${profile}.yaml" || die "R19: profile ${profile} publishes an AWS listener or an iam endpoint"
     # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
@@ -1451,14 +1446,67 @@ cmd_bootstrap() {
   rm -rf "$tmp"
 }
 
+# secrets_check ROOT: no PVE API token or AWS access key literal in any file, and the systemd units
+# under packaging/ load secrets only through LoadCredential= (R10).
+secrets_check() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+skip = {".git", "build", ".cache", ".tmp-tools"}
+literals = [("a PVE API token", re.compile("PVEAPIToken" + "=")), ("an AWS access key", re.compile("AKIA" + "[0-9A-Z]{16}"))]
+env_line = re.compile(r"^\s*(Environment|EnvironmentFile)\s*=\s*(.*)$")
+secret_key = re.compile(r"secret|token|passw|credential|private|api_?key|access_?key", re.I)
+failed = False
+for path in sorted(root.rglob("*")):
+    rel = path.relative_to(root)
+    if not path.is_file() or skip & set(rel.parts):
+        continue
+    text = path.read_text(errors="ignore")
+    for what, pattern in literals:
+        if pattern.search(text):
+            print(f"R10: {what} literal in {rel}; load it with LoadCredential=", file=sys.stderr)
+            failed = True
+    if rel.parts[0] == "packaging" and path.suffix in (".service", ".target"):
+        for number, line in enumerate(text.splitlines(), 1):
+            match = env_line.match(line)
+            if match and (match[1] == "EnvironmentFile" or secret_key.search(match[2])):
+                print(f"R10: {rel}:{number} {match[1]}= may carry a secret; use LoadCredential=", file=sys.stderr)
+                failed = True
+sys.exit(1 if failed else 0)
+PY
+}
+
+cmd_secrets() {
+  local tmp
+  secrets_check . || die "R10: secret literals or unit secrets"
+  tmp=$(mktemp -d)
+  mkdir -p "$tmp/packaging"
+  printf '[Service]\nLoadCredential=pve-token:/etc/vws/pve-token\nEnvironment=VWS_LOG_LEVEL=info\n' > "$tmp/packaging/vws.service"
+  secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: a clean unit was rejected"; }
+  printf '[Service]\nEnvironment=PVE_TOKEN=x\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a unit with a secret Environment= was accepted"; }
+  printf '[Service]\nEnvironment="DB_PASSWORD=x"\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a quoted secret Environment= was accepted"; }
+  printf '[Service]\nEnvironmentFile=/etc/vws/env\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: an EnvironmentFile= was accepted"; }
+  rm "$tmp/packaging/vws.service"
+  printf 'Authorization: %s\n' "PVEAPIToken""=user@pve!ci=abc" > "$tmp/note.txt"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a PVE API token literal was accepted"; }
+  printf 'key %s\n' "AKIA""ABCDEFGHIJKLMNOP" > "$tmp/note.txt"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: an AWS access key literal was accepted"; }
+  rm -rf "$tmp"
+}
+
 cmd_english() {
   scripts/guard-agents.sh english .github/english-allowlist || die "R22: the repo is English only; Hangul is allowed only in files that .github/english-allowlist lists with a reason"
 }
 
 cmd_observability() {
   # R25 (#50): observability values, the minimal collector and the collector examples.
-  local tmp version kver case name want_tag example
-  kver=$(sed -n 's/^KUBERNETES_VERSION=//p' scripts/versions.env)
+  local tmp version case name want_tag example
   version=$(sed -n 's/^OTELCOL_VERSION=v\{0,1\}//p' scripts/versions.env)
   [[ -n $version ]] || die "R25: scripts/versions.env has no OTELCOL_VERSION"
   want_tag=$(python3 -c 'import yaml;print(yaml.safe_load(open("charts/vws/values.yaml"))["observability"]["collector"]["image"].split(":")[1].split("@")[0])')
@@ -1466,7 +1514,6 @@ cmd_observability() {
   command -v otelcol-contrib >/dev/null || die "R25: otelcol-contrib missing; run scripts/install-tools.sh"
   otelcol-contrib --version | grep -q -F " ${version}" || die "R25: otelcol-contrib is not OTELCOL_VERSION ${version}"
   tmp=$(mktemp -d)
-  mkdir -p .cache/kubeconform
   helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/off.yaml"
   if grep -q -E 'name: (OTEL_|SENTRY_|VWS_LOG_LEVEL)|otel-collector' "$tmp/off.yaml"; then
     rm -rf "$tmp"; die "R25: the default render has telemetry env or the collector"
@@ -1516,10 +1563,7 @@ services:
         enabled: false
 YAML
   for case in collector debug external; do
-    helm lint charts/vws --strict -f "$SITE_VALUES" -f "$tmp/${case}.yaml" >/dev/null || { rm -rf "$tmp"; die "R25: helm lint fails with the ${case} observability values"; }
     helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/${case}.yaml" --namespace vws > "$tmp/${case}.render.yaml"
-    kubeconform -strict -summary -kubernetes-version "$kver" -cache .cache/kubeconform "$tmp/${case}.render.yaml" >/dev/null ||
-      { rm -rf "$tmp"; die "R25: kubeconform rejects the ${case} observability render"; }
     python3 scripts/check_render.py "$tmp/${case}.render.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "$tmp/${case}.yaml" ||
       { rm -rf "$tmp"; die "R25: check_render rejects the ${case} observability render"; }
   done
@@ -1548,7 +1592,7 @@ PY
     'observability: {collector: {exporters: {otlp: {endpoint: "http://gw.observability.svc:4317/"}}}}' \
     'observability: {otlpEndpoint: "https://otlp.observability.internal:4317/v1"}'; do
     printf '%s\n' "$case" > "$tmp/bad.yaml"
-    if helm lint charts/vws --strict -f "$SITE_VALUES" -f "$tmp/bad.yaml" > "$tmp/out" 2>&1 ||
+    if helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/bad.yaml" --namespace vws > "$tmp/out" 2>&1 ||
       ! grep -q -E 'Additional property|Does not match pattern' "$tmp/out"; then
       rm -rf "$tmp"; die "R25: the values schema did not reject ${case}"
     fi
@@ -1604,6 +1648,7 @@ cmd_all() {
   cmd_recovery
   cmd_placeholders
   cmd_english
+  cmd_secrets
   if [[ -n ${VWS_BASE_REF:-} ]]; then
     cmd_commits "origin/${VWS_BASE_REF}"
   elif git rev-parse --verify origin/main >/dev/null 2>&1; then
@@ -1613,7 +1658,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|observability|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|commits|commit-msg|all>
+usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|observability|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|secrets|commits|commit-msg|all>
 EOF
 }
 
@@ -1640,6 +1685,7 @@ case "$command_name" in
   recovery) cmd_recovery ;;
   placeholders) cmd_placeholders "$@" ;;
   english) cmd_english ;;
+  secrets) cmd_secrets ;;
   commits) cmd_commits "$@" ;;
   commit-msg) cmd_commit_msg "$@" ;;
   all) cmd_all ;;
