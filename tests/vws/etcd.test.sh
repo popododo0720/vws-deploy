@@ -79,6 +79,8 @@ run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1,b=10.0.0.256,c=10.0.0.3;    expect
 run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1,a=10.0.0.2,c=10.0.0.3;      expect_rc "a repeated name exits 2" 2
 run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1,b=10.0.0.1,c=10.0.0.3;      expect_rc "a repeated address exits 2" 2
 run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1:2379,b=10.0.0.2,c=10.0.0.3; expect_rc "a peer port equal to the client port exits 2" 2
+run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1,b=10.0.0.1:2380,c=10.0.0.3; expect_rc "a repeated address with the default port written out exits 2" 2
+run_cmd "${PKG}/vws-etcd-config" a a=10.0.0.1,client=10.0.0.2,c=10.0.0.3; expect_rc "the reserved name client exits 2" 2
 run_cmd "${PKG}/vws-etcd-config" d a=10.0.0.1,b=10.0.0.2,c=10.0.0.3;      expect_rc "a member outside the list exits 2" 2
 run_cmd "${PKG}/vws-etcd-config" b a=10.0.0.1,b=10.0.0.2,c=10.0.0.3:2390; expect_rc "a three-member config renders" 0
 expect_text "every member is in initial-cluster" "$OUT" "initial-cluster: a=https://10.0.0.1:2380,b=https://10.0.0.2:2380,c=https://10.0.0.3:2390"
@@ -96,6 +98,9 @@ ca_sum=$(sha256sum <"${TLS}/ca.crt")
 run_cmd "${PKG}/vws-etcd-tls" "$TLS" "$LIST";                              expect_rc "a rerun exits 0" 0
 expect_text "a rerun writes nothing" "${OUT:-nothing}" "nothing"
 expect_text "a rerun keeps the CA" "$(sha256sum <"${TLS}/ca.crt")" "$ca_sum"
+run_cmd flock "${TLS}/.lock" "${PKG}/vws-etcd-tls" "$TLS" "${LIST},d=127.0.0.2,e=127.0.0.3"
+expect_rc "a run while another holds the lock exits 1" 1
+expect_text "a locked run writes nothing" "$([[ -e ${TLS}/d ]] && echo written || echo none)" "none"
 
 # Three TLS-only members.
 start_member a "$LIST" "$CA"
@@ -125,6 +130,7 @@ expect_text "backup names the snapshot" "$OUT" "OK    etcd-snapshot  wrote ${WOR
 expect_text "the snapshot is 0600" "$(stat -c %a "${WORK}/snap.db")" "600"
 run_vws_real backup --etcd --out "${WORK}/snap.db";                        expect_rc "an existing snapshot is never overwritten" 2
 ETCDCTL_CERT='' run_vws_real backup --etcd --out "${WORK}/x.db";          expect_rc "a backup without a client certificate exits 2" 2
+ETCDCTL_KEY="${WORK}/missing.key" run_vws_real backup --etcd --out "${WORK}/x.db"; expect_rc "a missing key file exits 2" 2
 ETCDCTL_ENDPOINTS="http://127.0.0.1:${CA}" run_vws_real backup --etcd --out "${WORK}/x.db"; expect_rc "an http endpoint exits 2" 2
 ETCDCTL_COMMAND_TIMEOUT=3s ETCDCTL_ENDPOINTS="https://127.0.0.1:${PX}" run_vws_real backup --etcd --out "${WORK}/x.db"; expect_rc "a failed save exits 1" 1
 expect_text "a failed save leaves no file" "$(find "$WORK" -maxdepth 1 -name 'x.db*' | wc -l)" "0"

@@ -16,12 +16,12 @@ vws_etcd_backup() {
   done
   vws_need etcdctl etcdutl jq
   [[ ${ETCDCTL_ENDPOINTS:-} =~ ^https://[^,]+$ ]] || vws_usage "ETCDCTL_ENDPOINTS must be one https URL"
-  [[ -n ${ETCDCTL_CACERT:-} && -n ${ETCDCTL_CERT:-} && -n ${ETCDCTL_KEY:-} ]] ||
-    vws_usage "ETCDCTL_CACERT, ETCDCTL_CERT and ETCDCTL_KEY must name the vws-etcd client certificate"
+  [[ -f ${ETCDCTL_CACERT:-} && -r $ETCDCTL_CACERT && -f ${ETCDCTL_CERT:-} && -r $ETCDCTL_CERT && -f ${ETCDCTL_KEY:-} && -r $ETCDCTL_KEY ]] ||
+    vws_usage "ETCDCTL_CACERT, ETCDCTL_CERT and ETCDCTL_KEY must name readable files of the vws-etcd client certificate"
   out=${out:-vws-etcd-$(date -u +%Y%m%dT%H%M%SZ).db}
-  vws_etcd_part="${out}.part"
-  [[ ! -e $out && ! -e $vws_etcd_part ]] || vws_usage "${out} exists; backup never overwrites"
+  [[ ! -e $out ]] || vws_usage "${out} exists; backup never overwrites"
   umask 077
+  vws_etcd_part=$(mktemp "${out}.XXXXXX.part") || vws_die_env "cannot write next to ${out}"
   # shellcheck disable=SC2154 # vws_results is set by lib/common.sh
   trap 'rm -f "$vws_etcd_part" "$vws_results"' EXIT
   if ! err=$(ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s} etcdctl snapshot save "$vws_etcd_part" 2>&1 >/dev/null); then
@@ -32,7 +32,10 @@ vws_etcd_backup() {
     vws_emit FAIL etcd-snapshot "the saved snapshot does not verify; nothing was written"
     return 0
   fi
-  mv "$vws_etcd_part" "$out"
+  if ! ln "$vws_etcd_part" "$out" 2>/dev/null; then
+    vws_emit FAIL etcd-snapshot "${out} appeared during the backup; nothing was overwritten"
+    return 0
+  fi
   vws_emit OK etcd-snapshot "wrote ${out} (0600, revision $(jq -r .revision <<<"$status"), $(jq -r .totalKey <<<"$status") keys)"
 }
 
@@ -68,10 +71,18 @@ vws_etcd_restore() {
     return 0
   fi
   umask 077
-  if ! err=$(etcdutl snapshot restore "$snap" --data-dir "$dir" --name "$name" --initial-advertise-peer-urls "$peer" \
-    --initial-cluster "${cluster:-${name}=${peer}}" --initial-cluster-token vws-etcd 2>&1 >/dev/null); then
-    rm -rf "$dir"
+  # A private staging directory: a failed or interrupted restore removes only its own files.
+  vws_etcd_staging=$(mktemp -d "${dir%/}.XXXXXX") || vws_die_env "cannot write next to ${dir}"
+  # shellcheck disable=SC2154 # vws_results is set by lib/common.sh
+  trap 'rm -rf "$vws_etcd_staging" "$vws_results"' EXIT
+  if ! err=$(etcdutl snapshot restore "$snap" --data-dir "${vws_etcd_staging}/member" --name "$name" \
+    --initial-advertise-peer-urls "$peer" --initial-cluster "${cluster:-${name}=${peer}}" \
+    --initial-cluster-token vws-etcd 2>&1 >/dev/null); then
     vws_emit FAIL etcd-restore "etcdutl snapshot restore failed: $(tail -n 1 <<<"$err")"
+    return 0
+  fi
+  if ! mv -T "${vws_etcd_staging}/member" "$dir" 2>/dev/null; then
+    vws_emit FAIL etcd-restore "${dir} appeared during the restore; nothing was replaced"
     return 0
   fi
   vws_emit OK etcd-restore "restored revision $(jq -r .revision <<<"$status") into ${dir}; start member ${name} on it"
