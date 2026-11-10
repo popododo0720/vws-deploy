@@ -5,6 +5,9 @@ set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 export VWS_VERIFY_INTERVAL=1
+# Fake clock for deadline waits (vws-deploy#704). Unset for the real-clock timeout
+# case and for drain-waits (a background sleep edits the fixture).
+export VWS_VERIFY_NOW=1000000000
 
 scenario() {
   rm -rf "${WORK:?}/$1"
@@ -138,10 +141,12 @@ scenario drain-waits
 jq -n '{kind: "Node", metadata: {name: "node-a"}, spec: {unschedulable: true}}' >"${VWS_FAKE_DIR}/kubectl/get_nodes.json"
 jq -n '{items: [{spec: {nodeName: "node-a", attacher: "rbd.csi.ceph.com", source: {persistentVolumeName: "pv-a"}}, status: {attached: true}},
   {spec: {nodeName: "node-b", attacher: "rbd.csi.ceph.com", source: {persistentVolumeName: "pv-b"}}, status: {attached: true}}]}' >"${VWS_FAKE_DIR}/kubectl/get_volumeattachments.json"
+unset VWS_VERIFY_NOW
 (sleep 2; edit_json get_volumeattachments.json '(.items[] | select(.spec.nodeName == "node-a") | .status.attached) = false') &
 detach_pid=$!
 run_vws_real --strict verify-reboot --drained node-a --timeout 10s; expect_rc "a detach during the wait exits 0" 0
 wait "$detach_pid"
+export VWS_VERIFY_NOW=1000000000
 expect_text "a detach during the wait is OK" "$OUT" "OK    drained  node-a is cordoned and has no RBD volume attached; safe to reboot"
 expect_text "the wait printed the remaining PV name" "$ERR" "vws: drained node-a: 1 RBD volumes still attached: pv-a; waiting up to 10s"
 scenario drain-unreadable
@@ -302,6 +307,15 @@ run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 2s; expect_rc "
 expect_text "the timed-out gate is the first line" "$(first_line)" "FAIL  gate-cni  blocked at gate cni after 2s (timeout)"
 run_vws_real -o json verify-reboot --check "${WORK}/snap.json" --timeout 1s; expect_rc "json timeout exits 3" 3
 if jq -e '.status == "timeout" and .checks[0].name == "gate-cni"' <<<"$OUT" >/dev/null; then ok "json timeout"; else bad "json timeout" "$OUT"; fi
+
+# Real clock still times out (vws-deploy#704). One short case, no VWS_VERIFY_NOW.
+unset VWS_VERIFY_NOW
+t_real=$(date +%s)
+run_vws_real verify-reboot --check "${WORK}/snap.json" --timeout 1s; expect_rc "real-clock timeout exits 3" 3
+t_real=$(($(date +%s) - t_real))
+expect_text "real-clock timeout names the gate" "$(first_line)" "FAIL  gate-cni  blocked at gate cni after 1s (timeout)"
+if (( t_real >= 1 )); then ok "real-clock timeout waited in real time (${t_real}s)"; else bad "real-clock timeout was too fast" "${t_real}s"; fi
+export VWS_VERIFY_NOW=1000000000
 
 scenario service-short
 rebooted

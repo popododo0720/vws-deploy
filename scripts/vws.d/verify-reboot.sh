@@ -25,6 +25,27 @@ VWS_VERIFY_ALLOW_VM_RESTARTS=
 VWS_VERIFY_CEPH_HEALTH_FILE=
 VWS_VERIFY_SKIP_CEPH=
 
+# vws_verify_now / vws_verify_sleep: deadline loops in --check and --drained. When
+# VWS_VERIFY_NOW is a unix-seconds integer, now() returns it and sleep() advances it
+# instead of waiting (tests/vws/verify-reboot.test.sh, vws-deploy#704). Unset, now is
+# date +%s and sleep is the sleep on PATH (unchanged).
+vws_verify_now() {
+  if [[ ${VWS_VERIFY_NOW:-} =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$VWS_VERIFY_NOW"
+  else
+    date +%s
+  fi
+}
+
+vws_verify_sleep() {
+  local n=${1:-0}
+  if [[ ${VWS_VERIFY_NOW:-} =~ ^[0-9]+$ ]]; then
+    VWS_VERIFY_NOW=$((VWS_VERIFY_NOW + n))
+  else
+    sleep "$n"
+  fi
+}
+
 vws_verify_get() { # RESOURCE [ARGS...]: json, or {"items":[]} when it cannot be read
   vws_kubectl get "$@" -o json 2>/dev/null || echo '{"items":[]}'
 }
@@ -155,18 +176,18 @@ vws_verify_drained() {
     vws_emit FAIL drained "${node} is not cordoned: the drain did not run or failed; do not reboot"
     return
   fi
-  deadline=$(($(date +%s) + timeout))
+  deadline=$(($(vws_verify_now) + timeout))
   while :; do
     count=$(jq 'length' <<<"$attached")
     ((count > 0)) || break
     pvs=$(jq -r '[.[].spec.source.persistentVolumeName | select(. != null and . != "")] | join(", ")' <<<"$attached")
     [[ -n $pvs ]] || pvs='(names unavailable)'
-    if (($(date +%s) >= deadline)); then
+    if (($(vws_verify_now) >= deadline)); then
       vws_emit FAIL drained "${node} still has ${count} RBD volumes attached after ${timeout}s: ${pvs}; the drain did not finish; do not reboot"
       return
     fi
     echo "vws: drained ${node}: ${count} RBD volumes still attached: ${pvs}; waiting up to ${timeout}s" >&2
-    sleep "$VWS_VERIFY_INTERVAL"
+    vws_verify_sleep "$VWS_VERIFY_INTERVAL"
     attached=$(vws_kubectl get volumeattachments -o json 2>/dev/null |
       jq -er --arg n "$node" '[.items[] | select(.spec.nodeName == $n and .spec.attacher == "rbd.csi.ceph.com" and .status.attached == true)]') ||
       vws_die_env "cannot read volumeattachments; do not reboot ${node}"
@@ -277,22 +298,22 @@ vws_verify_check() {
   [[ -f $file ]] || vws_usage "${file} does not exist"
   jq -e '.nodes and .services' "$file" >/dev/null 2>&1 || vws_usage "${file} is not a vws verify-reboot snapshot"
   VWS_VERIFY_FILE=$file
-  start=$(date +%s)
+  start=$(vws_verify_now)
   deadline=$((start + timeout))
   for gate in api nodes cni csi bundle services; do
-    t0=$(date +%s)
+    t0=$(vws_verify_now)
     while :; do
       case $gate in
         services) result=$(vws_gate_services "$release") ;;
         *) result=$("vws_gate_${gate}") ;;
       esac
       [[ $result == pass* || $result == fail* ]] && break
-      if (($(date +%s) >= deadline)); then
+      if (($(vws_verify_now) >= deadline)); then
         vws_emit FAIL "gate-${gate}" "blocked at gate ${gate} after ${timeout}s (timeout): ${result#wait }"
         for p in "${passed[@]}"; do vws_emit OK "${p%%=*}" "${p#*=}"; done
         vws_verify_exit 3
       fi
-      sleep "$VWS_VERIFY_INTERVAL"
+      vws_verify_sleep "$VWS_VERIFY_INTERVAL"
     done
     if [[ $result == fail* ]]; then
       vws_emit FAIL "gate-${gate}" "blocked at gate ${gate}: ${result#fail }"
@@ -303,7 +324,7 @@ vws_verify_check() {
       vws_emit WARN "gate-${gate}" "SKIPPED by --skip-ceph-gate: no CephCluster and no --ceph-health-file, Ceph health was NOT checked"
       continue
     fi
-    passed+=("gate-${gate}=passed in $(($(date +%s) - t0))s")
+    passed+=("gate-${gate}=passed in $(($(vws_verify_now) - t0))s")
   done
   for p in "${passed[@]}"; do vws_emit OK "${p%%=*}" "${p#*=}"; done
 
