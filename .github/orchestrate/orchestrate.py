@@ -85,7 +85,7 @@ from orchestrate_rules.common import (  # noqa: E402
     NEEDS_VERIFY, OPT_OUT_LABELS, PART_OF_HINT, PART_OF_RE, STATUS_EVENT_KEY_RE, STATUS_REPO, URL_RE, VERIFY_CHECK,
     SPEC_FIRST_MODES, ac_boxes, ac_own_ticks, ac_recoverable, ac_tick_body, classify_comment, grok_allowlist, grok_busy, grok_held,
     grok_link, grok_owners, head_check_reasons, iso, latest_runs, num, parse_ac, parse_deps, rework_prs, run_order,
-    parse_spec, run_state, scrub, status_target, utc, vws_pr_key, wake_target,
+    parse_spec, run_state, scrub, spec_state, status_target, utc, vws_pr_key, wake_target,
 )
 from orchestrate_rules.hold_release import HOLD_LABEL, held_for, held_for_trusted  # noqa: E402
 from orchestrate_rules.superseded import superseded_numbers  # noqa: E402
@@ -2060,7 +2060,9 @@ def recheck_dispatch(gh, repo, number, item, owner=None, head=None):
 # One-way mirror of labels and bodies to the user project (Projects v2). It writes project items
 # only; decide() never reads the board. Field and option creation stays with board-apply.sh.
 
-BOARD_FIELDS = ("Status", "Owner", "Priority", "Depends on")
+BOARD_FIELDS = ("Status", "Owner", "Priority", "Depends on", "Spec")
+# vws-deploy#348: the Spec field shows spec_state(); every state but these two is Missing.
+BOARD_SPEC = {"ok": "OK", "exempt": "Exempt"}
 BOARD_BATCH = 20  # aliased mutations per GraphQL request
 BOARD_PAUSE = 3  # seconds between write requests (secondary rate limit)
 BOARD_LABELS = ("blocked", "in-review", "deepseek")  # a change to these triggers a sync on the next tick
@@ -2100,8 +2102,19 @@ def board_write_ok(query):
     return True
 
 
-def board_values(it):
-    """The board fields of one open item, from its labels and body only (design table, first match wins)."""
+def board_spec(it, specs, mode):
+    """The Spec field: empty under ORCHESTRATE_SPEC_FIRST=off and for items collect_specs() does not read
+    (PRs, and issues without ready plus deepseek or grok); else OK, Exempt or Missing from spec_state()."""
+    L = set(it["labels"])
+    if mode == "off" or it["is_pr"] or "ready" not in L or not L & {"deepseek", "grok"}:
+        return ""
+    url = parse_spec(it.get("body"))["url"]
+    return BOARD_SPEC.get(spec_state(it, specs.get(url) if url else None), "Missing")
+
+
+def board_values(it, specs=None, spec_mode="off"):
+    """The board fields of one open item, from its labels and body, plus the snapshot's spec reads for Spec
+    (design table, first match wins)."""
     L = set(it["labels"])
     if "blocked" in L:
         status = "Blocked"
@@ -2124,7 +2137,8 @@ def board_values(it):
     else:
         owner = ""
     return {"Status": status, "Owner": owner, "Priority": "Blocker" if "priority/blocker" in L else "Normal",
-            "Depends on": ", ".join(parse_deps(it.get("body"), it["repo"])[0])}
+            "Depends on": ", ".join(parse_deps(it.get("body"), it["repo"])[0]),
+            "Spec": board_spec(it, specs or {}, spec_mode)}
 
 
 def board_due(bstate, every):
@@ -2132,12 +2146,12 @@ def board_due(bstate, every):
     return bool(bstate.get("dirty")) or "last_sync" not in bstate or bstate.get("ticks", 0) + 1 >= every
 
 
-def board_plan(open_items, board_items, budget, scope=""):
+def board_plan(open_items, board_items, budget, scope="", specs=None, spec_mode="off"):
     """Pure diff. open_items: collect() items (open only). board_items: url -> {id, state, values}.
     Returns (mutations within the budget, number deferred). A mutation is a dict with op add|set|clear,
     target, url, field, value and item (a board item id, or None for an item added in the same run).
     Budget order: Status of existing items (closed -> Done included), adds with their Status, Owner and
-    Priority, Depends on. Every mutation sets the computed value, so a cut-off run converges."""
+    Priority, Depends on and Spec. Every mutation sets the computed value, so a cut-off run converges."""
     tiers = [[], [], [], []]
     open_urls = set()
     for key, it in sorted(open_items.items()):
@@ -2145,7 +2159,7 @@ def board_plan(open_items, board_items, budget, scope=""):
             continue
         open_urls.add(it["url"])
         cur = board_items.get(it["url"])
-        want = board_values(it)
+        want = board_values(it, specs, spec_mode)
         have = cur["values"] if cur else {}
         if cur is None:
             tiers[1].append({"op": "add", "target": key, "url": it["url"], "content": it.get("node_id"), "item": None})
@@ -2155,7 +2169,7 @@ def board_plan(open_items, board_items, budget, scope=""):
                 continue  # empty and unset compare equal, so clearing an unset field costs nothing
             m = {"op": "set" if val else "clear", "target": key, "url": it["url"], "field": name, "value": val,
                  "was": was, "item": cur["id"] if cur else None}
-            tier = {"Status": 0 if cur else 1, "Owner": 2, "Priority": 2, "Depends on": 3}[name]
+            tier = {"Status": 0 if cur else 1, "Owner": 2, "Priority": 2, "Depends on": 3, "Spec": 3}[name]
             tiers[tier].append(m)
     for url, cur in sorted(board_items.items()):
         # Fallback for the built-in Done workflows: a closed or merged item not marked Done gets Done.
@@ -2301,7 +2315,8 @@ def _board_sync(gh, snapshot, cfg, paths, log, mode, label_change, bstate, token
             else:
                 open_items = {k: it for k, it in snapshot["items"].items() if it["state"] == "open"}
                 muts, deferred = board_plan(open_items, items, int(num(cfg, "ORCHESTRATE_BOARD_WRITES")),
-                                            cfg["ORCHESTRATE_SCOPE"])
+                                            cfg["ORCHESTRATE_SCOPE"], snapshot.get("specs"),
+                                            cfg["ORCHESTRATE_SPEC_FIRST"])
                 for m in muts:
                     log("board_plan", op=m["op"], target=m["target"], field=m.get("field"), value=m.get("value"),
                         was=m.get("was"))
