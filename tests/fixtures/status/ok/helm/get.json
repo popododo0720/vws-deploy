@@ -7,9 +7,7 @@
     "compute": {
       "cpu": "100m",
       "memory": "256Mi",
-      "state": {
-        "size": "20Gi"
-      }
+      "replicas": 2
     },
     "console": {
       "cpu": "100m",
@@ -18,21 +16,21 @@
     },
     "console-api": {
       "cpu": "100m",
-      "memory": "256Mi",
-      "replicas": 1,
       "flags": {
         "console-origins": "https://console.example.invalid"
-      }
+      },
+      "memory": "256Mi",
+      "replicas": 1
     },
     "network": {
       "cpu": "100m",
-      "memory": "256Mi",
-      "state": {
-        "size": "20Gi"
-      },
       "flags": {
         "pool": "198.18.0.0/24",
         "vm-mtu": 9001
+      },
+      "memory": "256Mi",
+      "state": {
+        "size": "20Gi"
       }
     },
     "storage": {
