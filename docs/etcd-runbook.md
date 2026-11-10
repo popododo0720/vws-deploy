@@ -53,7 +53,7 @@ The tiers follow the design document: T0 is the box (no cluster), T1 is the k3s 
 
 | # | Scenario | Tier | Action | Expected | Check | Recovery time | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Controller killed | T1 | `kubectl -n vws delete pod -l app.kubernetes.io/name=compute --force --grace-period=0` | A new pod starts and converges again through list and watch. Instance state is unchanged | `kubectl -n vws rollout status statefulset/compute`, then compare `kubectl get vm -A` before and after | not measured | unverified |
+| 1 | Controller killed | T1 | `kubectl -n vws delete pod -l app.kubernetes.io/name=compute --force --grace-period=0` | A new pod starts and converges again through list and watch. Instance state is unchanged | `kubectl -n vws rollout status deployment/compute`, then compare `kubectl get vm -A` before and after | not measured | unverified |
 | 2 | Instance recovery after restart | T1 | Reboot a node | VMIs of VMs with `runStrategy: Always` come back and `Halted` VMs stay as they are | `kubectl get vmi -A -w` | not measured | unverified |
 | 3 | Same ClientToken is idempotent | T0, T1 | Call RunInstances twice with the same `ClientToken` | The same instance ID comes back and there is one VM object | `kubectl get vm -A -o name \| wc -l` is 1 | not measured | unverified |
 | 4 | One etcd member lost | T1 (k3s embedded etcd, 3 servers) | Power off one control-plane node | Quorum holds and reads and writes continue | `kubectl create configmap probe-$RANDOM -n vws --from-literal=a=b` succeeds | not measured | unverified |

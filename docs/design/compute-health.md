@@ -21,8 +21,8 @@ services:
     healthPort: 8081
 ```
 
-The render then has env `VWS_HEALTH_ADDR=0.0.0.0:8081`, a `metrics` container port on 8081 and a
-`metrics` port on the headless `compute-peers` Service (not on the external Service, #623), and httpGet probes (`/healthz` for startup and liveness, `/readyz` for readiness). It has
+The render then has env `VWS_HEALTH_ADDR=0.0.0.0:8081`, a `metrics` container port on 8081 (not on
+the external Service, #623; scrapers use the pod IP), and httpGet probes (`/healthz` for startup and liveness, `/readyz` for readiness). It has
 no `prometheus.io` annotations: vws-compute main no longer serves `/metrics`. A service without
 `healthPort` keeps the old tcpSocket or gRPC probes. Wiring an OTLP endpoint is separate work
 (#217).
@@ -34,8 +34,8 @@ same kind of key the chart already uses when an image reads a listener from env.
 derives from it:
 
 - the env value `0.0.0.0:<healthPort>`;
-- the `metrics` container port and the `metrics` port of in-cluster Services (the headless peers
-  Service), never of an external LoadBalancer Service (#623);
+- the `metrics` container port, never a port on an external LoadBalancer Service (#623); an
+  in-cluster Service publishes it when the service is not external;
 - the three probe checks and their paths.
 
 The chart fails when `healthPort` equals `port`, and the schema bounds both to 1024..65535. The
@@ -72,8 +72,8 @@ The compute Service is `external: true`, a LoadBalancer. #621 put the `metrics` 
 the load balancer published `/healthz` and `/readyz` (and `/metrics` on the pinned image) without
 authentication. An `external` Service now never carries the `metrics` port. The kubelet probes the
 container port on the pod IP, and a Prometheus scraper targets pod IPs, so neither needs the load
-balancer. The headless `compute-peers` Service keeps `metrics`, and an in-cluster ClusterIP
-Service with `healthPort` keeps it too.
+balancer. After vws-deploy#723 compute is a Deployment and has no headless peers Service; an
+in-cluster ClusterIP Service with `healthPort` still publishes `metrics` when the service is not external.
 
 | Option | Decision | Reason |
 | --- | --- | --- |
