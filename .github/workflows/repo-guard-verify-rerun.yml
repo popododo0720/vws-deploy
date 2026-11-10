@@ -17,9 +17,10 @@ jobs:
   # re-runs the verify-gate job of the newest pull_request run for the PR's current head; that job reads
   # the comments again. It checks out nothing and runs no PR code. It may only re-run jobs (actions: write)
   # and remove the verify-approved label when it cannot re-run the gate (issues and pull-requests: write).
-  # The job to re-run is the called one, "gate / verify-gate" ("caller job / called job"). The caller's bare
-  # "verify-gate" shim depends on it, so GitHub re-runs the shim after it; re-running only the shim would
-  # replay the old result.
+  # The job to re-run is the called one, "<caller job> / verify-gate" (named "gate" in vws-deploy). The caller's
+  # bare "verify-gate" shim depends on it, so GitHub re-runs the shim after it; re-running only the shim would
+  # replay the old result. The bare name is taken only when no called job is listed: a repo still on the full
+  # copy has its gate under that name, and a shim is listed only after the job it needs (vws-deploy#751).
   verify-rerun:
     if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     runs-on: ubuntu-latest
@@ -126,9 +127,19 @@ jobs:
           # A job that is still running cannot be re-run yet: wait for it (up to 15 minutes), then re-run.
           # The job is looked up again each time: the run's jobs list is its newest attempt, and another re-run
           # can start a newer attempt meanwhile; only a job of the newest attempt can be re-run.
+          # A run that is still queued or starting lists no gate job yet (vws-storage run 42648041338, read 4s
+          # after it was created): wait for it like a running job. Only a finished run without one gives up.
           for _ in $(seq 1 30); do
-            job=$(gh_api_retry "repos/${REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name == "gate / verify-gate") | .id')
-            [[ -n $job ]] || give_up "run ${run} has no verify-gate job"
+            job=$(gh_api_retry "repos/${REPO}/actions/runs/${run}/jobs?per_page=100" --jq \
+              '[.jobs[] | select(.name | endswith(" / verify-gate"))][0].id
+               // [.jobs[] | select(.name == "verify-gate")][0].id // empty')
+            if [[ -z $job ]]; then
+              status=$(gh_api_retry "repos/${REPO}/actions/runs/${run}" --jq '.status')
+              [[ $status != completed ]] || give_up "run ${run} has no verify-gate job"
+              echo "run ${run} lists no verify-gate job yet (status ${status}); waiting"
+              sleep 30
+              continue
+            fi
             status=$(gh_api_retry "repos/${REPO}/actions/jobs/${job}" --jq '.status')
             if [[ $status == completed ]]; then
               if out=$(gh_api_retry -X POST "repos/${REPO}/actions/jobs/${job}/rerun" 2>&1); then
@@ -150,4 +161,4 @@ jobs:
             fi
             sleep 30
           done
-          give_up "verify-gate job ${job} could not be re-run within 15 minutes (status ${status})"
+          give_up "verify-gate job ${job:-of run ${run}} could not be re-run within 15 minutes (status ${status})"
