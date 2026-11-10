@@ -168,13 +168,21 @@ class CommentRerun(unittest.TestCase):
                  '{"id": 88, "pull_requests": [], "head_repository": {"full_name": "fork/r"}, "head_branch": "other"},'
                  '{"id": 55, "pull_requests": [], "head_repository": {"full_name": "fork/r"}, "head_branch": "feat"}]}')
 
-    def gh(self, busy=0, rerun="exit 0", pr=PR, runs=RUNS, jobs="echo 99"):
-        """busy: how many status reads say in_progress. rerun: the POST's body, given the job id in $job."""
+    @staticmethod
+    def jobs_json(*names_ids):
+        """A jobs stub that applies the script's own --jq filter (gh's last arg) to a jobs list."""
+        body = '{"jobs": [%s]}' % ",".join('{"name": "%s", "id": %d}' % ni for ni in names_ids)
+        return "jq -r \"${@: -1}\" <<<'%s'" % body
+
+    def gh(self, busy=0, rerun="exit 0", pr=PR, runs=RUNS, jobs="echo 99", run="echo completed"):
+        """busy: how many status reads say in_progress. rerun: the POST's body, given the job id in $job.
+        run: the body of the run status read."""
         return f"""count() {{ n=$(cat "$0.$1" 2>/dev/null || echo 0); echo $((n + 1)) >"$0.$1"; echo "$n"; }}
 case "$*" in
   "api repos/o/r/pulls/7") echo '{pr}' ;;
   *workflows/repo-guard.yml/runs*) echo '{runs}' ;;
   *runs/55/jobs*) {jobs} ;;
+  "api repos/o/r/actions/runs/55 --jq .status") {run} ;;
   "api repos/o/r/actions/jobs/"*" --jq .status")
      if [ "$(count status)" -lt {busy} ]; then echo in_progress; else echo completed; fi ;;
   *"-X POST"*) job=${{4#repos/o/r/actions/jobs/}}; job=${{job%/rerun}}; {rerun} ;;
@@ -199,9 +207,10 @@ esac"""
     def test_reruns_the_called_gate_job_not_the_shim(self):
         # The caller's bare "verify-gate" shim only reads the result of "gate / verify-gate"; re-running the
         # shim alone would replay the old result, so the called job is the one re-run.
-        rc, calls, out = self.go()
+        rc, calls, out = self.go(jobs=self.jobs_json(("verify-gate", 98), ("gate / verify-gate", 99)))
         self.assertEqual(rc, 0, out)
-        self.assertIn('.name == "gate / verify-gate"', calls)
+        self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
+        self.assertNotIn("jobs/98", calls)
 
     def test_waits_for_running_job_then_reruns(self):
         rc, calls, out = self.go(busy=3)
