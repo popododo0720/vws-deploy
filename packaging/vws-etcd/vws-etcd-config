@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Usage: vws-etcd-config NAME NAME=IPV4[:PEERPORT][,NAME=IPV4[:PEERPORT]...]
+# Prints the etcd config file (etcd --config-file) of member NAME. The member list is the same on every
+# member: the ha profile has three (two global VMs and a witness, which may be a PVE node), the lab and
+# small profiles one. Every listener is https and both the client and the peer port require a
+# certificate from the cluster CA (vws-etcd-tls); the peer port also requires CN vws-etcd-member.
+# The TLS files are read from VWS_ETCD_TLS_DIR (default: the systemd credentials directory of
+# vws-etcd.service). VWS_ETCD_DATA_DIR, VWS_ETCD_CLIENT_PORT and VWS_ETCD_PEER_PORT override the
+# defaults /var/lib/vws-etcd, 2379 and 2380; a PEERPORT in the list overrides the peer port of that member.
+set -euo pipefail
+(($# == 2)) || { echo "usage: vws-etcd-config NAME NAME=IPV4[:PEERPORT][,...]" >&2; exit 2; }
+# shellcheck source=packaging/vws-etcd/members.sh
+source "$(dirname "${BASH_SOURCE[0]}")/members.sh"
+self=$1
+vws_etcd_members "$2"
+tls=${VWS_ETCD_TLS_DIR:-/run/credentials/vws-etcd.service}
+data=${VWS_ETCD_DATA_DIR:-/var/lib/vws-etcd}
+cport=${VWS_ETCD_CLIENT_PORT:-2379}
+pport=${VWS_ETCD_PEER_PORT:-2380}
+for port in "$cport" "$pport"; do
+  if [[ ! $port =~ ^[1-9][0-9]{0,4}$ ]] || ((port > 65535)); then vws_etcd_die "bad port ${port}"; fi
+done
+ip='' peer='' cluster=()
+for i in "${!vws_etcd_names[@]}"; do
+  url="https://${vws_etcd_ips[i]}:${vws_etcd_peer_ports[i]:-$pport}"
+  [[ ${vws_etcd_names[i]} != "$self" ]] || { ip=${vws_etcd_ips[i]}; peer=$url; }
+  cluster+=("${vws_etcd_names[i]}=${url}")
+done
+[[ -n $ip ]] || vws_etcd_die "${self} is not in the member list"
+[[ $peer != *":${cport}" ]] || vws_etcd_die "the client and peer port are the same (${cport})"
+
+cat <<EOF
+name: ${self}
+data-dir: ${data}
+listen-client-urls: https://${ip}:${cport}
+advertise-client-urls: https://${ip}:${cport}
+listen-peer-urls: ${peer}
+initial-advertise-peer-urls: ${peer}
+initial-cluster: $(IFS=,; echo "${cluster[*]}")
+initial-cluster-token: vws-etcd
+initial-cluster-state: new
+auto-compaction-mode: periodic
+auto-compaction-retention: "1h"
+tls-min-version: TLS1.2
+client-transport-security:
+  cert-file: ${tls}/member.crt
+  key-file: ${tls}/member.key
+  trusted-ca-file: ${tls}/ca.crt
+  client-cert-auth: true
+peer-transport-security:
+  cert-file: ${tls}/member.crt
+  key-file: ${tls}/member.key
+  trusted-ca-file: ${tls}/ca.crt
+  client-cert-auth: true
+  allowed-cn: [vws-etcd-member]
+EOF
