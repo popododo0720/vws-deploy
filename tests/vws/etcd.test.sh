@@ -121,8 +121,18 @@ expect_refused "the client certificate is refused on the peer port"
 run_cmd curl -fsS -m 10 --http1.1 --cacert "${TLS}/ca.crt" --cert "${TLS}/b/member.crt" --key "${TLS}/b/member.key" "https://127.0.0.1:${PA}/members"
 expect_rc "a member certificate is served on the peer port" 0
 
-# vws backup --etcd and vws restore --etcd into a fresh member.
+# Power loss of one member: kill -9 b, start it again on the same config and data directory.
 with_client "$CA" etcdctl put /vws/iam/probe restored-value >/dev/null
+kill -9 "${pids[1]}"
+wait "${pids[1]}" 2>/dev/null || true
+pids=("${pids[0]}" "${pids[2]}")
+etcd --config-file "${WORK}/b.yml" >>"${WORK}/b.log" 2>&1 &
+pids+=("$!")
+if wait_healthy "$CB"; then ok "a killed member comes back"; else bad "a killed member comes back" "$(tail -n 5 "${WORK}/b.log")"; fi
+expect_text "the killed member keeps its data" "$(with_client "$CB" etcdctl get --print-value-only /vws/iam/probe)" "restored-value"
+expect_text "the cluster still has three members" "$(with_client "$CA" etcdctl member list | wc -l)" "3"
+
+# vws backup --etcd and vws restore --etcd into a fresh member.
 export ETCDCTL_ENDPOINTS="https://127.0.0.1:${CA}" ETCDCTL_CACERT="${TLS}/client/ca.crt"
 export ETCDCTL_CERT="${TLS}/client/client.crt" ETCDCTL_KEY="${TLS}/client/client.key"
 run_vws_real backup --etcd --out "${WORK}/snap.db";                        expect_rc "vws backup --etcd exits 0" 0
