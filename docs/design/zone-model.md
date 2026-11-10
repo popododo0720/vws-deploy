@@ -7,7 +7,7 @@ AWS documents each Availability Zone as an isolated failure domain: separate pow
 - `platform/rook-ceph-cluster.ha.values.yaml` has one `ceph-blockpool` with `failureDomain: host` and three replicas. `platform/rook-ceph-cluster.single-node.values.yaml` has the same pool with `failureDomain: osd` and one replica. `profiles/small.yaml` uses the chart default pool.
 - Each profile has one `ceph-block` StorageClass with `allowedTopologies: []` and `volumeBindingMode: Immediate`.
 - Nothing in the chart, the platform bundle or the installer sets `topology.kubernetes.io/zone` (or any other zone label) on nodes, and the chart passes no zone list to any service. vws-storage admits volumes only in its `-zones` list (default `vws-1a`) and records the zone as a PVC annotation (vws-storage `docs/decisions/0001-zone-and-pvc-topology.md`).
-- vws-compute does not place a VM by zone. It refuses to attach a volume from another zone (`checkAttachments`), but with a generic invalid-argument error, not the EBS `InvalidVolume.ZoneMismatch` code. That error-code gap is tracked in popododo0720/vws-compute#167 and popododo0720/vws-console-api#531.
+- vws-compute does not place a VM by zone. It refuses a volume from another zone at create and at attach (`checkAttachments`, `validateVolumes`) with gRPC `INVALID_ARGUMENT` and ErrorInfo metadata `aws_code=InvalidVolume.ZoneMismatch` (popododo0720/vws-compute#168, merged). vws-console-api does not map that code to the EC2 response yet; that is tracked in popododo0720/vws-console-api#531.
 
 ## Decision
 
@@ -43,7 +43,7 @@ At that point, vws-storage `docs/decisions/0001-zone-and-pvc-topology.md` (revis
 | A zone is an isolated failure domain (power, network, facility) | **Gap.** All zones in a VWS cluster share one failure domain. A cluster-wide outage affects every zone. |
 | Spreading instances or volumes across zones protects against a zone outage | **Gap.** Placing resources in different VWS zones gives no extra availability. Use the `ha` profile for host redundancy. |
 | `CreateVolume` requires a known `AvailabilityZone` | Supported (vws-storage admission, unknown zone is refused). This record does not check which EC2 error code the refusal maps to. |
-| `AttachVolume` refuses a volume in another zone with `InvalidVolume.ZoneMismatch` | **Partial.** vws-compute `checkAttachments` refuses the attach, but returns a generic invalid-argument error, and vws-console-api has no `InvalidVolume.ZoneMismatch` mapping. Tracked in popododo0720/vws-compute#167 and popododo0720/vws-console-api#531. |
+| `AttachVolume` refuses a volume in another zone with `InvalidVolume.ZoneMismatch` | **Partial.** vws-compute refuses the attach and tags the error `aws_code=InvalidVolume.ZoneMismatch` (popododo0720/vws-compute#168), but vws-console-api has no mapping for that code yet, so EC2 callers do not see it. Tracked in popododo0720/vws-console-api#531. |
 
 Users who need protection from a full outage must run a second VWS cluster and replicate data themselves; VWS has no cross-cluster replication.
 
