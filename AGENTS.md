@@ -30,6 +30,7 @@ This repository holds only the deployment artifacts of the VWS private cloud. Th
 | R24 | A production render refuses placeholder values: the RFC 5737 IPv4 ranges `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24` and addresses in them, `2001:db8::/32` (RFC 3849) and addresses in it, the RFC 2606 domains (also bare `localhost` and the trailing-dot form such as `x.test.`), and display strings such as `CHANGE_ME`, `changeme`, `TODO` and `<...>`. Development and lab renders keep them. The only profiles are `dev` and `production`; any other `--profile` (such as `prod` or `Production`) fails closed with an error. The failure names the key and the value | `scripts/check_render.py` `scripts/guard.sh` `docs/service-config.md` | `scripts/guard.sh placeholders` `scripts/guard.sh all` |
 | R25 | `observability.enabled` (default false) is the only telemetry switch; off renders no `OTEL_*`, `SENTRY_*` or `VWS_LOG_LEVEL` env and no collector. A service's telemetry env equals `observability.defaults` with its `services.<name>.observability` override (same keys, schema-enforced), and no service gets a `VWS_*` env outside the allowlist in `scripts/check_render.py`. OTLP headers and the Sentry DSN come only by secretKeyRef. The minimal collector renders only with an empty `otlpEndpoint`, has no API token, Role or binding and mounts only its ConfigMap; its config and `docs/observability/collector-examples/` pass `otelcol-contrib validate` at `OTELCOL_VERSION` | `charts/vws/values.yaml` `charts/vws/values.schema.json` `charts/vws/templates/_helpers.tpl` `charts/vws/templates/control-plane.yaml` `scripts/versions.env` | `scripts/guard.sh observability` |
 | R26 | Installer packages keep their layers: a package imports only the module packages its entry in `layers` lists, and a new package adds an entry. Only `internal/cluster` imports `os/exec` or Kubernetes client types, and no production code imports std `log` or `testing` | `installer/internal/archtest/arch_test.go` `.github/workflows/ci.yml` | `scripts/guard-agents.sh archtest` (ci installer job) `scripts/guard.sh agents` |
+| R27 | A DeepSeek or grok task is dispatched only when its issue has an `## Acceptance criteria` section with checkbox items and a `Spec:` line: a draft PR or non-main commit by Grok (`Spec-by: grok`) whose test fails on CI, or `Spec: exempt (<reason>)` with a listed reason. `ORCHESTRATE_SPEC_FIRST` (`off`, `warn` or `enforce`) switches it; only `enforce` holds a task. `spec_state()` and `spec_gate()` in `common.py` decide it | `.github/orchestrate/rules/common.py` `.github/orchestrate/rules/dispatch.py` `.github/orchestrate/rules/grok.py` | `scripts/guard.sh agents` (runs `tests/orchestrate/test_spec_first.py` and the SpecFirst class of `tests/orchestrate/test_decide.py`) |
 
 The structure and enforcer cells point at real paths and real commands. A rule that is only a sentence is not a rule. `scripts/guard-agents.sh rules` reads the last column as the enforcer and prints how many rows say `Judgment` (a rule with no check).
 
@@ -62,6 +63,17 @@ After changing the files above, review that diff adversarially before asking for
 ### correct
 
 When the same mistake repeats, do not write more sentences. First change the structure so the bad state cannot be expressed, then add a failing check, and only then update the table. The check must actually fail on an input that contains the mistake. A fix that only edits the table is not a rule change.
+
+## Spec first
+
+A task is specified before it is implemented. Grok writes the acceptance criteria in the issue
+(measurable: a command, a test name, a status and error code with the AWS doc URL, or a number) and,
+where feasible, a failing test as a draft PR or branch commit with the trailer `Spec-by: grok`, linked
+from the issue as `Spec: <url>`. The implementer keeps that commit unchanged and makes it pass. When a
+separate failing test is not practical, the issue says `Spec: exempt (<reason>): <why>` with a reason
+from R27 (`docs`, `ci`, `config`, `revert`, `live-only`, `test-in-ac`). The implementer never writes or
+edits its own spec. Questions about the spec go to the issue, not into the code. The orchestrator side
+is in `docs/factory-orchestrator.md` ("Spec first").
 
 ## /correct loop
 
