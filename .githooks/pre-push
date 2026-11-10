@@ -1,6 +1,8 @@
 #!/bin/sh
-# R1: refuse to publish main or master, and refuse a force-push: an update of an
-# existing remote branch must fast-forward it (vws-deploy#449).
+# R1: refuse to publish main or master. A non-fast-forward update of a topic
+# branch is allowed only when the current remote head exists locally (the
+# --force-with-lease=<branch>:<old-head> case, vws-deploy#752). Main and master
+# stay blocked. A push over an unknown remote SHA is still refused.
 zero=0000000000000000000000000000000000000000
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
@@ -11,9 +13,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   esac
   [ "$local_sha" = "$zero" ] && continue
   [ "$remote_sha" = "$zero" ] && continue
-  if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-    echo "R1: refusing a force-push to ${remote_ref}: ${local_sha} does not fast-forward ${remote_sha}; add new commits or rebuild as a new -vN branch" >&2
-    exit 1
+  if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    continue
   fi
+  if git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    echo "R1: allowing a non-fast-forward push to ${remote_ref} (old head ${remote_sha}, new head ${local_sha}). AGENTS.md: only your own PR branch, only git push --force-with-lease=<branch>:<old-head>, every commit must build and pass tests, and the PR must name both heads." >&2
+    continue
+  fi
+  echo "R1: refusing a force-push to ${remote_ref}: ${local_sha} does not fast-forward ${remote_sha} and the remote head is not a local commit; add new commits or rebuild as a new -vN branch" >&2
+  exit 1
 done
 exit 0

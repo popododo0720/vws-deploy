@@ -244,16 +244,18 @@ cmd_hooks() {
     { rm -rf "$repo"; die "R1: pre-push refused a new branch"; }
   (cd "$repo" && printf '%s\n' "(delete) $zero refs/heads/topic $next" | "$hook" >/dev/null) ||
     { rm -rf "$repo"; die "R1: pre-push refused a branch deletion"; }
-  set +e
-  (cd "$repo" && printf '%s\n' "refs/heads/topic $side refs/heads/topic $next" | "$hook" >/dev/null 2>&1)
-  rc=$?
-  set -e
-  [[ $rc -ne 0 ]] || { rm -rf "$repo"; die "R1: pre-push accepted a force-push (non-fast-forward)"; }
+  (cd "$repo" && printf '%s\n' "refs/heads/topic $side refs/heads/topic $next" | "$hook" >/dev/null 2>&1) ||
+    { rm -rf "$repo"; die "R1: pre-push refused a non-fast-forward push of a topic branch whose old head exists locally"; }
   set +e
   (cd "$repo" && printf '%s\n' "refs/heads/topic $next refs/heads/topic 1111111111111111111111111111111111111111" | "$hook" >/dev/null 2>&1)
   rc=$?
   set -e
   [[ $rc -ne 0 ]] || { rm -rf "$repo"; die "R1: pre-push accepted a push over an unknown remote head"; }
+  set +e
+  (cd "$repo" && printf '%s\n' "refs/heads/main $side refs/heads/main $next" | "$hook" >/dev/null 2>&1)
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || { rm -rf "$repo"; die "R1: pre-push accepted a non-fast-forward push to main"; }
   rm -rf "$repo"
   local tmp
   tmp=$(mktemp)
