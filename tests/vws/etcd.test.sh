@@ -121,16 +121,48 @@ expect_refused "the client certificate is refused on the peer port"
 run_cmd curl -fsS -m 10 --http1.1 --cacert "${TLS}/ca.crt" --cert "${TLS}/b/member.crt" --key "${TLS}/b/member.key" "https://127.0.0.1:${PA}/members"
 expect_rc "a member certificate is served on the peer port" 0
 
+# Defrag: one member at a time, followers first, the leader last; a rerun is the same.
+run_cmd "${PKG}/vws-etcd-defrag" extra;                                   expect_rc "defrag with an argument exits 2" 2
+ETCDCTL_ENDPOINTS="http://127.0.0.1:${CA}" run_cmd "${PKG}/vws-etcd-defrag"; expect_rc "defrag of an http endpoint exits 2" 2
+leader=$(with_client "$CA" etcdctl endpoint status --cluster -w table | awk -F'|' '/ true /{gsub(/ /, "", $2); print $2}')
+for run in first second; do
+  run_cmd with_client "$CA" "${PKG}/vws-etcd-defrag";                      expect_rc "the ${run} defrag exits 0" 0
+  expect_text "the ${run} defrag does every member" "$(grep -c '^vws-etcd: defragmented https://' <<<"$OUT")" "3"
+  expect_text "the ${run} defrag does the leader last" "$(tail -n 1 <<<"$OUT" | awk '{print $3}')" "$leader"
+done
+
+# Check: only /vws/iam/ and /vws/admin/ keys, each value at most MAX_BYTES; values are never printed.
+with_client "$CA" etcdctl put /vws/admin/regions/pve-1 '{"name":"pve-1"}' >/dev/null
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check";                         expect_rc "a clean store passes the check" 0
+expect_text "the check counts the keys" "$OUT" "1 keys, all under /vws/iam/ or /vws/admin/"
+with_client "$CA" etcdctl put /vws/compute/i-1 instance-state-secret >/dev/null
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check";                         expect_rc "a key outside the allowed prefixes fails" 1
+expect_text "the check names the stray key" "$ERR" 'outside /vws/iam/ and /vws/admin/: "/vws/compute/i-1" (21 bytes)'
+expect_text "the check never prints a value" "$(grep -c instance-state-secret <<<"${OUT}${ERR}" || true)" "0"
+with_client "$CA" etcdctl del /vws/compute/i-1 >/dev/null
+head -c 65536 /dev/zero | tr '\0' a | with_client "$CA" etcdctl put /vws/iam/Policy/at-limit >/dev/null
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check";                         expect_rc "a value of exactly the limit passes" 0
+head -c 65537 /dev/zero | tr '\0' a | with_client "$CA" etcdctl put /vws/iam/Policy/over >/dev/null
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check";                         expect_rc "a value over the limit fails" 1
+expect_text "the check names the large key" "$ERR" 'over 65536 bytes: "/vws/iam/Policy/over" (65537 bytes)'
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check" 70000;                   expect_rc "MAX_BYTES raises the limit" 0
+with_client "$CA" etcdctl del --prefix /vws/ >/dev/null
+run_cmd with_client "$CA" "${PKG}/vws-etcd-check" 0;                       expect_rc "MAX_BYTES 0 exits 2" 2
+ETCDCTL_COMMAND_TIMEOUT=3s run_cmd with_client "$PX" "${PKG}/vws-etcd-check"; expect_rc "a failed read exits 1" 1
+
 # Power loss of one member: kill -9 b, start it again on the same config and data directory.
 with_client "$CA" etcdctl put /vws/iam/probe restored-value >/dev/null
 kill -9 "${pids[1]}"
 wait "${pids[1]}" 2>/dev/null || true
 pids=("${pids[0]}" "${pids[2]}")
+run_cmd with_client "$CA" "${PKG}/vws-etcd-defrag";                        expect_rc "defrag with a member down exits 1" 1
+expect_text "defrag with a member down touches nothing" "$(grep -c 'defragmented https' <<<"$OUT" || true)" "0"
 etcd --config-file "${WORK}/b.yml" >>"${WORK}/b.log" 2>&1 &
 pids+=("$!")
 if wait_healthy "$CB"; then ok "a killed member comes back"; else bad "a killed member comes back" "$(tail -n 5 "${WORK}/b.log")"; fi
 expect_text "the killed member keeps its data" "$(with_client "$CB" etcdctl get --print-value-only /vws/iam/probe)" "restored-value"
 expect_text "the cluster still has three members" "$(with_client "$CA" etcdctl member list | wc -l)" "3"
+run_cmd with_client "$CA" "${PKG}/vws-etcd-defrag";                        expect_rc "defrag after the member restarts exits 0" 0
 
 # vws backup --etcd and vws restore --etcd into a fresh member.
 export ETCDCTL_ENDPOINTS="https://127.0.0.1:${CA}" ETCDCTL_CACERT="${TLS}/client/ca.crt"
