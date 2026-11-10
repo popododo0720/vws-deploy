@@ -212,6 +212,58 @@ esac"""
         self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
         self.assertNotIn("jobs/98", calls)
 
+    def test_called_job_under_another_caller_name(self):
+        """vws-deploy#751 AC1: a caller may name its job other than "gate"; "<caller> / verify-gate" is re-run."""
+        rc, calls, out = self.go(jobs=self.jobs_json(("verify-gate", 98), ("guard / verify-gate", 97)))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X POST repos/o/r/actions/jobs/97/rerun", calls)
+        self.assertNotIn("jobs/98", calls)
+
+    def test_full_copy_gate_has_the_bare_name(self):
+        """vws-deploy#751 AC1: a repo on the full copy has only the bare "verify-gate" job; that one is re-run."""
+        rc, calls, out = self.go(jobs=self.jobs_json(("pr-hygiene", 96), ("verify-gate", 98)))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X POST repos/o/r/actions/jobs/98/rerun", calls)
+        self.assertNotIn("DELETE", calls)
+
+    def test_run_without_jobs_yet_waits_then_reruns(self):
+        """vws-deploy#751: vws-storage run 42648041338 was read 4s after it was created and listed no gate job,
+        so the label was dropped. A run that is not finished is now waited for; the label stays."""
+        full = self.jobs_json(("gate / verify-gate", 99), ("verify-gate", 98))
+        empty = self.jobs_json()
+        jobs = f'if [ "$(count jobs)" -lt 2 ]; then {empty}; else {full}; fi'
+        rc, calls, out = self.go(jobs=jobs, run="echo queued")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("-X POST repos/o/r/actions/jobs/99/rerun", calls)
+        self.assertEqual(calls.count("api repos/o/r/actions/runs/55 --jq .status"), 2)
+        self.assertNotIn("DELETE", calls)
+        self.assertIn("lists no verify-gate job yet (status queued); waiting", out)
+
+    def test_finished_run_without_gate_job_drops_the_label(self):
+        """vws-deploy#751 AC2: a finished run with no gate job cannot be re-run; the label goes at once."""
+        rc, calls, out = self.go(jobs=self.jobs_json(("pr-hygiene", 96)))
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertEqual(calls.count("runs/55/jobs"), 1)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("run 55 has no verify-gate job", out)
+
+    def test_run_that_never_lists_a_gate_job_drops_the_label(self):
+        """vws-deploy#751 AC2: the wait is bounded; a run stuck without a gate job drops the label after it."""
+        rc, calls, out = self.go(jobs=self.jobs_json(), run="echo in_progress")
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertEqual(calls.count("runs/55/jobs"), 30)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("verify-gate job of run 55 could not be re-run within 15 minutes", out)
+
+    def test_run_status_read_failure_drops_the_label(self):
+        rc, calls, out = self.go(jobs=self.jobs_json(), run='echo "gh: Server Error (HTTP 502)" >&2; exit 1')
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("POST", calls)
+        self.assertIn("-X DELETE repos/o/r/issues/7/labels/verify-approved", calls)
+        self.assertIn("lookup failed", out)
+
     def test_waits_for_running_job_then_reruns(self):
         rc, calls, out = self.go(busy=3)
         self.assertEqual(rc, 0, out)
