@@ -15,9 +15,10 @@ umask 077
 mkdir -p "$dir"
 file="${dir}/vws-etcd-$(date -u +%Y%m%dT%H%M%SZ).db"
 [[ ! -e $file ]] || { echo "vws-etcd: ${file} exists" >&2; exit 1; }
-trap 'rm -f "${file}.part"' EXIT
-ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s} etcdctl snapshot save "${file}.part" >/dev/null || { echo "vws-etcd: snapshot save failed" >&2; exit 1; }
-mv "${file}.part" "$file"
+part=$(mktemp "${file}.XXXXXX.part")
+trap 'rm -f "$part"' EXIT
+ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s} etcdctl snapshot save "$part" >/dev/null || { echo "vws-etcd: snapshot save failed" >&2; exit 1; }
+ln "$part" "$file" || { echo "vws-etcd: ${file} appeared during the save; nothing was replaced" >&2; exit 1; }
 echo "vws-etcd: wrote ${file}"
 mapfile -t old < <(find "$dir" -maxdepth 1 -type f -name 'vws-etcd-*Z.db' -printf '%f\n' | sort | head -n "-${keep}")
 for name in "${old[@]}"; do

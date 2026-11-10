@@ -9,7 +9,8 @@
 # The CN split matters: peers accept only CN vws-etcd-member (peer allowed-cn in vws-etcd-config),
 # so a leaked client certificate cannot join the cluster as a member.
 # An existing CA and existing directories are kept, so a rerun with one more member only adds that
-# member. Keys are 0600 (umask 077). Each directory appears complete or not at all.
+# member. Keys are 0600 (umask 077). Each directory appears complete or not at all. A second run on the
+# same OUTDIR while one is running exits 1 (OUTDIR/.lock), so two runs cannot make two CAs.
 set -euo pipefail
 (($# == 2)) || { echo "usage: vws-etcd-tls OUTDIR NAME=IPV4[:PEERPORT][,...]" >&2; exit 2; }
 # shellcheck source=packaging/vws-etcd/members.sh
@@ -19,6 +20,8 @@ vws_etcd_members "$2"
 command -v openssl >/dev/null || { echo "vws-etcd: openssl is not on PATH" >&2; exit 3; }
 umask 077
 mkdir -p "$out"
+exec 9>"$out/.lock"
+flock -n 9 || { echo "vws-etcd: another vws-etcd-tls is writing ${out}" >&2; exit 1; }
 work=$(mktemp -d "${out}/.work.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
