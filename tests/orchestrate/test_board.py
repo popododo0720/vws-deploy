@@ -1,6 +1,8 @@
 """board_sync plan tests for .github/orchestrate/orchestrate.py (vws-deploy#347).
 Run: python3 -m unittest discover -s tests/orchestrate"""
+import os
 import re
+import tempfile
 import unittest
 
 from orch_testlib import U, orch
@@ -192,6 +194,77 @@ class Guard(unittest.TestCase):
             with self.subTest(k=k):
                 with self.assertRaises(ValueError):
                     orch.load_config(orch.Paths({"ORCHESTRATE_CONFIG_DIR": "/nonexistent"}), {k: v})
+
+
+class SpecField(unittest.TestCase):
+    """vws-deploy#348: the Spec field mirrors spec_state() for the tasks collect_specs() reads."""
+    AC = "## Acceptance criteria\n- [ ] one\n"
+    PR = f"{U}/vws-iam/pull/9"
+
+    def spec(self, body, labels=("ready", "deepseek"), is_pr=False, specs=None, mode="warn"):
+        return orch.board_values(item("vws-iam", 1, labels, is_pr, body=body), specs, mode)["Spec"]
+
+    def test_states_map_to_ok_exempt_missing(self):
+        red, green = {self.PR: {"ci": "failing"}}, {self.PR: {"ci": "success"}}
+        cases = [
+            ("", None, "Missing"),  # missing_ac
+            (self.AC, None, "Missing"),  # missing_spec
+            (self.AC + "Spec: exempt (docs): only docs\n", None, "Exempt"),
+            (self.AC + "Spec: exempt (lazy): no\n", None, "Missing"),  # bad_exempt
+            (self.AC + f"Spec: {self.PR}\n", red, "OK"),
+            (self.AC + f"Spec: {self.PR}\n", green, "Missing"),  # spec_not_red
+            (self.AC + f"Spec: {self.PR}\n", {self.PR: {"unreadable": True}}, "Missing"),
+            (self.AC + f"Spec: {self.PR}\n", None, "Missing"),  # not read: spec_unreadable
+        ]
+        for body, specs, want in cases:
+            for mode in ("warn", "enforce"):
+                with self.subTest(body=body, mode=mode):
+                    self.assertEqual(self.spec(body, specs=specs, mode=mode), want)
+
+    def test_empty_when_off_or_not_a_spec_task(self):
+        body = self.AC + "Spec: exempt (docs): only docs\n"
+        self.assertEqual(self.spec(body, mode="off"), "")
+        self.assertEqual(self.spec(body, labels=("ready", "grok")), "Exempt")
+        for labels, is_pr in ((("ready",), False), (("deepseek",), False), (("ready", "deepseek"), True)):
+            with self.subTest(labels=labels, is_pr=is_pr):
+                self.assertEqual(self.spec(body, labels=labels, is_pr=is_pr), "")
+
+    def test_off_plans_no_spec_write(self):
+        its = items(item("vws-iam", 1, ("ready", "deepseek")))
+        muts, _ = orch.board_plan(its, {}, 50)
+        self.assertNotIn("Spec", {m.get("field") for m in muts})
+
+    def test_plan_sets_spec_last_and_converges(self):
+        its = items(item("vws-iam", 1, ("ready", "deepseek")))
+        muts, _ = orch.board_plan(its, {}, 50, spec_mode="enforce")
+        self.assertEqual((muts[-1]["field"], muts[-1]["value"]), ("Spec", "Missing"))
+        board = {its["vws-iam#1"]["url"]: {"id": "PVTI_1", "state": "OPEN", "values": {
+            m["field"]: m["value"] for m in muts if m["op"] == "set"}}}
+        self.assertEqual(orch.board_plan(its, board, 50, spec_mode="enforce"), ([], 0))
+        muts, _ = orch.board_plan(its, board, 50)  # back to off: the stale value is cleared
+        self.assertEqual([(m["op"], m["field"]) for m in muts], [("clear", "Spec")])
+
+    def test_sync_passes_snapshot_specs_and_mode(self):
+        body = self.AC + f"Spec: {self.PR}\n"
+        snap = {"items": items(item("vws-iam", 1, ("ready", "deepseek"), body=body)),
+                "specs": {self.PR: {"ci": "failing"}}}
+        url = snap["items"]["vws-iam#1"]["url"]
+        values = dict(orch.board_values(snap["items"]["vws-iam#1"]), Spec="Missing")
+        board = {url: {"id": "PVTI_1", "state": "OPEN", "values": {k: v for k, v in values.items() if v}}}
+        logged = []
+        cfg = dict(orch.DEFAULTS, ORCHESTRATE_SPEC_FIRST="warn")
+        fields = {n: {"id": f"F{n}", "options": {}} for n in orch.BOARD_FIELDS}
+        orig = orch.board_read
+        orch.board_read = lambda gh, project: (fields, board, 5000)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                paths = type("P", (), {"board_file": os.path.join(d, "board.json"), "stop": os.path.join(d, "STOP")})()
+                orch._board_sync(type("G", (), {"board_token": None})(), snap, cfg, paths,
+                                 lambda kind, **kw: logged.append((kind, kw)), "dry-run", False, {}, "t")
+        finally:
+            orch.board_read = orig
+        self.assertIn(("board_plan", {"op": "set", "target": "vws-iam#1", "field": "Spec", "value": "OK",
+                                      "was": "Missing"}), logged)
 
 
 if __name__ == "__main__":
