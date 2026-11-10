@@ -722,6 +722,47 @@ if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws --set service
 else
   bad "iam: schema allows three replicas" "$(cat "${WORK}/iam-r3.err")"
 fi
+
+# #723: compute is a stateless Deployment; replicas default to 2, stay configurable, and keep a PDB and spread.
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" >"${WORK}/compute-default.out"
+python3 - "${WORK}/compute-default.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+w = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "compute")
+pdb = next(d for d in docs if d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "compute")
+spread = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert w["spec"]["replicas"] == 2, w["spec"]["replicas"]
+assert pdb["spec"]["maxUnavailable"] == 1, pdb["spec"]
+assert spread and spread[0]["whenUnsatisfiable"] == "ScheduleAnyway" and spread[0]["maxSkew"] == 1, spread
+assert spread[0]["topologyKey"] == "kubernetes.io/hostname", spread
+PY
+ok "compute: default render is two replicas, PDB, soft topology spread"
+helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" -f "${VWS_TEST_ROOT}/profiles/ha.yaml" >"${WORK}/compute-ha.out"
+python3 - "${WORK}/compute-ha.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+w = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "compute")
+spread = w["spec"]["template"]["spec"]["topologySpreadConstraints"]
+assert w["spec"]["replicas"] == 2, w["spec"]["replicas"]
+assert spread and spread[0]["whenUnsatisfiable"] == "DoNotSchedule", spread
+PY
+ok "compute: ha profile keeps two replicas and hard topology spread"
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.compute.replicas=3 >"${WORK}/compute-r3.out" 2>"${WORK}/compute-r3.err"; then
+  python3 - "${WORK}/compute-r3.out" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+w = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "compute")
+assert w["spec"]["replicas"] == 3, w["spec"]["replicas"]
+PY
+  ok "compute: replicas=3 renders a three-replica Deployment"
+else
+  bad "compute: replicas=3 renders a three-replica Deployment" "$(cat "${WORK}/compute-r3.err")"
+fi
+if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set services.compute.replicas=1 >/dev/null 2>"${WORK}/compute-r1.err"; then
+  bad "compute: one replica rendered" "exit 0"
+else
+  ok "compute: schema refuses one replica"
+fi
 if helm template vws "${VWS_TEST_ROOT}/charts/vws" --namespace vws -f "${VWS_TEST_ROOT}/charts/vws/ci/site.yaml" --set-string services.console-api.flags.iam=grpc >/dev/null 2>"${WORK}/iam-off.err"; then
   bad "iam listeners: grpc with iam disabled rendered" "exit 0"
 else
