@@ -624,8 +624,8 @@ orchestrator only reads it:
   line, which stays `@deepseek-dev please take this issue ...` for the poller. A grok-wake gets the same line.
 - vws-verify checks the implementer's PR against the spec (the spec commit is an ancestor of the head and
   unchanged, carries `Spec-by: grok`, and its test passes); that is verify's checklist, not code here.
-- Not done yet: the board `Spec` field (the board-sync series) and the box switch to `warn`, then
-  `enforce` after the rollout bar in vws-deploy#348.
+- The board's `Spec` field shows the same state, so a held task is visible (see "Board sync").
+- Not done yet: the box switch to `warn`, then `enforce` after the rollout bar in vws-deploy#348.
 
 ## Infra retries (provider errors)
 
@@ -677,13 +677,18 @@ board is overwritten on the next sync. Design: vws-deploy#347.
   tick after a planned change of `blocked`, `in-review` or `deepseek`. Cadence state is
   `~/.local/state/vws-orchestrate/board.json`. The STOP file, a GraphQL `rateLimit.remaining` below
   `ORCHESTRATE_RATE_FLOOR` (read in the same query) and `ORCHESTRATE_SCOPE` are respected.
-- **What.** Status, Owner, Priority and Depends on, per the mapping in `board_values()`; open items not
+- **What.** Status, Owner, Priority, Depends on and Spec, per the mapping in `board_values()`; open items not
   on the board are added; board items whose issue or PR is closed or merged and not Done get Done
   (fallback for the built-in workflows). Rank and Agent are never touched. Fields and options are
   not created; a missing one is a `board_sync_error` (run `board-apply.sh`).
+- **Spec (vws-deploy#348).** A single-select field with options `OK`, `Exempt` and `Missing`. For an open
+  `ready` issue with `deepseek` or `grok` it is `OK` for state `ok`, `Exempt` for `exempt`, and `Missing`
+  for every other `spec_state()`. It is empty for every other item and whenever `ORCHESTRATE_SPEC_FIRST`
+  is `off`, so `off` plans no Spec write on a board that never had the field. Create the field before the
+  box sets `warn`, or every sync fails with `board_sync_error`.
 - **Writes.** Only `addProjectV2ItemById`, `updateProjectV2ItemFieldValue` and
   `clearProjectV2ItemFieldValue`, at most `ORCHESTRATE_BOARD_WRITES` (50) per sync, in aliased batches of
-  20 with a 3 s pause. Order: Status of existing items, adds with Status, Owner and Priority, Depends on;
+  20 with a 3 s pause. Order: Status of existing items, adds with Status, Owner and Priority, Depends on and Spec;
   the rest waits for the next sync. `Gh.graphql` refuses any query but the board read and any
   mutation that is not built verbatim from the three templates (values travel only as variables). It
   never writes issues, labels, comments or repos.
