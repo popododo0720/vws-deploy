@@ -120,23 +120,6 @@ the workflow YAML; see "Known gaps" in docs/QUALITY.md. It is a required check o
 judges and labels; a script merges only after that, under the rule above. Test it locally
 with `scripts/guard-agents.sh verify-gate <sha> <labels> <file>`.
 
-Codex review result attached, no blocking findings: the same section must have a line
-`Codex review: <full path or URL> blocking=<N>`, and the gate passes only with `blocking=0`.
-Missing line: "no Codex review"; N > 0: "Codex review has N blocking findings"; no absolute path
-or http(s) URL: "Codex review needs a full path or URL". Path rule:
-`/workspace/handoff/codex/<repo>-<pr>-<sha7>.md`, for example
-`Codex review: /workspace/handoff/codex/vws-deploy-301-7d994a0.md blocking=0`.
-Standard commands: per PR `codex review --base <PR base branch>` (usually `main`); per commit
-`codex review --commit <SHA>`. Save the output under the path rule, for example
-`codex review --base main > /workspace/handoff/codex/vws-deploy-123-abc1234.md`. `blocking=<N>` is
-the number of blocking findings in that saved review for the head being verified; the Verified-by
-line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
-Fix the findings and re-run on the new head until N is 0.
-Codex rounds are capped per PR: at most 3 rounds (`CODEX_ROUND_CAP`) per PR, counted as unique heads
-reviewed; a retry of the same head counts once, and a new PR for the same issue starts at 0
-(vws-deploy#579, which supersedes the per-issue cap of #403).
-`scripts/codex-round-count.sh` keeps the count in `/workspace/handoff/codex/rounds.tsv` (local files
-only; the issue column is for reporting) and refuses the 4th round on a PR; then split the work or
-move the rest to issues. It fails closed: a
-missing, unreadable or corrupt index, or a review file not in the index, stops the review (exit 2)
-until `init` and `backfill` fix it.
+Code review is Kodus (owner, 2026-11-11): it reviews every push on the PR, and the factory posts PASS
+only when no critical or high Kodus finding is open on the head. The Verified-by section needs no review
+line.
