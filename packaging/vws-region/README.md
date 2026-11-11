@@ -47,11 +47,19 @@ One failed request removes readiness; keepalived supplies bounded repeat probes.
 ## Helper permission boundary
 
 Only root owns the installed helper and sudoers policy. The writes without a name
-and `token-read` have exact argument matches. Wildcards occur only after `lock`, `unlock`,
-`snippet-write` and `snippet-delete`: these operations require a name, and the
-helper rejects extra arguments, path separators and invalid names before opening
-its fixed roots. Sudo wildcards alone do not validate names. The helper bounds
-stdin to 1 MiB and receives contents there, never in arguments.
+and `token-read` have exact argument matches. Named operations use anchored POSIX
+extended regexes over the complete verb-and-name argument string, with no globs.
+`lock` and `unlock` require a 1-64 character name starting with an ASCII letter
+or digit and containing only ASCII letters, digits, underscores and hyphens.
+Snippet operations require `vws-<lowercase-hex UUID>-user.yaml`, matching the
+helper's exact grammar. Empty names, extra words and traversal are denied by
+sudo before the helper runs. The helper independently validates names and bounds
+stdin to 1 MiB; contents are passed there, never in arguments.
+
+Argument regexes require sudo 1.9.10 or newer, declared in the package dependency.
+Debian 12 bookworm (PVE 8) supplies sudo 1.9.13p3 and satisfies this minimum.
+`test-install.sh` tests the installed policy with real Debian sudo, allowing
+valid names and denying empty, extra, traversal, overlength and malformed input.
 
 Sudo strips `CREDENTIALS_DIRECTORY`; the helper uses its fixed root-owned
 `/etc/vws/credentials/region-kek` fallback and checks ownership and permissions.
