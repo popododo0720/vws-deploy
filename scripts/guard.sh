@@ -1451,6 +1451,7 @@ cmd_bootstrap() {
 secrets_check() {
   python3 - "$1" <<'PY'
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1481,12 +1482,15 @@ for rel in rels:
                 continue
             if not logical:
                 start = number
-            logical += line
+            logical += line.rstrip()
             if logical.endswith("\\"):
                 logical = logical[:-1] + " "
                 continue
             match = env_line.match(logical)
-            if match and (match[1] == "EnvironmentFile" or secret_key.search(match[2])):
+            if match and (match[1] == "EnvironmentFile" or any(
+                secret_key.search(assignment.partition("=")[0])
+                for assignment in shlex.split(match[2]) if "=" in assignment
+            )):
                 print(f"R10: {rel}:{start} {match[1]}= may carry a secret; use LoadCredential=", file=sys.stderr)
                 failed = True
             logical = ""
@@ -1503,6 +1507,14 @@ cmd_secrets() {
   printf '[Service]\nLoadCredential=pve-token:/etc/vws/pve-token\nEnvironment=VWS_LOG_LEVEL=info\n' > "$tmp/packaging/vws.service"
   git -C "$tmp" add packaging
   secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: a clean unit was rejected"; }
+  printf '[Service]\nEnvironment=VWS_MODE=token-free "VWS_PATH=/srv/secret files" '\''VWS_LABEL=private data'\''\n' > "$tmp/packaging/vws.service"
+  secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: harmless secret-looking environment values were rejected"; }
+  printf '[Service]\nEnvironment=VWS_MODE=dev "DB_PASSWORD=x y"\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a later quoted secret assignment was accepted"; }
+  printf '[Service]\nEnvironment=VWS_MODE=dev '\''API_KEY=x y'\''\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a single-quoted secret assignment was accepted"; }
+  printf '[Service]\nEnvironment=VWS_MODE=dev \\ \t\n DB_PASSWORD=x\n' > "$tmp/packaging/vws.service"
+  ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a continued secret after trailing whitespace was accepted"; }
   printf '[Service]\nEnvironment=PVE_TOKEN=x\n' > "$tmp/packaging/vws.service"
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a unit with a secret Environment= was accepted"; }
   printf '[Service]\nEnvironment="DB_PASSWORD=x"\n' > "$tmp/packaging/vws.service"
