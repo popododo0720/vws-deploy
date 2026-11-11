@@ -48,22 +48,6 @@ One commit is one change. Only `scripts/scopes` says which path belongs to which
 
 Open a pull request with its body passed through `scripts/guard-agents.sh pr-normalize`, for example `gh pr create --body-file <(scripts/guard-agents.sh pr-normalize pr.md)`, and check it with `scripts/guard-agents.sh pr-body pr.md` first. `pr-normalize` rewrites a line `Part of popododo0720/vws-x#N` to `Part of vws-x#N`, the form the orchestrator's Rule D merges, and leaves everything else byte for byte. `pr-body` (the pr-hygiene check) fails on any line that starts with `Part of <owner>/<repo>#N` and names the allowed forms, `Part of #N` and `Part of vws-<repo>#N` (vws-deploy#504).
 
-## Using pstack
-
-Design and review go in the order below. Model choice follows the user's pstack rules; do not write model names in this file.
-
-### architect
-
-Design first, before changing a surface that takes values or the way things render. The files in question are `charts/vws/values.schema.json`, `charts/vws/templates/control-plane.yaml` and `charts/vws/templates/_helpers.tpl`. Record the chosen and rejected options in `docs/design/`. If the implementation departs from that design, write down why in the same record.
-
-### interrogate
-
-After changing the files above, review that diff adversarially before asking for review. Do not apply every finding automatically; fix only the ones that break behaviour or drop a recovery invariant.
-
-### correct
-
-When the same mistake repeats, do not write more sentences. First change the structure so the bad state cannot be expressed, then add a failing check, and only then update the table. The check must actually fail on an input that contains the mistake. A fix that only edits the table is not a rule change.
-
 ## Spec first
 
 A task is specified before it is implemented. Grok writes the acceptance criteria in the issue
@@ -83,7 +67,7 @@ is in `docs/factory-orchestrator.md` ("Spec first").
 4. The milestone report (to tmp) lists the number of incidents in the period and the checks promoted.
 5. The `incident` label is defined in `.github/labels.yml` (the only definition). That file is only a definition and does not create the label on GitHub. `scripts/guard-agents.sh correct` checks this section and its body, the required fields of the form and the label definition.
 
-## Way of working (poteto-mode)
+## Way of working
 
 - Write concisely and solve with the smallest code change. Do not add abstraction layers; delete them when you can.
 - Decide the shape of the data before writing code. When the same mistake shows up twice, block it with structure or a check instead of a sentence.
