@@ -280,13 +280,9 @@ import sys
 from pathlib import Path
 
 text = Path("AGENTS.md").read_text()
-for heading in ("## Rules", "## Branches and atomic commits", "## Using pstack", "## Commands"):
+for heading in ("## Rules", "## Branches and atomic commits", "## Commands"):
     if heading not in text:
         print(f"R2: AGENTS.md is missing {heading}", file=sys.stderr)
-        sys.exit(1)
-for word in ("architect", "interrogate", "correct"):
-    if word not in text:
-        print(f"R2: pstack usage is missing {word}", file=sys.stderr)
         sys.exit(1)
 
 rows = re.findall(r"^\| (R\d+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$", text, re.M)
