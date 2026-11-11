@@ -27,20 +27,8 @@ main.
   author and whoever last added the label must both be in it.
 - The PR author and the head commit's pusher can neither label nor approve, unless the login
   is the vws-verify identity in the repo variable `VWS_VERIFY_IDENTITY`.
-- **Codex review result attached, no blocking findings.** The same section has
-  `Codex review: <full path or URL> blocking=<N>` and N is 0. The location is an absolute path
-  or an http(s) URL; the path rule is `/workspace/handoff/codex/<repo>-<pr>-<sha7>.md`.
-  The gate fails with "no Codex review" (line missing), "Codex review has N blocking findings"
-  (N > 0) or "Codex review needs a full path or URL". This is not a tenth checklist item; the
-  nine items above are unchanged.
-- Standard commands: per PR `codex review --base <PR base branch>` (usually `main`); per commit
-  `codex review --commit <SHA>`. Save the output under the path rule, for example
-  `codex review --base main > /workspace/handoff/codex/vws-deploy-123-abc1234.md`. `blocking=<N>` is
-  the number of blocking findings in that saved review for the head being verified; the Verified-by
-  line points at that file, e.g. `Codex review: /workspace/handoff/codex/vws-deploy-123-abc1234.md blocking=0`.
-  Fix the findings and re-run on the new head until N is 0.
-- Codex review is capped at 3 rounds per PR (unique heads, `scripts/codex-round-count.sh`); a new
-  PR for the same issue starts at 0. This supersedes the per-issue cap of vws-deploy#403 (#579).
+- Code review is Kodus (owner, 2026-11-11): it reviews every push on the PR, and vws-verify posts PASS
+  only when no critical or high Kodus finding is open on the head. The section needs no review line.
 
 ```
 Verified-by: vws-verify
@@ -49,7 +37,6 @@ Head: <full 40-character head SHA>
 2. tests/vws/run.sh log: build/verify/run.log
 ...
 9. N/A: no user-visible change
-Codex review: /workspace/handoff/codex/vws-deploy-301-7d994a0.md blocking=0
 ```
 
 A push changes the head, so the old section stops counting and the gate turns red.
