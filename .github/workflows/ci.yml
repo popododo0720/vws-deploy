@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  region-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate package and Debian lifecycle
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
+            apt-get update
+            apt-get install -y --no-install-recommends git python3 lintian shellcheck sudo curl
+            packaging/vws-region/test.sh
+            mkdir -p build
+            printf "#!/bin/sh\nexit 0\n" > build/region-stub
+            chmod +x build/region-stub
+            packaging/vws-region/build.sh 0.0.0-1 build/region-stub build/region-stub build
+            packaging/vws-region/test-install.sh /src/build/vws-region_0.0.0-1_amd64.deb
+          '
+
   check:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,8 @@
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper registration-write
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper token-write
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper token-read
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper lease-write
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper lock *
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper unlock *
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper snippet-write *
+vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper snippet-delete *

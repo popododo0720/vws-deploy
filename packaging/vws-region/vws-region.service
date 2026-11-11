@@ -1,0 +1,22 @@
+[Unit]
+Description=VWS Proxmox region API
+After=network-online.target pve-cluster.service pveproxy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vws-region
+Group=vws-region
+SupplementaryGroups=www-data
+LoadCredential=region-kek:/etc/vws/credentials/region-kek
+LoadCredential=region-key:/etc/vws/region.key
+ExecStart=/usr/bin/vws-region -config /etc/vws/region.yaml -registration-file /etc/pve/vws/registration.json -tls-key-file %d/region-key -ops-addr 127.0.0.1:8083
+Restart=on-failure
+RestartSec=5s
+MemoryMax=512M
+CPUQuota=50%
+UMask=0027
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
