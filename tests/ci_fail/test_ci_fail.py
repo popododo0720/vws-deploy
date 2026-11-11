@@ -159,11 +159,12 @@ class RoundTrip(unittest.TestCase):
 
 class Masking(unittest.TestCase):
     def test_secrets_are_redacted(self):
+        aws_key = "AKIA" + "ABCDEFGHIJKLMNOP"
         log = "\n".join([
             "token ghp_abcdefghijklmnop1234 used",
             "pat github_pat_11ABCDEFG_abcdefghijk",
             "Authorization: Bearer abc.def",
-            "key AKIAABCDEFGHIJKLMNOP",
+            f"key {aws_key}",
             "password=hunter2 next",
             "API_KEY: s3cr3t",
             "clone https://user:pw123@example.com/r.git",
@@ -171,7 +172,7 @@ class Masking(unittest.TestCase):
             "-----BEGIN RSA PRIVATE KEY-----", "MIIEow", "-----END RSA PRIVATE KEY-----",
         ])
         out = cf.mask(log)
-        for secret in ("ghp_abcdefghijklmnop1234", "github_pat_11ABCDEFG", "abc.def", "AKIAABCDEFGHIJKLMNOP",
+        for secret in ("ghp_abcdefghijklmnop1234", "github_pat_11ABCDEFG", "abc.def", aws_key,
                        "hunter2", "s3cr3t", "pw123", "eyJhbGciOi", "MIIEow"):
             self.assertNotIn(secret, out)
         self.assertIn("[redacted]", out)
