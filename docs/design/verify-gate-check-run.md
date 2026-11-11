@@ -6,7 +6,7 @@ Two verify-gate models run today.
 
 - vws-deploy and every repo that calls `repo-guard-verify-gate.yml` (the comment model). The gate
   needs the `verify-approved` label and a PR comment with a `Verified-by: vws-verify` section that names
-  the head SHA, has evidence for the 9 docs/QUALITY.md items and a `Codex review: ... blocking=0` line.
+  the head SHA, has evidence for the 9 docs/QUALITY.md items. No review line is needed: Kodus reviews the PR (2026-11-11).
   The job walks every comment and every labeled event over GraphQL, then reads the head pusher.
 - vws-conformance (its own `repo-guard.yml` on `pull_request_target`, guard sha256 `7070d89b...`, from
   vws-conformance#3, the check-run model). The gate needs the label, a labeler in a nonempty
