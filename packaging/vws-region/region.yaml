@@ -1,0 +1,23 @@
+read_only: true
+default_project: default
+pools:
+  default: vws-default
+storages:
+  gp3: local-lvm
+snippets_storage: local
+default_bridge: vmbr0
+subnets: {}
+templates:
+  pool: vws-templates
+  tag: vws-image
+instance_types:
+  vws.small:
+    cores: 2
+    memory_mib: 2048
+scheduler:
+  policy: spread
+  host_reserve_mib: 2048
+  mem_overcommit: 1.0
+  cpu_overcommit: 4.0
+linked_clones: false
+live_tests: false
