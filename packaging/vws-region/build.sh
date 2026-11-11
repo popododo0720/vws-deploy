@@ -50,7 +50,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: VWS maintainers <maintainers@vws.cloud>
-Depends: adduser, curl, sudo, init-system-helpers (>= 1.65.2), systemd (>= 252)
+Depends: adduser, curl, sudo (>= 1.9.10), init-system-helpers (>= 1.65.2), systemd (>= 252)
 Recommends: keepalived
 Homepage: https://github.com/popododo0720/vws-deploy
 Description: Proxmox region API for VWS

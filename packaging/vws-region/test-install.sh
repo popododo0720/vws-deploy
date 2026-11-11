@@ -20,6 +20,40 @@ test "$(stat -c '%u:%g:%a' /etc/vws/credentials)" = 0:0:700
 test ! -e /etc/vws/credentials/region-kek
 test "$(stat -c %a /etc/sudoers.d/vws-region)" = 440
 visudo -c -f /etc/sudoers.d/vws-region
+sudo_version=$(dpkg-query -W -f='${Version}' sudo)
+dpkg --compare-versions "$sudo_version" ge 1.9.10
+printf 'Debian sudo version: %s\n' "$sudo_version"
+python3 - <<'PY'
+import subprocess
+
+helper = "/usr/lib/vws/vws-region-helper"
+fixed = ("registration-write", "token-write", "token-read", "lease-write")
+cases = [(True, (verb,)) for verb in fixed]
+cases += [(False, (verb, "extra")) for verb in fixed]
+cases += [(False, ()), (False, ("unknown",))]
+for verb in ("lock", "unlock"):
+    cases += [(True, (verb, name)) for name in ("a", "A0_-", "a" * 64)]
+    cases += [(False, (verb, name)) for name in
+              ("", "../escape", "valid extra", "valid/name", "-bad", "_bad",
+               "a" * 65, "valid\n", "\u00e9")]
+    cases += [(False, (verb,)), (False, (verb, "valid", "extra"))]
+snippet = "vws-01234567-89ab-cdef-0123-456789abcdef-user.yaml"
+for verb in ("snippet-write", "snippet-delete"):
+    cases.append((True, (verb, snippet)))
+    cases += [(False, (verb, name)) for name in
+              ("", "../" + snippet, "wrong.yaml", snippet.upper(),
+               snippet.replace(".yaml", "Xyaml"), snippet + " extra", snippet + "\n")]
+    cases += [(False, (verb,)), (False, (verb, snippet, "extra"))]
+for allowed, args in cases:
+    result = subprocess.run(
+        ["runuser", "-u", "vws-region", "--", "sudo", "-n", "-l", helper, *args],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode in (0, 1), (args, result.stderr)
+    assert (result.returncode == 0) == allowed, (args, result.stdout, result.stderr)
+    print(f"sudo {'ALLOW' if allowed else 'DENY'} {args!r}")
+print(f"real Debian sudo authorization: {len(cases)} cases passed")
+PY
 /var/lib/dpkg/info/vws-region.postinst configure
 printf 'unsafe' > /etc/vws/credentials/region-kek
 chmod 0644 /etc/vws/credentials/region-kek

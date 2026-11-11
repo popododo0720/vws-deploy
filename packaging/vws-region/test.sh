@@ -22,6 +22,14 @@ if python3 "$src/check-policy.py" "$tmp/broad-sudoers"; then
     echo "broadened sudoers accepted" >&2
     exit 1
 fi
+for arguments in 'lock *' 'lock [a-z]+' '^lock [a-z]+' 'lock [a-z]+$'; do
+    printf 'vws-region ALL=(root) NOPASSWD: /usr/lib/vws/vws-region-helper %s\n' \
+        "$arguments" > "$tmp/pattern-sudoers"
+    if python3 "$src/check-policy.py" "$tmp/pattern-sudoers"; then
+        echo "unsafe argument pattern accepted: $arguments" >&2
+        exit 1
+    fi
+done
 mkdir -p "$tmp/guard/scripts" "$tmp/guard/packaging/vws-region"
 cp "$root/scripts/guard.sh" "$tmp/guard/scripts/"
 cp "$src/vws-region.service" "$tmp/guard/packaging/vws-region/"
