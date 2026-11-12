@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # vws: one command for deploying and operating VWS. One file per command in scripts/vws.d/.
 # Usage: scripts/vws [flags] <command> [args]. Design: vws-deploy#43. Details: docs/vws-cli.md.
+# Disable tracing before argument parsing: even refused secret arguments must stay private.
+set +x
 set -euo pipefail
 
 VWS_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
