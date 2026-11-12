@@ -317,7 +317,7 @@ cmd_cursor() {
 }
 
 cmd_bundle() {
-  if grep -nE '^(KUBEVIRT|CDI|MULTUS|KUBEOVN|ROOK|CSI_DRIVER_NFS|KUBECONFORM)_' scripts/versions.env docs/image-pins.md; then
+  if grep -nE '^(KUBEVIRT|CDI|MULTUS|KUBEOVN|ROOK|CSI_DRIVER_NFS|KUBECONFORM|ENVTEST|LAB_VM)_' scripts/versions.env docs/image-pins.md; then
     die "R12: retired Kubernetes bundle and validator pins must not return"
   fi
 }
@@ -745,7 +745,67 @@ cmd_observability() {
   done
 }
 
+chart_refs_check() {
+  python3 - "$1" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+pattern = "charts/"
+tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout
+failed = False
+pattern_seen = False
+for rel in tracked.split("\0"):
+    if not rel:
+        continue
+    if pattern in rel:
+        print(f"R28: retired chart path {rel}", file=sys.stderr)
+        failed = True
+    path = root / rel
+    if not path.is_file():
+        continue
+    for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        if rel == "scripts/guard.sh" and not pattern_seen and line.strip() == 'pattern = "' + pattern + '"':
+            pattern_seen = True
+            continue
+        if pattern in line:
+            print(f"R28: {rel}:{number}: retired chart reference", file=sys.stderr)
+            failed = True
+sys.exit(1 if failed else 0)
+PY
+}
+
+cmd_no_charts() {
+  [[ ! -e charts ]] || die "R28: retired chart directory must not return"
+  chart_refs_check . || die "R28: retired chart references must not return"
+  local tmp retired=charts
+  tmp=$(mktemp -d)
+  git -C "$tmp" init -q
+  mkdir -p "$tmp/scripts"
+  cp scripts/guard.sh "$tmp/scripts/guard.sh"
+  git -C "$tmp" add scripts/guard.sh
+  chart_refs_check "$tmp" || { rm -rf "$tmp"; die "R28: the guard pattern was rejected"; }
+  printf '%s/vws\n' "$retired" >> "$tmp/scripts/guard.sh"
+  ! chart_refs_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R28: a seeded reference in the guard was accepted"; }
+  cp scripts/guard.sh "$tmp/scripts/guard.sh"
+  printf 'pattern = "%s/"\n' "$retired" >> "$tmp/scripts/guard.sh"
+  ! chart_refs_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R28: a duplicate guard pattern was accepted"; }
+  cp scripts/guard.sh "$tmp/scripts/guard.sh"
+  printf '%s/other\n' "$retired" > "$tmp/reference.md"
+  git -C "$tmp" add reference.md
+  ! chart_refs_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R28: a seeded reference was accepted"; }
+  rm "$tmp/reference.md"
+  git -C "$tmp" add -u
+  mkdir "$tmp/$retired"
+  : > "$tmp/$retired/retired.yaml"
+  git -C "$tmp" add "$retired"
+  ! chart_refs_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R28: a tracked retired path was accepted"; }
+  rm -rf "$tmp"
+}
+
 cmd_all() {
+  cmd_no_charts
   cmd_layout
   cmd_assets
   cmd_ci
@@ -767,7 +827,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|assets|ci|cursor|agents|bundle|observability|vws|bootstrap|hooks|docs|english|secrets|commits|commit-msg|all>
+usage: guard.sh <layout|assets|ci|cursor|agents|bundle|no-charts|observability|vws|bootstrap|hooks|docs|english|secrets|commits|commit-msg|all>
 EOF
 }
 
@@ -780,6 +840,7 @@ case "$command_name" in
   cursor) cmd_cursor ;;
   agents) cmd_agents ;;
   bundle) cmd_bundle ;;
+  no-charts) cmd_no_charts ;;
   observability) cmd_observability ;;
   vws) cmd_vws ;;
   bootstrap) cmd_bootstrap ;;
