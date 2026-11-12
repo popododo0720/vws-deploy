@@ -1,4 +1,5 @@
-# verify-gate: red unless vws-verify approved the current head (below). The guard script comes from the base commit.
+# verify-gate: red unless vws-verify approved the current head. The guard comes from the base branch tip, so
+# merged guard changes reach every open PR on its next run; the PR head is never checked out with a token.
 # One of the four shared repo-guard jobs (vws-deploy#402), one job per file: GitHub validates the permissions
 # of every job in a called file before any if:, so a file holds only jobs its caller job may grant.
 # Every vws-* repo calls it from a short .github/workflows/repo-guard.yml pinned by full commit SHA;
@@ -26,12 +27,13 @@ jobs:
   # approve, unless the login is the vws-verify identity (repo variable VWS_VERIFY_IDENTITY).
   # Limits (docs/QUALITY.md "Known gaps"): in other repos this YAML is fixed at the pinned vws-deploy commit,
   # but a PR CAN edit its caller (the pin or the shim); drift-check reports that after the fact. In vws-deploy
-  # a PR can edit this file too. The guard script is taken from the caller's base commit, which stops a PR
-  # from quietly weakening the script. All bots share one account, so the actor check cannot tell vws-verify
+  # a PR can edit this file too. The guard comes from the base branch tip, so merged changes reach every open
+  # PR on its next run. The PR head is never checked out with a token, which would run PR-controlled
+  # code. All bots share one account, so the actor check cannot tell vws-verify
   # from the PR author.
   # API budget (#573): no verify-approved label is one labels read. With the label, comments,
   # labeled events and the committer are one GraphQL query, and the pusher is one activity read
-  # that retries a rate limit. Issue events are not walked. The guard script stays the base commit.
+  # that retries a rate limit. Issue events are not walked. The guard comes from the base branch tip.
   verify-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -44,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
       - name: Approved for this head
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,7 +60,7 @@ jobs:
           GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}
         run: |
           set -euo pipefail
-          # Inlined from .github/gh-api-retry.sh. This step checks out the caller base, so it cannot source that file.
+          # Inlined from .github/gh-api-retry.sh. This step uses a token, so it checks out the base tip, never the PR head.
           # BEGIN gh-api-retry
           gh_api_rate_limited() {
             local file=$1
@@ -138,7 +140,7 @@ jobs:
           rname=${REPO#*/}
           # GraphQL comments are the issue comments (oldest first). A later page is fetched only when
           # hasNextPage is set. Labeled events are the newest window, not every issue event.
-          bundle_query='query($owner:String!, $name:String!, $number:Int!, $sha:GitObjectID!) {
+          bundle_query=$'query($owner:String!, $name:String!, $number:Int!, $sha:GitObjectID!) {
             repository(owner:$owner, name:$name) {
               pullRequest(number:$number) {
                 comments(first:100) {
@@ -154,7 +156,7 @@ jobs:
             }
           }
           # vg-bundle'
-          comments_query='query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+          comments_query=$'query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
             repository(owner:$owner, name:$name) {
               pullRequest(number:$number) {
                 comments(first:100, after:$cursor) {
@@ -165,7 +167,7 @@ jobs:
             }
           }
           # vg-comments'
-          labels_query='query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
+          labels_query=$'query($owner:String!, $name:String!, $number:Int!, $cursor:String!) {
             repository(owner:$owner, name:$name) {
               pullRequest(number:$number) {
                 timelineItems(last:100, before:$cursor, itemTypes:[LABELED_EVENT]) {

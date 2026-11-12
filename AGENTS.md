@@ -115,7 +115,7 @@ There are two supported entry points.
 body) with a `Verified-by: vws-verify` section that names the PR head SHA, with evidence for each
 docs/QUALITY.md item. A push voids the approval. The PR author and the head pusher cannot approve
 unless they are the vws-verify identity. The gate runs under `pull_request` (never
-`pull_request_target`) and uses the guard script from the base commit, but the PR can still edit
+`pull_request_target`) and uses the guard script from the current tip of the base branch, but the PR can still edit
 the workflow YAML; see "Known gaps" in docs/QUALITY.md. It is a required check on main. vws-verify
 judges and labels; a script merges only after that, under the rule above. Test it locally
 with `scripts/guard-agents.sh verify-gate <sha> <labels> <file>`.
