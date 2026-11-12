@@ -18,6 +18,7 @@ shellcheck "$src/build.sh" "$src/check-ready" "$src/postinst" "$src/prerm" \
     "$src/postrm" "$src/test.sh" "$src/test-install.sh"
 /usr/sbin/visudo -c -f "$src/sudoers"
 python3 "$src/check-policy.py" "$src/sudoers"
+python3 "$src/test-policy.py" "$src/check-policy.py" "$src/sudoers" "$tmp"
 printf 'vws-region ALL=(root) NOPASSWD: ALL\n' > "$tmp/broad-sudoers"
 /usr/sbin/visudo -c -f "$tmp/broad-sudoers"
 if python3 "$src/check-policy.py" "$tmp/broad-sudoers"; then
@@ -34,15 +35,18 @@ for arguments in 'lock *' 'lock [a-z]+' '^lock [a-z]+' 'lock [a-z]+$'; do
 done
 mkdir -p "$tmp/guard/scripts" "$tmp/guard/packaging/vws-region"
 cp "$root/scripts/guard.sh" "$tmp/guard/scripts/"
-cp "$src/vws-region.service" "$tmp/guard/packaging/vws-region/"
-printf '\n[Service]\nEnvironment=REGION_TOKEN=canary\n' >> \
-    "$tmp/guard/packaging/vws-region/vws-region.service"
 git -C "$tmp/guard" init -q
+cp "$src/vws-region.service" "$tmp/guard/packaging/vws-region/"
 git -C "$tmp/guard" add packaging
-if bash "$tmp/guard/scripts/guard.sh" secrets; then
-    echo "secret in unit Environment accepted" >&2
-    exit 1
-fi
+bash "$tmp/guard/scripts/guard.sh" secrets
+for secret in 'Environment=REGION_TOKEN=canary' 'PVEAPIToken''=canary'; do
+    cp "$src/vws-region.service" "$tmp/guard/packaging/vws-region/"
+    printf '\n%s\n' "$secret" >> "$tmp/guard/packaging/vws-region/vws-region.service"
+    if bash "$tmp/guard/scripts/guard.sh" secrets; then
+        echo "secret in packaged unit accepted" >&2
+        exit 1
+    fi
+done
 if "$src/build.sh" bad_version "$tmp/stub" "$tmp/stub" "$tmp"; then
     echo "invalid version accepted" >&2
     exit 1
