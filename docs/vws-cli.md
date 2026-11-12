@@ -56,6 +56,66 @@ It never reaches a cluster or the network. It puts the fake `kubectl` and `helm`
 
 ## Commands
 
+### vws region
+
+`vws region add NAME`, `edit NAME`, `remove NAME --yes`, `list`, `show NAME`,
+`test NAME`, and `health NAME` use the console admin API. Set `VWS_API_URL`
+to its HTTPS origin and supply a console bearer token through
+`VWS_API_TOKEN_FILE` (preferred) or `VWS_API_TOKEN` in the environment.
+HTTP is accepted only on loopback for local testing. Needs curl and python3.
+
+Add requires `--cluster-name`, `--pve-api-url`, `--token-id`,
+`--region-endpoint`, and `--token-secret-file PATH|-`. Optional `--ca-pem-file`
+reads PEM certificates, and `--zones` takes a JSON array of
+`{"letter":"a","nodes":["node1"]}` objects (defaults to `[]` on add).
+Edit accepts the same options, all optional; omitted fields stay unchanged.
+Test takes only an optional `--token-secret-file PATH|-`; without it the API
+skips PVE checks because only the region daemon retains the saved secret.
+
+```bash
+export VWS_API_URL=https://console.example.org
+export VWS_API_TOKEN_FILE="$HOME/.config/vws/console-token"
+scripts/vws region add pve-test-1 --cluster-name lab \
+  --pve-api-url https://pve.example.org:8006 --token-id 'root@pam!vws' \
+  --region-endpoint https://region.example.org --token-secret-file -
+scripts/vws region test pve-test-1
+scripts/vws region edit pve-test-1 --zones '[{"letter":"a","nodes":["node1"]}]'
+```
+
+Each operation makes one API call, except edit: GET reads the current ETag,
+then PATCH sends only supplied fields with `If-Match`. A concurrent change
+returns `Conflict` (exit 1); inspect the record before editing again.
+Remove sends DELETE without `If-Match`. Writes and tests are never retried.
+GET retries transient failures at most twice with bounded backoff; each curl
+attempt has a 20-second deadline and the whole call a 65-second deadline.
+`--dry-run` prints the method and path without authentication or a request.
+
+Text lists name, cluster name, PVE API URL, region endpoint, token ID,
+secret metadata (`set · fingerprint`), and zones. Health prints status, quorum,
+leader, online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
+1 on any FAIL, including with `-o json`. JSON output passes the API JSON through
+(DELETE 204 has no body). A 403 prints the command's missing `vws:Admin*`
+permission and requestId, and exits 3. Other API errors print code, message and
+requestId: invalid arguments exit 2, authentication/unavailability exit 3,
+and other failures exit 1.
+
+Secrets never go on argv: `--token-secret` and `--external-id`, including
+`=value`, are usage errors. File secrets and stdin strip trailing newlines;
+token and request body reach curl through a private header file and stdin.
+The dispatcher disables xtrace before parsing arguments so rejected secrets
+cannot enter trace output. Registration changes go only through the API.
+
+### vws aws-account
+
+`vws aws-account add ID`, `edit ID`, `remove ID --yes`, and `list` use
+`/api/v1/admin/aws-accounts` with the same credentials, output modes, timeouts,
+edit ETag sequence and exit codes as `vws region`.
+ID is the 12-digit AWS account ID. Add requires `--role-arn`,
+`--allowed-regions us-east-1,eu-west-1`, and `--external-id-file PATH|-`.
+Edit accepts those options and sends only supplied fields.
+Text prints the AWS account ID, role ARN, external ID metadata and allowed
+regions. `vws aws-account test` is pending on vws-console-api#923.
+
 ### vws help
 
 Shows the command list, common flags and exit codes. With `-o json`, one entry per command. Needs no cluster tools.
