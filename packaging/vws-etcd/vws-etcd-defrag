@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Usage: vws-etcd-defrag
+# What the defrag timer runs: defragments every member of the cluster in ETCDCTL_ENDPOINTS one at a
+# time, followers first and the leader last. A member stops serving while it defragments, so one at a
+# time keeps quorum, and the leader goes last so the one leader change a defrag may cause comes after
+# every follower is done.
+# It starts only when every member is healthy and stops at the first member that is not healthy after
+# its defrag. A rerun, also after an interrupted run, defragments every member again; that is safe.
+# etcdctl reads ETCDCTL_ENDPOINTS (one https URL of any member), ETCDCTL_CACERT, ETCDCTL_CERT and
+# ETCDCTL_KEY (the vws-etcd-tls client certificate); ETCDCTL_COMMAND_TIMEOUT bounds each call (default 60s).
+# Exit 2 on bad arguments, 1 when a member is unhealthy or a defrag fails.
+set -euo pipefail
+(($# == 0)) || { echo "usage: vws-etcd-defrag" >&2; exit 2; }
+[[ ${ETCDCTL_ENDPOINTS:-} =~ ^https://[^,]+$ ]] || { echo "vws-etcd: ETCDCTL_ENDPOINTS must be one https URL" >&2; exit 2; }
+export ETCDCTL_COMMAND_TIMEOUT=${ETCDCTL_COMMAND_TIMEOUT:-60s}
+fail() { echo "vws-etcd: $*" >&2; exit 1; }
+
+etcdctl endpoint health --cluster >/dev/null 2>&1 || fail "a member is not healthy; nothing was defragmented"
+status=$(etcdctl endpoint status --cluster --hex -w json) || fail "endpoint status failed; nothing was defragmented"
+# Followers in URL order, then the leader.
+mapfile -t order < <(jq -r '[.[] | {e: .Endpoint, l: (.Status.header.member_id == .Status.leader)}]
+  | sort_by(.l, .e) | .[].e' <<<"$status")
+((${#order[@]} > 0)) || fail "the cluster lists no member"
+[[ $(jq '[.[] | select(.Status.header.member_id == .Status.leader)] | length' <<<"$status") == 1 ]] ||
+  fail "the cluster has no single leader; nothing was defragmented"
+
+for url in "${order[@]}"; do
+  before=$(jq -r --arg e "$url" '.[] | select(.Endpoint == $e) | .Status.dbSize' <<<"$status")
+  ETCDCTL_ENDPOINTS=$url etcdctl defrag >/dev/null || fail "defrag of ${url} failed; the rest were not defragmented"
+  ETCDCTL_ENDPOINTS=$url etcdctl endpoint health >/dev/null 2>&1 ||
+    fail "${url} is not healthy after its defrag; the rest were not defragmented"
+  after=$(ETCDCTL_ENDPOINTS=$url etcdctl endpoint status -w json | jq -r '.[0].Status.dbSize') ||
+    fail "endpoint status of ${url} failed after its defrag; the rest were not defragmented"
+  echo "vws-etcd: defragmented ${url} (${before} -> ${after} bytes)"
+done

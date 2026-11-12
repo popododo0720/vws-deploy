@@ -10,6 +10,8 @@ The peer port also requires CN `vws-etcd-member`, so a client certificate cannot
 | `vws-etcd-tls OUTDIR LIST` | operator host | CA, one `ca.crt`/`member.crt`/`member.key` directory per member, one client directory; a rerun only adds new members |
 | `vws-etcd-config NAME LIST` | each member | prints the etcd config file of member `NAME`; TLS files come from the systemd credentials of `vws-etcd.service` |
 | `vws-etcd-snapshot DIR KEEP` | one member (backup timer) | saves `DIR/vws-etcd-<UTC>.db` and keeps the newest `KEEP` |
+| `vws-etcd-defrag` | one global VM (weekly timer) | defragments every member one at a time, followers first and the leader last, only when all are healthy |
+| `vws-etcd-check [MAX_BYTES]` | operator host | fails on a key outside `/vws/iam/` and `/vws/admin/` or a value over `MAX_BYTES` (default 65536) |
 
 `LIST` is the same everywhere: `NAME=IPV4[:PEERPORT],...` with an odd member count, for example
 `global-1=10.0.0.11,global-2=10.0.0.12,witness=10.0.0.21`. Each member must connect to its peers from the
@@ -19,5 +21,7 @@ Operator backups and restores go through `vws backup --etcd` and `vws restore --
 A snapshot holds IAM and the admin registry, not VM disks or Proxmox data. Copy snapshots off the member;
 a snapshot that exists only on the member is not a backup.
 
-Not here yet: the `vws-etcd.service` member unit and the backup timer unit, which wait for the R10 rewrite
+Schedules, sizing and alerts: `docs/design/etcd.md` and `docs/etcd-runbook.md`.
+
+Not here yet: the `vws-etcd.service` member unit and the backup and defrag timer units, which wait for the R10 rewrite
 (vws-deploy#763), and the `.deb` that installs these files.
