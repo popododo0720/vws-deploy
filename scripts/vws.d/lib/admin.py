@@ -134,10 +134,6 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
         data = json.loads(raw) if raw else None
     except (ValueError, UnicodeError):
         fail("admin API returned an invalid response", 3)
-    safe = redact(data, credentials)
-    if safe != data:
-        raw = (json.dumps(safe) + "\n").encode()
-    data = safe
     if status >= 400:
         error = data.get("error") if isinstance(data, dict) else None
         request_id = data.get("requestId", "unknown") if isinstance(data, dict) else "unknown"
@@ -145,29 +141,32 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
             request_id = "unknown"
         if (not isinstance(error, dict) or not isinstance(error.get("code"), str)
                 or not isinstance(error.get("message"), str)):
-            fail(f"unexpected API error response (HTTP {status}, requestId {request_id})", 3)
+            fail(redact(f"unexpected API error response (HTTP {status}, requestId {request_id})", credentials), 3)
         if status == 403:
-            fail(f"missing permission vws:{action} (requestId: {request_id})", 3)
+            fail(redact(f"missing permission vws:{action} (requestId: {request_id})", credentials), 3)
         message = f"{error['code']}: {error['message']} (requestId: {request_id})"
-        fail(message, 2 if status == 400 else 3 if status == 401 or status >= 500 else 1)
+        fail(redact(message, credentials), 2 if status == 400 else 3 if status == 401 or status >= 500 else 1)
     matches = re.findall(r'^etag:\s*("[^"\r\n]+")\s*$', received.read_text(), re.I | re.M)
     return raw, data, matches[-1] if matches else None
 
 
-def text_output(kind, operation, data):
+def text_output(kind, operation, data, credentials):
+    def emit(line):
+        print(redact(line, credentials))
+
     if operation == "test":
-        print("STEP\tRESULT\tMESSAGE")
+        emit("STEP\tRESULT\tMESSAGE")
         for step in data["steps"]:
-            print("\t".join(str(step[k]) for k in ("name", "result", "message")))
+            emit("\t".join(str(step[k]) for k in ("name", "result", "message")))
     elif operation == "health":
-        print("STATUS\tQUORUM\tLEADER\tONLINE NODES\tLAST ERROR")
+        emit("STATUS\tQUORUM\tLEADER\tONLINE NODES\tLAST ERROR")
         nodes = ",".join(n["name"] for n in data["nodes"] if n["online"])
-        print(f"{data['status']}\t{data['quorate']}\t{data['leader'] or '-'}\t"
+        emit(f"{data['status']}\t{data['quorate']}\t{data['leader'] or '-'}\t"
               f"{nodes or '-'}\t{(data.get('lastError') or {}).get('message', '-')}")
     elif data is not None:
         fields = (["name", "clusterName", "pveApiUrl", "regionEndpoint", "tokenId", "tokenSecret", "zones"]
                   if kind == "region" else ["awsAccountId", "roleArn", "externalId", "allowedRegions"])
-        print("\t".join(fields))
+        emit("\t".join(fields))
         for item in data["items"] or [] if operation == "list" else [data]:
             values = []
             for field in fields:
@@ -175,9 +174,9 @@ def text_output(kind, operation, data):
                 if field in ("tokenSecret", "externalId"):
                     value = "set \u00b7 " + value["fingerprint"] if value["set"] else "not set"
                 elif isinstance(value, list):
-                    value = json.dumps(value, separators=(",", ":"))
+                    value = json.dumps(redact(value, credentials), separators=(",", ":"))
                 values.append(str(value))
-            print("\t".join(values))
+            emit("\t".join(values))
 
 
 def main():
@@ -218,9 +217,10 @@ def main():
         raw, data, _ = request(base, path, method, body if method in ("POST", "PATCH") else None,
                                action, credentials, directory, etag)
         if os.environ.get("VWS_OUTPUT", "text") == "json":
-            sys.stdout.buffer.write(raw)
+            safe = redact(data, credentials)
+            sys.stdout.buffer.write(raw if safe == data else (json.dumps(safe) + "\n").encode())
         else:
-            text_output(kind, a.operation, data)
+            text_output(kind, a.operation, data, credentials)
         return int(a.operation == "test" and any(s["result"] == "FAIL" for s in data["steps"]))
 
 

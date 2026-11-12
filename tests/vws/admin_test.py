@@ -235,6 +235,16 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
                 expected("POST", BASE + "/" + NAME + "/test", {SECRET_KEY: SECRET},
                          result={"steps": [dict(name=SECRET, result="FAIL", message=SECRET + TOKEN)]})
                 run(["test", NAME, SECRET_FLAG, "-"], code=1, stdin=SECRET)
+                for secret in ("FAIL", "tls"):
+                    for mode in ("text", "json"):
+                        expected("POST", BASE + "/" + NAME + "/test", {SECRET_KEY: secret},
+                                 result={"steps": [dict(name="tls", result="FAIL", message="TLS handshake failed")]})
+                        result = run(["test", NAME, SECRET_FLAG, "-", "-o", mode], code=1, stdin=secret)
+                        check("protocol-collision secret stays private", secret not in result.stdout + result.stderr)
+            expected("POST", body=dict(create, **{SECRET_KEY: "error"}), status=400,
+                     result={"error": {"code": "InvalidArgument", "message": "invalid query"}, "requestId": "error"})
+            result = run(["add", NAME] + FIELDS + [SECRET_FLAG, "-"], code=2, stdin="error")
+            check("envelope-key collision stays private", "error" not in result.stdout + result.stderr)
             for envelope, request_id in [
                     ({"error": None, "requestId": "r"}, "r"),
                     ({"error": []}, "unknown"),
