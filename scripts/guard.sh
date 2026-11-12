@@ -662,6 +662,8 @@ cmd_agents() {
     || die "R13: .github/workflows/repo-guard.yml must be the caller of the repo-guard job files (.github/drift/caller_pin.py, #402)"
   python3 -m unittest discover -s tests/workflows >/dev/null 2>&1 \
     || die "R13: tests/workflows fail (python3 -m unittest discover -s tests/workflows -v)"
+  python3 -m unittest discover -s .github/drift >/dev/null 2>&1 \
+    || die "R13: a workflow uses an action not pinned by full SHA (python3 -m unittest discover -s .github/drift -v, #700)"
   scripts/guard-agents.sh agents AGENTS.md || die "R13: AGENTS.md lost the Insider-risk guardrails"
   scripts/guard-agents.sh rules AGENTS.md || die "R13: a row of the AGENTS.md rule table has no enforcer"
   [[ -f installer/internal/archtest/arch_test.go ]] || die "R26: installer/internal/archtest/arch_test.go is missing"
