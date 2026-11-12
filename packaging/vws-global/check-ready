@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+socket=
+expected=200
+case "${1:-}" in
+    api) url=http://127.0.0.1:8083/readyz ;;
+    iam) url=http://127.0.0.1:9096/readyz ;;
+    console) url=http://127.0.0.1:3000/readyz ;;
+    proxy)
+        url=http://localhost/
+        socket=/run/vws-aws-proxy/aws-proxy.sock
+        expected=403
+        ;;
+    *) echo "usage: $0 api|iam|console|proxy" >&2; exit 2 ;;
+esac
+attempt=0
+while [ "$attempt" -lt 3 ]; do
+    set -- --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --noproxy '*' --connect-timeout 1 --max-time 2
+    if [ -n "$socket" ]; then set -- "$@" --unix-socket "$socket"; fi
+    if status=$(/usr/bin/curl "$@" "$url") && [ "$status" = "$expected" ]; then
+        exit 0
+    fi
+    attempt=$((attempt + 1))
+    if [ "$attempt" -lt 3 ]; then sleep 1; fi
+done
+echo "vws-global: readiness failed for $url" >&2
+exit 1

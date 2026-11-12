@@ -1,0 +1,29 @@
+[Unit]
+Description=VWS global API
+After=network-online.target vws-iam.service vws-aws-proxy.service
+Wants=network-online.target vws-iam.service vws-aws-proxy.service
+
+[Service]
+Type=simple
+User=vws-console-api
+Group=vws-console-api
+SupplementaryGroups=vws-aws-proxy
+LoadCredential=admin-kek:/etc/vws/credentials/admin-kek
+LoadCredential=console-token:/etc/vws/credentials/console-token
+LoadCredential=vws-access-key:/etc/vws/credentials/vws-access-key
+LoadCredential=vws-secret-key:/etc/vws/credentials/vws-secret-key
+LoadCredential=etcd-client-key.pem:/etc/vws/credentials/api-etcd-key.pem
+LoadCredential=mtls-key.pem:/etc/vws/credentials/api-mtls-key.pem
+ExecStart=/usr/lib/vws/run-console-api -backend regions -global-config /etc/vws/global.yaml -iam grpc -iam-endpoint 127.0.0.1:9095 -iam-tls-ca-file /etc/vws/internal-ca.pem -iam-tls-cert-file /etc/vws/api-mtls.pem -iam-tls-key-file %d/mtls-key.pem -aws-proxy-socket /run/vws-aws-proxy/aws-proxy.sock
+ExecStartPost=/usr/lib/vws/check-global-ready api
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

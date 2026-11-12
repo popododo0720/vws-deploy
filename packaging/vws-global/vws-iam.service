@@ -1,0 +1,27 @@
+[Unit]
+Description=VWS identity and access management
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vws-iam
+Group=vws-iam
+LoadCredential=etcd-ca.pem:/etc/vws/etcd-ca.pem
+LoadCredential=etcd-client.pem:/etc/vws/iam-etcd.pem
+LoadCredential=etcd-client-key.pem:/etc/vws/credentials/iam-etcd-key.pem
+LoadCredential=kek:/etc/vws/credentials/iam-kek
+LoadCredential=iam-key.pem:/etc/vws/credentials/iam-key.pem
+ExecStart=/usr/bin/vws-iam -store etcd -etcd-endpoints https://127.0.0.1:2379 -listen 127.0.0.1:9095 -health-listen 127.0.0.1:9096 -tls-cert-file /etc/vws/iam.pem -tls-key-file %d/iam-key.pem -tls-client-ca-file /etc/vws/internal-ca.pem
+ExecStartPost=/usr/lib/vws/check-global-ready iam
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

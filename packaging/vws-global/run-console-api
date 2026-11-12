@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+: "${CREDENTIALS_DIRECTORY:?systemd credentials required}"
+export VWS_CONSOLE_TOKEN_FILE="$CREDENTIALS_DIRECTORY/console-token"
+export VWS_ACCESS_KEY_FILE="$CREDENTIALS_DIRECTORY/vws-access-key"
+export VWS_SECRET_KEY_FILE="$CREDENTIALS_DIRECTORY/vws-secret-key"
+exec /usr/bin/vws-console-api "$@"

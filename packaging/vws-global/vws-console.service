@@ -1,0 +1,25 @@
+[Unit]
+Description=VWS console
+After=network-online.target vws-console-api.service
+Wants=network-online.target vws-console-api.service
+
+[Service]
+Type=simple
+User=vws-console
+Group=vws-console
+WorkingDirectory=/usr/lib/vws/console
+Environment=NODE_ENV=production HOSTNAME=127.0.0.1 PORT=3000
+Environment=VWS_CONSOLE_API_URL=http://127.0.0.1:8080 VWS_CONSOLE_IAM=on
+ExecStart=/usr/lib/vws/node /usr/lib/vws/console/server.js
+ExecStartPost=/usr/lib/vws/check-global-ready console
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
