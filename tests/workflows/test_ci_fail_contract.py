@@ -140,6 +140,10 @@ class Labels(unittest.TestCase):
         label = re.search(r'^NEEDS_HUMAN = "([^"]+)"$', src, re.M).group(1)
         self.assertIn(label, names)
 
+    def test_retired_bot_labels_are_not_defined(self):
+        names = {x["name"] for x in yaml.safe_load(open(LABELS_PATH))}
+        self.assertEqual(names & {"deepseek", "grok"}, set())
+
 
 class DocSampleCaller(unittest.TestCase):
     def setUp(self):
