@@ -1485,6 +1485,18 @@ for rel in rels:
                 logical = logical[:-1] + " "
                 continue
             match = env_line.match(logical)
+            credential = re.match(r"^\s*LoadCredential\s*=\s*(.*)$", logical)
+            if credential:
+                owner = next((part.removesuffix(".d") for part in rel.parts
+                              if part.endswith((".service", ".service.d"))), "")
+                for value in shlex.split(credential[1]):
+                    forbidden = (
+                        re.search(r"aws[-_]", value, re.I) and owner != "vws-aws-proxy.service"
+                        or re.search(r"admin[-_]kek", value, re.I) and owner != "vws-console-api.service"
+                    )
+                    if forbidden:
+                        print(f"R10: {rel}:{start} credential belongs to another service", file=sys.stderr)
+                        failed = True
             if match and (match[1] == "EnvironmentFile" or any(
                 secret_key.search(assignment.partition("=")[0])
                 for assignment in shlex.split(match[2]) if "=" in assignment
@@ -1520,6 +1532,24 @@ cmd_secrets() {
   printf '[Service]\nEnvironmentFile=/etc/vws/env\n' > "$tmp/packaging/vws.service"
   ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: an EnvironmentFile= was accepted"; }
   rm "$tmp/packaging/vws.service"
+  for credential in aws-source admin-kek; do
+    if [[ $credential == aws-source ]]; then unit=vws-aws-proxy; else unit=vws-console-api; fi
+    printf '[Service]\nLoadCredential=%s:/etc/vws/credentials/%s\n' "$credential" "$credential" > "$tmp/packaging/$unit.service"
+    git -C "$tmp" add packaging
+    secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: credential owner rejected"; }
+    mv "$tmp/packaging/$unit.service" "$tmp/packaging/vws-console.service"
+    git -C "$tmp" add -A packaging
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: cross-service credential accepted"; }
+    printf '[Service]\nLoadCredential=renamed:/etc/vws/credentials/%s\n' "$credential" > "$tmp/packaging/vws-console.service"
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: renamed credential accepted"; }
+    rm "$tmp/packaging/vws-console.service"
+    mkdir -p "$tmp/packaging/vws-console.service.d"
+    printf '[Service]\nLoadCredential=\\\n %s:/etc/vws/credentials/%s\n' "$credential" "$credential" > "$tmp/packaging/vws-console.service.d/override.conf"
+    git -C "$tmp" add -A packaging
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: drop-in credential accepted"; }
+    rm -r "$tmp/packaging/vws-console.service.d"
+    git -C "$tmp" add -A packaging
+  done
   for unit in vws.socket vws.mount vws.swap vws.timer vws.path vws.slice vws.scope vws.automount vws.device vws.target vws.service.d/override.conf; do
     mkdir -p "$tmp/packaging/$(dirname "$unit")"
     printf '[Service]\nEnvironment=VWS_LOG_LEVEL=info \\\n# continued directives skip comments\n DB_PASSWORD=x\n' > "$tmp/packaging/$unit"
