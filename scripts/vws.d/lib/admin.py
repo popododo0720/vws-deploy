@@ -90,11 +90,23 @@ def parse(kind, argv):
     return a, body
 
 
-def request(base, path, method, body, action, token, directory, etag=None):
+def redact(value, credentials):
+    if isinstance(value, str):
+        for secret in credentials:
+            if secret:
+                value = value.replace(secret, "[REDACTED]")
+    elif isinstance(value, list):
+        return [redact(item, credentials) for item in value]
+    elif isinstance(value, dict):
+        return {redact(key, credentials): redact(item, credentials) for key, item in value.items()}
+    return value
+
+
+def request(base, path, method, body, action, credentials, directory, etag=None):
     headers = Path(directory) / "request.headers"
     with headers.open("w", encoding="utf-8") as f:
         headers.chmod(0o600)
-        f.write("Authorization: Bearer " + token + "\nContent-Type: application/json\n")
+        f.write("Authorization: Bearer " + credentials[0] + "\nContent-Type: application/json\n")
         if etag:
             f.write("If-Match: " + etag + "\n")
     response = Path(directory) / "response"
@@ -122,6 +134,10 @@ def request(base, path, method, body, action, token, directory, etag=None):
         data = json.loads(raw) if raw else None
     except (ValueError, UnicodeError):
         fail("admin API returned an invalid response", 3)
+    safe = redact(data, credentials)
+    if safe != data:
+        raw = (json.dumps(safe) + "\n").encode()
+    data = safe
     if status >= 400:
         error = data.get("error") if isinstance(data, dict) else None
         request_id = data.get("requestId", "unknown") if isinstance(data, dict) else "unknown"
@@ -133,9 +149,6 @@ def request(base, path, method, body, action, token, directory, etag=None):
         if status == 403:
             fail(f"missing permission vws:{action} (requestId: {request_id})", 3)
         message = f"{error['code']}: {error['message']} (requestId: {request_id})"
-        for secret in (token, (body or {}).get("tokenSecret"), (body or {}).get("externalId")):
-            if secret:
-                message = message.replace(secret, "[REDACTED]")
         fail(message, 2 if status == 400 else 3 if status == 401 or status >= 500 else 1)
     matches = re.findall(r'^etag:\s*("[^"\r\n]+")\s*$', received.read_text(), re.I | re.M)
     return raw, data, matches[-1] if matches else None
@@ -195,14 +208,15 @@ def main():
     suffix = "Region" if kind == "region" else "AwsAccount"
     action = {"add": "AdminRegister" + suffix, "edit": "AdminUpdate" + suffix,
               "remove": "AdminRemove" + suffix}.get(a.operation, "AdminList" + suffix + "s")
+    credentials = (token, body.get("tokenSecret"), body.get("externalId"))
     with tempfile.TemporaryDirectory(prefix="vws-admin-") as directory:
         etag = None
         if a.operation == "edit":
-            _, _, etag = request(base, path, "GET", None, action, token, directory)
+            _, _, etag = request(base, path, "GET", None, action, credentials, directory)
             if not etag:
                 fail("admin API GET returned no ETag; edit was not sent", 3)
         raw, data, _ = request(base, path, method, body if method in ("POST", "PATCH") else None,
-                               action, token, directory, etag)
+                               action, credentials, directory, etag)
         if os.environ.get("VWS_OUTPUT", "text") == "json":
             sys.stdout.buffer.write(raw)
         else:

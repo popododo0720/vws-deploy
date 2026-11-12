@@ -215,6 +215,26 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             result = run(args, code=3)
             check("403 action and requestId", "missing permission vws:" + action in result.stderr and "req-403" in result.stderr)
         if not MANUAL:
+            for status, error, code in [
+                    (400, None, 3),
+                    (400, {"code": SECRET, "message": SECRET + TOKEN}, 2),
+                    (403, {"code": "PermissionDenied", "message": SECRET + TOKEN}, 3)]:
+                expected("POST", body=create, status=status,
+                         result={"error": error, "requestId": SECRET + TOKEN})
+                result = run(["add", NAME] + FIELDS + [SECRET_FLAG, "-"], code=code, stdin=SECRET, trace=True)
+                check("echoed error credentials are redacted", "[REDACTED]" in result.stderr)
+            for mode in ("text", "json"):
+                echoed = dict(RECORD, **{SECRET_KEY: {"set": True, "fingerprint": SECRET + TOKEN}})
+                expected("POST", body=create, status=201, result=echoed)
+                result = run(["add", NAME] + FIELDS + [SECRET_FLAG, "-", "-o", mode], stdin=SECRET)
+                check("echoed success credentials are redacted", "[REDACTED]" in result.stdout)
+            expected("GET", BASE + "/" + NAME, status=403,
+                     result={"error": {"code": "PermissionDenied", "message": SECRET}, "requestId": SECRET})
+            run(["edit", NAME, SECRET_FLAG, "-"], code=3, stdin=SECRET)
+            if KIND == "region":
+                expected("POST", BASE + "/" + NAME + "/test", {SECRET_KEY: SECRET},
+                         result={"steps": [dict(name=SECRET, result="FAIL", message=SECRET + TOKEN)]})
+                run(["test", NAME, SECRET_FLAG, "-"], code=1, stdin=SECRET)
             for envelope, request_id in [
                     ({"error": None, "requestId": "r"}, "r"),
                     ({"error": []}, "unknown"),
