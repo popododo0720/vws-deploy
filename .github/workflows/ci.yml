@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  etcd-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate etcd package and Debian lifecycle
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
+            apt-get update
+            apt-get install -y --no-install-recommends git python3 lintian shellcheck curl openssl
+            mkdir -p build/tmp
+            export TMPDIR=/src/build/tmp
+            packaging/vws-etcd/test.sh
+            printf "#!/bin/sh\nexit 0\n" > build/etcd-stub
+            chmod +x build/etcd-stub
+            packaging/vws-etcd/build.sh 0.0.0-1 build/etcd-stub build
+            packaging/vws-etcd/test-install.sh /src/build/vws-etcd_0.0.0-1_amd64.deb
+          '
+
   global-package:
     runs-on: ubuntu-latest
     steps:
