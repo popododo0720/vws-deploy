@@ -1,1 +1,1 @@
-xhelm upgrade --install vws charts/vws
+xhelm upgrade --install vws /external-chart

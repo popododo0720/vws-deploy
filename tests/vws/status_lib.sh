@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 # Scenario helpers of status.test.sh and doctor.test.sh. Source after lib.sh.
-GROUP=$(sed -n 's/^  group: //p' "${VWS_TEST_ROOT}/charts/vws/crds/vwsclusters.yaml")
 
 scenario() {
   rm -rf "${WORK:?}/$1"
   cp -r "${FIXTURES}/status/ok" "${WORK}/$1"
   export VWS_FAKE_DIR="${WORK}/$1"
-  edit_json kubectl/get_vwsclusters.json --arg v "${GROUP}/v1alpha1" '.apiVersion = $v'
-  # The applied hash covers the chart (#101): the fixture holds the values sha256, the test adds this chart.
-  edit_json kubectl/get_vwsclusters.json --arg h "$(VWS_ROOT=$VWS_TEST_ROOT bash -c 'source "$1"; vws_applied_hash_of "$2"' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/hash.sh" "$(jq -r .status.appliedValuesHash "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json")")" '.status.appliedValuesHash = $h'
-  edit_json kubectl/get_crd.json --arg g "$GROUP" '(.items[] | select(.spec.group == "FILLED_BY_TEST")) |= (.spec.group = $g | .metadata.name = "vwsclusters." + $g)'
+
 }
 edit_json() { # FILE [JQ ARGS...] FILTER
   local f="${VWS_FAKE_DIR}/$1"

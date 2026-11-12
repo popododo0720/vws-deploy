@@ -1,1 +1,1 @@
-  vws_helm upgrade --install vws charts/vws --atomic
+  vws_helm upgrade --install vws /external-chart --atomic

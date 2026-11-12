@@ -25,7 +25,7 @@ vws_installer_credential_check() {
     if [[ $label == true ]]; then
       vws_emit OK credential "the initial admin password was handed out"
     else
-      vws_emit WARN credential "the initial admin password was never handed out; run vws init before finish, or read Secret vws-initial-admin later with a cluster-admin kubeconfig"
+      vws_emit WARN credential "the initial admin password was never handed out; read Secret vws-initial-admin with a cluster-admin kubeconfig"
     fi
   elif grep -q NotFound "$err"; then
     vws_emit OK credential "no Secret vws-initial-admin: console sign-in is off, nothing to hand out"

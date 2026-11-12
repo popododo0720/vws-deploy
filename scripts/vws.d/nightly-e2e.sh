@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# summary: nightly full-stack e2e on vws-test: scope check, apply the CR, every scenario, the feature-map PR, the results branch, an incident and a lead wake on failure
-# Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --cr FILE --log-url URL [--results DIR]
+# summary: nightly full-stack e2e on vws-test: scope check, every scenario, the feature-map PR, the results branch, an incident and a lead wake on failure
+# Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --log-url URL [--results DIR]
 #   [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]
 # vws-deploy#253, design docs/design/nightly-e2e.md. Removes every OS_* variable, then runs in order:
 #   scope         the cluster's kube-system UID is vwsTest.kubeSystemUID in docs/feature-map.json
-#   apply         vws apply --unattended -f CR (install or upgrade to what the CR pins)
 #   scenarios     vws nightly --results DIR --timeout SECONDS
 #   feature-map-pr vws nightly-pr --results DIR --log-url URL --repo REPO
 #   publish       vws nightly-publish --results DIR (the results JSON to the nightly-results branch)
@@ -25,7 +24,7 @@ VWS_NEED=(jq timeout flock gh kubectl)
 VWS_NIGHTLY_E2E_VWS=${VWS_NIGHTLY_E2E_VWS:-}
 # Seconds before the second incident attempt (doubled before the third). Tests set 0.
 VWS_NIGHTLY_E2E_BACKOFF=${VWS_NIGHTLY_E2E_BACKOFF:-5}
-declare -A VWS_E2E_LIMITS=([apply]=3600 [scenarios]=21600 [feature-map-pr]=600 [publish]=600)
+declare -A VWS_E2E_LIMITS=([scenarios]=21600 [feature-map-pr]=600 [publish]=600)
 
 vws_e2e_dir='' vws_e2e_failed=''
 
@@ -177,15 +176,14 @@ vws_e2e_wake() { # RUN LOG_URL INCIDENT REPO THREAD: one lead-wake comment per r
 }
 
 vws_cmd_main() {
-  local cr='' log_url='' results='' timeout_s=1800 repo=popododo0720/vws-deploy run v want uid started incident
+  local log_url='' results='' timeout_s=1800 repo=popododo0720/vws-deploy run v want uid started incident
   local thread='' wake stop
   local map="${VWS_ROOT}/docs/feature-map.json"
   while (($#)); do
     case $1 in
-      --cr | --log-url | --results | --timeout | --repo | --wake-thread)
+      --log-url | --results | --timeout | --repo | --wake-thread)
         (($# >= 2)) || vws_usage "$1 needs a value"
         case $1 in
-          --cr) cr=$2 ;;
           --log-url) log_url=$2 ;;
           --results) results=$2 ;;
           --timeout) timeout_s=$2 ;;
@@ -197,7 +195,6 @@ vws_cmd_main() {
     esac
   done
   [[ -z $VWS_DRY_RUN ]] || vws_usage "nightly-e2e has no --dry-run: its steps push a branch and open issues"
-  [[ -n $cr && -f $cr ]] || vws_usage "nightly-e2e needs --cr FILE (the VWSCluster CR to apply), not '${cr}'"
   [[ $log_url =~ ^https://[^[:space:]\`\<\>]{1,2000}$ ]] || vws_usage "--log-url must be an https URL without spaces"
   [[ $timeout_s =~ ^[1-9][0-9]{0,5}$ ]] || vws_usage "--timeout must be whole seconds from 1 to 999999, not ${timeout_s}"
   [[ $repo =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || vws_usage "--repo must be OWNER/NAME, not ${repo}"
@@ -230,8 +227,6 @@ vws_cmd_main() {
     vws_e2e_record scope pass 0 "$started" "cluster is vws-test (kube-system UID ${uid})"
   fi
 
-  if [[ -z $vws_e2e_failed ]]; then vws_e2e_step apply apply --unattended -f "$cr"; else
-    vws_e2e_record apply skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"; fi
   if [[ -z $vws_e2e_failed ]]; then
     vws_e2e_step scenarios nightly --results "$results" --timeout "$timeout_s"
     vws_e2e_step feature-map-pr nightly-pr --results "$results" --log-url "$log_url" --repo "$repo"

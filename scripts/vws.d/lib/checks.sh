@@ -5,8 +5,7 @@
 # evaluated because the API is unreachable exits 3 through vws_die_env.
 # MODE is preflight (things the bundle installs later may be missing: WARN) or doctor (missing: FAIL).
 
-# Minimum Ready nodes per profile (vws-deploy#43 section 2). CPU and memory minima come from the
-# profile file itself: the sum of requests over replicas.
+# Minimum Ready nodes per legacy installation profile (vws-deploy#43 section 2).
 declare -A VWS_PROFILE_MIN_NODES=([single-node]=1 [small]=3 [ha]=6)
 
 # vws_versions_env NAME: a value from scripts/versions.env. Versions are never written in this code.
@@ -67,29 +66,8 @@ vws_check_install_rights() {
   fi
 }
 
-# vws_profile_needs PROFILE: "<millicores> <MiB>" the profile requests in total.
-vws_profile_needs() {
-  python3 - "${VWS_ROOT}/charts/vws/values.yaml" "${VWS_ROOT}/profiles/$1.yaml" <<'PY'
-import sys, yaml
-import os
-base = yaml.safe_load(open(sys.argv[1]))["services"]
-# Without the profile file (profiles/ arrives with vws-deploy#53), the chart defaults count.
-prof = yaml.safe_load(open(sys.argv[2]))["services"] if os.path.exists(sys.argv[2]) else {}
-cpu = mem = 0
-for name, spec in base.items():
-    spec = {**spec, **prof.get(name, {})}
-    if spec.get("enabled", True) is False:
-        continue
-    n = spec.get("replicas", 1 if "state" in spec else 2)
-    c, m = spec.get("cpu", "100m"), spec.get("memory", "256Mi")
-    cpu += n * int(c[:-1])
-    mem += n * (int(m[:-2]) * (1024 if m.endswith("Gi") else 1))
-print(cpu, mem)
-PY
-}
-
 vws_check_nodes() {
-  local profile=$1 json ready need_cpu need_mem have_cpu have_mem min
+  local profile=$1 json ready min
   min=${VWS_PROFILE_MIN_NODES[$profile]:-}
   [[ -n $min ]] || vws_usage "unknown profile ${profile}"
   json=$(vws_kubectl get nodes -o json 2>/dev/null) || vws_die_env "cannot list nodes"
@@ -98,18 +76,6 @@ vws_check_nodes() {
     vws_emit OK nodes "${ready} Ready, profile ${profile} needs ${min}"
   else
     vws_emit FAIL nodes "${ready} Ready, profile ${profile} needs ${min}"
-  fi
-  read -r need_cpu need_mem < <(vws_profile_needs "$profile")
-  read -r have_cpu have_mem < <(jq -r '
-    def cpu: if endswith("m") then .[:-1] | tonumber else tonumber * 1000 end;
-    def mib: if endswith("Ki") then .[:-2] | tonumber / 1024 elif endswith("Mi") then .[:-2] | tonumber
-             elif endswith("Gi") then .[:-2] | tonumber * 1024 else tonumber / 1048576 end;
-    [.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .status.allocatable]
-    | "\(map(.cpu | cpu) | add // 0 | floor) \(map(.memory | mib) | add // 0 | floor)"' <<<"$json")
-  if ((have_cpu >= need_cpu && have_mem >= need_mem)); then
-    vws_emit OK node-resources "allocatable ${have_cpu}m/${have_mem}Mi, VWS requests ${need_cpu}m/${need_mem}Mi"
-  else
-    vws_emit FAIL node-resources "allocatable ${have_cpu}m/${have_mem}Mi, VWS requests ${need_cpu}m/${need_mem}Mi"
   fi
   vws_check_node_ip "$json"
 }
