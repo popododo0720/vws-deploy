@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  install-target:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install against a disposable Debian target
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
+            apt-get update
+            apt-get install -y --no-install-recommends python3 python3-yaml
+            mkdir -p build/tmp
+            export TMPDIR=/src/build/tmp
+            bash tests/vws/install.test.sh
+            bash tests/vws/install-container.sh
+          '
+
   etcd-package:
     runs-on: ubuntu-latest
     steps:
