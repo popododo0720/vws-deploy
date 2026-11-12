@@ -1,0 +1,27 @@
+[Unit]
+Description=VWS isolated AWS proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vws-aws-proxy
+Group=vws-aws-proxy
+RuntimeDirectory=vws-aws-proxy
+RuntimeDirectoryMode=0750
+LoadCredential=aws-source:/etc/vws/credentials/aws-source
+ExecStartPre=/usr/bin/rm -f /run/vws-aws-proxy/aws-proxy.sock
+ExecStart=/usr/bin/vws-aws-proxy -socket /run/vws-aws-proxy/aws-proxy.sock -accounts /etc/vws/aws-accounts.json -sts-endpoint https://sts.us-east-1.amazonaws.com -ec2-endpoint https://ec2.{region}.amazonaws.com
+ExecStartPost=/usr/lib/vws/check-global-ready proxy
+ExecStartPost=/usr/bin/chmod 0660 /run/vws-aws-proxy/aws-proxy.sock
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

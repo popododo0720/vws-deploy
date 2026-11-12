@@ -1,0 +1,19 @@
+iam:
+  etcd_endpoints: [https://127.0.0.1:2379]
+  tls:
+    ca_file: /etc/vws/etcd-ca.pem
+    cert_file: /etc/vws/api-etcd.pem
+    key_file: /run/credentials/vws-console-api.service/etcd-client-key.pem
+listeners:
+  console: 127.0.0.1:8080
+  ec2: 127.0.0.1:8081
+  s3: 127.0.0.1:8082
+  iam: 127.0.0.1:8084
+  ops: 127.0.0.1:8083
+credentials:
+  kek_file: /run/credentials/vws-console-api.service/admin-kek
+  mtls:
+    ca_file: /etc/vws/internal-ca.pem
+    cert_file: /etc/vws/api-mtls.pem
+    key_file: /run/credentials/vws-console-api.service/mtls-key.pem
+default_project: default

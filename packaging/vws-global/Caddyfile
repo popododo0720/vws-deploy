@@ -1,0 +1,17 @@
+console.example.test {
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+ec2.example.test {
+    reverse_proxy 127.0.0.1:8081
+}
+s3.example.test {
+    reverse_proxy 127.0.0.1:8082
+}
+iam.example.test {
+    reverse_proxy 127.0.0.1:8084
+}

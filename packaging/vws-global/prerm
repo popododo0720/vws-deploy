@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "$1" in
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            deb-systemd-invoke stop vws-console.service vws-console-api.service \
+                vws-aws-proxy.service vws-iam.service
+        fi
+        ;;
+esac
