@@ -316,6 +316,63 @@ Rollback limits (also printed as WARNs):
 
 `vws [--context CTX] nightly [--map FILE] [--results DIR] [--timeout SECONDS]` runs every scenario named in `docs/feature-map.json`, one at a time in name order, with `scripts/vws verify scenario NAME --result FILE --map MAP` (vws-deploy#287), so the scenario checks the same map's fingerprint, and records the results with the same update as `vws verify --update-feature-map`. Each scenario runs under `--timeout` (default 1800 seconds; then SIGTERM, and SIGKILL 30 seconds later) and writes `NAME.json` and `NAME.log` under `DIR` (default `$XDG_STATE_HOME/vws-nightly/<UTC time>`). A lock file next to `DIR` (`nightly.lock`) refuses a second run while one is active (exit 3). Exit codes: 0 every scenario passed, or no feature has a scenario (WARN); 1 a scenario failed, timed out, wrote no valid result, or had an invalid name (it is not run); 2 usage error; 3 a missing tool, a held lock, or an unreadable map. The command makes no cluster call itself. The scenarios do. A box timer starts it at 22:00 KST against main HEAD (vws-deploy#290). The timer is not in this repo, because R10 forbids systemd units here.
 
+### vws nightly-live
+
+`vws nightly-live --region NAME [--results DIR] [--snippets-storage ID]
+[--pve-ca-file FILE] [--fail-at STEP]` runs the Proxmox L0 cleanup and the
+shared slot check. It is a sibling of `vws nightly`, which remains the
+Kubernetes feature-map runner called by `vws nightly-e2e`.
+
+Set `VWS_API_URL` to the console HTTPS origin, `VWS_API_TOKEN_FILE` to a
+console token file, and the required `VWS_LIVE_PVE_URL` to the PVE origin
+pinned independently on the runner. Both origins require HTTPS; HTTP is
+allowed only on loopback. The runner reads its
+PVE token only from `${CREDENTIALS_DIRECTORY}/pve-token`, supplied by systemd
+`LoadCredential=pve-token:/path/on/verification-runner`. Its single-line
+content is `vws@pve!live=<secret>`; never put it in argv, environment values,
+workflows or the repository. Create that token with privilege separation:
+grant its role on `/pool/vws-live` VM.Audit, VM.PowerMgmt, VM.Allocate,
+VM.Snapshot and Pool.Audit; on `/storage/<snippets>` grant Datastore.Audit
+and Datastore.Allocate; on `/` grant Sys.Audit for cluster resources.
+Grant both the user and the separated token the required permissions.
+
+The read-only gate requires capability `kind: proxmox`, `cluster.name:
+pve-test`, `features.liveTests: true`, exactly one health node, a valid
+`pveApiUrl` matching `VWS_LIVE_PVE_URL`, and an existing `vws-live` pool.
+An unset or invalid pin, or a console origin mismatch, exits 3 before any
+PVE request. Every PVE request uses the runner's pinned origin.
+`live_tests` comes from
+`features.liveTests` in popododo0720/vws-console-api#943: until it ships, the
+missing field refuses the run. The gate makes read calls; no sweep, step or
+PVE write starts before it passes.
+
+Both start and end sweeps remove non-template QEMU VMs in pool `vws-live`
+with a semicolon-separated tag matching `vws.live.*`. For each live VM,
+read its config UUID, delete only its `vws-<uuid>-user.yaml` snippet, then
+stop and delete the VM. A missing snippet counts as already removed.
+If interrupted before VM deletion, the next sweep finds that VM and
+retries its snippet cleanup. Every other snippet stays, including apparent
+orphans and snippets belonging to VMs hidden from the token. The sweeps
+also delete every non-current snapshot of remaining pool VMs. Snippets
+storage defaults to `local`; `--pve-ca-file` supplies a trusted PVE CA file.
+Every HTTP call has a 20-second timeout; GETs retry transient errors with
+1- and 2-second backoff. Each asynchronous task has a 120-second deadline
+and must finish with exitstatus OK.
+
+Phase 1 creates zero VMs. Between sweeps, `live.py slots --need 0` checks
+that non-template, non-`vws.holder` pool VMs number at most two and each uses
+at most 1 GiB; later phases use `--need N` before creating. Part 2 adds
+registration through `vws region add/test/health` and L1 read assertions.
+`--fail-at slots` exercises failure cleanup. The end sweep also runs after
+step failure, SIGINT and SIGTERM.
+
+Results default to `$XDG_STATE_HOME/vws-nightly-live/<UTC>` (or
+`$HOME/.local/state/...`): `l0-start.json`, `l0-end.json`, and `results.json`
+with steps. A sibling `nightly-live.lock` refuses concurrent runs; stale
+lock files alone do not hold the lock. Exit codes: 0 all steps and both
+sweeps passed; 1 step or sweep failure; 2 usage; 3 environment or refused
+gate; 130/143 cancellation after the end sweep.
+
 ### vws nightly-pr
 
 `vws nightly-pr --results DIR --log-url URL [--root DIR] [--repo OWNER/NAME] [--remote NAME]` opens the nightly PR after `vws nightly` (vws-deploy#290). It commits only `docs/feature-map.json` and `docs/feature-map.md` from the checkout at `--root` (default this repo), on top of its HEAD, to the branch `nightly/<run>`, where `<run>` is the basename of `DIR` (for example `20261031T130000Z`). It pushes only that branch, never main, and opens one PR into main (`--repo`, default `popododo0720/vws-deploy`) whose body says `Part of #252`, links `URL` (an https link to the run log) and lists every result in `DIR`. The checkout's branch, index and files are not changed. A rerun of the same run reuses the pushed branch when it already holds the same files, and reports an open PR instead of opening a second one. Exit codes: 0 the PR was opened or is already open, or the map is unchanged against HEAD (WARN, no PR); 1 the push or the PR failed; 2 usage error; 3 a missing tool or a `--root` that is not the top of a git checkout.

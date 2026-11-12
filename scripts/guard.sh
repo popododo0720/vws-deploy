@@ -1465,12 +1465,19 @@ rels = [Path(p) for p in tracked.split("\0") if p]
 literals = [("a PVE API token", re.compile("PVEAPIToken" + "=")), ("an AWS access key", re.compile("AKIA" + "[0-9A-Z]{16}"))]
 env_line = re.compile(r"^\s*(Environment|EnvironmentFile)\s*=\s*(.*)$")
 secret_key = re.compile(r"secret|token|passw|credential|private|api_?key|access_?key", re.I)
+runner_reference = re.compile(
+    r"pve-token|CREDENTIALS_DIRECTORY|nightly-live|"
+    r"(?:secrets|vars|env)\s*(?:\.\s*\w*PVE\w*|\[\s*['\"]\w*PVE\w*['\"]\s*\])|"
+    r"\$\{?\w*PVE\w*|\b\w*PVE\w*\s*[:=]", re.I)
 failed = False
 for rel in rels:
     path = root / rel
     if not path.is_file():
         continue
     text = path.read_text(errors="ignore")
+    if rel.parts[0] == ".github" and runner_reference.search(text):
+        print(f"R10: runner credential reference in {rel}; keep PVE access on the verification runner", file=sys.stderr)
+        failed = True
     for what, pattern in literals:
         if pattern.search(text):
             print(f"R10: {what} literal in {rel}; load it with LoadCredential=", file=sys.stderr)
@@ -1518,6 +1525,16 @@ cmd_secrets() {
   secrets_check . || die "R10: secret literals or unit secrets"
   tmp=$(mktemp -d)
   git -C "$tmp" init -q
+  mkdir -p "$tmp/.github/workflows"
+  printf 'token: ${{ secrets.CONSOLE_TOKEN }}\n' > "$tmp/.github/workflows/x.yml"
+  git -C "$tmp" add .github
+  secrets_check "$tmp" || { rm -rf "$tmp"; die "R10: a workflow without runner credentials was rejected"; }
+  for unit in 'pve-token' 'CREDENTIALS_DIRECTORY' 'nightly-live' 'secrets.PvE_LIVE_TOKEN' \
+    "vars['live_pve']" '$PVE_TOKEN' 'PVE_TOKEN: x' 'env.live_pve'; do
+    printf '%s\n' "$unit" > "$tmp/.github/workflows/x.yml"
+    ! secrets_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R10: a workflow runner credential reference was accepted"; }
+  done
+  printf 'token: ${{ secrets.CONSOLE_TOKEN }}\n' > "$tmp/.github/workflows/x.yml"
   mkdir -p "$tmp/packaging"
   printf '[Service]\nLoadCredential=pve-token:/etc/vws/pve-token\nEnvironment=VWS_LOG_LEVEL=info\n' > "$tmp/packaging/vws.service"
   git -C "$tmp" add packaging
