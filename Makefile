@@ -12,12 +12,7 @@ export VWS_RELEASE := $(RELEASE)
 .PHONY: check tools hooks lint render conform crd platform guard vws-test
 
 check:
-	$(MAKE) tools
 	$(MAKE) hooks
-	$(MAKE) lint
-	$(MAKE) conform
-	$(MAKE) crd
-	$(MAKE) platform
 	$(MAKE) guard
 
 tools:

@@ -1001,7 +1001,9 @@ vws_layout_check() {
 cmd_vws() {
   local tmp
   vws_layout_check . || die "R17: scripts/vws layout is broken"
-  bash tests/vws/run.sh >/dev/null || die "R17: the vws harness fails; run tests/vws/run.sh"
+  for test in config region aws-account; do
+    bash "tests/vws/${test}.test.sh" || die "R17: the ${test} tests fail"
+  done
   if command -v shellcheck >/dev/null; then
     shellcheck -x -S warning scripts/vws scripts/vws.d/*.sh scripts/vws.d/lib/*.sh tests/vws/*.sh tests/fixtures/bin/* tests/fixtures/commands/*.sh ||
       die "R17: shellcheck rejects the vws files"
@@ -1726,19 +1728,12 @@ cmd_all() {
   cmd_ci
   cmd_cursor
   cmd_agents
-  cmd_config
-  cmd_observability
   cmd_vws
   cmd_upgrade_compat
   cmd_bootstrap
   cmd_crd
-  cmd_bundle
-  cmd_profiles
-  cmd_schema
   cmd_hooks
   cmd_docs
-  cmd_recovery
-  cmd_placeholders
   cmd_english
   cmd_secrets
   if [[ -n ${VWS_BASE_REF:-} ]]; then

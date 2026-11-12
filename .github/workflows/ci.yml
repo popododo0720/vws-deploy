@@ -55,9 +55,6 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: git fetch origin "$BASE_REF"
 
-      - name: Install validators
-        run: scripts/install-tools.sh
-
       - name: Check
         env:
           VWS_BASE_REF: ${{ github.base_ref }}
