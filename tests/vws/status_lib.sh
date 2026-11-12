@@ -10,9 +10,6 @@ scenario() {
   # The applied hash covers the chart (#101): the fixture holds the values sha256, the test adds this chart.
   edit_json kubectl/get_vwsclusters.json --arg h "$(VWS_ROOT=$VWS_TEST_ROOT bash -c 'source "$1"; vws_applied_hash_of "$2"' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/hash.sh" "$(jq -r .status.appliedValuesHash "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json")")" '.status.appliedValuesHash = $h'
   edit_json kubectl/get_crd.json --arg g "$GROUP" '(.items[] | select(.spec.group == "FILLED_BY_TEST")) |= (.spec.group = $g | .metadata.name = "vwsclusters." + $g)'
-  # Versions live only in scripts/versions.env (R12): the operators report what it pins.
-  edit_json kubectl/get_kubevirt.json --arg v "$(sed -n 's/^KUBEVIRT_VERSION=//p' "${VWS_TEST_ROOT}/scripts/versions.env")" '.items[0].status.observedKubeVirtVersion = $v'
-  edit_json kubectl/get_cdi.json --arg v "$(sed -n 's/^CDI_VERSION=//p' "${VWS_TEST_ROOT}/scripts/versions.env")" '.items[0].status.observedVersion = $v'
 }
 edit_json() { # FILE [JQ ARGS...] FILTER
   local f="${VWS_FAKE_DIR}/$1"
