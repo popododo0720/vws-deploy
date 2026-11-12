@@ -107,14 +107,18 @@ cannot enter trace output. Registration changes go only through the API.
 
 ### vws aws-account
 
-`vws aws-account add ID`, `edit ID`, `remove ID --yes`, and `list` use
+`vws aws-account add ID`, `edit ID`, `remove ID --yes`, `list`, and `test ID` use
 `/api/v1/admin/aws-accounts` with the same credentials, output modes, timeouts,
 edit ETag sequence and exit codes as `vws region`.
 ID is the 12-digit AWS account ID. Add requires `--role-arn`,
 `--allowed-regions us-east-1,eu-west-1`, and `--external-id-file PATH|-`.
 Edit accepts those options and sends only supplied fields.
 Text prints the AWS account ID, role ARN, external ID metadata and allowed
-regions. `vws aws-account test` is pending on vws-console-api#923.
+regions. Test sends one POST to `/api/v1/admin/aws-accounts/ID/test` with exactly
+`{}` and Content-Type `application/json`, using the saved registration.
+It accepts no registration or secret fields, prints STEP/RESULT/MESSAGE, and
+exits 1 if any step is not PASS, including with `-o json`. A 403 reports
+`vws:AdminListAwsAccounts` and requestId with exit 3.
 
 ### vws help
 
