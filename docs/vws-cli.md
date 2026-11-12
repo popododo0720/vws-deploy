@@ -120,6 +120,38 @@ It accepts no registration or secret fields, prints STEP/RESULT/MESSAGE, and
 exits 1 if any step is not PASS, including with `-o json`. A 403 reports
 `vws:AdminListAwsAccounts` and requestId with exit 3.
 
+### vws project
+
+`vws project show PROJECT`, `map PROJECT`, and `unmap PROJECT --yes` manage
+`/api/v1/admin/projects/PROJECT` using the credentials, output modes and
+timeouts of `vws region`. PROJECT and AWS account IDs must be 12 digits.
+Map and unmap take either `--region REGION --pool POOL` or
+`--aws-account ID`. A region has one pool per project: mapping a new pool in
+that region replaces its previous pool. Other regions and AWS accounts stay
+unchanged. Unmap removes only the supplied region/pool pair or AWS account;
+an absent entry exits 1 without sending PUT.
+
+```bash
+scripts/vws project show 123456789012
+scripts/vws project map 123456789012 --region pve-test-1 --pool vws-live
+scripts/vws project map 123456789012 --aws-account 234567890123
+scripts/vws project unmap 123456789012 --aws-account 234567890123 --yes
+```
+
+Each command is one admin operation: show sends one GET; map/unmap use the
+API's conditional update (GET for the ETag plus one PUT), the same pattern
+as region/aws-account edit, because PUT replaces both arrays.
+PUT sends both full merged arrays with `If-Match`; conflicts (409 or 412)
+exit 1 without retrying or overwriting the concurrent change.
+Repeated map calls preserve the same mapping. A missing GET ETag stops the
+operation before PUT. A 403 at either step prints the missing
+`vws:AdminMapProject` action and requestId and exits 3.
+
+Text output lists the project, pools and AWS accounts. `-o json` passes the
+API JSON through. `--dry-run` prints the GET and, for map/unmap, the PUT path
+without making requests or requiring credentials. Help discovers `project`
+from its command module automatically.
+
 ### vws config
 
 `vws config validate FILE|-` checks a global layer bootstrap file
