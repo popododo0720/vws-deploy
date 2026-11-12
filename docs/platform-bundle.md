@@ -1,5 +1,7 @@
 # Installing the platform bundle
 
+> **Superseded.** VWS now runs on Proxmox without Kubernetes. Operators register regions and AWS accounts as described in [docs/operator/regions.md](operator/regions.md). This page stays until it is deleted.
+
 These are the components that must be in the cluster before the VWS control plane goes up. The design is https://github.com/popododo0720/vws-deploy/issues/2. This repository applies nothing to a cluster. The procedure below is the order in which a person runs things on a cluster; it was not run on this box (unverified). `make check` only does the render and schema checks.
 
 ## Versions

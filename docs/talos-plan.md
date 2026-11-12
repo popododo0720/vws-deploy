@@ -1,5 +1,7 @@
 # Talos bootstrap and upgrade plan
 
+> **Superseded.** VWS now runs on Proxmox without Kubernetes. Operators register regions and AWS accounts as described in [docs/operator/regions.md](operator/regions.md). This page stays until it is deleted.
+
 The production Kubernetes distribution is Talos. The local lab is k3s; RKE2 is not used. The design is https://github.com/popododo0720/vws-deploy/issues/2.
 
 This document is a plan. Nothing was applied to a cluster, and this box has neither Talos tools nor normal-kernel VMs, so no procedure was run. Every procedure and example configuration is therefore **unverified**. Measurements happen in the T2 lab (three or more normal-kernel VMs). Below, "needs checking" means the content is recalled from documentation and must be confirmed in the lab.

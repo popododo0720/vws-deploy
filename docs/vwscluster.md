@@ -1,5 +1,7 @@
 # VWSCluster CR, profiles and `vws render` (vws-deploy#53)
 
+> **Superseded.** VWS now runs on Proxmox without Kubernetes. Operators register regions and AWS accounts as described in [docs/operator/regions.md](operator/regions.md). This page stays until it is deleted.
+
 The design is vws-deploy#43 (sections 0 and 2). The source of truth for configuration is one `VWSCluster` CR (named `vws`) in the release namespace; values files and rendered YAML are artifacts built from it.
 
 ## The exception to the "no CRDs" rule (written in one place)
