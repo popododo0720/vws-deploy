@@ -55,8 +55,10 @@ class Stub(BaseHTTPRequestHandler):
                 ERRORS.append("method, path or body did not match")
             if self.command == "PATCH" and self.headers.get("If-Match") != '"7"':
                 ERRORS.append("PATCH did not send the GET ETag")
-        raw = b"" if result is None else (json.dumps(result) + "\n").encode()
+        raw = result if isinstance(result, bytes) else b"" if result is None else (json.dumps(result) + "\n").encode()
         self.send_response(status)
+        if status in (301, 302):
+            self.send_header("Location", "/unexpected-follow")
         if etag:
             self.send_header("eTaG", etag)
         self.send_header("Content-Length", str(len(raw)))
@@ -215,6 +217,16 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             result = run(args, code=3)
             check("403 action and requestId", "missing permission vws:" + action in result.stderr and "req-403" in result.stderr)
         if not MANUAL:
+            for status in (301, 302, 304):
+                for payload in (None,) if status == 304 else (None, {"requestId": TOKEN}, b"<html>redirect</html>"):
+                    for op in ("list", "remove"):
+                        path = BASE if op == "list" else BASE + "/" + NAME
+                        expected("GET" if op == "list" else "DELETE", path, status=status, result=payload)
+                        result = run([op] + ([] if op == "list" else [NAME, "--yes"]), code=3)
+                        check(f"{op} HTTP {status} {type(payload).__name__} is diagnosed",
+                              f"unexpected HTTP {status}" in result.stderr)
+                        if isinstance(payload, dict):
+                            check("redirect requestId is redacted", "[REDACTED]" in result.stderr)
             for status, error, code in [
                     (400, None, 3),
                     (400, {"code": SECRET, "message": SECRET + TOKEN}, 2),

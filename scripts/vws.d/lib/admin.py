@@ -110,6 +110,8 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
         if etag:
             f.write("If-Match: " + etag + "\n")
     response = Path(directory) / "response"
+    # Curl can leave --output untouched for bodyless statuses such as 304.
+    response.write_bytes(b"")
     received = Path(directory) / "response.headers"
     args = ["curl", "-q", "--silent", "--show-error", "--max-time", "20",
             "--connect-timeout", "5", "--proto", "=http,https", "--request", method,
@@ -129,11 +131,13 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
     if result.returncode:
         fail("admin API transport failed (curl exit " + str(result.returncode) + ")", 3)
     raw = response.read_bytes()
+    status = int(result.stdout)
     try:
-        status = int(result.stdout)
         data = json.loads(raw) if raw else None
     except (ValueError, UnicodeError):
-        fail("admin API returned an invalid response", 3)
+        if 200 <= status < 300:
+            fail("admin API returned an invalid response", 3)
+        data = None
     if status >= 400:
         error = data.get("error") if isinstance(data, dict) else None
         request_id = data.get("requestId", "unknown") if isinstance(data, dict) else "unknown"
@@ -146,6 +150,12 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
             fail(redact(f"missing permission vws:{action} (requestId: {request_id})", credentials), 3)
         message = f"{error['code']}: {error['message']} (requestId: {request_id})"
         fail(redact(message, credentials), 2 if status == 400 else 3 if status == 401 or status >= 500 else 1)
+    if not 200 <= status < 300:
+        message = f"unexpected HTTP {status}"
+        request_id = data.get("requestId") if isinstance(data, dict) else None
+        if isinstance(request_id, str) and request_id:
+            message += f" (requestId: {request_id})"
+        fail(redact(message, credentials), 3)
     matches = re.findall(r'^etag:\s*("[^"\r\n]+")\s*$', received.read_text(), re.I | re.M)
     return raw, data, matches[-1] if matches else None
 
