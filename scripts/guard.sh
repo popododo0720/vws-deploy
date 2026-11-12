@@ -918,7 +918,7 @@ vws_layout_check() {
 cmd_vws() {
   local tmp test
   vws_layout_check . || die "R17: scripts/vws layout is broken"
-  for test in config region aws-account; do
+  for test in config region aws-account project; do
     bash "tests/vws/${test}.test.sh" || die "R17: the ${test} tests fail"
   done
   if command -v shellcheck >/dev/null; then
