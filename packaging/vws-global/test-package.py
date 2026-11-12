@@ -70,8 +70,14 @@ for path in ("usr/bin/vws-console-api", "usr/bin/vws-aws-proxy", "usr/bin/vws-ia
 
 class Ready(http.server.BaseHTTPRequestHandler):
     status = 200
+    unready = 0
 
     def do_GET(self):
+        if Ready.unready:
+            Ready.unready -= 1
+            self.send_response(503)
+            self.end_headers()
+            return
         self.send_response(self.status)
         self.end_headers()
 
@@ -107,6 +113,21 @@ for name, port in (("api", 8083), ("iam", 9096), ("console", 3000), ("proxy", No
             if socket.exists():
                 socket.unlink()
     run(probe, name, ok=False)
+
+# A daemon that answers 503 for its first 10 probes still starts; one that never does fails.
+server = http.server.HTTPServer(("127.0.0.1", 8083), Ready)
+thread = threading.Thread(target=server.serve_forever)
+thread.start()
+try:
+    Ready.status = 200
+    for unready, ok in ((10, True), (12, False)):
+        Ready.unready = unready
+        run(src / "check-ready", "api", ok=ok)
+finally:
+    Ready.unready = 0
+    server.shutdown()
+    thread.join()
+    server.server_close()
 run(src / "check-ready", "unknown", ok=False)
 
 # Run configuration twice against real filesystem permissions and fake OS commands.

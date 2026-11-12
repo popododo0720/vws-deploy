@@ -55,7 +55,8 @@ The proxy uses a private Unix socket shared only with the API group. Startup
 removes a stale socket, waits for HTTP, then grants group access. It has no
 `/healthz` or `/readyz`: the local probe expects its 403 rejection of an empty
 request, which cannot call AWS. Other units require `/readyz` status 200.
-All probes have three attempts, two-second request limits, and fail closed.
+All probes make up to 12 one-second requests one second apart (at most 23 s,
+inside `TimeoutStartSec=30`), so a daemon has time to bind, and fail closed.
 
 ```sh
 sudo systemctl enable --now vws-iam vws-aws-proxy vws-console-api vws-console
