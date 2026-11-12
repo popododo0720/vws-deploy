@@ -120,6 +120,25 @@ It accepts no registration or secret fields, prints STEP/RESULT/MESSAGE, and
 exits 1 if any step is not PASS, including with `-o json`. A 403 reports
 `vws:AdminListAwsAccounts` and requestId with exit 3.
 
+### vws config
+
+`vws config validate FILE|-` checks a global layer bootstrap file
+(`/etc/vws/global.yaml`, shipped by `packaging/vws-global`) with the rules
+vws-console-api applies at startup (`internal/globalconfig`). It accepts only
+the bootstrap keys: `iam.etcd_endpoints` (https://host:port) and `iam.tls`,
+`listeners`, `credentials.kek_file` and `credentials.mtls`, and
+`default_project`. A region or AWS account entry exits 2 and points at the
+admin API (`vws region`, `vws aws-account`). A secret written inline (a
+`secret`, `password`, `token`, `kek` or `key` key, a file field that is not a
+clean absolute path, or user info in an etcd URL) exits 2, as do unknown or
+duplicate keys, more than one document, a missing etcd endpoint, CA or KEK
+file, a bad listener, an invalid project name and a file over 64 KiB. An
+unreadable file exits 3. Messages name keys and line numbers, never a value
+from the file. `-o json` prints `{"valid":true}` or `valid`, `kind`
+(`registration`, `inline-secret` or `invalid`) and `error`. It reads only the
+file and needs python3 with PyYAML. `tests/vws/config_test.py` uses the case
+table of console-api's `TestParseRefusesWhatIsNotBootstrap`.
+
 ### vws help
 
 Shows the command list, common flags and exit codes. With `-o json`, one entry per command. Needs no cluster tools.
