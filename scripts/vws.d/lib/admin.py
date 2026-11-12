@@ -123,11 +123,16 @@ def request(base, path, method, body, action, token, directory, etag=None):
     except (ValueError, UnicodeError):
         fail("admin API returned an invalid response", 3)
     if status >= 400:
-        error = data.get("error", {}) if isinstance(data, dict) else {}
+        error = data.get("error") if isinstance(data, dict) else None
         request_id = data.get("requestId", "unknown") if isinstance(data, dict) else "unknown"
+        if not isinstance(request_id, str) or not request_id:
+            request_id = "unknown"
+        if (not isinstance(error, dict) or not isinstance(error.get("code"), str)
+                or not isinstance(error.get("message"), str)):
+            fail(f"unexpected API error response (HTTP {status}, requestId {request_id})", 3)
         if status == 403:
             fail(f"missing permission vws:{action} (requestId: {request_id})", 3)
-        message = f"{error.get('code', status)}: {error.get('message', 'API request failed')} (requestId: {request_id})"
+        message = f"{error['code']}: {error['message']} (requestId: {request_id})"
         for secret in (token, (body or {}).get("tokenSecret"), (body or {}).get("externalId")):
             if secret:
                 message = message.replace(secret, "[REDACTED]")

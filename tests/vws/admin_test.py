@@ -215,6 +215,20 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             result = run(args, code=3)
             check("403 action and requestId", "missing permission vws:" + action in result.stderr and "req-403" in result.stderr)
         if not MANUAL:
+            for envelope, request_id in [
+                    ({"error": None, "requestId": "r"}, "r"),
+                    ({"error": []}, "unknown"),
+                    ({"error": {"code": [], "message": "bad"}, "requestId": []}, "unknown"),
+                    ([], "unknown")]:
+                expected("GET", status=400, result=envelope)
+                result = run(["list"], code=3)
+                check("malformed error envelope has a clean diagnostic",
+                      f"unexpected API error response (HTTP 400, requestId {request_id})" in result.stderr
+                      and "Traceback" not in result.stderr)
+            expected("GET", status=400,
+                     result={"error": {"code": "InvalidArgument", "message": "invalid query"}, "requestId": "r"})
+            result = run(["list"], code=2)
+            check("valid argument error retains its usage exit", "InvalidArgument: invalid query" in result.stderr)
             run(["list"], code=3, env=dict(ENV, VWS_API_TOKEN="bad\nheader"))
             run(["edit", "../bad", SECRET_FLAG, str(secret_file)], code=2)
             run(["add", NAME] + FIELDS + [SECRET_FLAG, str(WORK / "absent")], code=3)
