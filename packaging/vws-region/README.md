@@ -47,7 +47,7 @@ sudo systemctl enable --now vws-region.service
 sudo /usr/lib/vws/check-region-ready
 ```
 
-The mTLS API listens on port 8443. Ops listens only on `127.0.0.1:8083`.
+The mTLS API listens on port 8443. Ops listens only on `127.0.0.1:8085`.
 The probe uses curl because console-api main has no `vws-region check` subcommand.
 One failed request removes readiness; keepalived supplies bounded repeat probes.
 

@@ -143,7 +143,7 @@ region endpoint you register in step 4.
 
 The package ships an example at
 `/usr/share/doc/vws-region/examples/keepalived.conf`. Its health script,
-`/usr/lib/vws/check-region-ready`, asks `http://127.0.0.1:8083/readyz` with a
+`/usr/lib/vws/check-region-ready`, asks `http://127.0.0.1:8085/readyz` with a
 2-second limit. The instance starts in BACKUP, and `init_fail` keeps a node from
 taking the VIP before it's ready. Set the interface, the VIP and prefix, a
 shared unused `virtual_router_id`, and a distinct priority per node, then run

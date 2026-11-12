@@ -6,6 +6,8 @@ mkdir -p "$root/build"
 tmp=$(mktemp -d "$root/build/region-test.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+python3 "$src/../check-ops-ports.py"
+python3 "$src/../test-ops-ports.py" "$src/.." "$tmp"
 python3 "$src/test-postinst.py" "$src/postinst" "$tmp"
 printf '#!/bin/sh\nexit 0\n' > "$tmp/stub"
 chmod 0755 "$tmp/stub"
@@ -72,7 +74,7 @@ class Ready(http.server.BaseHTTPRequestHandler):
         pass
 
 http.server.HTTPServer.allow_reuse_address = True
-server = http.server.HTTPServer(("127.0.0.1", 8083), Ready)
+server = http.server.HTTPServer(("127.0.0.1", 8085), Ready)
 thread = threading.Thread(target=server.serve_forever)
 thread.start()
 try:
@@ -85,6 +87,16 @@ finally:
     thread.join()
     server.server_close()
 assert subprocess.run([sys.argv[1]], check=False).returncode != 0
+server = http.server.HTTPServer(("127.0.0.1", 8083), Ready)
+thread = threading.Thread(target=server.serve_forever)
+thread.start()
+try:
+    assert subprocess.run([sys.argv[1]], check=False).returncode != 0
+finally:
+    server.shutdown()
+    thread.join()
+    server.server_close()
+print("global API readiness on 8083 cannot satisfy region readiness")
 print("readiness: ready, unready, recovered and stopped OK")
 PY
 python3 - "$src" <<'PY'
