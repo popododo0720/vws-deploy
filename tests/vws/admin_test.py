@@ -43,6 +43,9 @@ class Stub(BaseHTTPRequestHandler):
     def handle_request(self):
         data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = json.loads(data) if data else None
+        if self.path.endswith("/test") and KIND == "aws-account":
+            if data != b"{}" or self.headers.get("Content-Type") != "application/json":
+                ERRORS.append("saved test requires exactly {} and application/json")
         REQUESTS.append((self.command, self.path, body, self.headers.get("If-Match")))
         if self.headers.get("Authorization") != "Bearer " + TOKEN:
             ERRORS.append("bearer token did not match")
@@ -193,13 +196,34 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
                          result={"steps": [dict(name="regionapi", result="PASS", message="connected")]})
                 run(["test", NAME])
         else:
-            run(["test", NAME], code=2)
+            for outcome, code in (("PASS", 0), ("FAIL", 1), ("SKIPPED", 1)):
+                steps = {"steps": [dict(name="assume_role", result=outcome, message="AssumeRole " + outcome),
+                                   dict(name="get_caller_identity", result=outcome, message="identity " + outcome)]}
+                for mode in ("text", "json"):
+                    expected("POST", BASE + "/" + NAME + "/test", {}, result=steps)
+                    result = run(["test", NAME, "-o", mode], code=code)
+                    check("saved test table or exact JSON", result.stdout == json.dumps(steps) + "\n"
+                          if mode == "json" else all(v in result.stdout for v in
+                              ("STEP\tRESULT\tMESSAGE", "assume_role\t" + outcome, "get_caller_identity")))
+            for mode in ("text", "json"):
+                expected("POST", BASE + "/" + NAME + "/test", {},
+                         result={"steps": [dict(name="assume_role", result="PASS", message=TOKEN)]})
+                result = run(["test", NAME, "-o", mode])
+                check("step bearer token is redacted", "[REDACTED]" in result.stdout)
+            for invalid in ("12345678901", "1234567890123", "abcdefghijkl"):
+                run(["test", invalid], code=2)
+            run(["test", NAME, SECRET_FLAG, str(secret_file)], code=2)
+            for status in (302, 304, 500):
+                expected("POST", BASE + "/" + NAME + "/test", {}, status=status,
+                         result={"error": {"code": "Unavailable", "message": "test unavailable"}, "requestId": "req-test"})
+                run(["test", NAME], code=3)
         suffix = "Region" if KIND == "region" else "AwsAccount"
         ops = [("list", "AdminList" + suffix + "s"), ("add", "AdminRegister" + suffix),
-               ("edit", "AdminUpdate" + suffix), ("remove", "AdminRemove" + suffix)]
+               ("edit", "AdminUpdate" + suffix), ("remove", "AdminRemove" + suffix),
+               ("test", "AdminList" + suffix + "s")]
         if KIND == "region":
-            ops += [(op, "AdminListRegions") for op in ("show", "test", "health")]
-        for op, action in ops if not MANUAL else ops[:1]:
+            ops += [(op, "AdminListRegions") for op in ("show", "health")]
+        for op, action in ops if not MANUAL else ops[-1:]:
             method = {"add": "POST", "remove": "DELETE", "test": "POST"}.get(op, "GET")
             path = BASE if op in ("list", "add") else BASE + "/" + NAME
             if op in ("test", "health"):

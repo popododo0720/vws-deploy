@@ -35,9 +35,9 @@ def parse(kind, argv):
         if arg.split("=", 1)[0] in ("--token-secret", "--external-id"):
             fail("secrets require --token-secret-file or --external-id-file")
     p = Parser(prog="vws " + kind, allow_abbrev=False)
-    commands = ["add", "edit", "remove", "list"]
+    commands = ["add", "edit", "remove", "list", "test"]
     if kind == "region":
-        commands += ["show", "test", "health"]
+        commands += ["show", "health"]
     p.add_argument("operation", choices=commands)
     p.add_argument("name", nargs="?")
     fields = ({"--cluster-name": "clusterName", "--pve-api-url": "pveApiUrl",
@@ -60,7 +60,7 @@ def parse(kind, argv):
             if getattr(a, field) is not None}
     if a.operation not in ("add", "edit") and body:
         fail("registration fields are accepted only by add and edit")
-    if a.secret_file and a.operation not in ("add", "edit", "test"):
+    if a.secret_file and a.operation not in (("add", "edit", "test") if kind == "region" else ("add", "edit")):
         fail("secret file is not accepted by this operation")
     if a.operation == "add":
         required = (["clusterName", "pveApiUrl", "tokenId", "regionEndpoint"]
@@ -231,7 +231,8 @@ def main():
             sys.stdout.buffer.write(raw if safe == data else (json.dumps(safe) + "\n").encode())
         else:
             text_output(kind, a.operation, data, credentials)
-        return int(a.operation == "test" and any(s["result"] == "FAIL" for s in data["steps"]))
+        return int(a.operation == "test" and any(
+            s["result"] != "PASS" if kind == "aws-account" else s["result"] == "FAIL" for s in data["steps"]))
 
 
 if __name__ == "__main__":
