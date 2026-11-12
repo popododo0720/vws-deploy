@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # vws: one command for deploying and operating VWS. One file per command in scripts/vws.d/.
 # Usage: scripts/vws [flags] <command> [args]. Design: vws-deploy#43. Details: docs/vws-cli.md.
+# Disable tracing before argument parsing: even refused secret arguments must stay private.
+set +x
 set -euo pipefail
 
 VWS_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -10,6 +12,15 @@ VWS_COMMAND_DIR=${VWS_COMMAND_DIR:-${VWS_ROOT}/scripts/vws.d}
 export VWS_COMMAND_DIR
 # shellcheck source=scripts/vws.d/lib/common.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/common.sh"
+
+for arg in "$@"; do
+  case $arg in
+    --token-secret-file | --token-secret-file=* | --external-id-file | --external-id-file=*) ;;
+    --token-secret* | --external-id*)
+      vws_usage "secrets require --token-secret-file or --external-id-file"
+      ;;
+  esac
+done
 
 command_name=
 args=()
@@ -21,7 +32,7 @@ while (($#)); do
         --context) VWS_CONTEXT=$2 ;;
         --namespace | -n) VWS_NAMESPACE=$2 ;;
         -o)
-          [[ $2 == text || $2 == json ]] || vws_usage "-o must be text or json, not $2"
+          [[ $2 == text || $2 == json ]] || vws_usage "-o must be text or json"
           VWS_OUTPUT=$2
           ;;
       esac
@@ -32,7 +43,7 @@ while (($#)); do
         --context=*) VWS_CONTEXT=${1#*=} ;;
         --namespace=*) VWS_NAMESPACE=${1#*=} ;;
         -o=*)
-          [[ ${1#*=} == text || ${1#*=} == json ]] || vws_usage "-o must be text or json, not ${1#*=}"
+          [[ ${1#*=} == text || ${1#*=} == json ]] || vws_usage "-o must be text or json"
           VWS_OUTPUT=${1#*=}
           ;;
       esac
@@ -53,7 +64,7 @@ while (($#)); do
         args+=("$1")
         shift
       else
-        vws_usage "unknown flag $1"
+        vws_usage "unknown flag"
       fi
       ;;
     *)
@@ -65,14 +76,14 @@ done
 export VWS_CONTEXT VWS_NAMESPACE VWS_OUTPUT VWS_DRY_RUN VWS_YES VWS_STRICT
 
 [[ -n $command_name ]] || vws_usage "no command; try: scripts/vws help"
-[[ $command_name =~ ^[a-z][a-z0-9-]*$ ]] || vws_usage "unknown command ${command_name}"
+[[ $command_name =~ ^[a-z][a-z0-9-]*$ ]] || vws_usage "unknown command; try: scripts/vws help"
 file="${VWS_COMMAND_DIR}/${command_name}.sh"
-[[ -f $file ]] || vws_usage "unknown command ${command_name}; try: scripts/vws help"
+[[ -f $file ]] || vws_usage "unknown command; try: scripts/vws help"
 
 VWS_NEED=()
 # shellcheck source=/dev/null
 source "$file"
-declare -F vws_cmd_main >/dev/null || vws_die_env "${file} defines no vws_cmd_main"
+declare -F vws_cmd_main >/dev/null || vws_die_env "command module defines no vws_cmd_main"
 if ((${#VWS_NEED[@]})); then vws_need "${VWS_NEED[@]}"; fi
 vws_cmd_main "${args[@]+"${args[@]}"}"
 vws_finish

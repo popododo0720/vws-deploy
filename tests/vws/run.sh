@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs every tests/vws/*.test.sh (or VWS_TEST_DIR/*.test.sh). No cluster, no network: scripts/vws runs against
-# fake kubectl and helm.
+# Runs every tests/vws/*.test.sh (or VWS_TEST_DIR/*.test.sh). No cluster or external network:
+# admin commands use loopback HTTP stubs; other commands run against fake kubectl and helm.
 # Each suite prints its own "N cases, M failed" line. This runner adds them up over every suite and prints one
 # total, so a FAIL in an early suite is not hidden behind the last suite's "0 failed". A suite's failures are
 # the larger of its summary count and its FAIL lines; a suite that exits without a summary counts as one, and
