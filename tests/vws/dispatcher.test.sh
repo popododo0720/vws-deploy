@@ -9,7 +9,7 @@ run_vws_real help;                  expect_rc "help exits 0" 0
 run_vws_real --help;                expect_rc "--help exits 0" 0
 run_vws;                            expect_rc "no command exits 2" 2
 run_vws nope;                       expect_rc "unknown command exits 2" 2
-expect_text "unknown command is named" "$ERR" "unknown command nope"
+expect_text "unknown command is reported" "$ERR" "unknown command"
 run_vws '../etc/passwd';            expect_rc "a path as command exits 2" 2
 run_vws --bogus readonly;           expect_rc "unknown flag before the command exits 2" 2
 run_vws readonly --context;         expect_rc "flag without value exits 2" 2
@@ -39,12 +39,41 @@ for command in region aws-account; do
 done
 run_vws --bogus="$canary" readonly
 expect_rc "unknown flag value is rejected" 2
-expect_text "unknown flag name is reported" "$ERR" "unknown flag --bogus"
+expect_text "unknown flag is reported" "$ERR" "unknown flag"
 if [[ $OUT != *"$canary"* && $ERR != *"$canary"* ]]; then
   ok "unknown flag value stays private"
 else
   bad "unknown flag value stays private" "value appeared in output"
 fi
+
+for value in "$canary" "token-secret=$canary" "external-id=$canary"; do
+  for command in region aws-account; do
+    for form in separate equals; do
+      output_args=(-o "$value")
+      [[ $form != equals ]] || output_args=("-o=$value")
+      for position in before after; do
+        if [[ $position == before ]]; then
+          run_vws_real "${output_args[@]}" "$command" list
+        else
+          run_vws_real "$command" list "${output_args[@]}"
+        fi
+        expect_rc "$command output format $form $position is rejected" 2
+        if [[ $OUT != *"$canary"* && $ERR != *"$canary"* ]]; then
+          ok "$command output format $form $position keeps the canary private"
+        else
+          bad "$command output format $form $position keeps the canary private" "value appeared in output"
+        fi
+      done
+    done
+  done
+  run_vws_real "$value"
+  expect_rc "unknown command value is rejected" 2
+  if [[ $OUT != *"$canary"* && $ERR != *"$canary"* ]]; then
+    ok "unknown command value stays private"
+  else
+    bad "unknown command value stays private" "value appeared in output"
+  fi
+done
 
 # A missing tool exits 3. PATH has the system tools and the fake kubectl, but no helm.
 mkdir -p "${WORK}/nohelm"
