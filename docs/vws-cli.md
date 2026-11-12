@@ -323,8 +323,10 @@ Rollback limits (also printed as WARNs):
 shared slot check. It is a sibling of `vws nightly`, which remains the
 Kubernetes feature-map runner called by `vws nightly-e2e`.
 
-Set `VWS_API_URL` to the console HTTPS origin and `VWS_API_TOKEN_FILE` to a
-console token file. HTTP is allowed only on loopback. The runner reads its
+Set `VWS_API_URL` to the console HTTPS origin, `VWS_API_TOKEN_FILE` to a
+console token file, and the required `VWS_LIVE_PVE_URL` to the PVE origin
+pinned independently on the runner. Both origins require HTTPS; HTTP is
+allowed only on loopback. The runner reads its
 PVE token only from `${CREDENTIALS_DIRECTORY}/pve-token`, supplied by systemd
 `LoadCredential=pve-token:/path/on/verification-runner`. Its single-line
 content is `vws@pve!live=<secret>`; never put it in argv, environment values,
@@ -336,16 +338,22 @@ Grant both the user and the separated token the required permissions.
 
 The read-only gate requires capability `kind: proxmox`, `cluster.name:
 pve-test`, `features.liveTests: true`, exactly one health node, a valid
-`pveApiUrl`, and an existing `vws-live` pool. `live_tests` comes from
+`pveApiUrl` matching `VWS_LIVE_PVE_URL`, and an existing `vws-live` pool.
+An unset or invalid pin, or a console origin mismatch, exits 3 before any
+PVE request. Every PVE request uses the runner's pinned origin.
+`live_tests` comes from
 `features.liveTests` in popododo0720/vws-console-api#943: until it ships, the
 missing field refuses the run. The gate makes read calls; no sweep, step or
 PVE write starts before it passes.
 
-Both start and end sweeps stop and delete non-template QEMU VMs in pool
-`vws-live` with a semicolon-separated tag matching `vws.live.*`. They delete
-every non-current snapshot of remaining pool VMs and snippets named
-`vws-<uuid>-user.yaml` owned by deleted live VMs or with no VM holding that
-SMBIOS UUID anywhere on the cluster. Other VMs and snippets stay. Snippets
+Both start and end sweeps remove non-template QEMU VMs in pool `vws-live`
+with a semicolon-separated tag matching `vws.live.*`. For each live VM,
+read its config UUID, delete only its `vws-<uuid>-user.yaml` snippet, then
+stop and delete the VM. A missing snippet counts as already removed.
+If interrupted before VM deletion, the next sweep finds that VM and
+retries its snippet cleanup. Every other snippet stays, including apparent
+orphans and snippets belonging to VMs hidden from the token. The sweeps
+also delete every non-current snapshot of remaining pool VMs. Snippets
 storage defaults to `local`; `--pve-ca-file` supplies a trusted PVE CA file.
 Every HTTP call has a 20-second timeout; GETs retry transient errors with
 1- and 2-second backoff. Each asynchronous task has a 120-second deadline
