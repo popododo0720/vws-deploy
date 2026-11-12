@@ -5,6 +5,8 @@ root=$(CDPATH='' cd -- "$src/../.." && pwd)
 mkdir -p "$root/build"
 tmp=$(mktemp -d "$root/build/region-test.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+python3 "$src/test-postinst.py" "$src/postinst" "$tmp"
 printf '#!/bin/sh\nexit 0\n' > "$tmp/stub"
 chmod 0755 "$tmp/stub"
 "$src/build.sh" 0.0.0-1 "$tmp/stub" "$tmp/stub" "$tmp"
