@@ -5,4 +5,4 @@ as described in [operator/regions.md](operator/regions.md).
 
 Issue #773 removes the platform manifests, renderer, component pins, installer
 bundle copy, bundle version drift checks and Kube-OVN gateway image generation.
-The chart remains until #774; #775 removes the Kubernetes installer, CLI and this page.
+Issue #774 removes the Helm chart and its CRDs; #775 removes the Kubernetes installer, CLI and this page.
