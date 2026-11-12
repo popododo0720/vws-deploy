@@ -104,9 +104,14 @@ PY
 
 cmd_assets() {
   python3 - <<'PY'
+import re
 import sys
 from pathlib import Path
 
+endpoint_url = re.compile(r"https://[a-z0-9.{}-]+\.am[a]zonaws\.com\b")
+assert endpoint_url.sub("", "https://ec2.{region}.ama" + "zonaws.com") == ""
+notice = "ama" + "zon is a trade" + "mark of"
+assert endpoint_url.sub("", notice) == notice
 skip = {".git", "build", ".cache"}
 images = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp"}
 needles = [
@@ -129,7 +134,7 @@ for path in Path(".").rglob("*"):
         continue
     if path.name == "LICENSE":
         continue
-    text = path.read_text(errors="ignore").lower()
+    text = endpoint_url.sub("", path.read_text(errors="ignore").lower())
     for needle in needles:
         if needle.lower() in text:
             print(f"R7: brand-ownership notice in {path}", file=sys.stderr)
