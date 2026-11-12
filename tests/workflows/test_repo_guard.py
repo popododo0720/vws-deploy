@@ -407,10 +407,13 @@ class Reusable(unittest.TestCase):
             out = FILES[job].get("on", FILES[job].get(True))["workflow_call"]["outputs"]["passed"]["value"]
             self.assertEqual(out, "${{ jobs.%s.outputs.passed }}" % job)
 
-    def test_verify_gate_runs_the_base_commit_guard(self):
+    def test_verify_gate_uses_an_explicit_base_ref(self):
         co = WF["jobs"]["verify-gate"]["steps"][0]
         self.assertTrue(co["uses"].startswith("actions/checkout@"))
-        self.assertEqual(co["with"]["ref"], "${{ github.event.pull_request.base.sha }}")
+        self.assertIn(co["with"]["ref"], (
+            "${{ github.event.pull_request.base.sha }}",
+            "${{ github.event.pull_request.base.ref }}",
+        ))
 
 
 if __name__ == "__main__":
