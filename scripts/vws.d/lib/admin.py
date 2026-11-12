@@ -30,7 +30,57 @@ def read_file(path):
         fail("cannot read input file", 3)
 
 
+def parse_project(argv):
+    p = Parser(prog="vws project", allow_abbrev=False)
+    p.add_argument("operation", choices=["show", "map", "unmap"])
+    p.add_argument("name")
+    p.add_argument("--region")
+    p.add_argument("--pool")
+    p.add_argument("--aws-account")
+    a = p.parse_args(argv)
+    if not re.fullmatch(r"[0-9]{12}", a.name):
+        fail("project must be a 12-digit ID")
+    if a.operation == "show":
+        if any(v is not None for v in (a.region, a.pool, a.aws_account)):
+            fail("show accepts no mapping fields")
+    elif a.aws_account is not None:
+        if a.region is not None or a.pool is not None or not re.fullmatch(r"[0-9]{12}", a.aws_account):
+            fail("use either --region with --pool or a 12-digit --aws-account")
+    elif (a.region is None or a.pool is None or len(a.region) > 63
+          or not re.fullmatch(r"pve-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+", a.region)
+          or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", a.pool)):
+        fail("use --region with a valid --pool, or --aws-account")
+    return a, {}
+
+
+def project_update(a, data):
+    if (not isinstance(data, dict) or data.get("project") != a.name
+            or not isinstance(data.get("pools"), list)
+            or not isinstance(data.get("awsAccounts"), list)
+            or not all(isinstance(v, str) for v in data["awsAccounts"])
+            or not all(isinstance(v, dict) and isinstance(v.get("region"), str)
+                       and isinstance(v.get("pool"), str) for v in data["pools"])):
+        fail("admin API returned an invalid project mapping; PUT was not sent", 3)
+    body = {"pools": list(data["pools"]), "awsAccounts": list(data["awsAccounts"])}
+    key = "awsAccounts" if a.aws_account else "pools"
+    entry = a.aws_account if a.aws_account else {"region": a.region, "pool": a.pool}
+    if a.operation == "unmap":
+        if entry not in body[key]:
+            fail("project mapping entry not found; unmap was not sent", 1)
+        body[key].remove(entry)
+    elif a.aws_account:
+        if entry not in body[key]:
+            body[key].append(entry)
+    elif any(v["region"] == a.region for v in body[key]):
+        body[key] = [entry if v["region"] == a.region else v for v in body[key]]
+    else:
+        body[key].append(entry)
+    return body
+
+
 def parse(kind, argv):
+    if kind == "project":
+        return parse_project(argv)
     for arg in argv:
         if arg.split("=", 1)[0] in ("--token-secret", "--external-id"):
             fail("secrets require --token-secret-file or --external-id-file")
@@ -143,11 +193,11 @@ def request(base, path, method, body, action, credentials, directory, etag=None)
         request_id = data.get("requestId", "unknown") if isinstance(data, dict) else "unknown"
         if not isinstance(request_id, str) or not request_id:
             request_id = "unknown"
+        if status == 403:
+            fail(redact(f"missing permission vws:{action} (requestId: {request_id})", credentials), 3)
         if (not isinstance(error, dict) or not isinstance(error.get("code"), str)
                 or not isinstance(error.get("message"), str)):
             fail(redact(f"unexpected API error response (HTTP {status}, requestId {request_id})", credentials), 3)
-        if status == 403:
-            fail(redact(f"missing permission vws:{action} (requestId: {request_id})", credentials), 3)
         message = f"{error['code']}: {error['message']} (requestId: {request_id})"
         fail(redact(message, credentials), 2 if status == 400 else 3 if status == 401 or status >= 500 else 1)
     if not 200 <= status < 300:
@@ -174,7 +224,8 @@ def text_output(kind, operation, data, credentials):
         emit(f"{data['status']}\t{data['quorate']}\t{data['leader'] or '-'}\t"
               f"{nodes or '-'}\t{(data.get('lastError') or {}).get('message', '-')}")
     elif data is not None:
-        fields = (["name", "clusterName", "pveApiUrl", "regionEndpoint", "tokenId", "tokenSecret", "zones"]
+        fields = (["project", "pools", "awsAccounts"] if kind == "project" else
+                  ["name", "clusterName", "pveApiUrl", "regionEndpoint", "tokenId", "tokenSecret", "zones"]
                   if kind == "region" else ["awsAccountId", "roleArn", "externalId", "allowedRegions"])
         emit("\t".join(fields))
         for item in data["items"] or [] if operation == "list" else [data]:
@@ -192,14 +243,19 @@ def text_output(kind, operation, data, credentials):
 def main():
     kind = sys.argv[1]
     a, body = parse(kind, sys.argv[2:])
-    collection = "/api/v1/admin/" + ("regions" if kind == "region" else "aws-accounts")
+    collection = "/api/v1/admin/" + {"region": "regions", "aws-account": "aws-accounts",
+                                    "project": "projects"}[kind]
     path = collection if a.operation in ("add", "list") else collection + "/" + a.name
     method = {"add": "POST", "edit": "PATCH", "remove": "DELETE", "test": "POST"}.get(a.operation, "GET")
+    if a.operation in ("map", "unmap"):
+        method = "PUT"
     if a.operation in ("test", "health"):
         path += "/" + a.operation
-    if a.operation == "remove" and not os.environ.get("VWS_YES"):
-        fail("remove needs --yes")
+    if a.operation in ("remove", "unmap") and not os.environ.get("VWS_YES"):
+        fail(a.operation + " needs --yes")
     if os.environ.get("VWS_DRY_RUN"):
+        if method == "PUT":
+            print(f"DRYRUN GET {path}")
         print(f"DRYRUN {method} {path}")
         return 0
     base = os.environ.get("VWS_API_URL", "").rstrip("/")
@@ -217,6 +273,8 @@ def main():
     suffix = "Region" if kind == "region" else "AwsAccount"
     action = {"add": "AdminRegister" + suffix, "edit": "AdminUpdate" + suffix,
               "remove": "AdminRemove" + suffix}.get(a.operation, "AdminList" + suffix + "s")
+    if kind == "project":
+        action = "AdminMapProject"
     credentials = (token, body.get("tokenSecret"), body.get("externalId"))
     with tempfile.TemporaryDirectory(prefix="vws-admin-") as directory:
         etag = None
@@ -224,7 +282,12 @@ def main():
             _, _, etag = request(base, path, "GET", None, action, credentials, directory)
             if not etag:
                 fail("admin API GET returned no ETag; edit was not sent", 3)
-        raw, data, _ = request(base, path, method, body if method in ("POST", "PATCH") else None,
+        if method == "PUT":
+            _, current, etag = request(base, path, "GET", None, action, credentials, directory)
+            if not etag:
+                fail("admin API GET returned no ETag; PUT was not sent", 3)
+            body = project_update(a, current)
+        raw, data, _ = request(base, path, method, body if method in ("POST", "PATCH", "PUT") else None,
                                action, credentials, directory, etag)
         if os.environ.get("VWS_OUTPUT", "text") == "json":
             safe = redact(data, credentials)
