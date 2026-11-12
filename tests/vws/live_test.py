@@ -34,6 +34,8 @@ class Stub(BaseHTTPRequestHandler):
         auth = "Bearer " + TOKEN if path.startswith("/api/v1/") else "PVEAPIToken" + "=vws@pve!live=" + SECRET
         if self.headers.get("Authorization") != auth:
             s.errors.append("authorization mismatch")
+        if path.startswith(PVE) and self.headers.get("Host") != f"127.0.0.1:{s.server_port}":
+            s.errors.append("PVE origin did not match the runner pin")
         status, data = 200, {}
         if path.endswith("/capabilities"):
             data = s.cap
@@ -50,10 +52,15 @@ class Stub(BaseHTTPRequestHandler):
                 s.release.wait()
             data = {"data": copy.deepcopy(s.vms)}
         elif "/tasks/" in path:
-            data = {"data": {"status": "stopped", "exitstatus": SECRET if s.task_fail else "OK"}}
+            data = {"data": {"status": "stopped", "exitstatus": SECRET if s.task_fail or s.fail_once else "OK"}}
+            s.fail_once = False
         elif "/storage/" in path:
             if self.command == "DELETE":
-                s.snippets.remove(path.split("/content/", 1)[1])
+                volid = path.split("/content/", 1)[1]
+                if volid in s.snippets:
+                    s.snippets.remove(volid)
+                else:
+                    status = 404
                 data = {"data": None}
             else:
                 data = {"data": [{"volid": v} for v in s.snippets]}
@@ -102,7 +109,7 @@ class LiveTests(unittest.TestCase):
         s.calls, s.errors, s.resource_reads = [], [], 0
         s.replies, s.uuids = {}, {}
         s.arrived, s.release, ready = threading.Event(), threading.Event(), threading.Event()
-        s.block = s.gone = s.task_fail = False
+        s.block = s.gone = s.task_fail = s.fail_once = False
         s.cap = {"kind": "proxmox", "cluster": {"name": "pve-test"}, "features": {"liveTests": True}}
         s.health = {"nodes": [{"name": "node1"}]}
         s.pve_url = self.base = f"http://127.0.0.1:{s.server_port}"
@@ -122,7 +129,8 @@ class LiveTests(unittest.TestCase):
         self.thread = threading.Thread(target=serve)
         self.thread.start()
         self.assertTrue(ready.wait(5))
-        self.env = dict(os.environ, VWS_API_URL=self.base, VWS_API_TOKEN_FILE=str(self.work / "console"),
+        self.env = dict(os.environ, VWS_API_URL=self.base, VWS_LIVE_PVE_URL=self.base,
+                        VWS_API_TOKEN_FILE=str(self.work / "console"),
                         CREDENTIALS_DIRECTORY=str(self.work), VWS_COMMAND_DIR=str(ROOT / "scripts/vws.d"))
         self.env.pop("VWS_API_TOKEN", None)
         self.results = self.work / "results"
@@ -197,6 +205,21 @@ class LiveTests(unittest.TestCase):
         (self.work / "pve-token").write_text("root@pam!admin=" + SECRET)
         self.assert_refused()
 
+    def test_pinned_origin(self):
+        self.s.pve_url = f"http://localhost:{self.s.server_port}"
+        self.run_cli(3)
+        self.assertFalse(any(p.startswith(PVE) for _, p in self.s.calls))
+        self.s.pve_url = self.base
+        for pin in (None, "", "http://remote.example.org", "https://[bad", "https://example.org/path"):
+            self.s.calls.clear()
+            env = dict(self.env)
+            if pin is None:
+                env.pop("VWS_LIVE_PVE_URL")
+            else:
+                env["VWS_LIVE_PVE_URL"] = pin
+            self.run_cli(3, env=env)
+            self.assertFalse(any(p.startswith(PVE) for _, p in self.s.calls))
+
     def test_gate_reply_shapes(self):
         for path, payload in ((CONSOLE + "/health", []), (CONSOLE, []),
                               (CONSOLE, {"pveApiUrl": []}), (PVE + "/pools/vws-live", {"data": []}),
@@ -209,12 +232,15 @@ class LiveTests(unittest.TestCase):
     def test_happy_and_resume(self):
         self.run_cli()
         writes = [(m, p.removeprefix(PVE)) for m, p in self.s.calls if m != "GET"]
-        expected = [("POST", "/nodes/node1/qemu/101/status/stop")]
-        expected += [("DELETE", f"/nodes/node1/qemu/{n}?purge=1&destroy-unreferenced-disks=1") for n in (101, 102)]
+        expected = []
+        for n in (101, 102):
+            expected.append(("DELETE", f"/nodes/node1/storage/local/content/local:snippets/vws-{ident(n)}-user.yaml"))
+            if n == 101:
+                expected.append(("POST", "/nodes/node1/qemu/101/status/stop"))
+            expected.append(("DELETE", f"/nodes/node1/qemu/{n}?purge=1&destroy-unreferenced-disks=1"))
         expected += [("DELETE", f"/nodes/node1/qemu/{n}/snapshot/old") for n in (103, 106)]
-        expected += [("DELETE", f"/nodes/node1/storage/local/content/local:snippets/vws-{ident(n)}-user.yaml")
-                     for n in (101, 102, 999)]
         self.assertEqual(writes, expected)
+        self.assertIn(f"local:snippets/vws-{ident(999)}-user.yaml", self.s.snippets)
         self.assertEqual([v["vmid"] for v in self.s.vms], [103, 104, 105, 106])
         self.assertEqual(json.loads((self.results / "results.json").read_text())["result"], "pass")
         self.s.calls.clear()
@@ -230,6 +256,20 @@ class LiveTests(unittest.TestCase):
         self.s.uuids[103] = ident(101)
         self.run_cli()
         self.assertNotIn(f"local:snippets/vws-{ident(101)}-user.yaml", self.s.snippets)
+
+    def test_missing_snippet_and_retry(self):
+        self.s.snippets.remove(f"local:snippets/vws-{ident(102)}-user.yaml")
+        missing = PVE + f"/nodes/node1/storage/local/content/local:snippets/vws-{ident(102)}-user.yaml"
+        self.s.replies[missing] = (500, {"data": None})
+        self.s.fail_once = True
+        self.run_cli(1)
+        snippet = ("DELETE", PVE + f"/nodes/node1/storage/local/content/local:snippets/vws-{ident(101)}-user.yaml")
+        deletes = [i for i, call in enumerate(self.s.calls) if call == snippet]
+        vm = ("DELETE", PVE + "/nodes/node1/qemu/101?purge=1&destroy-unreferenced-disks=1")
+        self.assertEqual(len(deletes), 2)
+        self.assertLess(deletes[-1], self.s.calls.index(vm))
+        self.s.calls.clear()
+        self.run_cli()
 
     def test_failed_task(self):
         self.s.task_fail = True
@@ -250,7 +290,7 @@ class LiveTests(unittest.TestCase):
 
     def test_slot_need(self):
         self.results.mkdir()
-        (self.results / ".gate.json").write_text(json.dumps([self.base, "node1"]))
+        (self.results / ".gate.json").write_text(json.dumps([f"http://localhost:{self.s.server_port}", "node1"]))
         small = [self.s.vms[2], self.s.vms[-1]]
         small[0]["maxmem"] = 2 * 1024 ** 3
         for vms, need, code in ((self.s.vms, 0, 1), (self.s.vms, 3, 1), (self.s.vms, -1, 2),
@@ -273,8 +313,10 @@ class LiveTests(unittest.TestCase):
                 self.run_cli(3)
                 os.kill(p.pid, sig)
             finally:
-                self.s.release.set()
-                out, err = p.communicate(timeout=60)
+                try:
+                    out, err = p.communicate(timeout=60)
+                finally:
+                    self.s.release.set()
                 self.outputs.append(out + err)
             self.assertEqual(p.returncode, code, out + err)
             self.assertTrue((self.results / "l0-end.json").exists())

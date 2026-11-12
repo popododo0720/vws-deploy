@@ -57,13 +57,14 @@ class Client:
             raise Refused("invalid console or runner credential")
         self.secrets = (self.console, self.token, self.token.partition("=")[2])
         self.base = origin(os.environ.get("VWS_API_URL", "").rstrip("/"))
+        self.pve = origin(os.environ.get("VWS_LIVE_PVE_URL", "").rstrip("/"))
         self.opener = build_opener(ProxyHandler({}), NoRedirect(),
                                   HTTPSHandler(context=ssl.create_default_context(cafile=a.pve_ca_file)))
         self.console_opener = build_opener(ProxyHandler({}), NoRedirect())
         self.a, self.steps = a, []
         self.state = Path(a.results) / ".gate.json"
         if a.operation != "gate":
-            self.pve, self.node = json.loads(self.state.read_text())
+            _, self.node = json.loads(self.state.read_text())
 
     def request(self, path, method="GET", console=False, deadline=None):
         base = self.base if console else self.pve + "/api2/json"
@@ -122,7 +123,11 @@ class Client:
         if not isinstance(self.node, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", self.node):
             raise Refused("invalid health node")
         region = self.request("/api/v1/admin/regions/" + self.a.region, console=True)
-        self.pve = origin(region["pveApiUrl"])
+        reported, pinned = urlsplit(origin(region["pveApiUrl"])), urlsplit(self.pve)
+        ports = {"https": 443, "http": 80}
+        if (reported.scheme, reported.hostname, reported.port or ports[reported.scheme]) != (
+                pinned.scheme, pinned.hostname, pinned.port or ports[pinned.scheme]):
+            raise Refused("console pveApiUrl does not match VWS_LIVE_PVE_URL")
         pool = self.request("/pools/vws-live")
         if not isinstance(pool, dict):
             raise Refused("invalid pool response")
@@ -175,11 +180,27 @@ class Client:
         except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             self.emit(name, False, str(e) if isinstance(e, Refused) else "invalid sweep data")
 
+    def delete_snippet(self, v, ident):
+        volid = self.a.snippets_storage + ":snippets/vws-" + ident + "-user.yaml"
+        path = ("/nodes/" + quote(v["node"], safe="") + "/storage/" +
+                quote(self.a.snippets_storage, safe="") + "/content")
+        try:
+            task = self.request(path + "/" + quote(volid, safe=""), "DELETE")
+        except HTTPFailure as e:
+            if e.status != 404 and (e.status != 500 or any(
+                    s["volid"] == volid for s in self.request(path + "?content=snippets"))):
+                raise
+        else:
+            if task is not None:
+                self.wait(v["node"], task)
+        self.emit("sweep/snippet/" + volid, True)
+
     def delete_vm(self, v):
         path = self.vm_path(v)
-        ident = None
         try:
             ident = self.config_uuid(self.request(path + "/config"))
+            if ident:
+                self.delete_snippet(v, ident)
             if v.get("status") == "running":
                 self.wait(v["node"], self.request(path + "/status/stop", "POST"))
             self.wait(v["node"], self.request(path + "?purge=1&destroy-unreferenced-disks=1", "DELETE"))
@@ -187,26 +208,14 @@ class Client:
             if e.status not in (404, 500) or any(
                     x.get("vmid") == v["vmid"] for x in self.resources()):
                 raise
-        if ident:
-            self.deleted.add(ident)
 
     def sweep(self):
-        self.deleted = set()
         resources = self.resources()
-        nodes = {self.node} | {v["node"] for v in resources if self.candidate(v)}
         for v in resources:
             if self.candidate(v) and any(re.fullmatch(r"vws\.live\..+", tag)
                                          for tag in v.get("tags", "").split(";")):
                 self.item("sweep/vm/" + str(v["vmid"]), lambda v=v: self.delete_vm(v))
-        remaining = self.resources()
-        owned = set()
-        for v in remaining:
-            if v.get("type") != "qemu":
-                continue
-            config = self.request(self.vm_path(v) + "/config")
-            ident = self.config_uuid(config)
-            if ident:
-                owned.add(ident)
+        for v in self.resources():
             if self.candidate(v):
                 snapshots = self.request(self.vm_path(v) + "/snapshot")
                 for snapshot in snapshots:
@@ -214,19 +223,6 @@ class Client:
                         path = self.vm_path(v) + "/snapshot/" + quote(snapshot["name"], safe="")
                         self.item("sweep/snapshot/" + str(v["vmid"]) + "/" + snapshot["name"],
                                   lambda path=path, v=v: self.wait(v["node"], self.request(path, "DELETE")))
-        for node in sorted(nodes):
-            path = "/nodes/" + quote(node, safe="") + "/storage/" + quote(self.a.snippets_storage, safe="")
-            snippets = self.request(path + "/content?content=snippets")
-            for snippet in snippets:
-                volid = snippet["volid"]
-                prefix = self.a.snippets_storage + ":snippets/vws-"
-                match = re.fullmatch(re.escape(prefix) + r"([0-9a-fA-F-]{36})-user\.yaml", volid)
-                if match and (str(uuid.UUID(match[1])) in self.deleted or str(uuid.UUID(match[1])) not in owned):
-                    def remove(volid=volid, path=path, node=node):
-                        task = self.request(path + "/content/" + quote(volid, safe=""), "DELETE")
-                        if task is not None:
-                            self.wait(node, task)
-                    self.item("sweep/snippet/" + volid, remove)
 
     def slots(self):
         vms = [v for v in self.resources() if self.candidate(v) and
