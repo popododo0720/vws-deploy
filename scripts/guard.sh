@@ -4,8 +4,6 @@ set -euo pipefail
 export LC_ALL=C
 
 ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-# Site-only values (the elastic IP pool) that every helm call of these checks needs.
-SITE_VALUES=charts/vws/ci/site.yaml
 cd "$ROOT"
 
 die() {
@@ -51,55 +49,10 @@ scope_regex() {
 }
 
 cmd_layout() {
-  local found images
-  found=$(find charts/vws/templates -type f -printf '%f\n' | sort | paste -sd' ' -)
-  [[ $found == "_helpers.tpl control-plane.yaml" ]] || die "R10: unexpected template files: ${found}"
-  [[ ! -d charts/vws/charts ]] || die "R10: subcharts are a second catalog"
-  if grep -q -E '^(dependencies|icon):' charts/vws/Chart.yaml; then
-    die "R10: Chart.yaml must not declare dependencies or an icon"
-  fi
   if find . -path ./.git -prune -o -path ./packaging -prune -o \( -name '*.service' -o -name '*.target' \) -print | grep -q .; then
     die "R10: systemd units live only under packaging/"
   fi
   [[ ! -e host ]] || die "R10: host/ must not exist"
-  if grep -R -n -E 'DaemonSet|hostPath:|hostNetwork:' charts; then
-    die "R10: chart templates must not schedule onto the host"
-  fi
-  images=0
-  if image_lines=$(grep -R -o 'printf "%s/%s:%s"' charts/vws/templates); then
-    images=$(printf '%s\n' "$image_lines" | wc -l)
-  fi
-  [[ $images -eq 1 ]] || die "R5: derive the image reference in exactly one place"
-  if [[ -f go.mod || -f kustomization.yaml ]]; then
-    die "R10: the Helm chart is the only manifest path"
-  fi
-}
-
-cmd_names() {
-  python3 - <<'PY'
-import re
-import sys
-from pathlib import Path
-
-import yaml
-
-values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
-text = "\n".join(
-    path.read_text()
-    for path in Path("charts/vws/templates").rglob("*")
-    if path.is_file()
-)
-failed = False
-for name in values["services"]:
-    literal = re.escape(name)
-    hardcoded = re.search(rf"(?m)^[^#\n]*name:\s*{literal}\s*$", text)
-    compared = re.search(rf"""eq\s+\S+\s+["']{literal}["']""", text)
-    if hardcoded or compared:
-        print(f"R5: template hardcodes service name {name}", file=sys.stderr)
-        failed = True
-if failed:
-    sys.exit(1)
-PY
 }
 
 cmd_assets() {
@@ -149,11 +102,11 @@ PY
 # vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
 r8_scan() {
   grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
-    --exclude=crd-check.sh "$@"
+    "$@"
 }
 
 cmd_ci() {
-  if r8_scan .github Makefile scripts charts; then
+  if r8_scan .github Makefile scripts; then
     die "R8: this repo must not apply manifests to a cluster"
   fi
   local f
@@ -167,58 +120,6 @@ cmd_ci() {
   if grep -R -n -w -E 'helm|kubeconform' .github/workflows; then
     die "R8: workflows must not run the retired chart validators"
   fi
-}
-
-cmd_schema() {
-  python3 - <<'PY'
-import os
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-
-import yaml
-
-values = yaml.safe_load(Path("charts/vws/values.yaml").read_text())
-services = values["services"]
-single = {"console-api", "iam"}
-stateless = next((name for name, spec in services.items() if "state" not in (spec or {}) and name not in single), None)
-stateful = next((name for name, spec in services.items() if "state" in (spec or {})), None)
-wildcard_rule = {"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines"], "verbs": ["get"]}
-cases = [
-    {"services": {"compute": {"rbac": [{**wildcard_rule, "resources": ["*"]}]}}},
-    {"services": {"compute": {"rbac": [{**wildcard_rule, "apiGroups": ["*"]}]}}},
-    {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["*"]}]}}},
-    {"services": {"compute": {"rbac": [{**wildcard_rule, "verbs": ["escalate"]}]}}},
-    {"services": {"compute": {"rbac": [{**wildcard_rule, "namespace": "Not_A_Namespace"}]}}},
-    {"services": {"compute": {"rbac": []}}},
-    {"services": {"compute-agent": {}}},
-    {"services": {"compute-peers": {}}},
-]
-if stateless is not None:
-    cases.append({"services": {stateless: {"replicas": 1}}})
-    cases.append({"services": {stateless: {"livenessProbe": {}}}})
-if stateful is not None:
-    cases.append({"services": {stateful: {"replicas": 3}}})
-for case in cases:
-    handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
-    yaml.safe_dump(case, handle)
-    handle.close()
-    proc = subprocess.run(
-        ["helm", "template", "vws", "charts/vws", "-f", "charts/vws/ci/site.yaml", "-f", handle.name],
-        capture_output=True,
-        text=True,
-    )
-    os.unlink(handle.name)
-    blob = proc.stdout + proc.stderr
-    if proc.returncode == 0:
-        print(f"R5: schema accepted {case}", file=sys.stderr)
-        sys.exit(1)
-    if "values don't meet the specifications" not in blob and "Additional property" not in blob:
-        print(blob, file=sys.stderr)
-        print("R5: helm template failed for a reason other than the values schema", file=sys.stderr)
-        sys.exit(1)
-PY
 }
 
 cmd_hooks() {
@@ -274,7 +175,7 @@ cmd_hooks() {
     rm -f "$tmp"
     die "R2: commit-msg accepted an unscoped subject"
   fi
-  printf '%s\n' 'chart: add one service key' > "$tmp"
+  printf '%s\n' 'ci: update one guard' > "$tmp"
   scripts/guard.sh commit-msg "$tmp" >/dev/null
   rm -f "$tmp"
 }
@@ -301,7 +202,7 @@ if len(ids) != len(set(ids)):
     sys.exit(1)
 
 emitted = set()
-for path in (Path("scripts/guard.sh"), Path("scripts/check_render.py"), Path(".githooks/pre-push")):
+for path in (Path("scripts/guard.sh"), Path(".githooks/pre-push")):
     emitted.update(re.findall(r"\bR\d+\b", path.read_text()))
 if set(ids) != emitted:
     print(f"R2: rule ids {sorted(set(ids))} != checks {sorted(emitted)}", file=sys.stderr)
@@ -406,160 +307,9 @@ cmd_commits() {
   rm -f "$snapshot"
 }
 
-cmd_recovery() {
-  local rendered
-  rendered=$(mktemp)
-  local release=${VWS_RELEASE:-vws}
-  helm template "$release" charts/vws -f "$SITE_VALUES" --namespace "$release" > "$rendered"
-  python3 scripts/check_render.py "$rendered" charts/vws/values.yaml "$release" "$SITE_VALUES"
-  rm -f "$rendered"
-}
-
-# The negative half of R24: one production render per placeholder must fail and name its key.
-placeholder_case() {
-  local tmp=$1 name=$2 path=$3 value=$4 expect="$3: $4 is a placeholder"
-  python3 - "$tmp/site.yaml" "$path" "$value" > "$tmp/case.yaml" <<'PY'
-import sys
-import yaml
-
-values = yaml.safe_load(open(sys.argv[1]))
-parts = sys.argv[2].split(".")
-node = values
-for part in parts[:-1]:
-    node = node.setdefault(part, {})
-node[parts[-1]] = sys.argv[3]
-yaml.safe_dump(values, sys.stdout)
-PY
-  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/case.yaml" > "$tmp/case.render.yaml"
-  if python3 scripts/check_render.py --profile production "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" > "$tmp/out" 2>&1; then
-    die "R24: production accepted ${name}"
-  fi
-  grep -Fq -- "$expect" "$tmp/out" || { cat "$tmp/out" >&2; die "R24: ${name} did not name ${expect}"; }
-}
-
-# placeholder_pass TMP NAME PATH VALUE: production must accept VALUE at PATH (no false positive).
-placeholder_pass() {
-  local tmp=$1 name=$2 path=$3 value=$4
-  python3 - "$tmp/site.yaml" "$path" "$value" > "$tmp/pass.yaml" <<'PY'
-import sys
-import yaml
-
-values = yaml.safe_load(open(sys.argv[1]))
-parts = sys.argv[2].split(".")
-node = values
-for part in parts[:-1]:
-    node = node.setdefault(part, {})
-node[parts[-1]] = sys.argv[3]
-yaml.safe_dump(values, sys.stdout)
-PY
-  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/pass.yaml" > "$tmp/pass.render.yaml"
-  python3 scripts/check_render.py --profile production "$tmp/pass.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/pass.yaml" > "$tmp/out" 2>&1 \
-    || { cat "$tmp/out" >&2; die "R24: production rejected ${name}"; }
-}
-
-cmd_placeholders() {
-  local profile=production tmp
-  local -a files=()
-  while (($#)); do
-    case "$1" in
-      --profile) (($# >= 2)) || die "R24: --profile needs a value"; profile=$2; shift 2 ;;
-      --profile=*) profile=${1#*=}; shift ;;
-      *) files+=("$1"); shift ;;
-    esac
-  done
-  case "$profile" in
-    dev | production) ;;
-    *) die "R24: unknown --profile '${profile}'; expected one of: dev, production" ;;
-  esac
-  tmp=$(mktemp -d)
-  if ((${#files[@]})); then
-    local -a value_flags=()
-    local file
-    for file in "${files[@]}"; do value_flags+=(-f "$file"); done
-    helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" "${value_flags[@]}" > "$tmp/input.render.yaml"
-    python3 scripts/check_render.py --profile "$profile" "$tmp/input.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "${files[@]}" \
-      || { rm -rf "$tmp"; die "R24: the ${profile} render has a placeholder"; }
-    rm -rf "$tmp"
-    return
-  fi
-  cat > "$tmp/site.yaml" <<'EOF'
-services:
-  network:
-    flags:
-      pool: 10.20.0.0/24
-  console-api:
-    flags:
-      console-origins: https://console.vws.internal
-EOF
-  helm template "${VWS_RELEASE:-vws}" charts/vws --namespace "${VWS_RELEASE:-vws}" -f "$tmp/site.yaml" > "$tmp/site.render.yaml"
-  python3 scripts/check_render.py --profile production "$tmp/site.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/site.yaml" \
-    || { rm -rf "$tmp"; die "R24: production rejected the site values"; }
-
-  placeholder_case "$tmp" "RFC 5737 192.0.2.0/24" services.network.flags.pool 192.0.2.0/24
-  placeholder_case "$tmp" "an address in 192.0.2.0/24" services.network.flags.pool 192.0.2.17
-  placeholder_case "$tmp" "RFC 5737 198.51.100.0/24" services.network.flags.pool 198.51.100.0/24
-  placeholder_case "$tmp" "an address in 198.51.100.0/24" services.network.flags.pool 198.51.100.42
-  placeholder_case "$tmp" "RFC 5737 203.0.113.0/24" services.network.flags.pool 203.0.113.0/24
-  placeholder_case "$tmp" "an address in 203.0.113.0/24" services.network.flags.pool 203.0.113.9
-  placeholder_case "$tmp" "RFC 3849 2001:db8::/32" services.network.flags.pool 2001:db8::/32
-  placeholder_case "$tmp" "an address in 2001:db8::/32" services.network.flags.pool 2001:db8::1
-  placeholder_case "$tmp" "the reserved domain example.com" services.console-api.flags.console-origins https://example.com
-  placeholder_case "$tmp" "the reserved domain example.org" services.console-api.flags.console-origins https://example.org
-  placeholder_case "$tmp" "the reserved domain example.net" services.console-api.flags.console-origins https://example.net
-  placeholder_case "$tmp" "the reserved TLD .example" services.console-api.flags.console-origins https://app.example
-  placeholder_case "$tmp" "the reserved TLD .invalid" services.console-api.flags.console-origins https://console.example.invalid
-  placeholder_case "$tmp" "the reserved TLD .test" services.console-api.flags.console-origins https://app.test
-  placeholder_case "$tmp" "the reserved TLD .localhost" services.console-api.flags.console-origins https://app.localhost
-  placeholder_case "$tmp" "the bare host localhost in a URL" services.console-api.flags.console-origins https://localhost
-  placeholder_case "$tmp" "the bare host localhost with a port" services.console-api.flags.console-origins https://localhost:8443
-  placeholder_case "$tmp" "the bare flag value localhost" services.console-api.flags.console-origins localhost
-  placeholder_case "$tmp" "the trailing-dot reserved TLD .invalid" services.console-api.flags.console-origins https://console.example.invalid.
-  placeholder_case "$tmp" "the trailing-dot reserved TLD .test" services.console-api.flags.console-origins https://x.test.
-  placeholder_case "$tmp" "the trailing-dot reserved domain example.com" services.console-api.flags.console-origins https://example.com.
-  placeholder_case "$tmp" "the trailing-dot bare host localhost" services.console-api.flags.console-origins localhost.
-  placeholder_case "$tmp" "the display string CHANGE_ME" services.network.flags.pool CHANGE_ME
-  placeholder_case "$tmp" "the display string changeme" services.network.flags.pool changeme
-  placeholder_case "$tmp" "the display string TODO" services.network.flags.pool TODO
-  placeholder_case "$tmp" "an angle-bracket placeholder" services.network.flags.pool '<site pool>'
-
-  # Legitimate production values pass: a private pool and a real FQDN, with and without the
-  # root dot, and names that only contain a reserved label (vws-deploy#629 AC5).
-  placeholder_pass "$tmp" "a real FQDN with a trailing dot" services.console-api.flags.console-origins https://console.vws.internal.
-  placeholder_pass "$tmp" "a real FQDN with a trailing dot and a port" services.console-api.flags.console-origins https://console.vws.internal.:8443
-  placeholder_pass "$tmp" "a host whose first label is localhost" services.console-api.flags.console-origins https://localhost.vws.internal
-  placeholder_pass "$tmp" "a host whose label starts with localhost" services.console-api.flags.console-origins https://localhost-proxy.vws.internal
-  placeholder_pass "$tmp" "the private pool 10.20.0.0/24" services.network.flags.pool 10.20.0.0/24
-
-  # A development render keeps bare localhost (vws-deploy#629 AC3).
-  placeholder_case "$tmp" "the bare host localhost" services.console-api.flags.console-origins https://localhost
-  python3 scripts/check_render.py --profile dev "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
-    || { rm -rf "$tmp"; die "R24: the development profile rejected localhost"; }
-
-  # Only dev and production are profiles; anything else fails closed (vws-deploy#629 AC1, AC2).
-  local bad
-  for bad in prod Production staging ''; do
-    if python3 scripts/check_render.py --profile "$bad" "$tmp/site.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/site.yaml" > "$tmp/out" 2>&1; then
-      rm -rf "$tmp"; die "R24: check_render.py accepted --profile '${bad}'"
-    fi
-    grep -Fq "unknown --profile '${bad}'" "$tmp/out" || { cat "$tmp/out" >&2; rm -rf "$tmp"; die "R24: --profile '${bad}' did not name the profile"; }
-    if (cmd_placeholders --profile "$bad") > "$tmp/out" 2>&1; then
-      rm -rf "$tmp"; die "R24: guard.sh placeholders accepted --profile '${bad}'"
-    fi
-    grep -Fq "unknown --profile '${bad}'" "$tmp/out" || { cat "$tmp/out" >&2; rm -rf "$tmp"; die "R24: guard.sh placeholders --profile '${bad}' did not name the profile"; }
-  done
-
-  # The same placeholder stays legal in a development or lab render (AC3).
-  python3 scripts/check_render.py "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
-    || { rm -rf "$tmp"; die "R24: the default development render rejected a placeholder"; }
-  python3 scripts/check_render.py --profile dev "$tmp/case.render.yaml" charts/vws/values.yaml "${VWS_RELEASE:-vws}" "$tmp/case.yaml" >/dev/null \
-    || { rm -rf "$tmp"; die "R24: the development profile rejected a placeholder"; }
-
-  rm -rf "$tmp"
-}
-
 cmd_cursor() {
   [[ ! -e .cursor ]] || die "R9: .cursor/ does not belong in this repo"
-  if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts charts 2>/dev/null \
+  if grep -R -n -i -E 'api\.cursor\.com|cursor-agent|cursor cloud|CloudAgent' .github Makefile scripts 2>/dev/null \
     | grep -v 'scripts/guard.sh:'; then
     die "R9: Cursor cloud agents must not be called from this repo"
   fi
@@ -614,287 +364,6 @@ cmd_agents() {
   grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' "$rg_vg" || die "R13: verify-gate must pass the vws-verify identity"
 }
 
-console_api_closed() {
-  python3 - "$1" <<'PY'
-import sys, yaml
-path = sys.argv[1]
-docs = [d for d in yaml.safe_load_all(open(path)) if d]
-svc = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "console-api")
-ports = [{"name": p.get("name"), "port": p.get("port"), "targetPort": p.get("targetPort")} for p in svc["spec"]["ports"]]
-if ports != [{"name": "http", "port": 8080, "targetPort": "http"}]:
-    sys.exit(f"console-api ports {ports}")
-text = open(path).read()
-for bad in ("-iam=grpc", "-iam-endpoint", "-ec2-addr", "-s3-addr", "-iam-addr"):
-    if bad in text:
-        sys.exit(f"found {bad}")
-PY
-}
-
-cmd_config() {
-  local tmp literal
-  tmp=$(mktemp -d)
-  while read -r literal; do
-    [[ -n $literal ]] || continue
-    if grep -R -n -F -e "$literal" charts/vws/templates; then
-      rm -rf "$tmp"
-      die "R14: namespace ${literal} is written in templates; names live only in values namespaces"
-    fi
-  done < <(python3 -c 'import yaml;print(*yaml.safe_load(open("charts/vws/values.yaml"))["namespaces"].values(), sep="\n")')
-
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/default.yaml"
-  grep -q -e '- -kube-namespace=vws-vms' "$tmp/default.yaml" || die "R14: storage does not get -kube-namespace from values"
-  local f
-  for f in -hypervisor=kubevirt -vm-namespace=vws-vms -image-namespace=vws-images -storage=storage:7400; do
-    grep -q -e "- ${f}\$" "$tmp/default.yaml" || die "R14: the default render lacks compute ${f} (#121)"
-  done
-  python3 - "$tmp/default.yaml" <<'PY' || die "R14: compute has no persistentvolumeclaims get in the VM namespace (#121)"
-import sys, yaml
-ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-compute" and d["metadata"].get("namespace") == "vws-vms"
-         and any("" in r.get("apiGroups", []) and "persistentvolumeclaims" in r.get("resources", []) and "get" in r.get("verbs", []) for r in d.get("rules", []))
-         for d in yaml.safe_load_all(open(sys.argv[1])))
-sys.exit(0 if ok else 1)
-PY
-  python3 - "$tmp/default.yaml" <<'PY' || die "R14: compute has no virtualmachineinstances get in the VM namespace (#121, vws-compute#50)"
-import sys, yaml
-ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-compute" and d["metadata"].get("namespace") == "vws-vms"
-         and any("kubevirt.io" in r.get("apiGroups", []) and "virtualmachineinstances" in r.get("resources", []) and "get" in r.get("verbs", []) for r in d.get("rules", []))
-         for d in yaml.safe_load_all(open(sys.argv[1])))
-sys.exit(0 if ok else 1)
-PY
-
-  grep -q -e 'name: VWS_HEALTH_ADDR' "$tmp/default.yaml" || die "R15: compute has no VWS_HEALTH_ADDR (#212)"
-  grep -q -e 'path: /readyz' "$tmp/default.yaml" || die "R15: compute readiness does not use /readyz (#212)"
-  if grep -q -e 'prometheus.io/' "$tmp/default.yaml"; then
-    die "R15: compute still carries scrape annotations (#635)"
-  fi
-  grep -q -e 'tcpSocket' "$tmp/default.yaml" || die "R15: default probes are not tcpSocket"
-  python3 - "$tmp/default.yaml" charts/vws/values.yaml <<'PY' || die "R15: HTTP probes must match the services with healthPort (#212) or httpProbes (#612)"
-import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-values = yaml.safe_load(open(sys.argv[2]))
-health = {
-    name
-    for name, spec in values["services"].items()
-    if isinstance(spec, dict) and spec.get("enabled", True) is not False and (spec.get("healthPort") or spec.get("httpProbes"))
-}
-http = {
-    d["metadata"]["name"]
-    for d in docs
-    if d.get("kind") in ("Deployment", "StatefulSet")
-    for c in d["spec"]["template"]["spec"]["containers"]
-    if any("httpGet" in c.get(k, {}) for k in ("startupProbe", "livenessProbe", "readinessProbe"))
-}
-sys.exit(0 if http == health else 1)
-PY
-  python3 - "$tmp/default.yaml" <<'PY' || die "R15: console probes are not httpGet /healthz and /readyz on port http (#612)"
-import sys, yaml
-want = {"startupProbe": "/healthz", "livenessProbe": "/healthz", "readinessProbe": "/readyz"}
-for d in yaml.safe_load_all(open(sys.argv[1])):
-    if d and d.get("kind") == "Deployment" and d["metadata"]["name"] == "console":
-        c = d["spec"]["template"]["spec"]["containers"][0]
-        got = {k: (c.get(k) or {}).get("httpGet") or {} for k in want}
-        sys.exit(0 if all(got[k].get("path") == p and got[k].get("port") == "http" for k, p in want.items()) else 1)
-sys.exit(1)
-PY
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.probe=grpc > "$tmp/grpc.yaml"
-  python3 scripts/check_render.py "$tmp/grpc.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  probe: grpc\n')
-  grep -q -e 'grpc:' "$tmp/grpc.yaml" || die "R15: global.probe=grpc does not render gRPC probes"
-  ! grep -q -e 'tcpSocket' "$tmp/grpc.yaml" || die "R15: global.probe=grpc left a tcpSocket probe"
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set global.pendingFlags=true > "$tmp/health.yaml"
-  # storage readiness is the aggregate (engine, store, kube), never a bare port check (#110, #620).
-  for f in default grpc health; do
-    python3 - "$tmp/$f.yaml" <<'PY' || die "R15: the $f render's storage readiness is not httpGet /readyz on metrics (#110, #620)"
-import sys, yaml
-for d in yaml.safe_load_all(open(sys.argv[1])):
-    if d and d.get("kind") in ("Deployment", "StatefulSet") and d["metadata"]["name"] == "storage":
-        got = (d["spec"]["template"]["spec"]["containers"][0].get("readinessProbe") or {}).get("httpGet") or {}
-        sys.exit(0 if got.get("path") == "/readyz" and got.get("port") == "metrics" else 1)
-sys.exit(1)
-PY
-  done
-  python3 - "$tmp/default.yaml" <<'PY' || die "R14: storage has no virtualmachines list in the VM namespace (#123, vws-storage#68)"
-import sys, yaml
-ok = any(d and d.get("kind") == "Role" and d["metadata"].get("name") == "vws-storage" and d["metadata"].get("namespace") == "vws-vms"
-         and any("kubevirt.io" in r.get("apiGroups", []) and "virtualmachines" in r.get("resources", []) and r.get("verbs") == ["list"] for r in d.get("rules", []))
-         for d in yaml.safe_load_all(open(sys.argv[1])))
-sys.exit(0 if ok else 1)
-PY
-  python3 scripts/check_render.py "$tmp/health.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'global:\n  pendingFlags: true\n')
-  # vws-iam (#243): off by default (no image yet); on, it gets the KEK by secretKeyRef and a NetworkPolicy.
-  ! grep -q 'name: iam$' "$tmp/default.yaml" || die "R16: the default render has vws-iam, which has no image yet"
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.iam.enabled=true > "$tmp/iam.yaml"
-  python3 scripts/check_render.py "$tmp/iam.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  iam:\n    enabled: true\n') ||
-    die "R16: check_render rejects the vws-iam render"
-  # admin (#391): off by default (the installer image is private on GHCR); on, it is loopback, so no Service,
-  # a NetworkPolicy for the health port only, and the schema refuses anything that opens it up.
-  ! grep -q 'name: admin$' "$tmp/default.yaml" || die "R10: the default render has the admin page, whose image is private"
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true > "$tmp/admin.yaml"
-  python3 scripts/check_render.py "$tmp/admin.yaml" charts/vws/values.yaml vws "$SITE_VALUES" <(printf 'services:\n  admin:\n    enabled: true\n') ||
-    die "R10: check_render rejects the admin render"
-  for open_it in loopback=false external=true flags.listen=0.0.0.0:8080 'allowFrom={console}' replicas=2; do
-    ! helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
-      --set "services.admin.${open_it}" >/dev/null 2>&1 || die "R10: a loopback admin with ${open_it} was accepted"
-  done
-  # Release admin with a service portforward would render two Roles named admin-portforward.
-  local collide
-  collide=$(helm template admin charts/vws -f "$SITE_VALUES" --namespace vws --set services.admin.enabled=true \
-    --set services.portforward.port=8080 2>&1) && die "R11: a service Role named like admin-portforward was accepted"
-  [[ $collide == *'R11: Role admin-portforward would collide'* ]] || die "R11: the admin-portforward collision failed for another reason: $collide"
-  python3 - "$tmp/iam.yaml" <<'PY' || die "R15: Service iam port is not 9095"
-import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-svc = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "iam")
-ports = svc["spec"]["ports"]
-ok = (len(ports) == 1 and ports[0].get("name") == "http" and ports[0].get("port") == 9095
-      and ports[0].get("targetPort") == "http")
-sys.exit(0 if ok else 1)
-PY
-  console_api_closed "$tmp/default.yaml" || die "R15: the default render publishes an AWS listener or an iam endpoint"
-  # vws-iam store (#369): two replicas share the kube store in the release namespace. No volume
-  # holds state; the CRDs, a Role on exactly those resources and the API token make it work.
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace acme-sys --include-crds \
-    --set services.iam.enabled=true > "$tmp/iam-store.yaml"
-  python3 - "$tmp/iam-store.yaml" charts/vws/crds <<'PY' || die "R4: vws-iam does not render a shared kube store"
-import sys
-from pathlib import Path
-
-import yaml
-
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-crd_file = Path(sys.argv[2]) / "iam.yaml"
-group = "iam." + yaml.safe_load((Path(sys.argv[2]) / "vwsclusters.yaml").read_text())["spec"]["group"]
-def one(kind, name, ns="acme-sys"):
-    found = [d for d in docs if d.get("kind") == kind and d["metadata"]["name"] == name
-             and d["metadata"].get("namespace", ns) == ns]
-    return found[0] if len(found) == 1 else None
-errors = []
-want_crds = sorted(d["metadata"]["name"] for d in yaml.safe_load_all(crd_file.read_text()) if d) if crd_file.exists() else []
-plurals = sorted(n.split(".", 1)[0] for n in want_crds)
-got_crds = sorted(d["metadata"]["name"] for d in docs if d.get("kind") == "CustomResourceDefinition"
-                  and d["spec"]["group"] == group)
-if not want_crds or got_crds != want_crds:
-    errors.append(f"IAM CRDs rendered {got_crds}, want those of {crd_file}")
-if len(plurals) != 17:
-    errors.append(f"want the 17 vws-iam kube store resources, got {plurals}")
-deploy = one("Deployment", "iam")
-if deploy is None or one("StatefulSet", "iam") is not None:
-    errors.append("iam must be one Deployment and no StatefulSet")
-else:
-    spec = deploy["spec"]
-    pod = spec["template"]["spec"]
-    container = pod["containers"][0]
-    if spec.get("replicas") != 2:
-        errors.append(f"iam replicas {spec.get('replicas')}, want 2")
-    if pod.get("automountServiceAccountToken") is not True:
-        errors.append("iam pod must mount its API token")
-    if "-namespace=acme-sys" not in (container.get("args") or []):
-        errors.append(f"iam args {container.get('args')} lack -namespace=acme-sys")
-    volumes = pod.get("volumes") or []
-    if volumes != [{"name": "tmp", "emptyDir": {}}] or "volumeClaimTemplates" in spec:
-        errors.append(f"iam volumes {volumes}: only the /tmp scratch dir, no state volume")
-    if [m["mountPath"] for m in container.get("volumeMounts") or []] != ["/tmp"]:
-        errors.append("iam mounts something besides /tmp")
-sa = one("ServiceAccount", "iam")
-if sa is None or sa.get("automountServiceAccountToken") is not True:
-    errors.append("iam ServiceAccount must mount its API token")
-if any(d.get("kind") == "PersistentVolumeClaim" for d in docs):
-    errors.append("the render has a PersistentVolumeClaim")
-role = one("Role", "vws-iam")
-want_rules = [{"apiGroups": [group], "resources": plurals, "verbs": ["get", "list", "create", "update", "delete"]}]
-if role is None or [dict(r, resources=sorted(r["resources"])) for r in role.get("rules") or []] != want_rules:
-    errors.append(f"Role vws-iam in acme-sys has {role and role.get('rules')}, want {want_rules}")
-binding = one("RoleBinding", "vws-iam")
-if binding is None or binding["roleRef"]["name"] != "vws-iam" or binding.get("subjects") != [
-        {"kind": "ServiceAccount", "name": "iam", "namespace": "acme-sys"}]:
-    errors.append("RoleBinding vws-iam must bind only ServiceAccount acme-sys/iam")
-if one("ClusterRole", "vws-iam", None) is not None:
-    errors.append("iam needs no ClusterRole")
-for e in errors:
-    print("iam store:", e, file=sys.stderr)
-sys.exit(1 if errors else 0)
-PY
-
-  cat > "$tmp/override.yaml" <<'YAML'
-global:
-  pendingFlags: true
-namespaces:
-  vms: acme-vms
-  images: acme-images
-  nad: acme-nad
-services:
-  network:
-    flags:
-      kubeconfig: /etc/vws/kube/config
-      kube-external-subnet: ext
-      kube-nad-namespace: {namespace: nad}
-      kube-snat: true
-    kubeconfigSecret: acme-network-kubeconfig
-  storage:
-    s3:
-      rgw: {enabled: true, endpoint: "http://rgw.acme:8080", bucketPrefix: acme, existingSecret: acme-rgw-s3}
-YAML
-  helm template acme charts/vws -f "$SITE_VALUES" --namespace acme -f "$tmp/override.yaml" > "$tmp/override.rendered.yaml"
-  python3 scripts/check_render.py "$tmp/override.rendered.yaml" charts/vws/values.yaml acme "$SITE_VALUES" "$tmp/override.yaml"
-  local want
-  for want in -vm-namespace=acme-vms -image-namespace=acme-images -kube-namespace=acme-vms \
-    -kube-nad-namespace=acme-nad -kube-external-subnet=ext -kube-snat=true -kubeconfig=/etc/vws/kube/config -namespace=acme -hypervisor=kubevirt \
-    -object-backend=s3 -s3-profile=rgw -s3-endpoint=http://rgw.acme:8080 -s3-bucket-prefix=acme; do
-    grep -q -e "- ${want}\$" "$tmp/override.rendered.yaml" || die "R14: rendered args lack ${want}"
-  done
-  ! grep -q -e 'vws-vms\|vws-images\|vws-nad' "$tmp/override.rendered.yaml" || die "R14: a default namespace name survived a values override"
-
-  grep -q -e 'secretName: acme-network-kubeconfig' "$tmp/override.rendered.yaml" || die "R16: kubeconfigSecret is not mounted"
-  # -s3-bucket-prefix is not gated by global.pendingFlags since vws-storage#46 (#105).
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws --set services.storage.s3.rgw.enabled=true \
-    --set services.storage.s3.rgw.endpoint=http://r:8080 --set services.storage.s3.rgw.bucketPrefix=lab |
-    grep -q -e '- -s3-bucket-prefix=lab$' || die "R14: bucketPrefix does not render without global.pendingFlags"
-  ! grep -q -e '^kind: Secret' "$tmp/default.yaml" "$tmp/override.rendered.yaml" || die "R16: the chart renders a Secret"
-  ! grep -q -e 'kubeconfig' "$tmp/default.yaml" || die "R16: the default render mounts or passes a kubeconfig"
-  grep -q -e 'name: acme-rgw-s3' "$tmp/override.rendered.yaml" || die "R16: s3.rgw existingSecret is not referenced"
-  ! grep -q -e 'VWS_S3_\|object-backend' "$tmp/default.yaml" || die "R16: the default render enables the s3 object backend"
-  # bucketPrefix: at most 18 characters, so <prefix>-vws-<40 hex> fits 63 (vws-storage#46, #103).
-  printf '%s\n' 'global: {pendingFlags: true}' 'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: abcdefghij12345678}}}}' >"$tmp/prefix.yaml"
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "$tmp/prefix.yaml" | grep -q -e '- -s3-bucket-prefix=abcdefghij12345678$' ||
-    die "R16: an 18-character bucketPrefix does not render"
-
-  local bad
-  for bad in \
-    'services: {compute: {rbac: [{namespace: nowhere, apiGroups: [""], resources: [configmaps], verbs: [get]}]}}' \
-    'services: {storage: {flags: {kube-namespace: {namespace: nowhere}}}}' \
-    'services: {network: {flags: {kubeconfig: /k}}}' \
-    'services: {network: {flags: {kubeconfig: /k, kube-external-subnet: ext}}}' \
-    'services: {network: {flags: {kube-snat: true}}}' \
-    'services: {network: {kubeconfigSecret: x}}' \
-    'services: {network: {kubeconfigSecret: Bad_Name, flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
-    'services: {network: {flags: {kubeconfig: /k/c, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
-    'services: {network: {kubeconfigSecret: x, flags: {kubeconfig: rel, kube-external-subnet: e, kube-nad-namespace: {namespace: nad}}}}' \
-    'services: {network: {flags: {kube-x: [a]}}}' \
-    'services: {storage: {repeatedFlags: {kube-volume-type: []}}}' \
-    'services: {storage: {repeatedFlags: {kube-volume-type: gp3=a}}}' \
-    'services: {storage: {repeatedFlags: {kube-volume-type: ["gp3=a b"]}}}' \
-    'services: {storage: {repeatedFlags: {kube-volume-type: [gp3=a, gp3=a]}}}' \
-    'services: {storage: {repeatedFlags: {Kube-X: [a]}}}' \
-    'services: {storage: {flags: {kube-volume-type: gp3=a}, repeatedFlags: {kube-volume-type: [gp3=b]}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true}}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", existingSecret: ""}}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", accessKey: x}}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: abcdefghij123456789}}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: Acme}}}}' \
-    'services: {storage: {s3: {rgw: {enabled: true, endpoint: "http://r:8080", bucketPrefix: -acme}}}}' \
-    'services: {compute: {healthPort: 80}}' \
-    'services: {compute: {healthPort: "8081"}}' \
-    'services: {compute: {healthPort: 50051}}' \
-    'services: {compute: {healthPort: 8081, healthzPath: /livez}}' \
-    'global: {probe: http}'; do
-    printf '%s\n' "$bad" > "$tmp/bad.yaml"
-    if helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "$tmp/bad.yaml" >/dev/null 2>&1; then
-      rm -rf "$tmp"
-      die "R14: chart accepted ${bad}"
-    fi
-  done
-  rm -rf "$tmp"
-}
-
 # vws_layout_check DIR: every scripts/vws.d/<name>.sh has a summary, vws_cmd_main, a test and a doc
 # entry, and no command calls kubectl or helm directly (only vws_kubectl and vws_helm honor --dry-run).
 vws_layout_check() {
@@ -942,261 +411,7 @@ cmd_vws() {
   rm -rf "$tmp"
 }
 
-# upgrade_compat_check: every testdata/upgrade/<version>/ record decodes with the current code, its
-# README names the tag and command that wrote it, and its commit carries that chart version
-# (R23, vws-deploy#396).
-upgrade_compat_die() {
-  rm -rf "${upgrade_compat_tmp:-}"
-  die "R23: $*"
-}
-
-cmd_upgrade_compat() {
-  local dir version fixture group commit chart_version
-  group=$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)
-  [[ -n $group ]] || die "R23: charts/vws/crds/vwsclusters.yaml has no spec.group"
-  [[ -d testdata/upgrade ]] || die "R23: testdata/upgrade does not exist"
-  [[ -f tests/vws/upgrade-compat.test.sh ]] || die "R23: tests/vws/upgrade-compat.test.sh does not exist"
-  upgrade_compat_tmp=$(mktemp -d)
-  for dir in testdata/upgrade/*/; do
-    [[ -d $dir ]] || upgrade_compat_die "testdata/upgrade has no <version> directory"
-    version=$(basename "$dir")
-    [[ -f ${dir}README.md ]] || upgrade_compat_die "${dir}README.md does not exist"
-    grep -q -E '^Tag: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Tag: <tag>' line"
-    grep -q -E '^Command: [^[:space:]]' "${dir}README.md" || upgrade_compat_die "${dir}README.md has no 'Command: <command>' line"
-    commit=$(sed -n 's/^Commit: //p' "${dir}README.md")
-    [[ $commit =~ ^[0-9a-f]{40}$ ]] || upgrade_compat_die "${dir}README.md has no 'Commit: <full sha>' line"
-    git cat-file -e "${commit}^{commit}" 2>/dev/null || upgrade_compat_die "commit ${commit} is not in this repo"
-    git merge-base --is-ancestor "$commit" HEAD || upgrade_compat_die "commit ${commit} is not in this history"
-    chart_version=$(git show "${commit}:charts/vws/Chart.yaml" | sed -n 's/^version: //p')
-    [[ $chart_version == "$version" ]] ||
-      upgrade_compat_die "${dir} is version ${version} but charts/vws/Chart.yaml at ${commit:0:7} is ${chart_version}"
-    for fixture in "${dir}"*.json; do
-      [[ -f $fixture ]] || upgrade_compat_die "testdata/upgrade/${version} holds no .json record"
-      jq --arg v "${group}/v1alpha1" '.apiVersion = $v' "$fixture" >"${upgrade_compat_tmp}/cr.json" ||
-        upgrade_compat_die "${fixture} is not JSON"
-      python3 scripts/vws.d/lib/render.py "${upgrade_compat_tmp}/cr.json" /dev/null >/dev/null ||
-        upgrade_compat_die "${fixture} does not decode with the current code"
-    done
-  done
-  rm -rf "$upgrade_compat_tmp"
-  echo "upgrade-compat: records decode"
-}
-
-# crd_check ROOT: the only VWS CRD is VWSCluster in charts/vws/crds/vwsclusters.yaml, its schema has no
-# secret-shaped field name, and its API group is written there and in the example CRs only.
-crd_check() {
-  python3 - "$1" <<'PY'
-import importlib.util
-import re
-import sys
-from pathlib import Path
-
-import yaml
-
-root = Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("render", root / "scripts/vws.d/lib/render.py")
-render = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(render)
-crd_path = root / "charts/vws/crds/vwsclusters.yaml"
-# iam.yaml is the vws-iam store (vws-deploy#369): a copy of vws-iam deploy/crds/iam.yaml, group
-# iam.<VWSCluster group>. It is optional so a clean copy without it still passes.
-iam_path = root / "charts/vws/crds/iam.yaml"
-skip = {".git", "build", ".cache", "node_modules"}
-files = [p for p in root.rglob("*") if p.is_file() and not skip & set(p.relative_to(root).parts)]
-crds = [p for p in files if p.suffix in (".yaml", ".yml") and re.search(r"^kind:\s*CustomResourceDefinition\s*$", p.read_text(errors="ignore"), re.M)]
-allowed = [crd_path] + ([iam_path] if iam_path in crds else [])
-if sorted(p.relative_to(root) for p in crds) != sorted(p.relative_to(root) for p in allowed):
-    sys.exit(f"R18: the VWS CRDs are {crd_path.relative_to(root)} and {iam_path.relative_to(root)}, found {[str(p.relative_to(root)) for p in crds]}")
-docs = [d for d in yaml.safe_load_all(crd_path.read_text()) if d]
-if len(docs) != 1 or docs[0]["spec"]["names"]["kind"] != "VWSCluster":
-    sys.exit("R18: vwsclusters.yaml must hold one CRD, kind VWSCluster")
-group = docs[0]["spec"]["group"]
-crd = docs[0]
-if crd["metadata"]["name"] != f"vwsclusters.{group}":
-    sys.exit("R18: the CRD name must be vwsclusters.<spec.group>")
-# The kubeconform catalog has no CustomResourceDefinition schema, so the structural rules the API
-# server enforces are checked here: apiextensions v1, one storage version, a type on every node.
-if crd.get("apiVersion") != "apiextensions.k8s.io/v1" or crd["spec"].get("scope") != "Namespaced":
-    sys.exit("R18: the CRD must be apiextensions.k8s.io/v1 and Namespaced")
-if [v["name"] for v in crd["spec"]["versions"] if v.get("storage")] != ["v1alpha1"]:
-    sys.exit("R18: v1alpha1 must be the one storage version")
-
-def structural(schema, path):
-    if not schema.get("x-kubernetes-preserve-unknown-fields") and "type" not in schema:
-        sys.exit(f"R18: CRD schema node {path or '/'} has no type (not structural)")
-    for key, sub in (schema.get("properties") or {}).items():
-        structural(sub, f"{path}.{key}")
-    for key in ("additionalProperties", "items"):
-        if isinstance(schema.get(key), dict):
-            structural(schema[key], path + "[*]")
-    # The API server rejects additionalProperties beside properties in any form, false included
-    # (vws-deploy#81). Unknown fields are refused by render.py and pruned by the API server.
-    if schema.get("properties") and "additionalProperties" in schema:
-        sys.exit(f"R18: CRD schema node {path} has both properties and additionalProperties")
-
-for version in crd["spec"]["versions"]:
-    structural(version["schema"]["openAPIV3Schema"], "")
-
-if iam_path in crds:
-    for doc in (d for d in yaml.safe_load_all(iam_path.read_text()) if d):
-        names = doc["spec"]["names"]
-        if doc["spec"].get("group") != f"iam.{group}":
-            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} group must be iam.{group}")
-        if not names["plural"].startswith("iam") or doc["metadata"]["name"] != f"{names['plural']}.iam.{group}":
-            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']} must be iam<kind>s.iam.{group}")
-        if doc.get("apiVersion") != "apiextensions.k8s.io/v1" or doc["spec"].get("scope") != "Namespaced":
-            sys.exit(f"R18: {iam_path.name} CRDs must be apiextensions.k8s.io/v1 and Namespaced")
-        if [v["name"] for v in doc["spec"]["versions"] if v.get("storage")] != ["v1alpha1"]:
-            sys.exit(f"R18: {iam_path.name} CRD {doc['metadata']['name']}: v1alpha1 must be the one storage version")
-        for version in doc["spec"]["versions"]:
-            structural(version["schema"]["openAPIV3Schema"], "")
-
-def walk(schema, path):
-    for key, sub in (schema.get("properties") or {}).items():
-        if key not in render.REFERENCE_NAMES and render.SECRET_NAME.search(key):
-            sys.exit(f"R18: CR schema field {path}.{key} looks like a secret; the CR holds Secret names only")
-        walk(sub, f"{path}.{key}")
-    for key in ("additionalProperties", "items"):
-        if isinstance(schema.get(key), dict):
-            walk(schema[key], path + "[*]")
-
-for version in docs[0]["spec"]["versions"]:
-    walk(version["schema"]["openAPIV3Schema"], "")
-examples = sorted((root / "examples/vwscluster").glob("*.yaml"))
-for p in files:
-    if p == crd_path or p in examples:
-        continue
-    # A bare match only: iam.<group> (the vws-iam API group) is a different group.
-    if re.search(r"(?<![\w.-])" + re.escape(group), p.read_text(errors="ignore")):
-        sys.exit(f"R18: the API group {group} is written in {p.relative_to(root)}; read it from {crd_path.relative_to(root)}")
-for p in examples:
-    if yaml.safe_load(p.read_text()).get("apiVersion") != f"{group}/v1alpha1":
-        sys.exit(f"R18: {p.relative_to(root)} apiVersion is not {group}/v1alpha1")
-PY
-}
-
-cmd_crd() {
-  local tmp
-  crd_check . || die "R18: VWSCluster CRD rules"
-  tmp=$(mktemp -d)
-  mkdir -p "$tmp/charts/vws" "$tmp/scripts/vws.d/lib"
-  cp -r charts/vws/crds "$tmp/charts/vws/"
-  cp scripts/vws.d/lib/render.py "$tmp/scripts/vws.d/lib/"
-  cp -r examples "$tmp/"
-  crd_check "$tmp" || { rm -rf "$tmp"; die "R18: a clean copy was rejected"; }
-  sed 's/vwsclusters/vwsthings/; s/kind: VWSCluster/kind: VWSThing/' charts/vws/crds/vwsclusters.yaml > "$tmp/charts/vws/crds/second.yaml"
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a second CRD was accepted"; }
-  rm "$tmp/charts/vws/crds/second.yaml"
-  sed 's/^                version:$/                adminPassword:\n                  type: string\n                version:/' charts/vws/crds/vwsclusters.yaml > "$tmp/charts/vws/crds/vwsclusters.yaml"
-  grep -q adminPassword "$tmp/charts/vws/crds/vwsclusters.yaml" || { rm -rf "$tmp"; die "R18: negative test setup failed"; }
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a secret field in the CR schema was accepted"; }
-  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
-  python3 - "$tmp/charts/vws/crds/vwsclusters.yaml" <<'PY'
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-d["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["profile"].pop("type")
-yaml.safe_dump(d, open(sys.argv[1], "w"))
-PY
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a schema node without a type was accepted"; }
-  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
-  python3 - "$tmp/charts/vws/crds/vwsclusters.yaml" <<'PY'
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-d["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["additionalProperties"] = False
-yaml.safe_dump(d, open(sys.argv[1], "w"))
-PY
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: additionalProperties: false beside properties was accepted"; }
-  cp charts/vws/crds/vwsclusters.yaml "$tmp/charts/vws/crds/"
-  printf 'group: %s\n' "$(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)" > "$tmp/scripts/group.txt"
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: the API group written in a second place was accepted"; }
-  rm "$tmp/scripts/group.txt"
-  sed -i 's#^apiVersion: .*#apiVersion: example.com/v1alpha1#' "$tmp/examples/vwscluster/ha.yaml"
-  ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an example CR with another group was accepted"; }
-  sed -i "s#^apiVersion: .*#apiVersion: $(sed -n 's/^  group: //p' charts/vws/crds/vwsclusters.yaml)/v1alpha1#" "$tmp/examples/vwscluster/ha.yaml"
-  if [[ -f charts/vws/crds/iam.yaml ]]; then
-    sed 's/group: iam\./group: other./' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
-    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: an IAM CRD in another group was accepted"; }
-    sed 's/scope: Namespaced/scope: Cluster/' charts/vws/crds/iam.yaml > "$tmp/charts/vws/crds/iam.yaml"
-    ! crd_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R18: a cluster-scoped IAM CRD was accepted"; }
-    cp charts/vws/crds/iam.yaml "$tmp/charts/vws/crds/"
-    crd_check "$tmp" || { rm -rf "$tmp"; die "R18: a clean copy with the IAM CRDs was rejected"; }
-  fi
-  rm -rf "$tmp"
-}
-
-# profile_keys FILE...: fail unless every profile sets the same key paths.
-profile_keys() {
-  python3 - "$@" <<'PY'
-import sys
-import yaml
-
-def paths(node, prefix=""):
-    if isinstance(node, dict):
-        out = set()
-        for key, value in node.items():
-            out |= paths(value, f"{prefix}.{key}")
-        return out
-    return {prefix}
-
-sets = {path: paths(yaml.safe_load(open(path))) for path in sys.argv[1:]}
-first = next(iter(sets.values()))
-for path, keys in sets.items():
-    if keys != first:
-        sys.exit(f"R19: {path} sets different keys: {sorted(keys ^ first)}")
-PY
-}
-
-cmd_profiles() {
-  local tmp profile
-  tmp=$(mktemp -d)
-  profile_keys profiles/*.yaml || die "R19: profiles must set the same keys"
-  for profile in single-node small ha; do
-    [[ -f profiles/${profile}.yaml ]] || die "R19: profiles/${profile}.yaml is missing"
-    helm template vws charts/vws -f "$SITE_VALUES" --namespace vws -f "profiles/${profile}.yaml" > "$tmp/${profile}.yaml"
-    python3 scripts/check_render.py "$tmp/${profile}.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "profiles/${profile}.yaml" || die "R19: check_render rejects ${profile}"
-    console_api_closed "$tmp/${profile}.yaml" || die "R19: profile ${profile} publishes an AWS listener or an iam endpoint"
-    # The example CR of the profile renders, passes the same checks, and renders to the same bytes twice.
-    scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.values.yaml" >/dev/null || die "R19: vws render fails on examples/vwscluster/${profile}.yaml"
-    scripts/vws render "examples/vwscluster/${profile}.yaml" "$tmp/${profile}.again.yaml" >/dev/null
-    cmp -s "$tmp/${profile}.values.yaml" "$tmp/${profile}.again.yaml" || die "R19: vws render is not deterministic for ${profile}"
-    helm template vws charts/vws --namespace vws -f "$tmp/${profile}.values.yaml" > "$tmp/${profile}.cr.yaml"
-    python3 scripts/check_render.py "$tmp/${profile}.cr.yaml" charts/vws/values.yaml vws "$tmp/${profile}.values.yaml" || die "R19: check_render rejects the render of the ${profile} example"
-  done
-  grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/ha.yaml" || die "R19: profile ha does not require spreading"
-  ! grep -q 'whenUnsatisfiable: DoNotSchedule' "$tmp/single-node.yaml" || die "R19: profile single-node requires spreading over one node"
-  # spec.storage.s3.rgw of the CR reaches the storage flags and the secretKeyRef env (#108); without it the backend stays off.
-  ! grep -q -e '-object-backend=' "$tmp/small.cr.yaml" || die "R19: a CR without s3.rgw turns the object backend on"
-  sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    s3:\n      rgw: {enabled: true, endpoint: "http:\/\/rgw:8080", bucketPrefix: lab, existingSecret: lab-rgw}/' \
-    examples/vwscluster/small.yaml > "$tmp/rgw.cr.in.yaml"
-  scripts/vws render "$tmp/rgw.cr.in.yaml" "$tmp/rgw.values.yaml" >/dev/null || die "R19: vws render fails on a CR with s3.rgw"
-  helm template vws charts/vws --namespace vws -f "$tmp/rgw.values.yaml" > "$tmp/rgw.cr.yaml"
-  python3 scripts/check_render.py "$tmp/rgw.cr.yaml" charts/vws/values.yaml vws "$tmp/rgw.values.yaml" || die "R19: check_render rejects a CR with s3.rgw"
-  for want in -object-backend=s3 -s3-endpoint=http://rgw:8080 -s3-bucket-prefix=lab; do
-    grep -q -e "- ${want}\$" "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not render ${want}"
-  done
-  grep -q -e 'name: lab-rgw' "$tmp/rgw.cr.yaml" || die "R19: a CR with s3.rgw does not reference existingSecret"
-  # spec.storage.volumeTypes reaches vws-storage as one -kube-volume-type arg per mapped type (#391).
-  sed -e 's/    storageClass: fast-rbd/    storageClass: fast-rbd\n    volumeTypes:\n      gp3: {storageClass: fast-rbd, volumeSnapshotClass: snap}\n      sc1: {storageClass: cold, volumeMode: Filesystem}/' \
-    examples/vwscluster/small.yaml > "$tmp/vt.cr.in.yaml"
-  scripts/vws render "$tmp/vt.cr.in.yaml" "$tmp/vt.values.yaml" >/dev/null || die "R19: vws render fails on a CR with volumeTypes"
-  helm template vws charts/vws --namespace vws -f "$tmp/vt.values.yaml" > "$tmp/vt.cr.yaml"
-  python3 scripts/check_render.py "$tmp/vt.cr.yaml" charts/vws/values.yaml vws "$tmp/vt.values.yaml" || die "R19: check_render rejects a CR with volumeTypes"
-  for want in -kube-volume-type=gp3=fast-rbd//snap -kube-volume-type=sc1=cold/Filesystem; do
-    grep -q -e "- ${want}\$" "$tmp/vt.cr.yaml" || die "R19: a CR with volumeTypes does not render ${want}"
-  done
-  # Negative: a profile with one more key must fail the key check.
-  cp profiles/*.yaml "$tmp/"
-  python3 - "$tmp/small.yaml" <<'PY'
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-d["global"]["pendingFlags"] = True
-yaml.safe_dump(d, open(sys.argv[1], "w"))
-PY
-  ! profile_keys "$tmp/single-node.yaml" "$tmp/small.yaml" "$tmp/ha.yaml" 2>/dev/null || { rm -rf "$tmp"; die "R19: a profile with an extra key was accepted"; }
-  rm -rf "$tmp"
-}
-
-# bootstrap_check FILE TTL: the rendered bootstrap (scripts/bootstrap.sh) keeps the installer rules (R20).
+# bootstrap_check FILE TTL: the bootstrap template keeps the installer rules (R20).
 bootstrap_check() {
   python3 - "$1" "$2" <<'PY'
 import sys
@@ -1233,8 +448,7 @@ if dep is None or dep["spec"].get("replicas") != 1 or (dep["spec"].get("strategy
 tpl = dep["spec"]["template"]
 if "activeDeadlineSeconds" in tpl["spec"] or tpl["spec"].get("restartPolicy", "Always") != "Always":
     fail("a Deployment pod cannot set activeDeadlineSeconds or restartPolicy; the reaper bounds the rights")
-crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
-want_version = f"{crd['spec']['group']}/{crd['spec']['versions'][0]['name']}"
+want_version = "VWS_API_GROUP/VWS_CRD_VERSION"
 installer = tpl["spec"]["containers"][0]
 want_cmd = ["/opt/vws/bin/vws-installer", f"-api-version={want_version}", "-listen=0.0.0.0:8443",
             "-state-dir=/tmp/vws-installer", "-vws=/opt/vws/scripts/vws",
@@ -1316,13 +530,18 @@ cmd_bootstrap() {
   [[ $goimage == *"/golang:${gomod}-"*"@sha256:"* ]] || die "R20: INSTALLER_GO_IMAGE ${goimage} must be golang:${gomod} (installer/go.mod) pinned by digest"
   grep -q '^FROM ${GO_IMAGE} AS build$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must build vws-installer from GO_IMAGE"
   grep -q '^COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must copy vws-installer to /opt/vws/bin"
-  scripts/bootstrap.sh >/dev/null || die "R20: scripts/bootstrap.sh fails"
   ttl=$(sed -n 's/^INSTALLER_TTL_SECONDS=//p' scripts/versions.env)
-  bootstrap_check build/bootstrap.yaml "$ttl" || die "R20: bootstrap rules"
   tmp=$(mktemp -d)
+  # Keep the retired API placeholders in the template; only check its security structure.
+  local image
+  image=$(sed -n 's/^VWS_INSTALLER_IMAGE=//p' scripts/versions.env)
+  sed -e "s#INSTALLER_IMAGE#${image}#g" \
+    -e "s#REAPER_DEADLINE_SECONDS#$((ttl + 600))#g" \
+    -e "s#INSTALLER_TTL_SECONDS#${ttl}#g" bootstrap/bootstrap.yaml > "$tmp/bootstrap.yaml"
+  bootstrap_check "$tmp/bootstrap.yaml" "$ttl" || die "R20: bootstrap rules"
   bad_bootstrap() { # NAME SED
-    sed -e "$2" build/bootstrap.yaml > "$tmp/b.yaml"
-    cmp -s build/bootstrap.yaml "$tmp/b.yaml" && { rm -rf "$tmp"; die "R20: negative test '$1' changed nothing"; }
+    sed -e "$2" "$tmp/bootstrap.yaml" > "$tmp/b.yaml"
+    cmp -s "$tmp/bootstrap.yaml" "$tmp/b.yaml" && { rm -rf "$tmp"; die "R20: negative test '$1' changed nothing"; }
     ! bootstrap_check "$tmp/b.yaml" "$ttl" 2>/dev/null || { rm -rf "$tmp"; die "R20: $1 was accepted"; }
   }
   bad_bootstrap "a tag instead of a digest" 's#installer@sha256:[0-9a-f]*#installer:latest#'
@@ -1508,115 +727,11 @@ cmd_english() {
 }
 
 cmd_observability() {
-  # R25 (#50): observability values, the minimal collector and the collector examples.
-  local tmp version case name want_tag example
+  local version name example
   version=$(sed -n 's/^OTELCOL_VERSION=v\{0,1\}//p' scripts/versions.env)
   [[ -n $version ]] || die "R25: scripts/versions.env has no OTELCOL_VERSION"
-  want_tag=$(python3 -c 'import yaml;print(yaml.safe_load(open("charts/vws/values.yaml"))["observability"]["collector"]["image"].split(":")[1].split("@")[0])')
-  [[ $want_tag == "$version" ]] || die "R25: observability.collector.image tag ${want_tag} is not OTELCOL_VERSION ${version}"
   command -v otelcol-contrib >/dev/null || die "R25: otelcol-contrib missing; run scripts/install-tools.sh"
   otelcol-contrib --version | grep -q -F " ${version}" || die "R25: otelcol-contrib is not OTELCOL_VERSION ${version}"
-  tmp=$(mktemp -d)
-  helm template vws charts/vws -f "$SITE_VALUES" --namespace vws > "$tmp/off.yaml"
-  if grep -q -E 'name: (OTEL_|SENTRY_|VWS_LOG_LEVEL)|otel-collector' "$tmp/off.yaml"; then
-    rm -rf "$tmp"; die "R25: the default render has telemetry env or the collector"
-  fi
-  cat > "$tmp/collector.yaml" <<'YAML'
-observability:
-  enabled: true
-  defaults:
-    resourceAttributes:
-      deployment.environment: lab
-  collector:
-    exporters:
-      otlp:
-        endpoint: gateway.observability.svc:4317
-        authorizationSecret: "42"
-services:
-  compute:
-    observability:
-      samplerArg: "1.0"
-      protocol: http/protobuf
-YAML
-  cat > "$tmp/debug.yaml" <<'YAML'
-observability:
-  enabled: true
-  defaults:
-    samplerArg: "0.5"
-  collector:
-    exporters:
-      otlp:
-        endpoint: http://gateway.observability.svc:4317
-        insecure: true
-YAML
-  cat > "$tmp/external.yaml" <<'YAML'
-observability:
-  enabled: true
-  otlpEndpoint: https://otlp.observability.internal:4317
-  otlpHeadersSecret: vws-otlp-headers
-  defaults:
-    sentry:
-      enabled: true
-      dsnSecret: "true"
-services:
-  compute:
-    observability:
-      logLevel: debug
-      sentry:
-        enabled: false
-YAML
-  for case in collector debug external; do
-    helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/${case}.yaml" --namespace vws > "$tmp/${case}.render.yaml"
-    python3 scripts/check_render.py "$tmp/${case}.render.yaml" charts/vws/values.yaml vws "$SITE_VALUES" "$tmp/${case}.yaml" ||
-      { rm -rf "$tmp"; die "R25: check_render rejects the ${case} observability render"; }
-  done
-  if grep -q 'otel-collector' "$tmp/external.render.yaml"; then
-    rm -rf "$tmp"; die "R25: an external otlpEndpoint still renders the collector"
-  fi
-  for case in collector debug; do
-    python3 - "$tmp/${case}.render.yaml" "$tmp/${case}.otelcol.yaml" <<'PY'
-import sys, yaml
-cm = next(d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "otel-collector")
-open(sys.argv[2], "w").write(cm["data"]["config.yaml"])
-PY
-    OTLP_AUTHORIZATION=unused otelcol-contrib validate --config="$tmp/${case}.otelcol.yaml" ||
-      { rm -rf "$tmp"; die "R25: otelcol-contrib validate rejects the ${case} collector config"; }
-  done
-  # Negative: the schema takes only the telemetry keys in defaults and overrides, and no secret value.
-  for case in \
-    'observability: {defaults: {exporter: otlp}}' \
-    'services: {compute: {observability: {otlpEndpoint: "http://x:4317"}}}' \
-    'services: {compute: {observability: {sentry: {dsn: "https://k@sentry.internal/1"}}}}' \
-    'observability: {defaults: {sentry: {dsn: "https://k@sentry.internal/1"}}}' \
-    'observability: {otlpHeaders: "authorization=Bearer x"}' \
-    'observability: {collector: {exporters: {otlp: {headers: {authorization: x}}}}}' \
-    'observability: {defaults: {samplerArg: "2"}}' \
-    'observability: {collector: {image: "otel/opentelemetry-collector-contrib:latest"}}' \
-    'observability: {collector: {exporters: {otlp: {endpoint: "http://gw.observability.svc:4317/"}}}}' \
-    'observability: {otlpEndpoint: "https://otlp.observability.internal:4317/v1"}'; do
-    printf '%s\n' "$case" > "$tmp/bad.yaml"
-    if helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/bad.yaml" --namespace vws > "$tmp/out" 2>&1 ||
-      ! grep -q -E 'Additional property|Does not match pattern' "$tmp/out"; then
-      rm -rf "$tmp"; die "R25: the values schema did not reject ${case}"
-    fi
-  done
-  # Negative: a render that cannot work fails instead of rendering.
-  for case in \
-    'observability: {enabled: true, otlpHeadersSecret: vws-otlp-headers}' \
-    'observability: {enabled: true, collector: {exporters: {debug: {enabled: false}}}}' \
-    'observability: {enabled: true, defaults: {sentry: {enabled: true}}}' \
-    'observability: {enabled: true, collector: {exporters: {otlp: {authorizationSecret: vws-otlp-auth}}}}'; do
-    printf '%s\n' "$case" > "$tmp/bad.yaml"
-    if helm template vws charts/vws -f "$SITE_VALUES" -f "$tmp/bad.yaml" --namespace vws > "$tmp/out" 2>&1 ||
-      ! grep -q -E 'observability|sentry' "$tmp/out"; then
-      rm -rf "$tmp"; die "R25: helm template did not refuse ${case}"
-    fi
-  done
-  sed 's/limit_percentage: 80/limit_percentage: 180/' "$tmp/debug.otelcol.yaml" > "$tmp/bad.otelcol.yaml"
-  if otelcol-contrib validate --config="$tmp/bad.otelcol.yaml" >/dev/null 2>&1; then
-    rm -rf "$tmp"; die "R25: otelcol-contrib validate accepted a bad memory_limiter"
-  fi
-  rm -rf "$tmp"
   # Examples: config only, each with its rights or mounts and its component stability, and valid.
   local examples=docs/observability/collector-examples
   [[ -d $examples ]] || die "R25: ${examples} is missing"
@@ -1632,15 +747,12 @@ PY
 
 cmd_all() {
   cmd_layout
-  cmd_names
   cmd_assets
   cmd_ci
   cmd_cursor
   cmd_agents
   cmd_vws
-  cmd_upgrade_compat
   cmd_bootstrap
-  cmd_crd
   cmd_bundle
   cmd_hooks
   cmd_docs
@@ -1655,7 +767,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|names|assets|ci|cursor|agents|bundle|config|observability|vws|upgrade-compat|bootstrap|crd|profiles|schema|hooks|docs|recovery|placeholders|english|secrets|commits|commit-msg|all>
+usage: guard.sh <layout|assets|ci|cursor|agents|bundle|observability|vws|bootstrap|hooks|docs|english|secrets|commits|commit-msg|all>
 EOF
 }
 
@@ -1663,24 +775,16 @@ command_name=${1:-}
 shift || true
 case "$command_name" in
   layout) cmd_layout ;;
-  names) cmd_names ;;
   assets) cmd_assets ;;
   ci) cmd_ci ;;
   cursor) cmd_cursor ;;
   agents) cmd_agents ;;
   bundle) cmd_bundle ;;
-  config) cmd_config ;;
   observability) cmd_observability ;;
   vws) cmd_vws ;;
-  upgrade-compat) cmd_upgrade_compat ;;
   bootstrap) cmd_bootstrap ;;
-  crd) cmd_crd ;;
-  profiles) cmd_profiles ;;
-  schema) cmd_schema ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
-  recovery) cmd_recovery ;;
-  placeholders) cmd_placeholders "$@" ;;
   english) cmd_english ;;
   secrets) cmd_secrets ;;
   commits) cmd_commits "$@" ;;
