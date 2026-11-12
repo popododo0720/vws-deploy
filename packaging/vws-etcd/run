@@ -29,6 +29,8 @@ case "$1" in
             --key "$CREDENTIALS_DIRECTORY/member.key" "$endpoint/health"
         ;;
     snapshot|defrag)
+        exec 9>/var/lib/vws-etcd/maintenance.lock
+        flock --wait 1800 9 || { echo "vws-etcd: maintenance lock timed out" >&2; exit 1; }
         export ETCDCTL_API=3 ETCDCTL_ENDPOINTS=$endpoint
         export ETCDCTL_CACERT=$CREDENTIALS_DIRECTORY/ca.crt
         export ETCDCTL_CERT=$CREDENTIALS_DIRECTORY/client.crt
@@ -37,6 +39,7 @@ case "$1" in
         if [[ $1 == snapshot ]]; then
             exec "$src/vws-etcd-snapshot" /var/lib/vws-etcd/snapshots 48
         fi
+        export ETCDCTL_COMMAND_TIMEOUT=10m
         exec "$src/vws-etcd-defrag"
         ;;
     *) echo "vws-etcd: unknown action $1" >&2; exit 2 ;;

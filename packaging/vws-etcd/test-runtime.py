@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check installed helper layout, launcher boundaries and mutual-TLS readiness."""
 import http.server
+import fcntl
 import os
 import pathlib
 import ssl
@@ -18,6 +19,8 @@ binary.chmod(0o755)
 launcher = helpers / "run"
 launcher.write_text(launcher.read_text().replace("/etc/vws/etcd.conf", str(conf))
                     .replace("/run/vws-etcd/config.yaml", str(runtime))
+                    .replace("/var/lib/vws-etcd/maintenance.lock", str(tmp / "maintenance.lock"))
+                    .replace("--wait 1800", "--wait 1")
                     .replace("/usr/bin/vws-etcd", str(binary)))
 tls = tmp / "tls"
 subprocess.run([str(helpers / "vws-etcd-tls"), str(tls), "local=127.0.0.1"],
@@ -43,9 +46,15 @@ for action in ("snapshot", "defrag"):
         '[ "$ETCDCTL_CACERT" = "$CREDENTIALS_DIRECTORY/ca.crt" ]\n'
         '[ "$ETCDCTL_CERT" = "$CREDENTIALS_DIRECTORY/client.crt" ]\n'
         '[ "$ETCDCTL_KEY" = "$CREDENTIALS_DIRECTORY/client.key" ]\n'
-        '[ "$ETCDCTL_DIAL_TIMEOUT" = 5s ] && [ "$ETCDCTL_COMMAND_TIMEOUT" = 60s ]\n'
+        '[ "$ETCDCTL_DIAL_TIMEOUT" = 5s ]\n'
+        f'[ "$ETCDCTL_COMMAND_TIMEOUT" = {"60s" if action == "snapshot" else "10m"} ]\n'
         + ('[ "$1" = /var/lib/vws-etcd/snapshots ] && [ "$2" = 48 ]\n'
            if action == "snapshot" else '[ "$#" = 0 ]\n'))
+    subprocess.run([str(launcher), action], env=env, check=True, timeout=5)
+    with (tmp / "maintenance.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        blocked = subprocess.run([str(launcher), action], env=env, timeout=5)
+        assert blocked.returncode != 0
     subprocess.run([str(launcher), action], env=env, check=True, timeout=5)
 
 
@@ -93,6 +102,7 @@ for action in ("snapshot", "defrag"):
         assert f"LoadCredential={name}:/etc/vws/credentials/{name}" in unit
     assert "ExecStartPre=+/usr/lib/vws/etcd/check-credentials client" in unit
     assert f"ExecStart=/usr/lib/vws/etcd/run {action}" in unit
+    assert f"TimeoutStartSec={'32min' if action == 'snapshot' else '60min'}" in unit
     timer = (src / f"vws-etcd-{action}.timer").read_text().splitlines()
     assert "Persistent=true" in timer
     assert f"Unit=vws-etcd-{action}.service" in timer

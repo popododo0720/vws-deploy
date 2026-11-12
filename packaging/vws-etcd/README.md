@@ -65,8 +65,11 @@ total. Failed member processes restart after 5 seconds.
 Enable `vws-etcd-snapshot.timer` explicitly on each global VM (or the one lab/small member). It runs
 hourly and retains 48 snapshots in `/var/lib/vws-etcd/snapshots`. Enable `vws-etcd-defrag.timer` on
 only one global VM; it runs weekly. Both timers catch missed schedules after a restart, with a
-random delay. Calls have a 5 second dial timeout and 60 second command timeout; systemd also bounds
-each maintenance run. Copy snapshots off the member as described above.
+random delay. Calls have a 5 second dial timeout; snapshot commands have 60 seconds and defrag commands
+have 10 minutes. Local snapshot and defrag runs share a lock with a 30 minute wait bound, so they do
+not interrupt each other. Systemd bounds the whole snapshot run to 32 minutes and defrag to 60 minutes.
+The lock is local: coordinate snapshots on other members with the weekly cluster defrag window.
+Copy snapshots off the member as described above.
 
 `packaging/vws-etcd/test.sh` checks package contents, lintian, shellcheck, rejected inputs, unit
 credentials, and mutual-TLS readiness/recovery. CI runs `test-install.sh` in a disposable Debian
