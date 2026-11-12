@@ -42,7 +42,7 @@ Flags may go before or after the command. An unknown flag before the command nam
 
 ## Harness (`tests/vws/run.sh`)
 
-It never reaches a cluster or the network. It puts the fake `kubectl` and `helm` from `tests/fixtures/bin/` first in PATH and tests the dispatcher and common library with the test commands in `tests/fixtures/commands/`.
+It never reaches a cluster or the external network. Admin commands use a loopback HTTP stub started by the test with a readiness signal. Other commands put the fake `kubectl` and `helm` from `tests/fixtures/bin/` first in PATH and test the dispatcher and common library with the test commands in `tests/fixtures/commands/`.
 
 - On every call the fake tools write `tool<TAB>verb<TAB>args` to `$VWS_FAKE_LOG` and return `tests/fixtures/<tool>/<verb>_<resource>.json` as is. A missing file fails loudly (an unplanned call never passes).
 - `assert_no_changes` checks the log for mutating verbs. Its verb list is deliberately kept apart from `common.sh` (it does not trust the code under test). `assert_changes` is the control.
