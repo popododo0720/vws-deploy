@@ -71,7 +71,8 @@ Three members survive the loss of one. Five would only add write latency at this
   restore loses to one hour of IAM changes (a key created in that hour is gone after the restore).
 - **Restore**: `vws restore --etcd` on every member with the same snapshot (`docs/etcd-runbook.md`).
 
-The timer units for snapshots and defrag wait for the R10 rewrite (vws-deploy#763), like the member unit.
+The `vws-etcd` package ships the member and both maintenance timers. Installation starts and enables
+nothing; provision credentials and opt in to the schedules as described in `packaging/vws-etcd/README.md`.
 
 ## Alerts
 

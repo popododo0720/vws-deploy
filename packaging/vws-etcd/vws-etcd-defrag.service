@@ -1,0 +1,17 @@
+[Unit]
+Description=VWS etcd sequential defragmentation
+After=network-online.target vws-etcd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=vws-etcd
+Group=vws-etcd
+LoadCredential=ca.crt:/etc/vws/credentials/ca.crt
+LoadCredential=client.crt:/etc/vws/credentials/client.crt
+LoadCredential=client.key:/etc/vws/credentials/client.key
+ExecStartPre=+/usr/lib/vws/etcd/check-credentials client
+ExecStart=/usr/lib/vws/etcd/run defrag
+TimeoutStartSec=60min
+UMask=0077
+PrivateTmp=true

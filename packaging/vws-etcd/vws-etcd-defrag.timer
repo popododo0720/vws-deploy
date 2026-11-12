@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly VWS etcd defragmentation
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30min
+Unit=vws-etcd-defrag.service
+
+[Install]
+WantedBy=timers.target
