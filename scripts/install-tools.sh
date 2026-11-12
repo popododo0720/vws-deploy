@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the pinned helm, kubeconform, otelcol-contrib and etcd binaries used by make check and CI.
+# Install the pinned helm, otelcol-contrib and etcd binaries for optional legacy checks.
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -22,10 +22,6 @@ fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
 tar -xzf "$work/helm.tgz" -C "$work"
 install -m 755 "$work/linux-amd64/helm" "$dest/helm"
 
-fetch "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-  "$KUBECONFORM_SHA256" "$work/kubeconform.tgz"
-tar -xzf "$work/kubeconform.tgz" -C "$work"
-install -m 755 "$work/kubeconform" "$dest/kubeconform"
 
 fetch "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol-contrib_${OTELCOL_VERSION}_linux_amd64.tar.gz" \
   "$OTELCOL_SHA256" "$work/otelcol.tgz"
@@ -39,4 +35,4 @@ for bin in etcd etcdctl etcdutl; do
   install -m 755 "$work/etcd-${ETCD_VERSION}-linux-amd64/${bin}" "$dest/${bin}"
 done
 
-echo "installed helm, kubeconform, otelcol-contrib and etcd in ${dest}"
+echo "installed helm, otelcol-contrib and etcd in ${dest}"

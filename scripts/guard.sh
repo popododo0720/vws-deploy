@@ -164,6 +164,9 @@ cmd_ci() {
     ! r8_scan "$f" >/dev/null || die "R8: positive test ${f} was rejected"
   done
   grep -q 'make check' .github/workflows/ci.yml || die "R8: CI must run make check"
+  if grep -R -n -w -E 'helm|kubeconform' .github/workflows; then
+    die "R8: workflows must not run the retired chart validators"
+  fi
 }
 
 cmd_schema() {
@@ -563,96 +566,10 @@ cmd_cursor() {
   grep -q 'Do not use Cursor cloud agents' AGENTS.md || die "R9: AGENTS.md lost the Cursor rule"
 }
 
-# multus_digest_check FILE: fail unless FILE pins MULTUS_IMAGE_DIGEST as sha256:<64 lowercase hex>
-# (vws-deploy#626). The pin is handed to kubelet unchanged, so a bad form must fail here, not at pull time.
-multus_digest_check() {
-  local digest
-  digest=$(sed -n 's/^MULTUS_IMAGE_DIGEST=//p' "$1")
-  [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] \
-    || die "R12: MULTUS_IMAGE_DIGEST in $1 must match ^sha256:[0-9a-f]{64}\$; got '${digest}'"
-}
-
 cmd_bundle() {
-  local name version hits tmp
-  multus_digest_check scripts/versions.env
-  # The pin is input: an empty or malformed value must fail, and the call above must pass on the current pin.
-  tmp=$(mktemp -d)
-  sed 's/^MULTUS_IMAGE_DIGEST=.*/MULTUS_IMAGE_DIGEST=/' scripts/versions.env > "$tmp/empty.env"
-  sed 's/^MULTUS_IMAGE_DIGEST=.*/MULTUS_IMAGE_DIGEST=sha256:abc/' scripts/versions.env > "$tmp/short.env"
-  for digest in empty short; do
-    ! (multus_digest_check "$tmp/${digest}.env") 2>/dev/null \
-      || { rm -rf "$tmp"; die "R12: a ${digest} MULTUS_IMAGE_DIGEST was accepted"; }
-  done
-  rm -rf "$tmp"
-  for name in KUBEVIRT CDI MULTUS KUBEOVN ROOK CSI_DRIVER_NFS; do
-    version=$(sed -n "s/^${name}_VERSION=v\{0,1\}//p" scripts/versions.env)
-    [[ -n $version ]] || die "R12: scripts/versions.env has no ${name}_VERSION"
-    hits=$(grep -R -n -F -e "$version" . --exclude-dir=.git --exclude-dir=build --exclude-dir=.cache \
-      --exclude=versions.env || true)
-    [[ -z $hits ]] || die "R12: ${name} version is written outside scripts/versions.env: ${hits}"
-  done
-  cmd_cdi_cr
-  for name in rbd openvswitch geneve kvm nfs; do
-    grep -q -w "$name" docs/platform-bundle.md || die "R12: docs/platform-bundle.md does not list kernel module ${name}"
-  done
-  cmd_storage_names
-}
-
-cmd_storage_names() {
-  local rendered=build/platform/31-rook-ceph-cluster.yaml
-  [[ -f $rendered ]] || die "R12: ${rendered} is missing; run scripts/platform.sh first"
-  python3 - "$rendered" <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-WANT = "ceph-block"
-docs = [d for d in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if d]
-classes = [d for d in docs if d["kind"] == "StorageClass" and d["metadata"]["name"] == WANT]
-snaps = [d for d in docs if d["kind"] == "VolumeSnapshotClass" and d["metadata"]["name"] == WANT]
-if len(classes) != 1 or len(snaps) != 1:
-    sys.exit(f"R12: the bundle must render StorageClass and VolumeSnapshotClass {WANT} once each")
-if classes[0]["provisioner"] != snaps[0]["driver"]:
-    sys.exit("R12: StorageClass provisioner and VolumeSnapshotClass driver differ")
-doc = Path("docs/platform-bundle.md").read_text()
-for kind in ("StorageClass", "VolumeSnapshotClass"):
-    if not any(line.startswith(f"| {kind} | `{WANT}` |") for line in doc.splitlines()):
-        sys.exit(f"R12: docs/platform-bundle.md must list {kind} {WANT}")
-PY
-}
-
-cmd_cdi_cr() {
-  local crd=.cache/platform/cdi-operator.yaml
-  [[ -f $crd ]] || die "R12: ${crd} is missing; run scripts/platform.sh first"
-  python3 - "$crd" <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-docs = [d for d in yaml.safe_load_all(Path(sys.argv[1]).read_text()) if d]
-crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition" and d["metadata"]["name"] == "cdis.cdi.kubevirt.io")
-cr = yaml.safe_load(Path("platform/cdi-cr.yaml").read_text())
-version = cr["apiVersion"].split("/")[1]
-schema = next(v for v in crd["spec"]["versions"] if v["name"] == version)["schema"]["openAPIV3Schema"]
-
-
-def walk(value, node, path):
-    if "properties" in node and isinstance(value, dict):
-        for key, item in value.items():
-            if key not in node["properties"]:
-                sys.exit(f"R12: platform/cdi-cr.yaml {path}.{key} is not in the CDI CRD schema")
-            walk(item, node["properties"][key], f"{path}.{key}")
-    elif node.get("type") == "array" and isinstance(value, list):
-        for item in value:
-            walk(item, node.get("items", {}), f"{path}[]")
-    elif node.get("type") == "string" and not isinstance(value, str):
-        sys.exit(f"R12: platform/cdi-cr.yaml {path} must be a string")
-
-
-walk(cr["spec"], schema["properties"]["spec"], "spec")
-PY
+  if grep -nE '^(KUBEVIRT|CDI|MULTUS|KUBEOVN|ROOK|CSI_DRIVER_NFS|KUBECONFORM)_' scripts/versions.env docs/image-pins.md; then
+    die "R12: retired Kubernetes bundle and validator pins must not return"
+  fi
 }
 
 cmd_agents() {
@@ -999,7 +916,7 @@ vws_layout_check() {
 }
 
 cmd_vws() {
-  local tmp
+  local tmp test
   vws_layout_check . || die "R17: scripts/vws layout is broken"
   for test in config region aws-account; do
     bash "tests/vws/${test}.test.sh" || die "R17: the ${test} tests fail"
@@ -1230,7 +1147,7 @@ PY
 }
 
 cmd_profiles() {
-  local tmp profile size
+  local tmp profile
   tmp=$(mktemp -d)
   profile_keys profiles/*.yaml || die "R19: profiles must set the same keys"
   for profile in single-node small ha; do
@@ -1267,14 +1184,6 @@ cmd_profiles() {
   for want in -kube-volume-type=gp3=fast-rbd//snap -kube-volume-type=sc1=cold/Filesystem; do
     grep -q -e "- ${want}\$" "$tmp/vt.cr.yaml" || die "R19: a CR with volumeTypes does not render ${want}"
   done
-  # Ceph overlays, rendered by scripts/platform.sh.
-  for profile in single-node ha; do
-    [[ -f build/platform-profiles/31-rook-ceph-cluster.${profile}.yaml ]] || die "R19: run scripts/platform.sh first"
-  done
-  size=$(python3 -c 'import sys,yaml;print(sorted({p["spec"]["replicated"]["size"] for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"]=="CephBlockPool" for p in [d]}))' build/platform-profiles/31-rook-ceph-cluster.single-node.yaml)
-  [[ $size == "[1]" ]] || die "R19: single-node Ceph block pool size is ${size}, want [1]"
-  size=$(python3 -c 'import sys,yaml;print(sorted({p["spec"]["replicated"]["size"] for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"]=="CephBlockPool" for p in [d]}))' build/platform-profiles/31-rook-ceph-cluster.ha.yaml)
-  [[ $size == "[3]" ]] || die "R19: ha Ceph block pool size is ${size}, want [3]"
   # Negative: a profile with one more key must fail the key check.
   cp profiles/*.yaml "$tmp/"
   python3 - "$tmp/small.yaml" <<'PY'
@@ -1732,6 +1641,7 @@ cmd_all() {
   cmd_upgrade_compat
   cmd_bootstrap
   cmd_crd
+  cmd_bundle
   cmd_hooks
   cmd_docs
   cmd_english
