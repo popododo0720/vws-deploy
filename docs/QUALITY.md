@@ -52,7 +52,9 @@ The gate records that a verdict was posted. It cannot prove who judged it.
   alone in `VWS_VERIFY_ACTORS` and `VWS_VERIFY_IDENTITY`, so the author/pusher exclusion
   rejects a bot's own approval.
 - **The PR can edit the gate's YAML.** On `pull_request`, GitHub runs the workflow from the
-  PR's merge commit. The job checks out the base commit, so the guard script that judges is
+  PR's merge commit. The job checks out the current tip of the base branch, so a merged guard
+  change reaches every open PR on its next run; it never checks out the PR head with a token,
+  which would run PR-controlled code. The guard script that judges is
   the one on main, but a PR can still change `repo-guard.yml` itself (for example, the
   checkout ref or the step). In repos other than vws-deploy the steps are pinned in
   vws-deploy `repo-guard-<job>.yml` files, but a PR can still edit the caller and its pin;
