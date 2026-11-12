@@ -66,4 +66,10 @@ expect_text "dry-run prints the delete" "$ERR" "DRYRUN kubectl delete clusterrol
 run_vws_real installer;                          expect_rc "installer without finish exits 2" 2
 run_vws_real installer start;                    expect_rc "an unknown installer verb exits 2" 2
 
+if grep -qE '^COPY (charts|profiles)( |$)' "${VWS_TEST_ROOT}/bootstrap/Containerfile"; then
+  bad "installer image excludes retired chart inputs" "obsolete COPY instruction"
+else
+  ok "installer image excludes retired chart inputs"
+fi
+
 finish_tests

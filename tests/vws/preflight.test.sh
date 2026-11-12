@@ -190,4 +190,16 @@ scenario api-down
 rm "$(fx kubectl/version_.json)"
 run_vws_real preflight --profile single-node;     expect_rc "an unreachable API exits 3" 3
 
+# Exercise checkout checks without the retired chart validators.
+mkdir -p "${WORK}/source/.git" "${WORK}/source/scripts"
+printf '#!/usr/bin/env bash\n[[ $1 == bundle ]]\n' >"${WORK}/source/scripts/guard.sh"
+chmod +x "${WORK}/source/scripts/guard.sh"
+OUT=$(VWS_ROOT="${WORK}/source" VWS_SOURCE_CHECKS=1 bash -c '
+  source "$1"
+  vws_emit() { printf "%s %s %s\n" "$@"; }
+  vws_check_source
+' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/checks.sh")
+expect_line "source checks retain the bundle guard" OK source-bundle
+if [[ $OUT != *FAIL* ]]; then ok "source checks call no retired guard"; else bad "source checks" "$OUT"; fi
+
 finish_tests

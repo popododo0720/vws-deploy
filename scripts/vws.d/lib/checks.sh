@@ -80,7 +80,7 @@ vws_check_nodes() {
   vws_check_node_ip "$json"
 }
 
-# vws_check_node_ip NODES_JSON: node addresses must be static (docs/quickstart.md). A k3s node that
+# vws_check_node_ip NODES_JSON: node addresses must be static. A k3s node that
 # does not pin --node-ip follows whatever DHCP hands out; after a lease change the node, the CNI
 # tunnels and every certificate SAN point at the old address (vws-deploy#118). Only k3s exposes the
 # flags (annotation k3s.io/node-args); other distributions are not checked.
@@ -95,11 +95,11 @@ vws_check_node_ip() {
       select($pin == "" or $pin != $ip) |
       "\(.metadata.name) (InternalIP \($ip), --node-ip \(if $pin == "" then "not set" else $pin end))"] | join(", ")' <<<"$json")
   if ((k3s == 0)); then
-    vws_emit OK node-ip "not k3s; keep node addresses static (docs/quickstart.md)"
+    vws_emit OK node-ip "not k3s; keep node addresses static"
   elif [[ -z $bad ]]; then
     vws_emit OK node-ip "${k3s} k3s nodes pin --node-ip to their InternalIP"
   else
-    vws_emit WARN node-ip "${bad}: pin a static address with --node-ip, a DHCP change breaks the node (docs/quickstart.md)"
+    vws_emit WARN node-ip "${bad}: pin a static address with --node-ip, a DHCP change breaks the node"
   fi
 }
 
@@ -212,7 +212,7 @@ vws_check_node_network() {
   tmp=$(mktemp -d)
   if ! vws_kubectl get vwsclusters vws -o json >"${tmp}/cr.json" 2>/dev/null; then
     rm -rf "$tmp"
-    vws_emit OK node-network "no VWSCluster vws yet; vws init then preflight again checks spec.network.nodes"
+    vws_emit OK node-network "no VWSCluster vws; no spec.network.nodes to check"
     return 0
   fi
   vws_kubectl get nodes -o json >"${tmp}/nodes.json" 2>/dev/null || { rm -rf "$tmp"; vws_die_env "cannot list nodes"; }
@@ -226,7 +226,7 @@ vws_check_node_network() {
         -p "{\"spec\":{\"network\":{\"vmMTU\":${vm},\"underlayMTU\":${underlay}}}}" >/dev/null 2>&1; then
         vws_emit OK vm-mtu-set "spec.network.vmMTU=${vm} underlayMTU=${underlay} written to VWSCluster vws"
       else
-        vws_emit WARN vm-mtu-set "could not write spec.network.vmMTU=${vm}; set it with vws reconfigure --set network.vmMTU=${vm}"
+        vws_emit WARN vm-mtu-set "could not write spec.network.vmMTU=${vm}; set spec.network.vmMTU with the operator kubeconfig"
       fi
       continue
     fi
@@ -253,12 +253,9 @@ vws_check_source() {
     vws_emit OK source "not a checkout; skipped"
     return 0
   fi
-  local name
-  for name in bundle recovery config; do
-    if (cd "$VWS_ROOT" && scripts/guard.sh "$name" >/dev/null 2>&1); then
-      vws_emit OK "source-${name}" "scripts/guard.sh ${name}"
-    else
-      vws_emit FAIL "source-${name}" "scripts/guard.sh ${name} fails; run it for the reason"
-    fi
-  done
+  if (cd "$VWS_ROOT" && scripts/guard.sh bundle >/dev/null 2>&1); then
+    vws_emit OK source-bundle "scripts/guard.sh bundle"
+  else
+    vws_emit FAIL source-bundle "scripts/guard.sh bundle fails; run it for the reason"
+  fi
 }
