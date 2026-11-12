@@ -687,7 +687,7 @@ cmd_agents() {
   grep -q -E 'guard-agents.sh verify-gate( |$)' "$rg_vg" || die "R13: repo-guard-verify-gate.yml has no verify-gate (#249)"
   grep -q -e 'labeled, unlabeled' .github/workflows/repo-guard.yml || die "R13: repo-guard.yml must re-run verify-gate on labeled/unlabeled"
   ! grep -q 'pull_request_target' "${rg_all[@]}" || die "R13: repo-guard must not use pull_request_target"
-  grep -q 'ref: ${{ github.event.pull_request.base.sha }}' "$rg_vg" || die "R13: verify-gate must run the guard from the base commit"
+  grep -q 'ref: ${{ github.event.pull_request.base.ref }}' "$rg_vg" || die "R13: verify-gate must run the guard from the current base branch tip"
   grep -q 'GUARD_VERIFY_EXCLUDE=' "$rg_vg" || die "R13: verify-gate must exclude the PR author and the head pusher"
   grep -q 'GUARD_VERIFY_IDENTITY: ${{ vars.VWS_VERIFY_IDENTITY }}' "$rg_vg" || die "R13: verify-gate must pass the vws-verify identity"
 }
