@@ -1,7 +1,7 @@
 # vws-region
 
 Install the same release on every PVE node. This package does not install a PVE
-cluster or modify `/etc/pve`, VM definitions, snippets or volumes. It installs
+cluster or modify VM definitions, snippets or volumes. It installs
 `/usr/bin/vws-region`, `/usr/lib/vws/vws-region-helper`, the readiness probe,
 systemd unit, sudoers policy and `/etc/vws/region.yaml`.
 
@@ -26,6 +26,13 @@ the node settings and certificates first. Edit `/etc/vws/region.yaml` to name
 existing pools, bridges, template selectors and storage. The example is read-only.
 Registration is read from `/etc/pve/vws/registration.json`, overriding the old
 binary default under `priv/`. Operator registration must match the binary release.
+
+During configure, postinst creates the lease directory `/etc/pve/vws/` only when
+`/proc/self/mounts` lists `/dev/fuse` mounted at `/etc/pve` with filesystem type
+`fuse` (pmxcfs). A plain directory or any other mount is left unchanged. Repeated
+configure runs preserve existing data, and a symlink at `/etc/pve/vws` is refused.
+The package never changes ownership or permissions on pmxcfs and retains the
+directory on removal and purge.
 
 Provision a root-owned, mode 0600, 32-byte raw KEK at
 `/etc/vws/credentials/region-kek` identically on each node. Provision the region

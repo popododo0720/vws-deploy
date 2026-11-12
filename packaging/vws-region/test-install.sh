@@ -15,6 +15,29 @@ snapshot() {
 }
 before=$(snapshot)
 apt-get install -y --no-install-recommends "$1"
+test ! -e /etc/pve/vws
+tmp=$(mktemp -d "$(dirname -- "$1")/region-install.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+printf '/dev/fuse /etc/pve fuse rw 0 0\n' > "$tmp/mounts"
+VWS_REGION_TEST=1 VWS_REGION_TEST_MOUNTS="$tmp/mounts" \
+    /var/lib/dpkg/info/vws-region.postinst configure
+test -d /etc/pve/vws
+printf 'lease sentinel\n' > /etc/pve/vws/lease.json
+lease_before=$(snapshot)
+VWS_REGION_TEST=1 VWS_REGION_TEST_MOUNTS="$tmp/mounts" \
+    /var/lib/dpkg/info/vws-region.postinst configure
+test "$lease_before" = "$(snapshot)"
+rm /etc/pve/vws/lease.json
+rmdir /etc/pve/vws
+ln -s "$tmp" /etc/pve/vws
+if VWS_REGION_TEST=1 VWS_REGION_TEST_MOUNTS="$tmp/mounts" \
+    /var/lib/dpkg/info/vws-region.postinst configure 2>"$tmp/error"; then
+    echo "symlinked lease directory accepted" >&2
+    exit 1
+fi
+grep -q 'lease directory /etc/pve/vws must not be a symlink' "$tmp/error"
+rm /etc/pve/vws
+test "$before" = "$(snapshot)"
 getent passwd vws-region
 test "$(stat -c '%u:%g:%a' /etc/vws/credentials)" = 0:0:700
 test ! -e /etc/vws/credentials/region-kek

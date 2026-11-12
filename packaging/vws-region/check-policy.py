@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check command permissions; visudo checks syntax, not least privilege."""
+"""Check helper permissions and PVE token references in shipped configuration."""
 import pathlib
 import re
 import sys
@@ -35,4 +35,18 @@ for line in expected:
     assert re.fullmatch(arguments, f"{verb} {valid}"), arguments
     for invalid in ("", "../escape", "valid extra", "wrong.yaml"):
         assert re.fullmatch(arguments, f"{verb} {invalid}") is None, invalid
-print(f"{path}: fixed helper policy OK")
+packaging = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else pathlib.Path(__file__).resolve().parent.parent
+# guard.sh secrets already rejects the authorization prefix in every tracked file.
+token = re.compile(
+    r"pve-token|/etc/pve/priv/vws/|"
+    r"[^\s@=!]+@[^\s@=!]+![^\s@=!]+="
+    r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+)
+suffixes = {".service", ".target", ".socket", ".mount", ".swap", ".timer",
+            ".path", ".slice", ".scope", ".automount", ".device", ".conf", ".yaml"}
+for candidate in sorted(packaging.rglob("*")):
+    if candidate.is_file() and candidate.suffix in suffixes:
+        for number, line in enumerate(candidate.read_text().splitlines(), 1):
+            if token.search(line):
+                sys.exit(f"{candidate}:{number}: packaged configuration must not contain a PVE token or token path")
+print(f"{path}: fixed helper policy and packaged PVE token policy OK")

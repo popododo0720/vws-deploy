@@ -2,6 +2,22 @@
 set -eu
 case "$1" in
     configure)
+        mounts=/proc/self/mounts
+        if [ "${VWS_REGION_TEST_MOUNTS+x}" = x ]; then
+            if [ "${VWS_REGION_TEST:-}" != 1 ] || [ -z "$VWS_REGION_TEST_MOUNTS" ]; then
+                echo "vws-region: mounts override requires VWS_REGION_TEST=1 and a fixture path" >&2
+                exit 1
+            fi
+            mounts=$VWS_REGION_TEST_MOUNTS
+        fi
+        if awk '$1 == "/dev/fuse" && $2 == "/etc/pve" && $3 == "fuse" { found = 1 }
+                END { exit !found }' "$mounts"; then
+            if [ -L /etc/pve/vws ]; then
+                echo "vws-region: lease directory /etc/pve/vws must not be a symlink" >&2
+                exit 1
+            fi
+            mkdir -p /etc/pve/vws
+        fi
         if ! getent passwd vws-region >/dev/null; then
             adduser --system --group --home /nonexistent --no-create-home \
                 --shell /usr/sbin/nologin vws-region
