@@ -10,9 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -35,17 +33,6 @@ func (f *fakeCluster) Install(_ context.Context, cr []byte, _ func(string)) (clu
 	return cluster.Result{ConsoleURL: "https://console.example.invalid"}, f.err
 }
 
-func apiVersion(t *testing.T) string {
-	t.Helper()
-	crd, err := os.ReadFile("../../../charts/vws/crds/vwsclusters.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	g := regexp.MustCompile(`(?m)^  group: (\S+)$`).FindSubmatch(crd)
-	v := regexp.MustCompile(`(?m)^    - name: (\S+)$`).FindSubmatch(crd)
-	return string(g[1]) + "/" + string(v[1])
-}
-
 // serve starts the real API on TLS against a fake cluster and returns a logged-in client
 // pinned to the test certificate.
 func serve(t *testing.T, fc *fakeCluster, pf api.Preflight) (*client.Client, *api.Server) {
@@ -63,7 +50,7 @@ func serveCreds(
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := api.Config{Auth: auth, Cluster: fc, Preflight: pf, APIVersion: apiVersion(t)}
+	cfg := api.Config{Auth: auth, Cluster: fc, Preflight: pf, APIVersion: "example.invalid/v1alpha1"}
 	if creds != nil {
 		cfg.Credentials = creds
 	}
