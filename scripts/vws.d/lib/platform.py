@@ -7,13 +7,9 @@ is a byte copy of BUNDLE, less csi-driver-nfs unless the driver is nfs. With it:
 - the CephCluster gets network.provider host and addressRanges.public/cluster;
 No ovn-external-gw-config: it would delete the underlay bridge and wants a Subnet named external
 (vws-deploy#164). Gateway node labels belong to vws-network.
-With spec.network.nodes.external, GATEWAY_MTU_FILE: a Deployment that keeps OVN options:gateway_mtu
-at the external MTU on every VPC router port to the external subnet (vws-deploy#237), so the router
-answers oversized packets bound for the 1500 path with ICMP fragmentation-needed (PMTUD).
 With spec.storage.driver nfs, csi-driver-nfs and the vws-nfs StorageClass; otherwise no csi-driver-nfs.
 Exit 2 when the CR or the bundle does not fit.
 """
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -21,7 +17,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import EXTERNAL_SUBNET, NFS_CLASS, Invalid, host_interface, tunnel_overhead  # noqa: E402
+from render import NFS_CLASS, Invalid, host_interface, tunnel_overhead  # noqa: E402
 
 # csi-driver-nfs (vws-deploy#170): in the bundle for every CR, installed only when spec.storage.driver is
 # nfs. Then NFS_CLASS_FILE adds the StorageClass the storage service uses, with the CR's export.
@@ -29,92 +25,6 @@ NFS_DRIVER_FILE = "35-csi-driver-nfs.yaml"
 NFS_CLASS_FILE = "36-vws-nfs-storageclass.yaml"
 NFS_PROVISIONER = "nfs.csi.k8s.io"
 
-# OVN gateway_mtu (vws-deploy#237). Kube-OVN sets no gateway_mtu and has no field for it; vws-network
-# only talks to the Kubernetes API. Kube-OVN names a VPC's port to an extraExternalSubnets subnet
-# <vpc>-<subnet>. The loop sets the option only where it differs, so it is idempotent and picks up
-# new VPCs within GATEWAY_MTU_PERIOD seconds. It reaches the NB DB through the ovn-nb Service
-# (kube-system, plain TCP 6641, the bundle has ENABLE_SSL=false) and needs no Kubernetes RBAC.
-GATEWAY_MTU_FILE = "22-vws-ovn-gateway-mtu.yaml"
-GATEWAY_MTU_NAME = "vws-ovn-gateway-mtu"
-GATEWAY_MTU_PERIOD = 30
-KUBEOVN_IMAGE = "docker.io/kubeovn/kube-ovn"
-VERSIONS = Path(__file__).resolve().parents[3] / "scripts" / "versions.env"
-GATEWAY_MTU_SCRIPT = """db="tcp:${OVN_NB_SERVICE_HOST}:${OVN_NB_SERVICE_PORT}"
-nb() { ovn-nbctl --db="$db" --timeout=10 "$@"; }
-while :; do
-  for lrp in $(nb --bare --columns=name find logical_router_port); do
-    case $lrp in *-${SUBNET}) ;; *) continue ;; esac
-    cur=$(nb --if-exists get logical_router_port "$lrp" options:gateway_mtu | tr -d '"')
-    [ "$cur" = "$MTU" ] && continue
-    nb set logical_router_port "$lrp" options:gateway_mtu="$MTU" && echo "$lrp gateway_mtu=$MTU (was ${cur:-unset})"
-  done
-  sleep "$PERIOD"
-done
-"""
-
-
-def kubeovn_version():
-    for line in VERSIONS.read_text().splitlines():
-        if line.startswith("KUBEOVN_VERSION="):
-            return line.split("=", 1)[1].strip()
-    raise Invalid(f"{VERSIONS}: no KUBEOVN_VERSION")
-
-
-DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
-
-
-def gateway_mtu_target(spec):
-    """(external subnet, MTU) for the gateway_mtu Deployment, or None. spec.network.nodes.external
-    names vws-external with its link MTU; otherwise an external subnet wired only through the
-    vws-network flag kube-external-subnet gets the default 1500 (#246)."""
-    external = (((spec.get("network") or {}).get("nodes")) or {}).get("external")
-    if external:
-        return EXTERNAL_SUBNET, external.get("mtu", 1500)
-    flags = ((spec.get("services") or {}).get("network") or {}).get("flags") or {}
-    subnet = flags.get("kube-external-subnet")
-    if not subnet:
-        return None
-    if not DNS_LABEL.match(str(subnet)):
-        raise Invalid(f"spec.services.network.flags.kube-external-subnet: {subnet!r} is not a subnet name")
-    return str(subnet), 1500
-
-
-def gateway_mtu(subnet, mtu):
-    """The Deployment that keeps gateway_mtu=MTU on the VPC ports to the external SUBNET."""
-    labels = {"app.kubernetes.io/name": GATEWAY_MTU_NAME, "app.kubernetes.io/part-of": "vws"}
-    env = [{"name": "SUBNET", "value": subnet},
-           {"name": "MTU", "value": str(mtu)},
-           {"name": "PERIOD", "value": str(GATEWAY_MTU_PERIOD)}]
-    return yaml.safe_dump({
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": {"name": GATEWAY_MTU_NAME, "namespace": "kube-system", "labels": labels},
-        "spec": {
-            "replicas": 1,
-            "selector": {"matchLabels": labels},
-            "template": {
-                "metadata": {"labels": labels},
-                "spec": {
-                    "automountServiceAccountToken": False,
-                    "enableServiceLinks": True,
-                    "nodeSelector": {"kubernetes.io/os": "linux"},
-                    "securityContext": {"runAsNonRoot": True, "runAsUser": 65534, "runAsGroup": 65534,
-                                        "seccompProfile": {"type": "RuntimeDefault"}},
-                    "containers": [{
-                        "name": "gateway-mtu",
-                        "image": f"{KUBEOVN_IMAGE}:{kubeovn_version()}",
-                        "imagePullPolicy": "IfNotPresent",
-                        "command": ["/bin/sh", "-c", GATEWAY_MTU_SCRIPT],
-                        "env": env,
-                        "resources": {"requests": {"cpu": "10m", "memory": "32Mi"},
-                                      "limits": {"memory": "64Mi"}},
-                        "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
-                                            "capabilities": {"drop": ["ALL"]}},
-                    }],
-                },
-            },
-        },
-    }, sort_keys=True)
 
 
 def nfs_class(nfs):
@@ -165,9 +75,6 @@ def build(cr, bundle, out):
     out.mkdir(parents=True, exist_ok=True)
     if nfs:
         (out / NFS_CLASS_FILE).write_text(nfs_class(storage.get("nfs")))
-    target = gateway_mtu_target(spec)
-    if target:
-        (out / GATEWAY_MTU_FILE).write_text(gateway_mtu(*target))
     for f in files:
         if f.name == NFS_DRIVER_FILE and not nfs:
             continue

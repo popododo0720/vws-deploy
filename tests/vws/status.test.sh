@@ -12,7 +12,11 @@ assert_no_changes "status changes nothing"
 expect_line "status shows the applied generation" OK cluster-cr "generation 2 applied"
 expect_line "status shows the release revision" OK release "revision 3 deployed"
 expect_line "status compares release values" OK release-drift
-expect_line "status compares the bundle version" OK bundle-kubevirt
+if grep -q "bundle-kubevirt" <<<"$OUT" || grep -q $'kubectl\tget\tkubevirt' "$VWS_FAKE_LOG"; then
+  bad "status ignores retired bundle pins" "$OUT"
+else
+  ok "status ignores retired bundle pins"
+fi
 expect_line "status lists every service" OK service-compute
 if [[ -z $(grep -E '^(WARN|FAIL)' <<<"$OUT" || true) ]]; then ok "status ok has no WARN or FAIL"; else bad "status ok clean" "$OUT"; fi
 
@@ -56,10 +60,6 @@ edit_json helm/status.json '.info.status = "failed"'
 run_vws_real status;                          expect_rc "failed release exits 1" 1
 expect_line "failed release says helm history" FAIL release "helm history vws"
 
-scenario bundle-drift
-edit_json kubectl/get_kubevirt.json '.items[0].status.observedKubeVirtVersion = "v0.0.1"'
-run_vws_real status;                          expect_rc "bundle drift: WARN exits 0" 0
-expect_line "bundle drift: WARN names versions.env" WARN bundle-kubevirt "KUBEVIRT_VERSION"
 
 scenario not-ready
 edit_json kubectl/get_deployments,statefulsets.json '(.items[] | select(.metadata.name == "compute") | .status.readyReplicas) = 0

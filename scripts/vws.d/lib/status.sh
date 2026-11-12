@@ -106,26 +106,6 @@ PY
   fi
 }
 
-# Bundle operators report the version they run; compare with scripts/versions.env.
-vws_check_bundle_versions() {
-  local resource key field want have json
-  for resource in kubevirt:KUBEVIRT_VERSION:observedKubeVirtVersion cdi:CDI_VERSION:observedVersion; do
-    IFS=: read -r resource key field <<<"$resource"
-    want=$(vws_versions_env "$key")
-    if ! json=$(vws_kubectl get "$resource" -A -o json 2>/dev/null); then
-      vws_emit WARN "bundle-${resource}" "cannot read ${resource} with these credentials; version not compared"
-      continue
-    fi
-    have=$(jq -r --arg f "$field" '[.items[] | .status[$f] // "unknown"] | join(",")' <<<"$json")
-    if [[ -z $have ]]; then
-      vws_emit WARN "bundle-${resource}" "no ${resource} CR; want ${want}"
-    elif [[ $have == "$want" ]]; then
-      vws_emit OK "bundle-${resource}" "$have"
-    else
-      vws_emit WARN "bundle-${resource}" "drift: running ${have}, scripts/versions.env ${key}=${want}"
-    fi
-  done
-}
 
 # Every service of charts/vws/values.yaml has a workload with all replicas ready.
 vws_check_services() {

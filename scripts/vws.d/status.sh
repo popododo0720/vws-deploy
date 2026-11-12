@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary: show the installed state: CR, applied values, release, bundle versions, services (read only)
+# summary: show the installed state: CR, applied values, release, services (read only)
 # Sourced by scripts/vws. Usage: vws status. Exit 1 on a FAIL (or a WARN with --strict), 3 when the
 # cluster cannot be read. Works with the operating role (no Secrets): see lib/status.sh.
 # shellcheck disable=SC2034 # read by scripts/vws
@@ -18,7 +18,6 @@ vws_status_all() {
   vws_check_cluster_cr
   vws_check_applied_hash
   vws_check_release_detail "$mode"
-  vws_check_bundle_versions
   vws_check_services
   vws_check_pdbs
 }

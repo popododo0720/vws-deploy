@@ -1,5 +1,5 @@
-# The installer image: vws-installer (installer/, #141, #191), scripts/vws, the chart, the rendered platform bundle, helm and kubectl.
-# Build from the repo root after scripts/platform.sh (build/platform must exist):
+# The installer image: vws-installer (installer/, #141, #191), scripts/vws, the chart, helm and kubectl.
+# Build from the repo root:
 #   source scripts/versions.env
 #   docker build -f bootstrap/Containerfile --build-arg BASE="$INSTALLER_BASE_IMAGE" --build-arg GO_IMAGE="$INSTALLER_GO_IMAGE" \
 #     --build-arg HELM_VERSION --build-arg HELM_SHA256 --build-arg KUBERNETES_VERSION --build-arg KUBECTL_SHA256 .
@@ -29,7 +29,6 @@ COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer
 COPY scripts /opt/vws/scripts
 COPY charts /opt/vws/charts
 COPY profiles /opt/vws/profiles
-COPY build/platform /opt/vws/build/platform
 ENV PATH=/opt/vws/scripts:$PATH
 USER 65532:65532
 ENTRYPOINT ["/opt/vws/scripts/vws"]
