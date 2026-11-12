@@ -13,6 +13,15 @@ export VWS_COMMAND_DIR
 # shellcheck source=scripts/vws.d/lib/common.sh
 source "${VWS_ROOT}/scripts/vws.d/lib/common.sh"
 
+for arg in "$@"; do
+  case $arg in
+    --token-secret-file | --token-secret-file=* | --external-id-file | --external-id-file=*) ;;
+    --token-secret* | --external-id*)
+      vws_usage "secrets require --token-secret-file or --external-id-file"
+      ;;
+  esac
+done
+
 command_name=
 args=()
 while (($#)); do
@@ -55,7 +64,7 @@ while (($#)); do
         args+=("$1")
         shift
       else
-        vws_usage "unknown flag $1"
+        vws_usage "unknown flag ${1%%=*}"
       fi
       ;;
     *)

@@ -15,6 +15,37 @@ run_vws --bogus readonly;           expect_rc "unknown flag before the command e
 run_vws readonly --context;         expect_rc "flag without value exits 2" 2
 run_vws -o xml readonly;            expect_rc "bad -o value exits 2" 2
 
+canary=gate-canary-768
+for command in region aws-account; do
+  for flag in --token-secret --external-id --token-secret-extra --external-id-extra; do
+    for form in separate equals; do
+      secret_args=("$flag" "$canary")
+      [[ $form != equals ]] || secret_args=("${flag}=${canary}")
+      for position in before after; do
+        if [[ $position == before ]]; then
+          run_vws_real "${secret_args[@]}" "$command" add pve-test-1
+        else
+          run_vws_real "$command" add pve-test-1 "${secret_args[@]}"
+        fi
+        expect_rc "$command $flag $form $position is rejected" 2
+        if [[ $OUT != *"$canary"* && $ERR != *"$canary"* ]]; then
+          ok "$command $flag $form $position keeps the canary private"
+        else
+          bad "$command $flag $form $position keeps the canary private" "secret appeared in output"
+        fi
+      done
+    done
+  done
+done
+run_vws --bogus="$canary" readonly
+expect_rc "unknown flag value is rejected" 2
+expect_text "unknown flag name is reported" "$ERR" "unknown flag --bogus"
+if [[ $OUT != *"$canary"* && $ERR != *"$canary"* ]]; then
+  ok "unknown flag value stays private"
+else
+  bad "unknown flag value stays private" "value appeared in output"
+fi
+
 # A missing tool exits 3. PATH has the system tools and the fake kubectl, but no helm.
 mkdir -p "${WORK}/nohelm"
 for tool in bash env jq cat grep sed awk mktemp rm dirname basename sort tr wc head date cut printf mkdir; do
