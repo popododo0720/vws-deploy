@@ -2,4 +2,4 @@
 set -eu
 exec /usr/bin/curl --fail --silent --show-error --output /dev/null \
     --noproxy '*' --connect-timeout 1 --max-time 2 \
-    http://127.0.0.1:8083/readyz
+    http://127.0.0.1:8085/readyz
