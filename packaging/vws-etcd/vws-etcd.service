@@ -1,0 +1,24 @@
+[Unit]
+Description=VWS TLS etcd member
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vws-etcd
+Group=vws-etcd
+LoadCredential=ca.crt:/etc/vws/credentials/ca.crt
+LoadCredential=member.crt:/etc/vws/credentials/member.crt
+LoadCredential=member.key:/etc/vws/credentials/member.key
+ExecStartPre=+/usr/lib/vws/etcd/check-credentials member
+RuntimeDirectory=vws-etcd
+RuntimeDirectoryMode=0700
+ExecStart=/usr/lib/vws/etcd/run member
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=90s
+UMask=0077
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

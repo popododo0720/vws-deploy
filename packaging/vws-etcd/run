@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+(($# == 1)) || { echo "usage: $0 member|ready|snapshot|defrag" >&2; exit 2; }
+src=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+name='' list=''
+while IFS= read -r line || [[ -n $line ]]; do
+    case "$line" in
+        ''|'#'*) ;;
+        NAME=*) name=${line#NAME=} ;;
+        LIST=*) list=${line#LIST=} ;;
+        *) echo "vws-etcd: unknown setting in /etc/vws/etcd.conf" >&2; exit 2 ;;
+    esac
+done < /etc/vws/etcd.conf
+: "${CREDENTIALS_DIRECTORY:?systemd credentials directory required}"
+export VWS_ETCD_TLS_DIR=$CREDENTIALS_DIRECTORY
+config=$("$src/vws-etcd-config" "$name" "$list")
+endpoint=$(awk '/^advertise-client-urls:/ {print $2}' <<<"$config")
+case "$1" in
+    member)
+        umask 077
+        printf '%s\n' "$config" > /run/vws-etcd/config.yaml
+        exec /usr/bin/vws-etcd --config-file /run/vws-etcd/config.yaml
+        ;;
+    ready)
+        exec /usr/bin/curl --fail --silent --show-error --output /dev/null \
+            --noproxy '*' --connect-timeout 1 --max-time 2 \
+            --cacert "$CREDENTIALS_DIRECTORY/ca.crt" \
+            --cert "$CREDENTIALS_DIRECTORY/member.crt" \
+            --key "$CREDENTIALS_DIRECTORY/member.key" "$endpoint/health"
+        ;;
+    snapshot|defrag)
+        export ETCDCTL_API=3 ETCDCTL_ENDPOINTS=$endpoint
+        export ETCDCTL_CACERT=$CREDENTIALS_DIRECTORY/ca.crt
+        export ETCDCTL_CERT=$CREDENTIALS_DIRECTORY/client.crt
+        export ETCDCTL_KEY=$CREDENTIALS_DIRECTORY/client.key
+        export ETCDCTL_DIAL_TIMEOUT=5s ETCDCTL_COMMAND_TIMEOUT=60s
+        if [[ $1 == snapshot ]]; then
+            exec "$src/vws-etcd-snapshot" /var/lib/vws-etcd/snapshots 48
+        fi
+        exec "$src/vws-etcd-defrag"
+        ;;
+    *) echo "vws-etcd: unknown action $1" >&2; exit 2 ;;
+esac

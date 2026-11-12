@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+case "$1" in
+    configure)
+        for dir in /etc/vws /etc/vws/credentials /var/lib/vws-etcd; do
+            if [ -L "$dir" ]; then
+                echo "vws-etcd: $dir must not be a symlink" >&2
+                exit 1
+            fi
+        done
+        if ! getent passwd vws-etcd >/dev/null; then
+            adduser --system --group --home /var/lib/vws-etcd --no-create-home \
+                --shell /usr/sbin/nologin vws-etcd
+        fi
+        install -d -o root -g root -m 0700 /etc/vws/credentials
+        /usr/lib/vws/etcd/check-credentials installed
+        install -d -o vws-etcd -g vws-etcd -m 0700 /var/lib/vws-etcd
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+        fi
+        ;;
+esac

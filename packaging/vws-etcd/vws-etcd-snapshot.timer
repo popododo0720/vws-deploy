@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly VWS etcd snapshot
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5min
+Unit=vws-etcd-snapshot.service
+
+[Install]
+WantedBy=timers.target
