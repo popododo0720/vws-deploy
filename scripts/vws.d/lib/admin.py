@@ -294,6 +294,10 @@ def main():
             sys.stdout.buffer.write(raw if safe == data else (json.dumps(safe) + "\n").encode())
         else:
             text_output(kind, a.operation, data, credentials)
+        push_error = data.get("lastError") if kind == "region" and a.operation in ("add", "edit") and isinstance(data, dict) else None
+        if isinstance(push_error, dict):
+            print(redact("region push failed: " + str(push_error.get("message", "unknown error")), credentials), file=sys.stderr)
+            return 1
         return int(a.operation == "test" and any(
             s["result"] != "PASS" if kind == "aws-account" else s["result"] == "FAIL" for s in data["steps"]))
 
