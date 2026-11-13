@@ -1,5 +1,5 @@
 {
-  "vwsTest": {"kubeSystemUID": "18a8b0c5-891b-4a39-8cdd-3a18723047b9", "note": "kube-system namespace UID of vws-test (k3s v1.35.9, created 2026-10-12), read-only via kubectl get ns kube-system -o jsonpath={.metadata.uid}; signers are the allowed_signers lines (principal vws-test) whose key may sign results, empty until the vws-test runner key is listed (vws-deploy#288)", "signers": []},
+  "vwsTest": {"pveServerId": null, "note": "serverid of the nested PVE box pve-test-1 from GET /nodes/{node}/subscription, read by live.py identity; null until the box exists. Signers are the allowed_signers lines (principal vws-test) whose key may sign results, empty until the vws-test runner key is listed (vws-deploy#288)", "signers": []},
   "features": [
     {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": "ec2-volume-reboot"},
     {"feature": "EC2 DescribeInstances / StopInstances / StartInstances", "repo": "vws-console-api", "issue": null, "scenario": null, "na": "no scenario yet; ec2-volume-reboot runs, reboots and terminates an instance but never stops or starts one"},

@@ -1,8 +1,13 @@
 # Signed feature-map results
 
-vws-deploy#288, part of #262. Before this, the only provenance of a scenario result was that its
-`clusterUID` equals `vwsTest.kubeSystemUID` in `docs/feature-map.json`. That UID is committed, so
-anyone could write a passing result by hand and `vws verify --update-feature-map` recorded it.
+vws-deploy#288, part of #262. A scenario result's `pveServerId` must equal
+`vwsTest.pveServerId` in `docs/feature-map.json` (vws-deploy#826). The runner reads the node's
+`serverid` through `live.py identity` after the shared PVE gate passes. The identity is public,
+so matching it alone cannot prove that a result came from the runner.
+
+An unset identity refuses every result. The map stays null until the nested PVE box exists.
+Retired map identities are invalid input (exit 2); retired Kubernetes result identities are
+refused (exit 1). Missing or mismatched PVE identities are also refused.
 
 ## Chosen: an SSH signature from a key only the vws-test runner holds
 
