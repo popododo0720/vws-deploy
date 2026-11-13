@@ -112,6 +112,7 @@ for directive in ("User=vws-region", "SupplementaryGroups=www-data",
                   "LoadCredential=region-kek:/etc/vws/credentials/region-kek"):
     assert directive in unit, directive
 assert not any(line.startswith(("Environment=", "EnvironmentFile=")) for line in unit)
+assert not list(src.rglob("*.service.d")), "unit drop-in"
 vrrp = (src / "keepalived.conf").read_text()
 for directive in ("weight 0", "init_fail", "vws_region_ready",
                   'script "/usr/lib/vws/check-region-ready"'):

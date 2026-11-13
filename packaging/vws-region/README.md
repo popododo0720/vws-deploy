@@ -41,7 +41,17 @@ certificate at `/etc/vws/region.crt`, its root-only key at `/etc/vws/region.key`
 and global client CA at `/etc/vws/global-ca.pem`. Certificates must cover the VIP
 and use the appropriate region/global trust. The unit loads both private inputs
 through systemd credentials; no secret is supplied in flags or Environment.
-Restrict the source credential directory to root. Then run:
+Restrict the source credential directory to root.
+
+The KEK lives in two places. The source at `/etc/vws/credentials/region-kek`
+is root-owned 0600, and only root reads it. `LoadCredential=region-kek` in
+`vws-region.service` copies it to `$CREDENTIALS_DIRECTORY/region-kek`, which
+systemd makes root-owned mode 0440 with an ACL. That ACL lets the `vws-region`
+service user read the copy, and no one else gets it. vws-region accepts group
+read only inside a root-owned credentials directory that no group or world can
+write. Anywhere else it refuses a KEK that is group- or world-readable. Don't
+point `CREDENTIALS_DIRECTORY` elsewhere with a drop-in or `Environment=`.
+Then run:
 
 ```sh
 sudo systemctl enable --now vws-region.service
@@ -73,8 +83,9 @@ Debian 12 bookworm (PVE 8) supplies sudo 1.9.13p3 and satisfies this minimum.
 `test-install.sh` tests the installed policy with real Debian sudo, allowing
 valid names and denying empty, extra, traversal, overlength and malformed input.
 
-Sudo strips `CREDENTIALS_DIRECTORY`; the helper uses its fixed root-owned
-`/etc/vws/credentials/region-kek` fallback and checks ownership and permissions.
+Sudo strips `CREDENTIALS_DIRECTORY`, so the helper runs as root and reads the
+root-owned 0600 source `/etc/vws/credentials/region-kek` directly, refusing it
+unless it is root-owned with no group or world bits.
 Postinst ensures the credentials directory is root:root 0700 and refuses an
 existing key unless it is a regular, non-symlink, root:root 0600, 32-byte file.
 It never generates a key. Provision the same raw key securely on all nodes,
