@@ -53,9 +53,13 @@ One failed request removes readiness; keepalived supplies bounded repeat probes.
 
 ## Helper permission boundary
 
-Only root owns the installed helper and sudoers policy. The writes without a name
-and `token-read` have exact argument matches. Named operations use anchored POSIX
-extended regexes over the complete verb-and-name argument string, with no globs.
+Only root owns the installed helper and sudoers policy. `registration-write` and
+`lease-write` have exact argument matches without arguments. `token-write <fp>`,
+`token-read <fp>` and `token-delete <fp>` each require exactly one fingerprint:
+the token's lowercase hex SHA-256, matching `^[0-9a-f]{64}$`. Argument-free token
+verbs, uppercase fingerprints, wrong lengths and extra arguments are denied.
+Named operations use anchored POSIX extended regexes over the complete
+verb-and-name argument string, with no globs.
 `lock` and `unlock` require a 1-64 character name starting with an ASCII letter
 or digit and containing only ASCII letters, digits, underscores and hyphens.
 Snippet operations require `vws-<lowercase-hex UUID>-user.yaml`, matching the
@@ -75,13 +79,13 @@ existing key unless it is a regular, non-symlink, root:root 0600, 32-byte file.
 It never generates a key. Provision the same raw key securely on all nodes,
 for example with `sudo install -o root -g root -m 0600 ./region-kek
 /etc/vws/credentials/region-kek`, then remove the transport copy. Invoke with
-`sudo -n /usr/lib/vws/vws-region-helper <operation>` from the credential-bearing
+`sudo -n /usr/lib/vws/vws-region-helper <operation> [argument]` from the credential-bearing
 service context. The package grants no shell, arbitrary path or unrestricted
 helper invocation. `visudo` checks syntax; `check-policy.py` separately rejects
 valid but broadened grants. The daemon release must implement the corresponding
 sudo invocation and credential contract; this package does not change API code.
-`token-read` and the fixed KEK fallback arrive with vws-console-api#757; use the
-matching helper release once that change merges.
+The fingerprint token verbs require the helper release containing
+vws-console-api#904.
 
 ## VIP configuration and failover test
 
