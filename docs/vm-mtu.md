@@ -1,15 +1,14 @@
 # VPC VM MTU (vws-deploy#236, vws-network#93)
 
 As on AWS, VMs inside a VPC get MTU 9001, and paths out through the IGW/NAT/EIP are 1500.
-The installer never creates or changes any NIC or host MTU. It reads the physical (underlay) NIC MTU that
-the user set in the OS beforehand and, if it is too small, lowers only the VM MTU in the VWSCluster. vws-network applies it through the Subnet and DHCP.
+This is the historical network field design. Host NICs and their MTUs are configured by the operator; the retired CLI no longer adjusts VWSCluster MTU fields.
 
 ## Fields
 
 | Field | Range, default | Meaning |
 | --- | --- | --- |
 | `spec.network.vmMTU` | 68–9001, 9001 when unset | VM interface MTU. The chart passes it to vws-network as `-vm-mtu` |
-| `spec.network.underlayMTU` | 1280–9216 | MTU of the node NIC the tunnel crosses. Uses the value preflight read |
+| `spec.network.underlayMTU` | 1280–9216 | MTU of the node NIC the tunnel crosses. Configured physical tunnel MTU |
 | `spec.network.tunnelOverhead` | 0–200, 100 when unset | Bytes Geneve adds |
 | `spec.network.ipv4Only` | bool | When true and `tunnelOverhead` is unset, the overhead is 60 (about 58 for an IPv4 outer header, plus margin) |
 
@@ -21,30 +20,6 @@ The schema has no `default`. `vmMTU` must be able to be empty so that "lower 900
 - Upper bound = underlay MTU − overhead. 9001 needs 9101; 9216 is recommended.
 - `vws render`: without `vmMTU`, min(9001, upper bound); with it, that value. Above the upper bound, exit code 2.
 - kube-ovn-cni `--mtu` uses the same overhead: tunnel MTU − overhead (the default of 100 keeps the previous value).
-
-## preflight
-
-`vws preflight --links FILE` reads the tunnel interface MTU on each node and takes the minimum as the underlay. If it is too small,
-it emits a `vm-mtu` WARN and writes only `vmMTU` (the lowered value) and `underlayMTU` (the read value) with `kubectl patch vwsclusters vws`.
-Without `--links` it decides from `underlayMTU`, and without that it is a WARN (unconfirmed).
-
-Example: with a 1500 tunnel NIC the VM MTU is 1400 (overhead 100), or 1440 with `ipv4Only`.
-
-## vws-test values
-
-The product default is 9001. vws-test runs on OpenStack geneve, where the node NIC MTU is 8942, so it uses a lowered value.
-When preflight reads 8942 from `--links` it writes the values below itself; to set them by hand use `vws reconfigure --set`.
-
-```yaml
-spec:
-  network:
-    underlayMTU: 8942
-    vmMTU: 8842        # 8942 - 100. Up to 8882 with ipv4Only: true
-```
-
-```sh
-vws reconfigure --set network.underlayMTU=8942 --set network.vmMTU=8842
-```
 
 ## The 1500 path out
 

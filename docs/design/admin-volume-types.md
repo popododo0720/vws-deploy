@@ -36,7 +36,7 @@ reads the mapping at run time instead of only from flags.
    `admin` as defense in depth. If a later need puts `admin` behind a Service, it must first add
    in-app auth like vws-installer (TLS plus a one-time access code, `docs/installer-api.md`).
 3. Saving validates with the same rules `vws apply` uses today: every StorageClass and
-   VolumeSnapshotClass exists (`scripts/vws.d/lib/checks.sh` `vws_check_volume_types`), volumeMode
+   VolumeSnapshotClass exists, volumeMode
    is Block or Filesystem (the CRD enum in the former VWSCluster CRD), and driver nfs
    refuses a mapping (`scripts/vws.d/lib/render.py`). It then writes both the
    VWSCluster `spec.storage.volumeTypes` and the ConfigMap. vws-storage picks up the change with no
@@ -83,7 +83,6 @@ reads the mapping at run time instead of only from flags.
    deny-all-ingress NetworkPolicy, and a test proves another pod cannot reach the page. Kubelet
    httpGet probes target the pod IP, so probes use a separate port that serves only `/healthz`
    and `/readyz` (or exec probes); the page and its write endpoints stay on loopback.
-5. Docs: `docs/vwscluster.md` and `docs/vws-cli.md` for the admin page.
 
 ## PR 3 as built (#391)
 
@@ -193,7 +192,6 @@ Still open before `admin` can be enabled:
   `vws apply`.
 - Not run: kubectl needs a discovery cache directory under a read-only root filesystem with no
   `HOME`. Unverified until a live run.
-- PR 5 (docs: `docs/vwscluster.md`, `docs/vws-cli.md`).
 
 ## PR 4c as built (#391): the vws and vws-admin handoff
 
@@ -224,19 +222,13 @@ Rejected:
 - `kubectl replace` with the full object: needs the `update` verb and sends metadata the CLI does
   not own; the patch needs only `patch`, which the operator Role has.
 
-Not changed: the preflight of `vws apply` writes `spec.network.vmMTU` and `underlayMTU` with a
-merge patch when the tunnel NIC needs a lower MTU (`lib/checks.sh`, #236), and `vws apply` writes
-the status subresource. Neither replaces the spec or touches `spec.storage.volumeTypes`.
-
 Still open: the installer package on GHCR, `pods/portforward` for the operator, the vws-storage
 reader (popododo0720/vws-storage#222), the kubectl discovery cache under a read-only root, and
 PR 5 (docs).
 
 ## PR 5 as built (#391): docs
 
-`docs/vwscluster.md` "Admin page for the volume type mapping" says how to turn the page on, reach
-it, what a save checks and writes, and when vws-storage sees the change. `docs/vws-cli.md`
-`vws apply` says it is the step that reaches vws-storage after a page save. The page is
+The supported deployment path is documented in `docs/operator/regions.md`. The retained page is
 `vws-installer admin`, not a `scripts/vws` command, so it has no `### vws` entry (R17).
 
 The kubectl discovery cache is no longer open. kubectl v1.35.0, the binary the installer image
@@ -258,7 +250,7 @@ rollout, which already meets "without restarting the cluster".
 
 The page is reached only with `kubectl port-forward` (step 2). The operator's credentials need
 `create` on `pods/portforward` for the admin pod, and `get` on that pod, which kubectl reads first.
-Today nothing in the repo grants it, and `docs/vwscluster.md` says to use credentials that have it.
+The operator must use credentials with that permission.
 vws-verify asked on #614 (review of #650) to narrow the grant instead of making it namespace-wide.
 
 Why it must be narrow: port-forward goes through the kubelet to the pod's network namespace, not
@@ -316,8 +308,6 @@ The implementation PR must handle:
 - `scripts/guard.sh recovery` (R4) and `scripts/check_render.py` must accept that StatefulSet only
   for `loopback`, and fail a render where the Role names another pod, has a third rule, or gets
   a RoleBinding.
-- `docs/vwscluster.md` and `docs/rbac.md` change from `deploy/admin`
-  and "use credentials that do" to `pod/admin-0` and the binding command.
 
 ## PR 6 as built (#391): the port-forward grant
 

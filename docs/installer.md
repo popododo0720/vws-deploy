@@ -13,16 +13,19 @@ Why cluster-admin is needed: the bundle creates CRDs, ClusterRoles (and bindings
 
 ## Operator ClusterRole `vws-operator-read` (exact list, enforced by R20)
 
+The bootstrap manifest and R20 retain this exact read set during the staged cleanup.
+The legacy read permissions remain even though their operational CLI consumers have been retired.
+
 | apiGroup | resource | verbs | Used by |
 | --- | --- | --- | --- |
-| `""` | `nodes` | get, list | preflight, doctor |
-| `storage.k8s.io` | `storageclasses` | get, list | preflight |
-| `snapshot.storage.k8s.io` | `volumesnapshotclasses` | get, list | preflight |
-| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list | doctor (CRD Established) |
-| `kubevirt.io` | `kubevirts` | get, list | status (bundle version), doctor (phase), diag (#77) |
-| `cdi.kubevirt.io` | `cdis` | get, list | status (bundle version), doctor (phase), diag (#77) |
-| `ceph.rook.io` | `cephclusters` | get, list | doctor (Ceph health), diag (#77) |
-| `""` | `persistentvolumeclaims` (all namespaces) | get, list | doctor (Pending PVC) (#77) |
+| `""` | `nodes` | get, list | installer node checks |
+| `storage.k8s.io` | `storageclasses` | get, list | installer storage checks |
+| `snapshot.storage.k8s.io` | `volumesnapshotclasses` | get, list | installer storage checks |
+| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list | legacy CRD reads |
+| `kubevirt.io` | `kubevirts` | get, list | legacy component reads (#77) |
+| `cdi.kubevirt.io` | `cdis` | get, list | legacy component reads (#77) |
+| `ceph.rook.io` | `cephclusters` | get, list | legacy Ceph reads (#77) |
+| `""` | `persistentvolumeclaims` (all namespaces) | get, list | legacy PVC reads (#77) |
 
 `scripts/guard.sh bootstrap` refuses groups/resources outside the list, verbs other than get/list (including watch), `resourceNames` and `nonResourceURLs` (negative tests: watch, a resource outside the list, PVC write verbs, a group outside the list, cluster-wide pods, an allowed entry removed).
 
@@ -50,7 +53,6 @@ Note: step 2 also fails when rights remain through another binding (one the user
 ## What must be measured on a real cluster (`/workspace/cluster-verification-list.md` I1, I2, I4)
 
 - Real RBAC reclaim: after finish, `kubectl auth can-i --as=system:serviceaccount:vws:vws-installer '*' '*'` is `no`; the reaper actually deletes at the TTL (with a shortened TTL); the deadline holds after the reaper pod is force-deleted.
-- Whether the bundle and chart install completely with cluster-admin, and whether `status` works with operator rights (helm releases live in Secrets, so `helm list` does not work with operator rights; status/doctor assume the user's credentials, to be checked in #56).
 - Whether the Deployment and Service actually come up, and whether `kubectl -n vws exec deploy/vws-installer` and `port-forward svc/vws-installer 8443` work (#140, not run).
 - Building and publishing the installer image (the digest is zeros now), and whether helm runs with `HOME=/tmp` inside the pod.
 
