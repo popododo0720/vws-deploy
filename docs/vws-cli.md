@@ -291,8 +291,8 @@ Shows the command list, common flags and exit codes. With `-o json`, one entry p
 ### vws nightly-live
 
 `vws nightly-live --region NAME [--results DIR] [--snippets-storage ID]
-[--pve-ca-file FILE] [--fail-at STEP]` runs the Proxmox L0 cleanup and the
-shared slot check. It is a sibling of `vws nightly`, which remains the
+[--pve-ca-file FILE] [--run-id ID] [--fail-at STEP]` runs Proxmox L0 cleanup,
+guarded L2 launches and L7 termination. It is a sibling of `vws nightly`, which remains the
 feature-map scenario runner called by `vws nightly-e2e`.
 
 Set `VWS_API_URL` to the console HTTPS origin, `VWS_API_TOKEN_FILE` to a
@@ -331,16 +331,38 @@ Every HTTP call has a 20-second timeout; GETs retry transient errors with
 1- and 2-second backoff. Each asynchronous task has a 120-second deadline
 and must finish with exitstatus OK.
 
-Phase 1 creates zero VMs. Between sweeps, `live.py slots --need 0` checks
-that non-template, non-`vws.holder` pool VMs number at most two and each uses
-at most 1 GiB; later phases use `--need N` before creating. Part 2 adds
-registration through `vws region add/test/health` and L1 read assertions.
-`--fail-at slots` exercises failure cleanup. The end sweep also runs after
-step failure, SIGINT and SIGTERM.
+Set `VWS_VERIFY_EC2_ENDPOINT`, `VWS_VERIFY_ACCESS_KEY_ID`,
+`VWS_VERIFY_SECRET_ACCESS_KEY`, `VWS_VERIFY_IMAGE_ID` and
+`VWS_VERIFY_KEY_NAME` (an existing key pair). Install `aws` on the runner.
+`VWS_VERIFY_SUBNET_ID` optionally selects the launch subnet.
+`VWS_VERIFY_INSTANCE_TYPE` defaults to `vws.small`; every other value fails
+before a call. EC2 credentials go only to the aws subprocess environment;
+neither API replies nor subprocess stderr are copied to results.
+
+Every RunInstances call, including the same-token retry, passes the shared
+`slots --need 1` guard: fewer than two non-template, non-holder pool VMs,
+each at most 1 GiB. L2 sends ClientToken, cloud-init user-data, the key pair
+and a 128-character tag value, checks DescribeInstances private IP and tags,
+and verifies the retry returns the same ID without another PVE VM.
+Every launch sends `vws-live-run=<runid>` and verifies `vws.live.<runid>`
+on that VM through the pinned PVE API (console-api#997/#1004). The default
+run ID is generated once per invocation; an explicit ID must match
+`[a-z0-9][a-z0-9-]{0,39}`. Use a fresh ID for each run.
+
+L2 deletes its VM before L7 creates a fresh pair, then L7 terminates both
+through EC2 and confirms their absence. Each step cleans up in a finally
+block, including errors, timeouts, SIGINT and SIGTERM; the end sweep follows.
+`--fail-at slots|l2|l7` injects a failure (live steps fail after creation).
+After the end sweep, a separate final assertion requires zero non-template,
+non-holder pool VMs, no holder disks, no snapshots on remaining pool VMs,
+and no snippets for the VM UUIDs recorded by this invocation. Foreign and
+unidentified orphan snippets remain untouched. L3-L6 and L8 are deferred.
 
 Results default to `$XDG_STATE_HOME/vws-nightly-live/<UTC>` (or
-`$HOME/.local/state/...`): `l0-start.json`, `l0-end.json`, and `results.json`
-with steps. A sibling `nightly-live.lock` refuses concurrent runs; stale
+`$HOME/.local/state/...`): `l0-start.json`, `slots.json`, `l2.json`, `l7.json`,
+`l0-end.json`, `final.json`, and aggregated `results.json`. A failing final
+assertion fails the job and aggregate result. Old step results are removed
+under the run lock. A sibling `nightly-live.lock` refuses concurrent runs; stale
 lock files alone do not hold the lock. Exit codes: 0 all steps and both
 sweeps passed; 1 step or sweep failure; 2 usage; 3 environment or refused
 gate; 130/143 cancellation after the end sweep.
