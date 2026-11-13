@@ -39,6 +39,7 @@ if VWS_REGION_TEST=1 VWS_REGION_TEST_MOUNTS="$tmp/mounts" \
 fi
 grep -q 'lease directory /etc/pve/vws must not be a symlink' "$tmp/error"
 rm /etc/pve/vws
+rmdir /etc/pve/priv/lock/vws-region /etc/pve/priv/lock /etc/pve/priv/vws /etc/pve/priv
 test "$before" = "$(snapshot)"
 getent passwd vws-region
 test "$(stat -c '%u:%g:%a' /etc/vws/credentials)" = 0:0:700
