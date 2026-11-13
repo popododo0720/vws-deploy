@@ -7,12 +7,12 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fake="${WORK}/fake"
-mkdir -p "${fake}/kubectl" "${fake}/aws"
+mkdir -p "${fake}/aws"
 export VWS_FAKE_DIR=$fake
-printf 'uid-vws-test' >"${fake}/kubectl/get_ns.json"
+start_identity_stub
 map="${WORK}/map.json"
 cat >"$map" <<'JSON'
-{"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
+{"vwsTest": {"pveServerId": "TestServer826"}, "features": [
   {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": "s3-basic"}
 ]}
 JSON
@@ -44,7 +44,7 @@ expect_text "steps run in order and cleanup is idempotent" "$(steps)" \
   "create-bucket=pass put-object=pass get-object=pass object-matches=pass list-objects=pass delete-object=pass delete-bucket=pass cleanup:delete-object=pass cleanup:delete-bucket=pass"
 expect_text "cleanup of a deleted bucket reports it" "$OUT" '"evidence":"already gone"'
 expect_text "the cmd field shows the call" "$OUT" '"cmd":"vws_aws s3api create-bucket --bucket vws-verify-'
-if jq -e '.scenario == "s3-basic" and .result == "pass" and .cluster == "vws-test" and .clusterUID == "uid-vws-test"
+if jq -e '.scenario == "s3-basic" and .result == "pass" and .cluster == "vws-test" and .pveServerId == "TestServer826"
     and .evidence == $e' --arg e "${WORK}/r1.steps.jsonl" "${WORK}/r1.json" >/dev/null; then
   ok "the result file names the cluster and the steps file"; else bad "result file" "$(cat "${WORK}/r1.json")"; fi
 if [[ $(cat "${WORK}/r1.steps.jsonl") == "$OUT" ]]; then ok "the steps file holds the printed lines"; else bad "steps file" "$(cat "${WORK}/r1.steps.jsonl")"; fi
@@ -140,24 +140,25 @@ expect_text "what the grace could not clean is named by run ID" "$OUT" "the sign
 rm -f "${fake}/aws/s3api_delete-object.sleep"; rm -rf "$s3"
 
 cp "${WORK}/r1.json" "${WORK}/stale.json"
-printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
+echo '{"serverid":"OtherServer826"}' >"${WORK}/identity.json"
 run_vws_real verify scenario s3-basic --map "$map" --result "${WORK}/stale.json"
 if [[ ! -e ${WORK}/stale.json ]]; then ok "a refused run leaves no old result behind"; else bad "stale result" "$(cat "${WORK}/stale.json")"; fi
-printf 'uid-vws-test' >"${fake}/kubectl/get_ns.json"
+echo '{"serverid":"TestServer826"}' >"${WORK}/identity.json"
 
 run_vws_real nightly --map "$map" --results "${WORK}/nightly/run1"
 expect_rc "nightly runs the real scenario against its own map" 0
-if jq -e '.result == "pass" and .clusterUID == "uid-vws-test"' "${WORK}/nightly/run1/s3-basic.json" >/dev/null; then
+if jq -e '.result == "pass" and .pveServerId == "TestServer826"' "${WORK}/nightly/run1/s3-basic.json" >/dev/null; then
   ok "nightly records the scenario result"; else bad "nightly result" "$OUT $(cat "${WORK}/nightly/run1/s3-basic.log")"; fi
 
-printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
+echo '{"serverid":"OtherServer826"}' >"${WORK}/identity.json"
 run_vws_real verify scenario s3-basic --map "$map"
 expect_rc "another cluster is refused" 3
-expect_text "the refusal names both UIDs" "$ERR" "uid-elsewhere is not vws-test (uid-vws-test); nothing ran"
+expect_text "the refusal names both server IDs" "$ERR" "OtherServer826 is not vws-test (TestServer826); nothing ran"
 if ! grep -q '^aws' "$VWS_FAKE_LOG"; then ok "a refused cluster gets no aws call"; else bad "no aws call" "$(cat "$VWS_FAKE_LOG")"; fi
-printf 'uid-vws-test' >"${fake}/kubectl/get_ns.json"
-jq '.vwsTest.kubeSystemUID = null' "$map" >"${WORK}/nofp.json"
+echo '{"serverid":"TestServer826"}' >"${WORK}/identity.json"
+jq '.vwsTest.pveServerId = null' "$map" >"${WORK}/nofp.json"
 run_vws_real verify scenario s3-basic --map "${WORK}/nofp.json"; expect_rc "a map without a fingerprint is refused" 3
+identity_refusals s3-basic "$map"
 
 run_vws_real verify scenario nope --map "$map"; expect_rc "an unknown scenario is a usage error" 2
 expect_text "the error points at list" "$ERR" "unknown scenario nope; try: scripts/vws verify list"

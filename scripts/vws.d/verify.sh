@@ -5,11 +5,12 @@
 #        vws verify --update-feature-map [--map FILE] RESULT.json...
 #        vws verify --check-feature-map [--map FILE]   (FAIL: stale md, a Phase 1 gap, or a scenario with no scenario file)
 # scenario and list: vws-deploy#251, lib/verify_scenario.sh, docs/vws-cli.md. scenario runs only on the
-# cluster whose kube-system UID is vwsTest.kubeSystemUID in the map.
+# gated PVE target whose serverid is vwsTest.pveServerId in the map.
+# Requires VWS_VERIFY_REGION and the live.py console/PVE credentials; VWS_VERIFY_PVE_CA_FILE pins the PVE CA.
 # --update-feature-map, vws-deploy#252. RESULT.json is a scenario result:
 #   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence": "link",
-#    "clusterUID": "kube-system namespace UID", "signature": "SSHSIG"}
-# clusterUID must equal vwsTest.kubeSystemUID in the map, and signature must verify against a key in
+#    "pveServerId": "PVE node serverid", "signature": "SSHSIG"}
+# pveServerId must equal vwsTest.pveServerId in the map, and signature must verify against a key in
 # vwsTest.signers (vws-deploy#288), else the result is refused (FAIL).
 # Only a pass on vws-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
 # Exit: 0 ok/warn, 1 a result refused (FAIL), 2 usage or invalid result/fingerprint ("FAIL: <reason>",

@@ -9,7 +9,7 @@
 # shellcheck disable=SC2154 # vws_results and vws_fail_count come from lib/common.sh
 
 VWS_SCENARIO_DIR="${VWS_ROOT}/scripts/vws.d/lib"
-vws_sc_name='' vws_sc_deadline='' vws_sc_pid='' vws_sc_cur='' vws_sc_uid='' vws_sc_result='' vws_sc_fail_at='' vws_sc_fail_hit='' vws_sc_failed='' vws_sc_tmp='' vws_sc_steps=''
+vws_sc_name='' vws_sc_deadline='' vws_sc_pid='' vws_sc_cur='' vws_sc_server_id='' vws_sc_result='' vws_sc_fail_at='' vws_sc_fail_hit='' vws_sc_failed='' vws_sc_tmp='' vws_sc_steps=''
 vws_sc_defer_names=() vws_sc_defer_cmds=()
 
 vws_sc_file() { printf '%s/scenario-%s.sh' "$VWS_SCENARIO_DIR" "$1"; }
@@ -132,9 +132,9 @@ vws_sc_signal() {
 
 vws_sc_write_result() { # pass|fail
   [[ -n $vws_sc_result ]] || return 0
-  jq -n --arg s "$vws_sc_name" --arg r "$1" --arg u "$vws_sc_uid" --arg e "$vws_sc_steps" \
+  jq -n --arg s "$vws_sc_name" --arg r "$1" --arg u "$vws_sc_server_id" --arg e "$vws_sc_steps" \
     --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{scenario: $s, result: $r, cluster: "vws-test", finishedAt: $t, clusterUID: $u, evidence: $e}' \
+    '{scenario: $s, result: $r, cluster: "vws-test", finishedAt: $t, pveServerId: $u, evidence: $e}' \
     >"${vws_sc_result}.tmp" || vws_die_env "cannot write ${vws_sc_result}"
   if [[ -n ${VWS_RESULT_SIGNING_KEY:-} ]]; then
     python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" sign "${vws_sc_result}.tmp" "$VWS_RESULT_SIGNING_KEY" ||
@@ -161,7 +161,7 @@ vws_aws() {
   env -i PATH="$PATH" HOME="${vws_sc_tmp}" AWS_CONFIG_FILE="$cfg" AWS_SHARED_CREDENTIALS_FILE=/dev/null \
     AWS_EC2_METADATA_DISABLED=true AWS_RETRY_MODE=standard AWS_MAX_ATTEMPTS=5 AWS_PAGER='' \
     AWS_ACCESS_KEY_ID="$VWS_VERIFY_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$VWS_VERIFY_SECRET_ACCESS_KEY" \
-    AWS_DEFAULT_REGION="${VWS_VERIFY_REGION:-vws-1}" "${ep[@]}" \
+    AWS_DEFAULT_REGION="$VWS_VERIFY_REGION" "${ep[@]}" \
     VWS_FAKE_LOG="${VWS_FAKE_LOG:-}" VWS_FAKE_DIR="${VWS_FAKE_DIR:-}" \
     timeout --kill-after=2 "$limit" \
     aws --cli-connect-timeout 10 --cli-read-timeout 60 "$@"
@@ -181,7 +181,7 @@ vws_sc_check_endpoint() { # VAR: the endpoint variable to check
 
 # vws_sc_main NAME MAP FAIL_AT RESULT: exit 0 every step passed, 1 a step or a cleanup failed, 2 usage,
 # 3 environment (tool or variable missing, cluster unreadable, cluster is not vws-test). Nothing runs before
-# the cluster's kube-system UID matches vwsTest.kubeSystemUID in MAP.
+# the gated PVE server ID matches vwsTest.pveServerId in MAP.
 vws_sc_main() {
   local map=$2 file var want status=pass
   vws_sc_name=$1 vws_sc_fail_at=$3 vws_sc_result=$4
@@ -200,10 +200,16 @@ vws_sc_main() {
     [[ -z ${!var:-} ]] || vws_sc_check_endpoint "$var"
   done
   [[ -f $map ]] || vws_die_env "feature map ${map} not found"
-  want=$(jq -r '.vwsTest.kubeSystemUID // empty' "$map" 2>/dev/null) || vws_die_env "feature map ${map} is unreadable"
+  if jq -e '.vwsTest | has("kubeSystemUID") and (has("pveServerId") | not)' "$map" >/dev/null 2>&1; then
+    vws_die_env "vwsTest.kubeSystemUID is retired (vws-deploy#826); set vwsTest.pveServerId"
+  fi
+  want=$(jq -r '.vwsTest.pveServerId // empty' "$map" 2>/dev/null) || vws_die_env "feature map ${map} is unreadable"
   [[ -n $want ]] || vws_die_env "feature map ${map} has no vws-test fingerprint; nothing ran"
-  vws_sc_uid=$(vws_kubectl get ns kube-system -o 'jsonpath={.metadata.uid}') || vws_die_env "cannot read the kube-system UID"
-  [[ $vws_sc_uid == "$want" ]] || vws_die_env "cluster kube-system UID ${vws_sc_uid} is not vws-test (${want}); nothing ran"
+  [[ -n ${VWS_VERIFY_REGION:-} ]] || vws_die_env "scenario ${vws_sc_name} needs VWS_VERIFY_REGION; nothing ran"
+  local -a identity=(python3 "${VWS_ROOT}/scripts/vws.d/lib/live.py" identity --region "$VWS_VERIFY_REGION")
+  [[ -z ${VWS_VERIFY_PVE_CA_FILE:-} ]] || identity+=(--pve-ca-file "$VWS_VERIFY_PVE_CA_FILE")
+  vws_sc_server_id=$("${identity[@]}") || vws_die_env "cannot identify the PVE target; nothing ran"
+  [[ $vws_sc_server_id == "$want" ]] || vws_die_env "PVE server ID ${vws_sc_server_id} is not vws-test (${want}); nothing ran"
 
   vws_sc_tmp=$(mktemp -d)
   # shellcheck disable=SC2064 # expand now: the paths are fixed for this run

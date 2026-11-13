@@ -1,8 +1,8 @@
 # Nightly full-stack e2e on vws-test (vws-deploy#253)
 
-One command, `vws nightly-e2e`, runs the whole nightly on vws-test: a scope check, then
-`vws apply -f CR` (install or upgrade the stack the CR pins), then `vws nightly` (every
-feature-map scenario), then `vws nightly-pr` (the feature-map PR). It writes a JSON summary and
+One command, `vws nightly-e2e`, runs the whole nightly on vws-test: a PVE scope check, then
+`vws nightly` (every feature-map scenario), `vws nightly-pr` (the feature-map PR), and
+`vws nightly-publish` (the results branch). It writes a JSON summary and
 opens an `incident` issue when a step fails. The command reference is `docs/vws-cli.md`.
 
 ## Runner
@@ -25,16 +25,25 @@ JSON on the box, the nightly PR (it links the run log) and the incident issue on
 
 ## Scope
 
-The nightly makes no OpenStack API call. vws-test is a Kubernetes cluster on OpenStack VMs, and
-everything the nightly does goes through the cluster API and the VWS endpoints. To keep it that
-way:
+The nightly makes no OpenStack API call. vws-test is the nested PVE box pve-test-1, and
+the nightly uses the console/PVE APIs and VWS endpoints:
 
 - the command removes every `OS_*` variable from its environment before any step, so no step
   inherits OpenStack credentials;
-- before any step that writes, it compares the cluster's kube-system UID with
-  `vwsTest.kubeSystemUID` in the feature map and stops on any other cluster;
+- before any step that writes, `live.py identity --region "$VWS_VERIFY_REGION"` runs the
+  shared live gate and reads `serverid` from `GET /nodes/{node}/subscription`, within 60 seconds.
+  It must equal `vwsTest.pveServerId` in the feature map. A missing identity, failed gate,
+  retired map or mismatch skips all later steps;
 - `tests/vws/nightly-e2e.test.sh` puts a fake `openstack` first on PATH and fails if any step
   calls it.
+
+The scope gate requires the console origin and token file (`VWS_API_URL`,
+`VWS_API_TOKEN_FILE`), runner-pinned `VWS_LIVE_PVE_URL`, the systemd `pve-token` credential
+under `CREDENTIALS_DIRECTORY`, and `VWS_VERIFY_REGION`. Set `VWS_VERIFY_PVE_CA_FILE` for a
+private PVE CA. The gate checks the Proxmox capability, allowlisted cluster name, live-tests
+flag, single health node, matching PVE origin and readable `vws-live` pool. HTTPS is required
+except on loopback. The map's identity stays null until the nested box exists; no real
+server ID is assumed. Each scenario repeats the gate before its first AWS call.
 
 ## Results branch (vws-deploy#290)
 
@@ -54,7 +63,7 @@ Rejected:
 - **Results committed to main by the nightly PR.** A file per night on main grows main with data
   nobody reviews, and the AC asks for the results off main.
 - **Logs on the branch.** Scenario logs and step output can hold endpoint replies; only the result
-  JSON (scenario, result, time, cluster UID, signature) is published.
+  JSON (scenario, result, time, pveServerId, signature) is published.
 
 ## Failure wake (vws-deploy#290)
 

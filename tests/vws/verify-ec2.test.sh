@@ -7,12 +7,12 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 fake="${WORK}/fake"
-mkdir -p "${fake}/kubectl" "${fake}/aws"
+mkdir -p "${fake}/aws"
 export VWS_FAKE_DIR=$fake
-printf 'uid-vws-test' >"${fake}/kubectl/get_ns.json"
+start_identity_stub
 map="${WORK}/map.json"
 cat >"$map" <<'JSON'
-{"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
+{"vwsTest": {"pveServerId": "TestServer826"}, "features": [
   {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": "ec2-volume-reboot"}
 ]}
 JSON
@@ -103,6 +103,8 @@ expect_text "SIGTERM runs both cleanups" "$(jq -r 'select(.step | startswith("cl
 expect_text "after a signal the instance is terminated without a wait" "$OUT" '"evidence":"terminating i-00000001"'
 leaves_nothing "SIGTERM"
 rm "${fake}/aws/ec2_reboot-instances.sleep"; rm -rf "$ec2"
+
+identity_refusals ec2-volume-reboot "$map"
 
 VWS_VERIFY_IMAGE_ID='' run
 expect_rc "a missing image is an environment error" 3

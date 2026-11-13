@@ -11,36 +11,18 @@ import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from admin import Parser, fail, read_file, redact
+from live_origin import NoRedirect, Refused, origin
 
 ALLOWLIST = ("pve-test",)
-
-
-class Refused(Exception):
-    pass
 
 
 class HTTPFailure(Refused):
     def __init__(self, status):
         self.status = status
         super().__init__("API HTTP " + str(status))
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *_):
-        return None
-
-
-def origin(value):
-    u = urlsplit(value)
-    if (not u.hostname or u.username or u.password or u.path or u.query or u.fragment
-            or not u.port and u.netloc.endswith(":") or
-            u.scheme != "https" and not (u.scheme == "http" and u.hostname in
-                                         ("127.0.0.1", "::1", "localhost"))):
-        raise Refused("endpoint must be an HTTPS origin (HTTP only on loopback)")
-    return value
 
 
 class Client:
@@ -62,9 +44,8 @@ class Client:
                                   HTTPSHandler(context=ssl.create_default_context(cafile=a.pve_ca_file)))
         self.console_opener = build_opener(ProxyHandler({}), NoRedirect())
         self.a, self.steps = a, []
-        self.state = Path(a.results) / ".gate.json"
-        if a.operation != "gate":
-            _, self.node = json.loads(self.state.read_text())
+        if a.operation not in ("gate", "identity"):
+            _, self.node = json.loads((Path(a.results) / ".gate.json").read_text())
 
     def request(self, path, method="GET", console=False, deadline=None):
         base = self.base if console else self.pve + "/api2/json"
@@ -102,7 +83,7 @@ class Client:
                     steps=self.steps)
         (Path(self.a.results) / (name + ".json")).write_text(json.dumps(data) + "\n")
 
-    def gate(self):
+    def check_gate(self):
         if not re.fullmatch(r"pve-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]+", self.a.region) or len(self.a.region) > 63:
             raise Refused("invalid region name")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.a.snippets_storage):
@@ -134,8 +115,19 @@ class Client:
         state = json.dumps([self.pve, self.node])
         if redact(state, self.secrets) != state:
             raise Refused("credential in gate response")
-        self.state.write_text(state)
+        return state
+
+    def gate(self):
+        (Path(self.a.results) / ".gate.json").write_text(self.check_gate())
         self.emit("gate", True)
+
+    def identity(self):
+        self.check_gate()
+        serverid = self.request("/nodes/" + quote(self.node, safe="") + "/subscription").get("serverid")
+        if (not isinstance(serverid, str) or not re.fullmatch(r"[A-Za-z0-9]{1,64}", serverid)
+                or redact(serverid, self.secrets) != serverid):
+            raise Refused("invalid PVE server ID")
+        print(serverid)
 
     def resources(self):
         data = self.request("/cluster/resources?type=vm")
@@ -234,9 +226,9 @@ class Client:
 
 def main():
     p = Parser(allow_abbrev=False)
-    p.add_argument("operation", choices=("gate", "sweep", "slots", "results"))
+    p.add_argument("operation", choices=("gate", "identity", "sweep", "slots", "results"))
     p.add_argument("--region", required=True)
-    p.add_argument("--results", required=True)
+    p.add_argument("--results")
     p.add_argument("--snippets-storage", default="local")
     p.add_argument("--pve-ca-file")
     p.add_argument("--fail-at", choices=("slots",))
@@ -244,7 +236,8 @@ def main():
     p.add_argument("--need", type=int, default=0)
     p.add_argument("--exit", type=int, default=0)
     a = p.parse_args()
-    if a.need < 0 or a.operation == "sweep" and not a.phase:
+    if (a.need < 0 or a.operation == "sweep" and not a.phase
+            or a.operation != "identity" and not a.results):
         p.error("")
     if a.operation == "results":
         steps = []
@@ -260,12 +253,16 @@ def main():
     try:
         getattr(c, a.operation)()
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-        c.emit(a.operation, False, str(e) if isinstance(e, Refused) else "invalid API response")
+        message = str(e) if isinstance(e, Refused) else "invalid API response"
+        if a.operation == "identity":
+            fail(redact(message, c.secrets), 3)
+        c.emit(a.operation, False, message)
     except SystemExit:
-        c.emit(a.operation, False, "interrupted")
+        if a.operation != "identity":
+            c.emit(a.operation, False, "interrupted")
         raise
     finally:
-        if a.operation != "gate":
+        if a.operation not in ("gate", "identity"):
             c.save(a.phase if a.operation == "sweep" else "slots")
     return (3 if a.operation == "gate" else 1) if any(s["result"] == "fail" for s in c.steps) else 0
 

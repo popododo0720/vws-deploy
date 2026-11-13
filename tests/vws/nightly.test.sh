@@ -9,7 +9,7 @@ fm="${WORK}/fm"; mkdir -p "$fm"
 map="${fm}/feature-map.json"
 write_map() {
   cat >"$map" <<'JSON'
-{"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
+{"vwsTest": {"pveServerId": "TestServer826"}, "features": [
   {"feature": "EC2 run", "repo": "vws-console-api", "issue": null, "scenario": "ec2-run"},
   {"feature": "EC2 key pair", "repo": "vws-console-api", "issue": null, "scenario": "ec2-keypair"},
   {"feature": "STS", "repo": "vws-iam", "issue": null, "scenario": "sts-assume-role", "lastPass": "2026-10-14T00:00:00Z", "evidence": "old"},
@@ -34,7 +34,11 @@ case $mode in
   crash) echo "boom" >&2; exit 4 ;;
 esac
 jq -n --arg s "$name" --arg r "$mode" '{scenario: $s, result: $r, cluster: "vws-test",
-  finishedAt: "2026-10-30T13:00:00Z", clusterUID: "uid-vws-test", evidence: "https://example.invalid/\($s)"}' >"$out"
+  finishedAt: "2026-10-30T13:00:00Z", pveServerId: "TestServer826", evidence: "https://example.invalid/\($s)"}' >"$out"
+if [[ -n ${FAKE_RETIRED_RESULT:-} ]]; then
+  jq '.clusterUID = .pveServerId | del(.pveServerId)' "$out" >"${out}.old"
+  mv "${out}.old" "$out"
+fi
 python3 "$FAKE_FM" sign "$out" "$FAKE_KEY"
 [[ $mode == pass ]]
 SH
@@ -52,6 +56,11 @@ if jq -e '[.features[0,1,2].lastPass] == ["2026-10-30T13:00:00Z","2026-10-30T13:
   ok "passes are recorded in the map"; else bad "passes recorded" "$(cat "$map")"; fi
 expect_text "md is regenerated" "$(cat "${fm}/feature-map.md")" "2026-10-30 22:00 KST"
 expect_text "each scenario has a log" "$OUT" "log ${WORK}/r1/ec2-run.log"
+
+write_map
+FAKE_RETIRED_RESULT=1 run_vws_real nightly --map "$map" --results "${WORK}/retired"
+expect_rc "signed Kubernetes results fail nightly" 1
+expect_text "nightly reports the retired identity" "$OUT" "clusterUID is a retired Kubernetes identity"
 
 write_map; : >"$FAKE_RUNS"
 FAKE_MODE_sts_assume_role=fail run_vws_real nightly --map "$map" --results "${WORK}/r2"
