@@ -17,6 +17,13 @@ case "$1" in
                 exit 1
             fi
             mkdir -p /etc/pve/vws
+            for dir in /etc/pve/priv/vws /etc/pve/priv/lock/vws-region; do
+                if [ -L "$dir" ]; then
+                    echo "vws-region: $dir must not be a symlink" >&2
+                    exit 1
+                fi
+                mkdir -p "$dir"
+            done
         fi
         if ! getent passwd vws-region >/dev/null; then
             adduser --system --group --home /nonexistent --no-create-home \

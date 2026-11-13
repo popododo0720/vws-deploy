@@ -14,7 +14,9 @@ pve = root / "pve"
 pve.mkdir()
 credentials = root / "credentials"
 script = root / "postinst"
-script.write_text(source.replace("/etc/pve/vws", str(pve / "vws"))
+script.write_text(source.replace("/etc/pve/priv/lock/vws-region", str(pve / "priv/lock/vws-region"))
+                  .replace("/etc/pve/priv/vws", str(pve / "priv/vws"))
+                  .replace("/etc/pve/vws", str(pve / "vws"))
                   .replace("/etc/vws/credentials", str(credentials))
                   .replace("/run/systemd/system", str(root / "no-systemd")))
 bin_dir = root / "bin"
@@ -48,11 +50,12 @@ class PostinstTests(unittest.TestCase):
         mounts.write_text("/dev/fuse /etc/pve fuse rw,nosuid,nodev 0 0\n")
 
     def tearDown(self):
-        lease = pve / "vws"
-        if lease.is_symlink():
-            lease.unlink()
-        elif lease.exists():
-            shutil.rmtree(lease)
+        for name in ("vws", "priv"):
+            path = pve / name
+            if path.is_symlink():
+                path.unlink()
+            elif path.exists():
+                shutil.rmtree(path)
 
     def test_non_pmxcfs_unchanged(self):
         for line in ("", "/dev/fuse /etc/pve ext4 rw 0 0\n",
@@ -66,6 +69,7 @@ class PostinstTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((result.stdout, result.stderr), ("", ""))
                 self.assertFalse((pve / "vws").exists())
+                self.assertFalse((pve / "priv").exists())
 
     def test_override_requires_explicit_test_mode(self):
         for extra in ({"VWS_REGION_TEST_MOUNTS": str(mounts)},
@@ -81,12 +85,18 @@ class PostinstTests(unittest.TestCase):
         result = configure(fixture)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((pve / "vws").is_dir())
+        self.assertTrue((pve / "priv/vws").is_dir())
+        self.assertTrue((pve / "priv/lock/vws-region").is_dir())
         sentinel = pve / "vws" / "lease.json"
         sentinel.write_text("lease sentinel\n")
         before = (sentinel.read_bytes(), sentinel.stat())
         result = configure(fixture)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(before, (sentinel.read_bytes(), sentinel.stat()))
+        private = pve / "priv/vws/pve-token"
+        private.write_text("token sentinel\n")
+        self.assertEqual(configure(fixture).returncode, 0)
+        self.assertEqual(private.read_text(), "token sentinel\n")
 
     def test_symlink_refused(self):
         target = root / "target"
@@ -96,6 +106,21 @@ class PostinstTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must not be a symlink", result.stderr)
         self.assertEqual(list(target.iterdir()), [])
+
+    def test_private_symlinks_refused(self):
+        for leaf in ("priv/vws", "priv/lock/vws-region"):
+            with self.subTest(leaf=leaf):
+                target = root / ("target-" + leaf.replace("/", "-"))
+                target.mkdir()
+                link = pve / leaf
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(target, target_is_directory=True)
+                result = configure(fixture)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must not be a symlink", result.stderr)
+                self.assertEqual(list(target.iterdir()), [])
+                link.unlink()
+                target.rmdir()
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
