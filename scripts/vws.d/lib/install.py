@@ -76,7 +76,8 @@ def inventory(path):
         host = cfg["hosts"][0]
         if (set(host.get("roles", [])) != {"etcd", "global", "region"}
                 or len(host["roles"]) != 3
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", host.get("name", ""))
+                or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", host.get("name", ""))
+                or host.get("name") == "client"
                 or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", host.get("ssh_user", "root"))):
             raise Invalid("invalid lab host")
         ipaddress.IPv4Address(host["address"])
@@ -210,8 +211,8 @@ fi
             changed = self.write("/etc/keepalived/keepalived.conf", "644", vip.encode()) or changed
             changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
             for name, version, payload in packages:
-                current = self.run(name, f"dpkg-query -W -f='${{Version}}' {name} 2>/dev/null || true")
-                upgrade = current != version.encode()
+                current = self.run(name, f"dpkg-query -W -f='${{db:Status-Abbrev}}\\t${{Version}}' {name} 2>/dev/null || true")
+                upgrade = current != b"ii \t" + version.encode()
                 if upgrade:
                     self.run(name, """
 systemctl disable --now keepalived >/dev/null 2>&1

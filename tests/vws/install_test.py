@@ -26,12 +26,16 @@ if c == "test ! -f /var/lib/vws-install/pending || echo pending":
 elif c == "rm -f /var/lib/vws-install/pending":
     (s / "pending").unlink(missing_ok=True)
 elif "dpkg-query" in c:
-    if (s / "package").exists(): print("0.0.0-1", end="")
+    name = next(n for n in ("vws-etcd", "vws-global", "vws-region") if n in c)
+    (s / "current-package").write_text(name)
+    if (s / name).exists():
+        status = os.environ.get("INSTALL_PACKAGE_STATE", "ii ") if name == "vws-global" else "ii "
+        print(status + "\t0.0.0-1", end="")
 elif "apt-get install" in c:
-    (s / "package").touch()
+    (s / (s / "current-package").read_text()).touch()
     (s / "pending").touch()
 elif "systemctl is-enabled" in c:
-    key = s / c.split("is-enabled --quiet ")[1].split()[0]
+    key = s / ("service-" + c.split("is-enabled --quiet ")[1].split()[0])
     print("changed" if not key.exists() or "systemctl restart" in c else "unchanged")
     key.touch()
 elif "echo changed" in c:
@@ -82,6 +86,10 @@ class Install(unittest.TestCase):
         good = path.read_text()
         for bad in ("", "---", "[", "hosts: []", good + "unknown: value\n",
                     good + "profile: lab\n", good.replace("name: lab-1", "token: hidden"),
+                    good.replace("name: lab-1", "name: Lab-1"),
+                    good.replace("name: lab-1", "name: lab-"),
+                    good.replace("name: lab-1", "name: client"),
+                    good.replace("name: lab-1", "name: " + "a" * 64),
                     good.replace("name: lab-1", "name: '-oProxyCommand=bad'"),
                     good.replace("address: 192.0.2.1", "address: 192.0.2.1;bad"),
                     good.replace("roles: [etcd, global, region]", "roles: [etcd]"),
@@ -99,6 +107,15 @@ class Install(unittest.TestCase):
             with self.subTest(data=data):
                 (self.work / "global.yaml").write_text(data)
                 self.refused()
+
+    def test_member_name_boundaries(self):
+        path = self.work / "hosts.yaml"
+        good = path.read_text()
+        for name in ("a", "0", "a" * 63):
+            with self.subTest(name=name):
+                path.write_text(good.replace("name: lab-1", "name: " + name))
+                result = self.run_install()
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_credential(self):
         (self.work / "credentials/admin-kek").unlink()
@@ -179,6 +196,17 @@ class Install(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("systemctl restart vws-etcd", (self.work / "state/argv").read_text())
         self.assertNotIn("replacement-private-fixture", result.stdout + result.stderr)
+
+    def test_unconfigured_package_is_installed_again(self):
+        self.assertEqual(self.run_install().returncode, 0)
+        self.env["INSTALL_PACKAGE_STATE"] = "iU "
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("vws-global package changed", result.stdout)
+        self.env.pop("INSTALL_PACKAGE_STATE")
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)))
 
 
 if __name__ == "__main__":

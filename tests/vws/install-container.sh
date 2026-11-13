@@ -56,6 +56,10 @@ assert steps and all(s["status"] == "unchanged" for s in steps), steps
 PY
 snapshot > "$work/after"
 cmp "$work/before" "$work/after"
+dpkg --unpack "$work/packages/vws-global_0.0.0-1_all.deb" >/dev/null
+bash "$root/scripts/vws" "${args[@]}" > "$work/configure.out" 2> "$work/configure.err"
+grep -q 'vws-global package changed' "$work/configure.out"
+test "$(dpkg-query -W -f='${db:Status-Abbrev}' vws-global)" = 'ii '
 touch /var/lib/vws-install/pending
 : > "$INSTALL_STATE/systemctl"
 bash "$root/scripts/vws" "${args[@]}" > "$work/restart.out" 2> "$work/restart.err"
