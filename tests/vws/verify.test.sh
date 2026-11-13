@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 map="${WORK}/fm/feature-map.json"
 mkdir -p "${WORK}/fm"
 cat >"$map" <<'JSON'
-{"vwsTest": {"kubeSystemUID": "uid-vws-test"}, "features": [
+{"vwsTest": {"pveServerId": "TestServer826"}, "features": [
   {"feature": "EC2 key pair import", "repo": "vws-console-api", "issue": "vws-console-api#128", "scenario": "ec2-keypair"},
   {"feature": "STS", "repo": "vws-iam", "issue": "vws-iam#5", "scenario": "sts-assume-role", "lastPass": "2026-10-14T00:00:00Z", "evidence": "old"},
   {"feature": "Console login", "repo": "vws-console", "scenario": null, "na": "browser UI"}
@@ -17,9 +17,9 @@ JSON
 p1="${WORK}/fm/phase1-features.json"
 echo '{"phase1": ["EC2 key pair import", "Console login"], "later": [{"feature": "STS", "reason": "test"}]}' >"$p1"
 jq --arg k "$(test_signer a)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"
-result() { # FILE SCENARIO RESULT CLUSTER TIME [CLUSTER_UID]
-  jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" --arg u "${6-uid-vws-test}" \
-    '{scenario: $s, result: $r, cluster: $c, finishedAt: $t, clusterUID: $u, evidence: "https://example.invalid/\($s)"}' >"${WORK}/fm/$1"
+result() { # FILE SCENARIO RESULT CLUSTER TIME [PVE_SERVER_ID]
+  jq -n --arg s "$2" --arg r "$3" --arg c "$4" --arg t "$5" --arg u "${6-TestServer826}" \
+    '{scenario: $s, result: $r, cluster: $c, finishedAt: $t, pveServerId: $u, evidence: "https://example.invalid/\($s)"}' >"${WORK}/fm/$1"
   sign_result "${WORK}/fm/$1"
 }
 result pass.json ec2-keypair pass vws-test 2026-10-14T06:30:00Z
@@ -104,22 +104,22 @@ run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/garbage.json";
 run_vws_real verify --update-feature-map --map "$map"; expect_rc "no result file is a usage error" 2
 run_vws_real verify; expect_rc "no mode is a usage error" 2
 
-# Provenance: a hand-written result without clusterUID, or with another cluster's UID, is refused.
+# Provenance: a hand-written result without pveServerId, or with another target's server ID, is refused.
 before=$(cat "$map")
 jq -n '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: "2026-10-14T07:30:00Z", evidence: "forged"}' >"${WORK}/fm/nouid.json"
-result baduid.json ec2-keypair pass vws-test 2026-10-14T07:30:00Z uid-elsewhere
-run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/nouid.json"; expect_rc "a result without clusterUID is refused" 1
-expect_text "missing clusterUID is reported" "$OUT" "clusterUID None does not match the vws-test fingerprint; refused"
-run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/baduid.json"; expect_rc "a mismatched clusterUID is refused" 1
-expect_text "mismatched clusterUID is reported" "$OUT" "clusterUID 'uid-elsewhere' does not match"
+result baduid.json ec2-keypair pass vws-test 2026-10-14T07:30:00Z OtherServer826
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/nouid.json"; expect_rc "a result without pveServerId is refused" 1
+expect_text "missing pveServerId is reported" "$OUT" "pveServerId None does not match the vws-test fingerprint; refused"
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/baduid.json"; expect_rc "a mismatched pveServerId is refused" 1
+expect_text "mismatched pveServerId is reported" "$OUT" "pveServerId 'OtherServer826' does not match"
 if [[ $(cat "$map") == "$before" ]]; then ok "refused results leave the map unchanged"; else bad "map unchanged" "$(cat "$map")"; fi
-jq '.vwsTest.kubeSystemUID = null' "$map" >"${WORK}/fm/nofp.json"
+jq '.vwsTest.pveServerId = null' "$map" >"${WORK}/fm/nofp.json"
 result good.json ec2-keypair pass vws-test 2026-10-14T07:30:00Z
 run_vws_real verify --update-feature-map --map "${WORK}/fm/nofp.json" "${WORK}/fm/good.json"; expect_rc "no configured fingerprint refuses every result" 1
 expect_text "unconfigured fingerprint is reported" "$OUT" "no vws-test fingerprint"
-run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/good.json"; expect_rc "a matching clusterUID is accepted" 0
-if jq -e '.features[0].lastPass == "2026-10-14T07:30:00Z" and .vwsTest.kubeSystemUID == "uid-vws-test"' "$map" >/dev/null; then
-  ok "a matching clusterUID records the pass and keeps the fingerprint"; else bad "matching pass" "$(cat "$map")"; fi
+run_vws_real verify --update-feature-map --map "$map" "${WORK}/fm/good.json"; expect_rc "a matching pveServerId is accepted" 0
+if jq -e '.features[0].lastPass == "2026-10-14T07:30:00Z" and .vwsTest.pveServerId == "TestServer826"' "$map" >/dev/null; then
+  ok "a matching pveServerId records the pass and keeps the fingerprint"; else bad "matching pass" "$(cat "$map")"; fi
 
 # Signature (vws-deploy#288): only a result signed by a key in vwsTest.signers is recorded.
 refused() { # NAME FILE NEEDLE [MAP]
@@ -131,6 +131,12 @@ refused() { # NAME FILE NEEDLE [MAP]
   if [[ $(cat "${4:-$map}") == "$m_before" ]]; then ok "$1 leaves the map unchanged"; else bad "$1 map unchanged" "$(cat "${4:-$map}")"; fi
 }
 result signed.json ec2-keypair pass vws-test 2026-10-14T08:00:00Z
+jq '.clusterUID = "retired"' "${WORK}/fm/signed.json" >"${WORK}/fm/retired.json"
+sign_result "${WORK}/fm/retired.json"
+refused "a signed result carrying the retired field" "${WORK}/fm/retired.json" "clusterUID is a retired Kubernetes identity"
+jq 'del(.pveServerId)' "${WORK}/fm/retired.json" >"${WORK}/fm/retired-only.json"
+sign_result "${WORK}/fm/retired-only.json"
+refused "a signed Kubernetes-only result" "${WORK}/fm/retired-only.json" "clusterUID is a retired Kubernetes identity"
 jq '.evidence = "https://example.invalid/forged"' "${WORK}/fm/signed.json" >"${WORK}/fm/tampered.json"
 refused "a tampered field" "${WORK}/fm/tampered.json" "signature does not verify against vwsTest.signers"
 jq '.finishedAt = "2026-10-14T09:00:00Z"' "${WORK}/fm/signed.json" >"${WORK}/fm/tampered-time.json"
@@ -172,22 +178,31 @@ invalid() { # NAME MAP FILE NEEDLE
     ok "$1 leaves the map unchanged"; else bad "$1 map unchanged" "$(cat "$2")"; fi
 }
 recent=2026-10-14T05:00:00Z
-jq -n --arg t "$recent" '{scenario: ["ec2-keypair"], result: "pass", cluster: "vws-test", finishedAt: $t, clusterUID: "uid-vws-test"}' >"${WORK}/fm/sclist.json"
+jq -n --arg t "$recent" '{scenario: ["ec2-keypair"], result: "pass", cluster: "vws-test", finishedAt: $t, pveServerId: "TestServer826"}' >"${WORK}/fm/sclist.json"
 invalid "a list scenario" "$map" "${WORK}/fm/sclist.json" "scenario must be a non-empty string"
-jq -n --arg t "$recent" '{scenario: {name: "ec2-keypair"}, result: "pass", cluster: "vws-test", finishedAt: $t, clusterUID: "uid-vws-test"}' >"${WORK}/fm/scobj.json"
+jq -n --arg t "$recent" '{scenario: {name: "ec2-keypair"}, result: "pass", cluster: "vws-test", finishedAt: $t, pveServerId: "TestServer826"}' >"${WORK}/fm/scobj.json"
 invalid "an object scenario" "$map" "${WORK}/fm/scobj.json" "scenario must be a non-empty string"
-jq -n '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: 1760000000, clusterUID: "uid-vws-test"}' >"${WORK}/fm/numtime.json"
+jq -n '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: 1760000000, pveServerId: "TestServer826"}' >"${WORK}/fm/numtime.json"
 invalid "a numeric finishedAt" "$map" "${WORK}/fm/numtime.json" "finishedAt must be a non-empty string"
 future=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
 result future.json ec2-keypair pass vws-test "$future"
 invalid "a future finishedAt" "$map" "${WORK}/fm/future.json" "is in the future"
-jq -n --arg t "$recent" '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: $t, clusterUID: 42}' >"${WORK}/fm/numuid.json"
-invalid "a non-string clusterUID" "$map" "${WORK}/fm/numuid.json" "clusterUID must be a string"
-jq '.vwsTest.kubeSystemUID = 7' "$map" >"${WORK}/fm/numfp.json"
+jq -n --arg t "$recent" '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: $t, pveServerId: 42}' >"${WORK}/fm/numuid.json"
+invalid "a non-string pveServerId" "$map" "${WORK}/fm/numuid.json" "pveServerId must be a string"
+jq '.vwsTest.pveServerId = 7' "$map" >"${WORK}/fm/numfp.json"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "${WORK}/fm/numfp.json" 2>/dev/null || true
 result recent.json ec2-keypair pass vws-test "$recent"
-invalid "a non-string fingerprint" "${WORK}/fm/numfp.json" "${WORK}/fm/recent.json" "kubeSystemUID must be a string or null"
-jq -n --arg t "$recent" '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: $t, clusterUID: "uid-vws-test", signature: 5}' >"${WORK}/fm/numsig.json"
+for shape in '.vwsTest |= {kubeSystemUID: .pveServerId}' '.vwsTest.kubeSystemUID = null'; do
+  jq "$shape" "$map" >"${WORK}/fm/retired-map.json"
+  invalid "a map carrying the retired key" "${WORK}/fm/retired-map.json" "${WORK}/fm/recent.json" "vwsTest.kubeSystemUID is retired"
+  for mode in render check; do
+    RC=0; OUT=$(python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" "$mode" "${WORK}/fm/retired-map.json") || RC=$?
+    expect_rc "a retired map cannot $mode" 2
+    expect_text "$mode names the retired map field" "$OUT" "vwsTest.kubeSystemUID is retired"
+  done
+done
+invalid "a non-string fingerprint" "${WORK}/fm/numfp.json" "${WORK}/fm/recent.json" "pveServerId must be a string or null"
+jq -n --arg t "$recent" '{scenario: "ec2-keypair", result: "pass", cluster: "vws-test", finishedAt: $t, pveServerId: "TestServer826", signature: 5}' >"${WORK}/fm/numsig.json"
 invalid "a non-string signature" "$map" "${WORK}/fm/numsig.json" "signature must be a string"
 jq '.vwsTest.signers = "vws-test ssh-ed25519 AAAA"' "$map" >"${WORK}/fm/strsigners.json"
 invalid "a signers string, not a list" "${WORK}/fm/strsigners.json" "${WORK}/fm/recent.json" "vwsTest.signers must be a list"

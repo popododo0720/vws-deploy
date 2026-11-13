@@ -6,10 +6,13 @@ set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-fake="${WORK}/fake"; mkdir -p "${fake}/kubectl" "${WORK}/bin"
-export VWS_FAKE_DIR=$fake
-uid=$(jq -r .vwsTest.kubeSystemUID "${VWS_TEST_ROOT}/docs/feature-map.json")
-printf '%s' "$uid" >"${fake}/kubectl/get_ns.json"
+mkdir -p "${WORK}/bin" "${WORK}/root/scripts" "${WORK}/root/docs"
+start_identity_stub
+cp "$VWS_BIN" "${WORK}/root/scripts/vws"
+ln -s "${VWS_TEST_ROOT}/scripts/vws.d" "${WORK}/root/scripts/vws.d"
+VWS_BIN="${WORK}/root/scripts/vws"
+map="${WORK}/root/docs/feature-map.json"
+jq '.vwsTest.pveServerId = "TestServer826"' "${VWS_TEST_ROOT}/docs/feature-map.json" >"$map"
 
 # The fake vws: logs the command and any OS_* variable it got; FAKE_<command> picks pass, fail or hang.
 cat >"${WORK}/vws" <<'SH'
@@ -78,7 +81,7 @@ expect_text "nightly-pr gets the run and the log URL" "$(cat "$FAKE_VWS_LOG")" "
 if ! grep -q '^env ' "$FAKE_VWS_LOG"; then ok "no step inherits an OS_* variable"; else bad "OS env leaked" "$(cat "$FAKE_VWS_LOG")"; fi
 if [[ ! -s $FAKE_OS_LOG ]]; then ok "no step calls openstack"; else bad "openstack called" "$(cat "$FAKE_OS_LOG")"; fi
 assert_no_changes "the scope check only reads the cluster"
-expect_text "the scope check reads kube-system" "$(cat "$VWS_FAKE_LOG")" "get ns kube-system"
+expect_text "the scope check reads the PVE subscription" "$(cat "${WORK}/identity.calls")" "/nodes/node1/subscription"
 if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass" ]]; then
   ok "summary.json records the run and five passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
 if [[ ! -s $FAKE_GH_LOG ]]; then ok "a passing run with a wake thread opens no incident and posts no wake"; else bad "gh on pass" "$(cat "$FAKE_GH_LOG")"; fi
@@ -181,15 +184,33 @@ expect_rc "a failed publish: exit 1" 1
 expect_text "the failed publish is named" "$OUT" "FAIL  e2e/publish  vws nightly-publish exited 1"
 expect_text "a failed publish opens an incident on that step" "$(cat "$FAKE_GH_BODY")" "failed at step \`publish\`"
 
-printf 'uid-elsewhere' >"${fake}/kubectl/get_ns.json"
+echo '{"serverid":"OtherServer826"}' >"${WORK}/identity.json"
 r="r/20261105T130400Z"
 e2e --results "${WORK}/$r"
 expect_rc "another cluster: exit 1" 1
-expect_text "the scope failure names the cluster" "$OUT" "FAIL  e2e/scope  cluster kube-system UID 'uid-elsewhere' is not vws-test"
+expect_text "the scope failure names the cluster" "$OUT" "FAIL  e2e/scope  PVE server ID OtherServer826 is not vws-test"
 if [[ ! -s $FAKE_VWS_LOG ]]; then ok "on another cluster no step runs"; else bad "ran elsewhere" "$(cat "$FAKE_VWS_LOG")"; fi
 expect_text "the scope failure opens an incident" "$(cat "$FAKE_GH_LOG")" "issue create"
 expect_text "the incident body names the scope step" "$(cat "$FAKE_GH_BODY")" "failed at step \`scope\`"
-printf '%s' "$uid" >"${fake}/kubectl/get_ns.json"
+echo '{"serverid":"TestServer826"}' >"${WORK}/identity.json"
+
+cp "$map" "${map}.orig"
+jq '.vwsTest |= {kubeSystemUID: .pveServerId}' "${map}.orig" >"$map"
+e2e --results "${WORK}/r/20261105T130410Z"
+expect_rc "a retired scope map fails" 1
+expect_text "the retired scope field is named" "$OUT" "vwsTest.kubeSystemUID is retired"
+[[ ! -s $FAKE_VWS_LOG ]] && ok "a retired scope map runs no step" || bad "retired scope" "$(cat "$FAKE_VWS_LOG")"
+jq '.vwsTest.pveServerId = null' "${map}.orig" >"$map"
+e2e --results "${WORK}/r/20261105T130420Z"
+expect_rc "an unconfigured PVE identity fails scope" 1
+[[ ! -s $FAKE_VWS_LOG ]] && ok "an unset scope identity runs no step" || bad "unset scope" "$(cat "$FAKE_VWS_LOG")"
+mv "${map}.orig" "$map"
+echo '{}' >"${WORK}/identity.json"
+e2e --results "${WORK}/r/20261105T130430Z"
+expect_rc "an unreadable PVE identity fails scope" 1
+expect_text "the failed identity is named" "$OUT" "cannot identify the PVE target; nothing ran"
+[[ ! -s $FAKE_VWS_LOG ]] && ok "a failed identity runs no step" || bad "failed identity" "$(cat "$FAKE_VWS_LOG")"
+echo '{"serverid":"TestServer826"}' >"${WORK}/identity.json"
 
 FAKE_nightly=fail FAKE_GH_CREATE_FAIL=1 e2e --results "${WORK}/r/20261105T130500Z"
 expect_rc "an incident that cannot be opened: exit 1" 1

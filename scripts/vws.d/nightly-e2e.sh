@@ -3,7 +3,9 @@
 # Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --log-url URL [--results DIR]
 #   [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]
 # vws-deploy#253, design docs/design/nightly-e2e.md. Removes every OS_* variable, then runs in order:
-#   scope         the cluster's kube-system UID is vwsTest.kubeSystemUID in docs/feature-map.json
+#   scope         the gated PVE server ID is vwsTest.pveServerId in docs/feature-map.json
+#                 requires VWS_VERIFY_REGION and live.py console/PVE credentials;
+#                 VWS_VERIFY_PVE_CA_FILE supplies the trusted PVE CA
 #   scenarios     vws nightly --results DIR --timeout SECONDS
 #   feature-map-pr vws nightly-pr --results DIR --log-url URL --repo REPO
 #   publish       vws nightly-publish --results DIR (the results JSON to the nightly-results branch)
@@ -18,7 +20,7 @@
 # Exit: 0 every step passed, 1 a step failed or the incident or wake could not be posted, 2 usage,
 # 3 environment (tool missing, lock held).
 # shellcheck disable=SC2034 # read by scripts/vws
-VWS_NEED=(jq timeout flock gh kubectl)
+VWS_NEED=(jq timeout flock gh python3)
 
 # The vws used for the steps. Tests point it at a fake; nothing else sets it.
 VWS_NIGHTLY_E2E_VWS=${VWS_NIGHTLY_E2E_VWS:-}
@@ -215,16 +217,21 @@ vws_cmd_main() {
   [[ -z $VWS_NIGHTLY_E2E_VWS ]] || vws_e2e_cmd=("$VWS_NIGHTLY_E2E_VWS")
 
   started=$(date -u +%FT%TZ)
-  want=$(jq -r '.vwsTest.kubeSystemUID // empty' "$map" 2>/dev/null) || want=''
-  export -f vws_kubectl vws_kube_flags vws_kubectl_reads
-  uid=$(timeout --kill-after=10 60 bash -c 'vws_kubectl get ns kube-system --request-timeout=30s -o "jsonpath={.metadata.uid}"' \
-    2>"${vws_e2e_dir}/scope.log") || uid=''
-  if [[ -z $want ]]; then
-    vws_e2e_record scope fail 3 "$started" "${map} has no vwsTest.kubeSystemUID; nothing ran"
+  want=$(jq -r '.vwsTest.pveServerId // empty' "$map" 2>/dev/null) || want=''
+  local -a identity=(python3 "${VWS_ROOT}/scripts/vws.d/lib/live.py" identity --region "${VWS_VERIFY_REGION:-}")
+  [[ -z ${VWS_VERIFY_PVE_CA_FILE:-} ]] || identity+=(--pve-ca-file "$VWS_VERIFY_PVE_CA_FILE")
+  if jq -e '.vwsTest | has("kubeSystemUID") and (has("pveServerId") | not)' "$map" >/dev/null 2>&1; then
+    vws_e2e_record scope fail 3 "$started" "vwsTest.kubeSystemUID is retired (vws-deploy#826); set vwsTest.pveServerId"
+  elif [[ -z $want ]]; then
+    vws_e2e_record scope fail 3 "$started" "${map} has no vwsTest.pveServerId; nothing ran"
+  elif [[ -z ${VWS_VERIFY_REGION:-} ]]; then
+    vws_e2e_record scope fail 3 "$started" "needs VWS_VERIFY_REGION; nothing ran"
+  elif ! uid=$(timeout --kill-after=10 60 "${identity[@]}" 2>"${vws_e2e_dir}/scope.log"); then
+    vws_e2e_record scope fail 3 "$started" "cannot identify the PVE target; nothing ran"
   elif [[ $uid != "$want" ]]; then
-    vws_e2e_record scope fail 3 "$started" "cluster kube-system UID '${uid:0:64}' is not vws-test (${want}); nothing ran"
+    vws_e2e_record scope fail 3 "$started" "PVE server ID ${uid} is not vws-test (${want}); nothing ran"
   else
-    vws_e2e_record scope pass 0 "$started" "cluster is vws-test (kube-system UID ${uid})"
+    vws_e2e_record scope pass 0 "$started" "PVE target is vws-test (server ID ${uid})"
   fi
 
   if [[ -z $vws_e2e_failed ]]; then

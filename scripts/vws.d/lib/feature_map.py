@@ -1,34 +1,10 @@
 #!/usr/bin/env python3
-"""Feature map: update last-pass times from vws verify scenario results and render the markdown.
+"""Record signed scenario results and render the feature map.
+Only a signed vws-test pass with pveServerId matching the map moves lastPass forward.
+Retired map/result identities are refused; signing follows docs/design/result-signing.md.
 
-Usage: feature_map.py update MAP RESULT.json...   (then renders MAP's .md sibling)
-       feature_map.py render MAP
-       feature_map.py check MAP                    (exit 1 when the .md is stale, MAP misses a Phase 1 feature or a row has no scenario or na)
-       feature_map.py sign RESULT.json KEY         (adds "signature"; KEY is an ssh private key file)
-
-MAP is docs/feature-map.json, the only hand-edited source. lastPass and evidence are written only
-here, from a scenario result with result "pass" and cluster "vws-test" (vws-deploy#252). A result
-for an unknown scenario, another cluster, or an older time changes nothing.
-Provenance: the result must also carry "clusterUID", the kube-system namespace UID of the cluster it
-ran on, equal to MAP's "vwsTest": {"kubeSystemUID": ...}. A missing, unconfigured or different UID is
-refused (FAIL). This stops results from another cluster or a typo'd file.
-Signature (vws-deploy#288): the result must also carry "signature", an SSHSIG (ssh-keygen -Y sign,
-namespace NAMESPACE) over canonical(result without "signature"), made by a key that MAP's
-"vwsTest": {"signers": [...]} lists for principal PRINCIPAL. Those lines are the trust root, in
-ssh allowed_signers format. An unsigned result, a bad signature, an unlisted key or an empty signers
-list is refused (FAIL). Output lines are "LEVEL<TAB>NAME<TAB>MESSAGE" for scripts/vws.d/verify.sh to emit.
-
-Exit codes (update): 0 recorded or ignored; 1 a result was refused or unreadable (FAIL lines);
-2 invalid input: a result field with the wrong type, missing or malformed (scenario, cluster,
-finishedAt, result, clusterUID, evidence, signature), a finishedAt more than 5 minutes in the future,
-a vwsTest.kubeSystemUID that is not a string or null, or a vwsTest.signers that is not a list of
-one-line strings. Exit 2 prints a single "FAIL: <reason>" line, no
-traceback, and leaves MAP and its .md unchanged. 3 MAP itself is unreadable. render/check: 0, 1 stale, 3. sign: 0, 1 signing failed, 2 usage.
-check also reads phase1-features.json next to MAP (vws-deploy#289), the owner-approved Phase 1 list:
-{"phase1": [names], "later": [{"feature", "reason"}]}. It fails (exit 1, one FAIL line each) when a
-Phase 1 name has no MAP row, or a MAP row is in neither list; an unreadable list exits 3.
-check also fails on a row with neither a "scenario" nor an "na" reason, or with both (vws-deploy#290);
-the md shows the reason as "N/A: <na>" in the Verify command column.
+Update exits 0 for recorded/ignored results, 1 for refusals, 2 for invalid
+input without writes, and 3 for unreadable maps. Check validates Phase 1 coverage and markdown.
 """
 import json
 import os
@@ -58,7 +34,7 @@ def check_result(rpath, r):
             raise InvalidInput(f"{rpath}: {key} is missing")
         if not isinstance(r[key], str) or not r[key]:
             raise InvalidInput(f"{rpath}: {key} must be a non-empty string, got {type(r[key]).__name__}")
-    for key in ("clusterUID", "evidence", "signature"):
+    for key in ("pveServerId", "evidence", "signature"):
         if r.get(key) is not None and not isinstance(r[key], str):
             raise InvalidInput(f"{rpath}: {key} must be a string, got {type(r[key]).__name__}")
     try:
@@ -130,6 +106,9 @@ def load(path):
         if feat["feature"] in names:
             raise ValueError(f"duplicate feature {feat['feature']}")
         names.add(feat["feature"])
+    vws_test = data.get("vwsTest") or {}
+    if isinstance(vws_test, dict) and "kubeSystemUID" in vws_test:
+        raise InvalidInput(f"{path}: vwsTest.kubeSystemUID is retired (vws-deploy#826); set vwsTest.pveServerId")
     return data
 
 
@@ -210,9 +189,9 @@ def update(map_path, results):
     vws_test = data.get("vwsTest") or {}
     if not isinstance(vws_test, dict):
         raise InvalidInput(f"{map_path}: vwsTest must be an object, got {type(vws_test).__name__}")
-    want_uid = vws_test.get("kubeSystemUID")
-    if want_uid is not None and not isinstance(want_uid, str):
-        raise InvalidInput(f"{map_path}: vwsTest.kubeSystemUID must be a string or null, got {type(want_uid).__name__}")
+    want_id = vws_test.get("pveServerId")
+    if want_id is not None and not isinstance(want_id, str):
+        raise InvalidInput(f"{map_path}: vwsTest.pveServerId must be a string or null, got {type(want_id).__name__}")
     signers = vws_test.get("signers") or []
     if not isinstance(signers, list) or not all(isinstance(x, str) and x.strip() and "\n" not in x for x in signers):
         raise InvalidInput(f"{map_path}: vwsTest.signers must be a list of one-line allowed_signers strings")
@@ -226,15 +205,18 @@ def update(map_path, results):
             failed = True
             continue
         sc, when = check_result(rpath, r)
-        if sc not in by_sc:
+        if "clusterUID" in r:
+            out.append(f"FAIL\tfeature-map\t{sc}: clusterUID is a retired Kubernetes identity; refused")
+            failed = True
+        elif sc not in by_sc:
             out.append(f"WARN\tfeature-map\t{sc}: no feature uses this scenario")
         elif r.get("cluster") != CLUSTER:
             out.append(f"WARN\tfeature-map\t{sc}: result is from {r.get('cluster')!r}, not {CLUSTER}; ignored")
-        elif not want_uid:
-            out.append(f"FAIL\tfeature-map\t{sc}: no vws-test fingerprint (vwsTest.kubeSystemUID) in {map_path}; refused")
+        elif not want_id:
+            out.append(f"FAIL\tfeature-map\t{sc}: no vws-test fingerprint (vwsTest.pveServerId) in {map_path}; refused")
             failed = True
-        elif r.get("clusterUID") != want_uid:
-            out.append(f"FAIL\tfeature-map\t{sc}: clusterUID {r.get('clusterUID')!r} does not match the vws-test fingerprint; refused")
+        elif r.get("pveServerId") != want_id:
+            out.append(f"FAIL\tfeature-map\t{sc}: pveServerId {r.get('pveServerId')!r} does not match the vws-test fingerprint; refused")
             failed = True
         elif not signers:
             out.append(f"FAIL\tfeature-map\t{sc}: no trusted signer (vwsTest.signers) in {map_path}; refused")
@@ -277,9 +259,6 @@ def main(argv):
         if argv[0] == "update":
             try:
                 out, failed = update(argv[1], argv[2:])
-            except InvalidInput as e:
-                print(f"FAIL: {e}")
-                return 2
             except (AttributeError, TypeError) as e:
                 print(f"FAIL: malformed input ({type(e).__name__}: {e})")
                 return 2
@@ -296,6 +275,9 @@ def main(argv):
                 out.append(f"FAIL\tfeature-map\t{md_path(argv[1])} is stale; run scripts/vws verify --update-feature-map")
         print("\n".join(out))
         return 1 if out else 0
+    except InvalidInput as e:
+        print(f"FAIL: {e}")
+        return 2
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"feature-map: {e}", file=sys.stderr)
         return 3
