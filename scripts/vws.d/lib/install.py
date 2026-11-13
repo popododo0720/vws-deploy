@@ -221,9 +221,11 @@ fi
                     "/etc/systemd/system/" + slice_name + ".d/50-vws-memory.conf", "644",
                     f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n".encode()) or changed
                 for service in LAB_SERVICES[group]:
+                    # The region package also sets a per-service 512 MiB limit.
+                    limit = f"MemoryMax={mib}M\n" if group == "region" else ""
                     changed = self.write(
                         "/etc/systemd/system/" + service + ".service.d/50-vws-memory.conf", "644",
-                        f"[Service]\nSlice={slice_name}\n".encode()) or changed
+                        f"[Service]\nSlice={slice_name}\n{limit}".encode()) or changed
             # Reload even after an interrupted write whose reply never reached us.
             self.run("load memory budget", "systemctl daemon-reload")
             self.emit("memory budget")

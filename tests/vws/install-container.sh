@@ -61,7 +61,8 @@ for group, mib, services in (
     assert config.read_text() == f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n"
     for service in services:
         config = root / (service + ".service.d") / "50-vws-memory.conf"
-        assert config.read_text() == f"[Service]\nSlice={name}\n"
+        limit = f"MemoryMax={mib}M\n" if group == "region" else ""
+        assert config.read_text() == f"[Service]\nSlice={name}\n{limit}"
     assert config.stat().st_uid == 0 and config.stat().st_mode & 0o777 == 0o644
 PY
 snapshot > "$work/before"

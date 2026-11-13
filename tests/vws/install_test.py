@@ -124,8 +124,9 @@ class Install(unittest.TestCase):
                                ("vws-console-api", "global"), ("vws-console", "global"),
                                ("vws-region", "region"), ("vws-etcd", "etcd"),
                                ("vws-etcd-snapshot", "etcd"), ("vws-etcd-defrag", "etcd")):
+            limit = "MemoryMax=512M\n" if group == "region" else ""
             self.assertTrue(any(f"/{service}.service.d/50-vws-memory.conf" in row["command"]
-                                and row["data"] == f"[Service]\nSlice=vws-lab-{group}.slice\n"
+                                and row["data"] == f"[Service]\nSlice=vws-lab-{group}.slice\n{limit}"
                                 for row in units), service)
         log = (self.work / "state/argv").read_text()
         self.assertLess(log.index("systemctl daemon-reload"), log.index("systemctl is-enabled"))
@@ -146,7 +147,7 @@ class Install(unittest.TestCase):
 
     def test_custom_budget_and_reload_failure_recovery(self):
         path = self.work / "hosts.yaml"
-        path.write_text(path.read_text() + "memory_mib: {global: 768, region: 512, etcd: 256}\n")
+        path.write_text(path.read_text() + "memory_mib: {global: 768, region: 768, etcd: 256}\n")
         self.env["INSTALL_FAIL"] = "systemctl daemon-reload"
         result = self.run_install()
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -156,6 +157,10 @@ class Install(unittest.TestCase):
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("MemoryMax=768M", (self.work / "state/units").read_text())
+        units = [json.loads(line) for line in (self.work / "state/units").read_text().splitlines()]
+        self.assertTrue(any("/vws-region.service.d/50-vws-memory.conf" in row["command"]
+                            and row["data"] == "[Service]\nSlice=vws-lab-region.slice\nMemoryMax=768M\n"
+                            for row in units))
         self.assertFalse((self.work / "state/pending").exists())
         again = self.run_install(["-o", "json", *self.args])
         self.assertEqual(again.returncode, 0, again.stderr)
