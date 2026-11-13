@@ -27,10 +27,11 @@ existing pools, bridges, template selectors and storage. The example is read-onl
 Registration is read from `/etc/pve/vws/registration.json`, overriding the old
 binary default under `priv/`. Operator registration must match the binary release.
 
-During configure, postinst creates the lease directory `/etc/pve/vws/` only when
+During configure, postinst creates the lease directory `/etc/pve/vws/` and the helper's private and lock
+directories `/etc/pve/priv/vws/` and `/etc/pve/priv/lock/vws-region/` only when
 `/proc/self/mounts` lists `/dev/fuse` mounted at `/etc/pve` with filesystem type
 `fuse` (pmxcfs). A plain directory or any other mount is left unchanged. Repeated
-configure runs preserve existing data, and a symlink at `/etc/pve/vws` is refused.
+configure runs preserve existing data, and a symlink at any of those three paths is refused.
 The package never changes ownership or permissions on pmxcfs and retains the
 directory on removal and purge.
 
