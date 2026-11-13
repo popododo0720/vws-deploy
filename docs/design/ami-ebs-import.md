@@ -1,5 +1,7 @@
 # AMI and EBS snapshot import (#135)
 
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
+
 ## Problem
 
 Users moving from AWS (#132, target user (d)) need their AMIs and EBS snapshots in VWS: an imported AMI is an image that RunInstances boots, and an imported EBS snapshot is a snapshot that CreateVolume restores. Today nothing brings a disk from outside the cluster into VWS:
@@ -38,7 +40,7 @@ EBS snapshot ── coldsnap ──> raw file ──> upload to an S3/HTTPS endp
 - **vws-storage**: implements that source as a CDI DataVolume with an `s3` or `http` source in the VM namespace, size taken from the disk image (rounded up to whole GiB, or the requested `size_gib` when larger), status progress from the DataVolume. CDI comes from the platform bundle (`CDI_VERSION` in `scripts/versions.env`).
 - **vws-console-api**: EC2 `ImportSnapshot` and `DescribeImportSnapshotTasks` (an import task is CreateVolume from the URL, then CreateSnapshot, then DeleteVolume of the temporary volume), and `RegisterImage` with a root `BlockDeviceMappings` snapshot. `ImportImage` is `ImportSnapshot` followed by `RegisterImage` and can come later. Error codes follow EC2 (`InvalidParameter`, `InvalidSnapshot.NotFound`, `InvalidImportTaskId.NotFound`).
 - **vws-compute**: `CreateImage` from a snapshot already exists. Its work is the boot check of an imported image (below) and any device-model setting that check shows is needed.
-- **vws-deploy**: RBAC for the new vws-storage calls goes through `services.storage.rbac` in `charts/vws/values.yaml` (R11). CDI importer pods need egress to the source URL; the chart renders no NetworkPolicy today, so nothing blocks it, but a later egress policy must allow it. A migration runbook (export, coldsnap, upload, import, boot) goes into docs once the APIs exist.
+- **vws-deploy**: RBAC for the new vws-storage calls goes through `services.storage.rbac` in the former chart values (R11). CDI importer pods need egress to the source URL; the chart renders no NetworkPolicy today, so nothing blocks it, but a later egress policy must allow it. A migration runbook (export, coldsnap, upload, import, boot) goes into docs once the APIs exist.
 
 Getting bytes out of AWS stays on the operator's workstation with their own AWS credentials (`aws ec2 export-image` or `coldsnap`). No AWS credential is stored in VWS for the export step. The only credential VWS sees is the one for the bucket it reads, and only by Secret name.
 

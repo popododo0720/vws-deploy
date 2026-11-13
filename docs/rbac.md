@@ -1,8 +1,10 @@
 # Why each service has its rights (RBAC)
 
-Each service's `rbac` in `charts/vws/values.yaml` allows only the Kubernetes API calls the service code actually makes. A rule with a `namespace` renders as a Role in that namespace, a rule without one as a ClusterRole, and a ClusterRole may hold only cluster-scoped resources (`CLUSTER_SCOPED` in `scripts/check_render.py`). A rule may add `resourceNames` to limit it to named objects (#614). `scripts/check_render.py` refuses `resourceNames` on a rule with `create`, because RBAC cannot limit create by name. What follows comes from reading the code on `origin/main` of each service repository. It was not checked with `kubectl auth can-i` on a real cluster (needs checking, T1 or above).
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
 
-Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`, vws-network `890dbaf`. A rule's `namespace` is a key of `namespaces` in `values.yaml` (`release` is the release namespace), and the name lives only there. The service flag table is in `docs/service-config.md`.
+Each service's `rbac` in the former chart values allows only the Kubernetes API calls the service code actually makes. A rule with a `namespace` renders as a Role in that namespace, a rule without one as a ClusterRole, and a ClusterRole may hold only cluster-scoped resources (`CLUSTER_SCOPED` in `scripts/check_render.py`). A rule may add `resourceNames` to limit it to named objects (#614). `scripts/check_render.py` refuses `resourceNames` on a rule with `create`, because RBAC cannot limit create by name. What follows comes from reading the code on `origin/main` of each service repository. It was not checked with `kubectl auth can-i` on a real cluster (needs checking, T1 or above).
+
+Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`, vws-network `890dbaf`. A rule's `namespace` is a key of `namespaces` in `values.yaml` (`release` is the release namespace), and the name lives only there.
 
 ## compute (`internal/hypervisor/kubevirt/agent.go`, `image.go`)
 
@@ -67,7 +69,7 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 | --- | --- | --- | --- |
 | `Get`, `List` (two call sites), `Create`, `Update` (CAS on resourceVersion), `Delete` | `iam.vws.popododo0720.io` iamusers, iamgroups, iamroles, iampolicies, iamaccesskeys, iammfadevices, iamaccesskeyindexes, iamsessions, iamoperations, iamreplayentries, iamattemptcounters, iamgroupmembershiplocks, iamfidodevices, iaminstanceprofiles, iamaccountaliases, iamaccountaliasclaims, iamaccountpasswordpolicies | get, list, create, update, delete | the store namespace `-namespace` (the release namespace in values, `release`) |
 
-- `charts/vws/crds/iam.yaml` is a byte copy of vws-iam main `deploy/crds/iam.yaml` at `f7145bf` (17 CRDs, #656), and the resource list equals vws-iam main `deploy/rbac/role.yaml`. `tests/vws/render.test.sh` fails if the rendered `vws-iam` Role and the chart CRDs name different kinds (#243).
+- the former IAM CRDs are byte copies of vws-iam main `deploy/crds/iam.yaml` at `f7145bf` (17 CRDs, #656), and the resource list equals vws-iam main `deploy/rbac/role.yaml`. `tests/vws/render.test.sh` fails if the rendered `vws-iam` Role and the chart CRDs name different kinds (#243).
 - The pinned image `74a29dc` predates `iamgroupmembershiplocks` (vws-iam#136), `iamfidodevices` (vws-iam#168), `iaminstanceprofiles` (vws-iam#97) and the account alias and password policy kinds, so it does not touch them yet. The CRDs and grants are installed ahead so moving the pin needs no RBAC or CRD change.
 - The client is uncached (no informer), so no watch. No patch, no status subresource, no Secrets: the KEK comes by secretKeyRef env.
 - Like every service with `rbac`, the chart also renders the `iam-leader` Lease Role. vws-iam does not use leader election.
@@ -76,7 +78,7 @@ Commits read: vws-compute `df28dbd` (after the #20 merge), vws-storage `77450d5`
 
 | Call | Resource | Verbs | Namespace |
 | --- | --- | --- | --- |
-| `kubectl get vwsclusters vws -o json` (the page and the resourceVersion of a save), `kubectl patch vwsclusters vws --type=json` (a save) | VWSCluster (the group is read from `charts/vws/crds/vwsclusters.yaml`, R18) vwsclusters, `resourceNames: [vws]` | get, patch | the release namespace (`-namespace`) |
+| `kubectl get vwsclusters vws -o json` (the page and the resourceVersion of a save), `kubectl patch vwsclusters vws --type=json` (a save) | VWSCluster (the group is read from the former VWSCluster CRD, R18) vwsclusters, `resourceNames: [vws]` | get, patch | the release namespace (`-namespace`) |
 | `kubectl patch configmaps vws-volume-types --type=json` (adds `/data`) | `""` configmaps, `resourceNames: [vws-volume-types]` | get, patch | the release namespace |
 | `kubectl get storageclasses -o jsonpath` (the class list and the check that a class exists) | `storage.k8s.io` storageclasses | list | cluster |
 | `kubectl get volumesnapshotclasses -o jsonpath` (the same for snapshot classes) | `snapshot.storage.k8s.io` volumesnapshotclasses | list | cluster |
@@ -94,12 +96,12 @@ Volume PVCs live in the VM namespace (`vws-vms`), because KubeVirt hotplug can a
 ## Still needs checking
 
 - The rights on a real API server (`kubectl auth can-i`) were not checked. UNVERIFIED.
-- **The compute KubeVirt agent is on by default (#121).** vws-compute `62d90e7`'s `-hypervisor=kubevirt` and the namespace flags are in the default render (`docs/service-config.md`).
+- **The compute KubeVirt agent is on by default (#121).** vws-compute `62d90e7`'s `-hypervisor=kubevirt` and the namespace flags are in the default render.
 - **PVC `get` in the VM namespace (#121).** `internal/hypervisor/kubevirt/volumes.go:145` `checkAttachable` (reads the claim's access mode before attaching and before booting from a volume) and `ping.go:23` (health: gets the probe claim in the VM and image namespaces; NotFound is normal). Without this rule compute health was not serving on vws-test because of forbidden (#51 T1).
 - **VMI `get` (#121, vws-compute#50).** The READY decision reads the VMI phase. Without it, running instances stay in RECONCILING. Images from before the vws-compute#50 merge do not make this call (only a read right is added).
 - If the clients start using a cache, `get`/`list` will also need `watch`. The main code now uses the uncached `client.New` (compute `internal/store/kubestore/cluster.go:20`, network `internal/network/dataplane_kubeovn_open.go:41`) or `kubernetes.NewForConfig` (storage `internal/backend/kube/config.go:47`).
 - **Cross-namespace cloning (`datavolumes/source`) is a T2 lab item.** Neither code nor docs confirmed whether CDI requires caller rights (such as create on `datavolumes/source`) when a VM's `dataVolumeTemplates` clone a DataSource in `vws-images` into `vws-vms`. Create a VM on a real cluster, and if it is refused, add it to the compute rules.
-- The namespace values `vws-vms`, `vws-images` and `vws-nad` mean something only if the services receive the same values. They are passed as flags from the one place in values, and whether each service image accepts the flag was checked by reading `cmd` on the service repository's main. compute's three flags are the exception (`docs/service-config.md`).
+- The namespace values `vws-vms`, `vws-images` and `vws-nad` mean something only if the services receive the same values. They are passed as flags from the one place in values, and whether each service image accepts the flag was checked by reading `cmd` on the service repository's main. compute's three flags are the exception.
 
 ## Operator roles after installation (bootstrap, vws-deploy#54, #77)
 

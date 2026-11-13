@@ -194,8 +194,7 @@ func save(ctx context.Context, c Cluster, form map[string][]string) (view, int) 
 }
 
 // check returns what is wrong with want: the CRD rules, classes that do not exist, and a new
-// Filesystem type, which needs the datavolumes list rule only vws apply grants
-// (scripts/vws.d/lib/render.py volume_type_flags).
+// Filesystem type, which needs permission to list datavolumes.
 func check(ctx context.Context, c Cluster, cur api.Storage, want map[string]api.VolumeType) ([]string, error) {
 	var out []string
 	for _, e := range api.CheckVolumeTypes(api.Storage{Driver: cur.Driver, VolumeTypes: want}) {
@@ -244,8 +243,7 @@ func check(ctx context.Context, c Cluster, cur api.Storage, want map[string]api.
 }
 
 // FlagValue is the vws-storage -kube-volume-type value after TYPE=: CLASS[/MODE[/SNAPSHOTCLASS]]
-// with empty trailing fields left out, the same as render.py volume_type_flags and the chart's
-// ConfigMap, so the next vws apply renders the same data.
+// with empty trailing fields left out.
 func FlagValue(vt api.VolumeType) string {
 	fields := []string{vt.StorageClass, vt.VolumeMode, vt.VolumeSnapshotClass}
 	for len(fields) > 1 && fields[len(fields)-1] == "" {

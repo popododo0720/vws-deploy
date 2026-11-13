@@ -1,6 +1,5 @@
-# Template of build/bootstrap.yaml (scripts/bootstrap.sh adds the VWSCluster CRD from the chart and
-# fills INSTALLER_IMAGE and INSTALLER_TTL_SECONDS from scripts/versions.env). vws-deploy#43 decision 8:
-# the installer ServiceAccount holds cluster-admin through vws-installer-temp only during install.
+# Legacy installer template retained for static security checks until #775.
+# The installer ServiceAccount holds cluster-admin through vws-installer-temp only during install.
 # vws installer finish deletes that binding and verifies it is gone. The reaper Job deletes it at
 # creationTimestamp + TTL even if nobody runs finish or the installer pod crashed.
 apiVersion: v1

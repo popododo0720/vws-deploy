@@ -1,4 +1,4 @@
-# The installer image: vws-installer (installer/, #141, #191), scripts/vws, the chart, helm and kubectl.
+# The installer image: vws-installer (installer/, #141, #191), scripts/vws, helm and kubectl.
 # Build from the repo root:
 #   source scripts/versions.env
 #   docker build -f bootstrap/Containerfile --build-arg BASE="$INSTALLER_BASE_IMAGE" --build-arg GO_IMAGE="$INSTALLER_GO_IMAGE" \
@@ -27,8 +27,6 @@ RUN apk add --no-cache bash jq python3 py3-yaml curl ca-certificates \
  && rm -rf /tmp/helm.tgz /tmp/linux-amd64 && apk del curl
 COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer
 COPY scripts /opt/vws/scripts
-COPY charts /opt/vws/charts
-COPY profiles /opt/vws/profiles
 ENV PATH=/opt/vws/scripts:$PATH
 USER 65532:65532
 ENTRYPOINT ["/opt/vws/scripts/vws"]

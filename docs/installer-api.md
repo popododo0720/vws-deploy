@@ -1,6 +1,8 @@
 # Installer API server (vws-deploy#141, design #139 (b))
 
-`installer/` is the Go module `github.com/popododo0720/vws-deploy/installer`. The `vws-installer` binary serves #139's installer API over TLS (self-signed). Logs, metrics and traces use vws-lib `obs` (`obs.Setup`, `httpobs.Middleware`), and errors use vws-lib `errs`. There is no `go.mod` at the root, so R10 (the chart is the only manifest path) still holds.
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
+
+`installer/` is the Go module `github.com/popododo0720/vws-deploy/installer`. The `vws-installer` binary serves #139's installer API over TLS (self-signed). Logs, metrics and traces use vws-lib `obs` (`obs.Setup`, `httpobs.Middleware`), and errors use vws-lib `errs`.
 
 ## Running
 
@@ -8,9 +10,9 @@
 vws-installer -api-version GROUP/VERSION [-listen 0.0.0.0:8443] [-state-dir /tmp/vws-installer] [-kubectl kubectl] [-vws vws]
 ```
 
-- `-api-version` is required and has no default. The group is written only in `charts/vws/crds/vwsclusters.yaml` (R18). The bootstrap Deployment passes the group/version that `scripts/bootstrap.sh` reads from the CRD as `-api-version=` (#191). R20 checks the whole command line and the probes.
-- In `-state-dir` (0700) it writes the one-time access code `access-code` and the certificate's SHA-256 fingerprint `fingerprint` (both 0600). Neither is logged. `vws init --print-url` (#142) reads these files.
-- Installing is `vws apply --unattended -f <state-dir>/vwscluster.json`. That command stores the CR (`vws init --from`) and applies it (#144).
+- `-api-version` is required and has no default. It is the caller-supplied legacy group/version; the retired chart no longer provides it.
+- In `-state-dir` (0700) it writes the one-time access code `access-code` and the certificate's SHA-256 fingerprint `fingerprint` (both 0600). Neither is logged. `vws-installer print-url` reads these files.
+- Chart installation through the legacy API is retired. The module remains until #775.
 
 ## Endpoints (base `/api/v1`, JSON)
 

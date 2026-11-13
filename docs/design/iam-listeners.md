@@ -1,5 +1,7 @@
 # IAM listeners
 
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
+
 ## Problem
 
 console-api reaches AWS-shaped EC2, S3 and IAM on the addresses it is given. The vws-iam binary listens on `127.0.0.1:9095` unless `-listen` says otherwise, and its health port stays on `127.0.0.1:9096`. A Service on another port, or a loopback address, leaves those listeners unreachable from outside the pod. The chart is the only renderer. This repo does not apply it to a cluster.
@@ -27,7 +29,7 @@ spec:
 
 Two facts, one owner each.
 
-The iam listen port lives only in `charts/vws/values.yaml` `services.iam.port` and `services.iam.flags.listen`. Both are 9095. `-health-listen` is not passed.
+The iam listen port lives only in the former chart values `services.iam.port` and `services.iam.flags.listen`. Both are 9095. `-health-listen` is not passed.
 
 An AWS listen address lives only in a flag whose key ends in `-addr`. A string `0.0.0.0:<n>`, with `n` in 1024..65535 and `n` different from the service's primary port, becomes one extra port on the client Service. The port name is the key with `-addr` removed, and it matches `^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$`. Ports are sorted by number. A repeated name or port fails the render. `127.0.0.1:<n>` fails the render. A `0.0.0.0` port outside 1024..65535 fails the render. One `-addr` flag may use the primary port, which is how `-console-addr` stays the probe port. A second `-addr` flag on that same port fails the render. Any other value, including `compute:50051`, stays an argument. `flags.listen` is not an `-addr` flag.
 
@@ -39,7 +41,7 @@ Extra ports are appended only on the client Service. The headless `-peers` Servi
 
 The NetworkPolicy `ports` entry is the integer `services.iam.port`. kube-ovn with `--np-enforcement=standard` does not resolve a named port, so `port: http` blocks console-api from `iam:9095`. `check_render.py` rejects a NetworkPolicy port that is not that integer, a port range (`endPort`), and a protocol other than TCP.
 
-`services.iam.replicas` is 2. Both replicas share the vws-iam kube store in the release namespace (#369, `docs/design/iam-store.md`).
+`services.iam.replicas` is 2. Both replicas share the vws-iam kube store in the release namespace (#369).
 
 ## Tradeoffs
 

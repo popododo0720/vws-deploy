@@ -134,7 +134,7 @@ Only when `direct[]` is not empty does `vws render` add the two flags below and 
 
 Evidence: vws-network `8ff82a7` (#67) `cmd/vws-network/main.go:40-41`, `cmd/vws-network/start.go:80` (unknown keys are refused), `internal/network/dataplane_kubeovn_open.go:56` (refuses to start when direct is set but the namespace is empty).
 
-**The VM namespace is values `namespaces.vms`.** #125 only said direct NADs live in the VM namespace. A VM attaches only NADs in its own namespace, so this uses the same key as vws-compute's `-vm-namespace` (`docs/service-config.md`). It differs from the `nad` namespace of tenant subnet NADs.
+**The VM namespace is values `namespaces.vms`.** #125 only said direct NADs live in the VM namespace. A VM attaches only NADs in its own namespace, so this uses the same key as vws-compute's `-vm-namespace`. It differs from the `nad` namespace of tenant subnet NADs.
 
 At the same time network gets a Role in the `vms` namespace: `get` and `create` on `k8s.cni.cncf.io` network-attachment-definitions. vws-network creates `vws-direct-<name>` at start and never deletes it, so there is no `delete` (vws-network `docs/rbac.md` "direct NAD Role"). The render writes `services.network.rbac` as the chart's default list plus this rule.
 

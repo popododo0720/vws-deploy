@@ -1,5 +1,7 @@
 # compute health listener (vws-deploy#212)
 
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
+
 ## Problem
 
 vws-compute main serves `/healthz` and `/readyz` on a second HTTP listener when `VWS_HEALTH_ADDR`
@@ -78,7 +80,7 @@ Service with `healthPort` keeps it too.
 | Option | Decision | Reason |
 | --- | --- | --- |
 | Drop `metrics` from every `external` Service | chosen | Nothing reaches the health listener through the load balancer; it closes the exposure on every CNI and load balancer |
-| Keep the port and add a NetworkPolicy that admits only scrapers and the kubelet | rejected | A NetworkPolicy filters pod ingress, not what the load balancer publishes; kubelet traffic comes from the node, and whether Kube-OVN admits it under such a policy is unchecked on vws-test (docs/service-config.md, #620) |
+| Keep the port and add a NetworkPolicy that admits only scrapers and the kubelet | rejected | A NetworkPolicy filters pod ingress, not what the load balancer publishes; kubelet traffic comes from the node, and whether Kube-OVN admits it under such a policy is unchecked on vws-test (#620) |
 
 `scripts/check_render.py` `check_service_ports` fails a render whose `external` LoadBalancer
 Service publishes a `metrics` port or the `healthPort` number, and the self-test adds that port
@@ -91,8 +93,8 @@ the reason above.
   `/healthz` and `/readyz` and sends metrics over OTLP.
 - vws-compute `internal/obs/obs.go` at 1cb732f served `/metrics`; that commit is in the pinned
   image `sha-1b62a87`, which still serves it.
-- `charts/vws/values.yaml` `services.compute.healthPort`, and the pod template in
-  `charts/vws/templates/_helpers.tpl` with no annotations.
+- the former chart values `services.compute.healthPort`, and the pod template in
+  the former pod helper with no annotations.
 - `scripts/check_render.py` `check_health`, `check_listen` and the self-test mutations.
 - `scripts/guard.sh config` default-render assertions.
 

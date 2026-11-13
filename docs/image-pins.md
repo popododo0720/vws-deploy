@@ -1,14 +1,12 @@
 # Cross-service image pin rules
 
-Each service in `charts/vws/values.yaml` pins its image with `services.<name>.imageTag`
-(vws-deploy#280). Most pins move on their own. The rules below list the pins that must move
+Service release pins usually move on their own. The rules below list the pins that must move
 together, because a newer build of one service reads a field that only a newer build of another
 service writes. A PR that moves the first pin past its threshold moves the second pin in the same PR
 to a published build at or after the floor.
 
 A published build is a `sha-<7>` tag for which an anonymous manifest request to `ghcr.io` returns
-HTTP 200 with a `docker-content-digest` header. The values comment above the pin cites that digest
-and the date of the request.
+HTTP 200 with a `docker-content-digest` header. Record that digest and the date of the request with the release input.
 
 ## Rules
 
@@ -27,7 +25,3 @@ On 2026-11-02 an anonymous manifest request returned HTTP 200 for these floor bu
 | --- | --- | --- |
 | `ghcr.io/popododo0720/vws/console-api` | `sha-ac413c5` | `sha256:779d710a4b7d2226bee1adbd6c55f0067d03a96958578d90e3321758f5310e84` |
 | `ghcr.io/popododo0720/vws/compute` | `sha-f609a2e` | `sha256:d8ebeacba67126c06b24b45ee851244fb822ca3fd1c579033f41d3ee21195653` |
-
-The chart pins on that date (`console-api` `sha-c09cba3`, `compute` `sha-1b62a87`) were both before
-their thresholds. On 2026-11-06 console-api moved to `sha-d3a4057` (vws-deploy#310), still before
-`ac413c5`, so the rule does not apply yet.

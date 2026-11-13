@@ -1,5 +1,7 @@
 # Admin page for the EBS volume type mapping (#391 AC3, #614)
 
+> **Historical Kubernetes design.** The Helm chart and its CRDs were retired in #774. The supported deployment path is `docs/operator/regions.md`.
+
 ## Problem
 
 #391 AC3 and #614 AC1-AC3 ask for a VWS admin page, outside vws-console, that lists and edits
@@ -18,7 +20,7 @@ Two facts constrain where the page can live and how it applies a change:
 
 ## Chosen (proposal, pending the lead's answer on #614)
 
-A new small control service `admin` in `charts/vws/values.yaml` `services` (R5), and vws-storage
+A new small control service `admin` in the former chart values `services` (R5), and vws-storage
 reads the mapping at run time instead of only from flags.
 
 1. The chart renders one ConfigMap `vws-volume-types` in the release namespace from
@@ -28,14 +30,14 @@ reads the mapping at run time instead of only from flags.
 2. `admin` listens on `127.0.0.1` only and has no Service, Ingress or NodePort. A ClusterIP
    Service would not be a boundary: every pod in the cluster can reach it, and the chart renders a
    NetworkPolicy only for services with `allowFrom`
-   (`charts/vws/templates/control-plane.yaml`). `kubectl port-forward` reaches the pod loopback,
+   (the former pod template). `kubectl port-forward` reaches the pod loopback,
    so the operator's kube credentials (`pods/portforward` on the admin pod) are the auth boundary,
    the same as `vws` CLI commands. The chart also renders a deny-all-ingress NetworkPolicy for
    `admin` as defense in depth. If a later need puts `admin` behind a Service, it must first add
    in-app auth like vws-installer (TLS plus a one-time access code, `docs/installer-api.md`).
 3. Saving validates with the same rules `vws apply` uses today: every StorageClass and
    VolumeSnapshotClass exists (`scripts/vws.d/lib/checks.sh` `vws_check_volume_types`), volumeMode
-   is Block or Filesystem (the CRD enum in `charts/vws/crds/vwsclusters.yaml`), and driver nfs
+   is Block or Filesystem (the CRD enum in the former VWSCluster CRD), and driver nfs
    refuses a mapping (`scripts/vws.d/lib/render.py`). It then writes both the
    VWSCluster `spec.storage.volumeTypes` and the ConfigMap. vws-storage picks up the change with no
    pod restart. The next `vws apply` renders the same ConfigMap from the CR, so the two converge
@@ -61,7 +63,7 @@ reads the mapping at run time instead of only from flags.
 
 ## Open items
 
-- `services.*.rbac` has no `resourceNames` today (`charts/vws/values.schema.json`), so the
+- `services.*.rbac` has no `resourceNames` today (the former values schema), so the
   ConfigMap rule would cover every ConfigMap in the release namespace. Adding `resourceNames` to
   the schema and R11 is a prerequisite PR. Once it lands, `admin` limits `vwsclusters` get and
   patch to `resourceNames: [vws]` and `configmaps` get and update to `[vws-volume-types]`.
@@ -167,7 +169,7 @@ PR 4b wires the page into the chart as `services.admin`. It departs from the des
   node, so the health port must stay open to every source (#650: a deny-all policy must not block
   the probe port). The page port needs no rule: it is bound to 127.0.0.1.
 - The `vwsclusters` rule names its group as `{crd: vwsclusters}`. The template and
-  `scripts/check_render.py` read `spec.group` from `charts/vws/crds/vwsclusters.yaml`, because R18
+  `scripts/check_render.py` read `spec.group` from the former VWSCluster CRD, because R18
   allows that group to be written only there. The CRD header no longer says no service reads it.
 - RBAC is what the page calls: `get` and `patch` on VWSCluster `vws`, `get` and `patch` on
   ConfigMap `vws-volume-types` (the page never reads it, but `kubectl patch` gets the object before
@@ -314,7 +316,7 @@ The implementation PR must handle:
 - `scripts/guard.sh recovery` (R4) and `scripts/check_render.py` must accept that StatefulSet only
   for `loopback`, and fail a render where the Role names another pod, has a third rule, or gets
   a RoleBinding.
-- `docs/vwscluster.md`, `docs/rbac.md` and `docs/service-config.md` change from `deploy/admin`
+- `docs/vwscluster.md` and `docs/rbac.md` change from `deploy/admin`
   and "use credentials that do" to `pod/admin-0` and the binding command.
 
 ## PR 6 as built (#391): the port-forward grant

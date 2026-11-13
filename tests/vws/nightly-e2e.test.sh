@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vws nightly-e2e: runs scope, apply, scenarios, feature-map-pr and publish in order on vws-test only, writes a
+# vws nightly-e2e: runs scope, scenarios, feature-map-pr and publish in order on vws-test only, writes a
 # JSON summary, opens one incident and posts one lead wake on a failure (each reused on a rerun), posts nothing on a
 # pass and never reaches OpenStack.
 set -euo pipefail
@@ -10,7 +10,6 @@ fake="${WORK}/fake"; mkdir -p "${fake}/kubectl" "${WORK}/bin"
 export VWS_FAKE_DIR=$fake
 uid=$(jq -r .vwsTest.kubeSystemUID "${VWS_TEST_ROOT}/docs/feature-map.json")
 printf '%s' "$uid" >"${fake}/kubectl/get_ns.json"
-cr="${WORK}/cr.yaml"; echo 'kind: VWSCluster' >"$cr"
 
 # The fake vws: logs the command and any OS_* variable it got; FAKE_<command> picks pass, fail or hang.
 cat >"${WORK}/vws" <<'SH'
@@ -65,15 +64,14 @@ export OS_CLOUD=other-project OS_AUTH_URL=https://keystone.invalid OS_PASSWORD=h
 export VWS_VERIFY_SECRET_ACCESS_KEY=s3cr3t-value API_TOKEN=abc GH_TOKEN=abc-longer-token
 export PRIVATE_KEY=$'-----BEGIN KEY-----\npemline1secret\npemline2secret\n-----END KEY-----'
 url=https://logs.invalid/run
-e2e() { : >"$FAKE_VWS_LOG"; : >"$FAKE_GH_LOG"; : >"$FAKE_OS_LOG"; rm -f "$FAKE_GH_BODY" "$FAKE_GH_WAKE"; run_vws_real nightly-e2e --cr "$cr" --log-url "$url" "$@"; }
+e2e() { : >"$FAKE_VWS_LOG"; : >"$FAKE_GH_LOG"; : >"$FAKE_OS_LOG"; rm -f "$FAKE_GH_BODY" "$FAKE_GH_WAKE"; run_vws_real nightly-e2e --log-url "$url" "$@"; }
 summary() { jq -r "$2" "${WORK}/$1/e2e/summary.json"; }
 
 r="r/20261105T130000Z"
 e2e --results "${WORK}/$r" --timeout 60 --wake-thread 339
 expect_rc "every step passes: exit 0" 0
-if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'apply\nnightly\nnightly-pr\nnightly-publish' ]]; then ok "apply, nightly, nightly-pr and nightly-publish run once, in order"
+if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'nightly\nnightly-pr\nnightly-publish' ]]; then ok "nightly, nightly-pr and nightly-publish run once, in order"
 else bad "step order" "$(cat "$FAKE_VWS_LOG")"; fi
-expect_text "apply gets the CR unattended" "$(cat "$FAKE_VWS_LOG")" "apply --unattended -f ${cr}"
 expect_text "nightly writes into the run directory" "$(cat "$FAKE_VWS_LOG")" "nightly --results ${WORK}/$r --timeout 60"
 expect_text "nightly-publish gets the run" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results ${WORK}/$r"
 expect_text "nightly-pr gets the run and the log URL" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results ${WORK}/$r --log-url ${url} --repo popododo0720/vws-deploy"
@@ -81,7 +79,7 @@ if ! grep -q '^env ' "$FAKE_VWS_LOG"; then ok "no step inherits an OS_* variable
 if [[ ! -s $FAKE_OS_LOG ]]; then ok "no step calls openstack"; else bad "openstack called" "$(cat "$FAKE_OS_LOG")"; fi
 assert_no_changes "the scope check only reads the cluster"
 expect_text "the scope check reads kube-system" "$(cat "$VWS_FAKE_LOG")" "get ns kube-system"
-if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass,pass" ]]; then
+if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass" ]]; then
   ok "summary.json records the run and five passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
 if [[ ! -s $FAKE_GH_LOG ]]; then ok "a passing run with a wake thread opens no incident and posts no wake"; else bad "gh on pass" "$(cat "$FAKE_GH_LOG")"; fi
 
@@ -172,16 +170,10 @@ expect_rc "a wake that cannot be posted: exit 1" 1
 expect_text "the unposted wake is FAIL with the body path" "$OUT" "FAIL  e2e/wake  could not post the lead wake on popododo0720/vws-deploy#339; body at ${WORK}/r/20261105T130280Z/e2e/wake.md"
 if [[ $(grep -c -- '-F body=@' "$FAKE_GH_LOG") == 3 ]]; then ok "the wake post is tried three times"; else bad "wake retries" "$(cat "$FAKE_GH_LOG")"; fi
 
-FAKE_apply=fail FAKE_GH_LIST='[{"title":"incident: nightly e2e 20261105T130200Z failed","url":"https://github.com/popododo0720/vws-deploy/issues/77"}]' \
+FAKE_nightly=fail FAKE_GH_LIST='[{"title":"incident: nightly e2e 20261105T130200Z failed","url":"https://github.com/popododo0720/vws-deploy/issues/77"}]' \
   e2e --results "${WORK}/$r"
 expect_text "a rerun of the same run reuses (even when another step fails) the open incident" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/77"
 if ! grep -q 'issue create' "$FAKE_GH_LOG"; then ok "a rerun opens no second incident"; else bad "duplicate" "$(cat "$FAKE_GH_LOG")"; fi
-
-FAKE_apply=fail e2e --results "${WORK}/r/20261105T130300Z"
-expect_rc "a failed apply: exit 1" 1
-if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == apply ]]; then ok "a failed apply skips the scenarios and the PR"; else bad "after apply" "$(cat "$FAKE_VWS_LOG")"; fi
-expect_text "the skipped steps are WARN" "$OUT" "WARN  e2e/scenarios  skipped after apply failed"
-expect_text "a skipped publish is WARN" "$OUT" "WARN  e2e/publish  skipped after apply failed"
 
 r="r/20261105T130350Z"
 FAKE_nightly_publish=fail e2e --results "${WORK}/$r"
@@ -199,7 +191,7 @@ expect_text "the scope failure opens an incident" "$(cat "$FAKE_GH_LOG")" "issue
 expect_text "the incident body names the scope step" "$(cat "$FAKE_GH_BODY")" "failed at step \`scope\`"
 printf '%s' "$uid" >"${fake}/kubectl/get_ns.json"
 
-FAKE_apply=fail FAKE_GH_CREATE_FAIL=1 e2e --results "${WORK}/r/20261105T130500Z"
+FAKE_nightly=fail FAKE_GH_CREATE_FAIL=1 e2e --results "${WORK}/r/20261105T130500Z"
 expect_rc "an incident that cannot be opened: exit 1" 1
 expect_text "the unopened incident is FAIL with the body path" "$OUT" "FAIL  e2e/incident  could not open the incident issue"
 if [[ $(grep -c 'issue create' "$FAKE_GH_LOG") == 3 ]]; then ok "issue create is tried three times"; else bad "retries" "$(cat "$FAKE_GH_LOG")"; fi
@@ -216,10 +208,9 @@ if ! grep -rqw openstack "${VWS_TEST_ROOT}/scripts/vws" "${VWS_TEST_ROOT}/script
 
 e2e --results "${WORK}/r/latest"; expect_rc "a results directory not named like a run: usage" 2
 e2e --results "${WORK}/r/20261105T130700Z" --timeout 0; expect_rc "a zero timeout: usage" 2
-run_vws_real nightly-e2e --log-url "$url"; expect_rc "no --cr: usage" 2
-run_vws_real nightly-e2e --cr "$cr" --log-url http://insecure.invalid; expect_rc "a non-https log URL: usage" 2
-run_vws_real --dry-run nightly-e2e --cr "$cr" --log-url "$url"; expect_rc "--dry-run is refused" 2
+run_vws_real nightly-e2e --log-url http://insecure.invalid; expect_rc "a non-https log URL: usage" 2
+run_vws_real --dry-run nightly-e2e --log-url "$url"; expect_rc "--dry-run is refused" 2
 run_vws_real nightly-e2e --bogus; expect_rc "an unknown argument: usage" 2
-run_vws_real nightly-e2e --cr "$cr" --log-url "$url" --wake-thread 339abc; expect_rc "a wake thread that is not a number: usage" 2
+run_vws_real nightly-e2e --log-url "$url" --wake-thread 339abc; expect_rc "a wake thread that is not a number: usage" 2
 
 finish_tests

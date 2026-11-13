@@ -20,8 +20,18 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render import RECOMMENDED_UNDERLAY_MTU, VM_MTU, host_interface, tunnel_overhead  # noqa: E402
+VM_MTU = 9001
+RECOMMENDED_UNDERLAY_MTU = 9216
+
+
+def host_interface(link):
+    return f"{link['nic']}.{link['vlan']}" if link.get("vlan") else link["nic"]
+
+
+def tunnel_overhead(network):
+    if network.get("tunnelOverhead") is not None:
+        return network["tunnelOverhead"]
+    return 60 if network.get("ipv4Only") else 100
 
 
 def wanted(nodes, direct):

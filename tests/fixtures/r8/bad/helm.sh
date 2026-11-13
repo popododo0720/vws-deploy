@@ -1,1 +1,1 @@
-helm install vws charts/vws
+helm install vws /external-chart

@@ -1,1 +1,1 @@
-Vws_helm upgrade vws charts/vws
+Vws_helm upgrade vws /external-chart

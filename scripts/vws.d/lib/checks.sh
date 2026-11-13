@@ -5,8 +5,7 @@
 # evaluated because the API is unreachable exits 3 through vws_die_env.
 # MODE is preflight (things the bundle installs later may be missing: WARN) or doctor (missing: FAIL).
 
-# Minimum Ready nodes per profile (vws-deploy#43 section 2). CPU and memory minima come from the
-# profile file itself: the sum of requests over replicas.
+# Minimum Ready nodes per legacy installation profile (vws-deploy#43 section 2).
 declare -A VWS_PROFILE_MIN_NODES=([single-node]=1 [small]=3 [ha]=6)
 
 # vws_versions_env NAME: a value from scripts/versions.env. Versions are never written in this code.
@@ -67,29 +66,8 @@ vws_check_install_rights() {
   fi
 }
 
-# vws_profile_needs PROFILE: "<millicores> <MiB>" the profile requests in total.
-vws_profile_needs() {
-  python3 - "${VWS_ROOT}/charts/vws/values.yaml" "${VWS_ROOT}/profiles/$1.yaml" <<'PY'
-import sys, yaml
-import os
-base = yaml.safe_load(open(sys.argv[1]))["services"]
-# Without the profile file (profiles/ arrives with vws-deploy#53), the chart defaults count.
-prof = yaml.safe_load(open(sys.argv[2]))["services"] if os.path.exists(sys.argv[2]) else {}
-cpu = mem = 0
-for name, spec in base.items():
-    spec = {**spec, **prof.get(name, {})}
-    if spec.get("enabled", True) is False:
-        continue
-    n = spec.get("replicas", 1 if "state" in spec else 2)
-    c, m = spec.get("cpu", "100m"), spec.get("memory", "256Mi")
-    cpu += n * int(c[:-1])
-    mem += n * (int(m[:-2]) * (1024 if m.endswith("Gi") else 1))
-print(cpu, mem)
-PY
-}
-
 vws_check_nodes() {
-  local profile=$1 json ready need_cpu need_mem have_cpu have_mem min
+  local profile=$1 json ready min
   min=${VWS_PROFILE_MIN_NODES[$profile]:-}
   [[ -n $min ]] || vws_usage "unknown profile ${profile}"
   json=$(vws_kubectl get nodes -o json 2>/dev/null) || vws_die_env "cannot list nodes"
@@ -99,22 +77,10 @@ vws_check_nodes() {
   else
     vws_emit FAIL nodes "${ready} Ready, profile ${profile} needs ${min}"
   fi
-  read -r need_cpu need_mem < <(vws_profile_needs "$profile")
-  read -r have_cpu have_mem < <(jq -r '
-    def cpu: if endswith("m") then .[:-1] | tonumber else tonumber * 1000 end;
-    def mib: if endswith("Ki") then .[:-2] | tonumber / 1024 elif endswith("Mi") then .[:-2] | tonumber
-             elif endswith("Gi") then .[:-2] | tonumber * 1024 else tonumber / 1048576 end;
-    [.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .status.allocatable]
-    | "\(map(.cpu | cpu) | add // 0 | floor) \(map(.memory | mib) | add // 0 | floor)"' <<<"$json")
-  if ((have_cpu >= need_cpu && have_mem >= need_mem)); then
-    vws_emit OK node-resources "allocatable ${have_cpu}m/${have_mem}Mi, VWS requests ${need_cpu}m/${need_mem}Mi"
-  else
-    vws_emit FAIL node-resources "allocatable ${have_cpu}m/${have_mem}Mi, VWS requests ${need_cpu}m/${need_mem}Mi"
-  fi
   vws_check_node_ip "$json"
 }
 
-# vws_check_node_ip NODES_JSON: node addresses must be static (docs/quickstart.md). A k3s node that
+# vws_check_node_ip NODES_JSON: node addresses must be static. A k3s node that
 # does not pin --node-ip follows whatever DHCP hands out; after a lease change the node, the CNI
 # tunnels and every certificate SAN point at the old address (vws-deploy#118). Only k3s exposes the
 # flags (annotation k3s.io/node-args); other distributions are not checked.
@@ -129,11 +95,11 @@ vws_check_node_ip() {
       select($pin == "" or $pin != $ip) |
       "\(.metadata.name) (InternalIP \($ip), --node-ip \(if $pin == "" then "not set" else $pin end))"] | join(", ")' <<<"$json")
   if ((k3s == 0)); then
-    vws_emit OK node-ip "not k3s; keep node addresses static (docs/quickstart.md)"
+    vws_emit OK node-ip "not k3s; keep node addresses static"
   elif [[ -z $bad ]]; then
     vws_emit OK node-ip "${k3s} k3s nodes pin --node-ip to their InternalIP"
   else
-    vws_emit WARN node-ip "${bad}: pin a static address with --node-ip, a DHCP change breaks the node (docs/quickstart.md)"
+    vws_emit WARN node-ip "${bad}: pin a static address with --node-ip, a DHCP change breaks the node"
   fi
 }
 
@@ -246,7 +212,7 @@ vws_check_node_network() {
   tmp=$(mktemp -d)
   if ! vws_kubectl get vwsclusters vws -o json >"${tmp}/cr.json" 2>/dev/null; then
     rm -rf "$tmp"
-    vws_emit OK node-network "no VWSCluster vws yet; vws init then preflight again checks spec.network.nodes"
+    vws_emit OK node-network "no VWSCluster vws; no spec.network.nodes to check"
     return 0
   fi
   vws_kubectl get nodes -o json >"${tmp}/nodes.json" 2>/dev/null || { rm -rf "$tmp"; vws_die_env "cannot list nodes"; }
@@ -260,7 +226,7 @@ vws_check_node_network() {
         -p "{\"spec\":{\"network\":{\"vmMTU\":${vm},\"underlayMTU\":${underlay}}}}" >/dev/null 2>&1; then
         vws_emit OK vm-mtu-set "spec.network.vmMTU=${vm} underlayMTU=${underlay} written to VWSCluster vws"
       else
-        vws_emit WARN vm-mtu-set "could not write spec.network.vmMTU=${vm}; set it with vws reconfigure --set network.vmMTU=${vm}"
+        vws_emit WARN vm-mtu-set "could not write spec.network.vmMTU=${vm}; set spec.network.vmMTU with the operator kubeconfig"
       fi
       continue
     fi
@@ -287,12 +253,9 @@ vws_check_source() {
     vws_emit OK source "not a checkout; skipped"
     return 0
   fi
-  local name
-  for name in bundle recovery config; do
-    if (cd "$VWS_ROOT" && scripts/guard.sh "$name" >/dev/null 2>&1); then
-      vws_emit OK "source-${name}" "scripts/guard.sh ${name}"
-    else
-      vws_emit FAIL "source-${name}" "scripts/guard.sh ${name} fails; run it for the reason"
-    fi
-  done
+  if (cd "$VWS_ROOT" && scripts/guard.sh bundle >/dev/null 2>&1); then
+    vws_emit OK source-bundle "scripts/guard.sh bundle"
+  else
+    vws_emit FAIL source-bundle "scripts/guard.sh bundle fails; run it for the reason"
+  fi
 }

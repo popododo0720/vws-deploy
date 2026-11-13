@@ -8,8 +8,8 @@ The design is vws-deploy#43 (sections 0 and 2). The source of truth for configur
 
 The vws-deploy#2 decision (no VWS-specific CRDs; service metadata goes in annotations and ConfigMaps) is about the service metadata store. The user **approved one deployment-configuration CRD as an explicit exception** (#43 section 0). Scope:
 
-- Allowed: the single `VWSCluster` CRD in `charts/vws/crds/vwsclusters.yaml`, `v1alpha1`, a namespaced singleton `vws`, deployment configuration only.
-- Also allowed (#369): the vws-iam store CRDs in `charts/vws/crds/iam.yaml`, a copy of vws-iam `deploy/crds/iam.yaml`, Namespaced, group `iam.<VWSCluster group>`. They are the vws-iam data store (vws-iam#2), not deployment configuration, and only vws-iam reads or writes them.
+- Allowed: the single `VWSCluster` CRD, `v1alpha1`, a namespaced singleton `vws`, deployment configuration only.
+- Also allowed (#369): the vws-iam store CRDs, a copy of vws-iam `deploy/crds/iam.yaml`, Namespaced, group `iam.<VWSCluster group>`. They are the vws-iam data store (vws-iam#2), not deployment configuration, and only vws-iam reads or writes them.
 - Forbidden: storing service metadata in the CR, any other VWS-specific CRD, service code reading or writing the CR (no `vwsclusters` in service RBAC), a controller that acts on the CR.
 - `status` holds only `observedGeneration`, `appliedValuesHash` and `conditions`, written by the installer at the end of `vws apply` (#54).
 - The CRD and CR survive an uninstall. Helm only installs files in `crds/` and never deletes them, and the CRD also carries `helm.sh/resource-policy: keep`.
@@ -17,7 +17,7 @@ The vws-deploy#2 decision (no VWS-specific CRDs; service metadata goes in annota
 
 ## API group
 
-The API group is written in **one place only**: `spec.group` in `charts/vws/crds/vwsclusters.yaml`. It is a temporary name until a domain is secured (#43 decision 9). `vws render` and the guard read the group from that file. The `apiVersion` of the example CRs (`examples/vwscluster/*.yaml`) has to repeat the group by syntax, so the guard checks that it matches the CRD and fails if the group appears in any other file. To change it, change the CRD and the three example files together.
+The API group is written in **one place only**: `spec.group` in the former VWSCluster CRD. It is a temporary name until a domain is secured (#43 decision 9). `vws render` and the guard read the group from that file. The `apiVersion` of the example CRs (`examples/vwscluster/*.yaml`) has to repeat the group by syntax, so the guard checks that it matches the CRD and fails if the group appears in any other file. To change it, change the CRD and the three example files together.
 
 ## CR schema
 
@@ -36,7 +36,7 @@ The API group is written in **one place only**: `spec.group` in `charts/vws/crds
 | `spec.network.vmMTU`, `underlayMTU`, `tunnelOverhead`, `ipv4Only` | VPC VM MTU (#236, vws-network#93). `vmMTU` 68–9001; when unset, 9001 (AWS) is lowered to what the underlay can carry. `underlayMTU` is the tunnel NIC MTU the OS already set (1280–9216). `tunnelOverhead` 0–200, 100 when unset, 60 with `ipv4Only: true`. 9001 needs an underlay of 9101 or more; 9216 is recommended. The installer does not change NIC MTUs. Details in `docs/vm-mtu.md` | `services.network.flags.vm-mtu` (`-vm-mtu`). If `vmMTU` exceeds underlay − overhead, exit code 2. The same overhead is used for kube-ovn-cni `--mtu` |
 | `spec.observability.enabled` | boolean, off when unset | `true` gives `observability.enabled: true` (#217, `docs/observability/README.md`). Off or unset writes no `observability` key, so the render is unchanged |
 | `spec.observability.otlpEndpoint` | empty, or `http(s)://host[:port]` (the chart's pattern); only with `enabled: true` | set gives `observability.otlpEndpoint` and the chart runs no collector; empty runs the minimal collector. Set without `enabled: true` is exit code 2 |
-| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in `charts/vws/values.yaml`. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95). render refuses other values with exit code 2. `iam.replicas` is at least 2 like any stateless service (#369) | the `services.<name>` key of the same name; `flags` are merged |
+| `spec.services.<name>.{replicas,cpu,memory,flags}` | only services in the former chart values. `console-api.replicas` must be 1 (sessions are held in memory, popododo0720/vws-console-api#95). render refuses other values with exit code 2. `iam.replicas` is at least 2 like any stateless service (#369) | the `services.<name>` key of the same name; `flags` are merged |
 | `spec.secrets.<name>.secretName` | Secret name references only | no values take it yet, so it must be empty |
 
 - There are no secret value fields. If a field or flag name looks secret (`password`, `token`, `secret`, `credential`, `key` and so on, except `secrets`/`secretName`/`existingSecret`), `vws render` refuses it and the guard refuses it in the CRD schema.
@@ -58,7 +58,7 @@ spec:
       enabled: true
 ```
 
-It is off by default because the installer package on GHCR is private, so the pod cannot pull it without credentials (`charts/vws/values.yaml` `services.admin`).
+It is off by default because the installer package on GHCR is private, so the pod cannot pull it without credentials (the former chart values `services.admin`).
 
 Reach it with the operator's own kube credentials. The page has no Service and no login of its own: it listens on `127.0.0.1:8080` in the pod, and `kubectl port-forward` is the only way in.
 
@@ -89,7 +89,7 @@ The page reaches the API with in-cluster kubectl under a read-only root filesyst
 
 ## Profiles
 
-`profiles/<name>.yaml` is a values file layered over `charts/vws/values.yaml` and only changes values. The three profiles have the same keys (R19).
+`profiles/<name>.yaml` is a values file layered over the former chart values and only changes values. The three profiles have the same keys (R19).
 
 | | single-node | small | ha |
 | --- | --- | --- | --- |
@@ -120,7 +120,7 @@ console-api holds sessions in memory. With a second pod or an HPA, requests land
 
 ## iam has two replicas on a shared store (#369)
 
-iam keeps its state in the vws-iam kube store in the release namespace (`-namespace`, `docs/iam-install.md`), so the chart runs `services.iam.replicas: 2` like any stateless service.
+iam keeps its state in the vws-iam kube store in the release namespace (`-namespace`), so the chart runs `services.iam.replicas: 2` like any stateless service.
 
 - `values.schema.json` and `scripts/check_render.py` R4: at least 2 replicas.
 - `scripts/guard.sh config`: the iam render has the IAM CRDs, the Role, the API token, `-namespace` and no state volume.
@@ -143,7 +143,7 @@ spec:
 - `scripts/check_render.py` R15: refuses a missing `-console-origins` or an entry that is not `scheme://host[:port]`, and refuses a `-trusted-proxies` entry that is not an IP/CIDR.
 - `-trusted-proxies` is passed only when it has a value. It is supported together with `-console-origins` since #137 (5b42eb7).
 - This chart needs console-api image #137 (5b42eb7) or later. Older images do not start with the unknown flag `-console-origins` (and `-trusted-proxies`, if set).
-- Image pin (#280): `services.console-api.imageTag: sha-d3a4057` in `charts/vws/values.yaml` pins console-api alone to `ghcr.io/popododo0720/vws/console-api:sha-d3a4057`. This build still reads the credentials from env (`VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY`), and it makes no Kubernetes API call, so it needs no Role and the chart passes no credential flags. Other services still follow `global.tag` → appVersion. The schema checks only the tag shape (`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`).
+- Image pin (#280): `services.console-api.imageTag: sha-d3a4057` in the former chart values pins console-api alone to `ghcr.io/popododo0720/vws/console-api:sha-d3a4057`. This build still reads the credentials from env (`VWS_CONSOLE_TOKEN`, `VWS_ACCESS_KEY`, `VWS_SECRET_KEY`), and it makes no Kubernetes API call, so it needs no Role and the chart passes no credential flags. Other services still follow `global.tag` → appVersion. The schema checks only the tag shape (`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`).
   - This tag was published by vws-console-api's `publish.yml` (ko on every push to main, `sha-<7-character commit>`, label `org.opencontainers.image.revision=<full SHA>`) when d3a4057 merged (digest `sha256:48fc6ba1544ada28ecba5c244e9bd0f12e189ff0b12d849ed3e704f5e8853983`, an anonymous manifest request returned HTTP 200 on 2026-11-06). vws-test has not run this tag yet (vws-deploy#310).
   - Why d3a4057: console-api#325 serves CreateUser, ListUsers and the other IAM user and group actions over vws-iam gRPC with `-iam=grpc`; the previous pin c09cba3 answered them with `InvalidAction`. It is three commits after c09cba3, so it keeps the env credentials, the attach state of console-api#299 and the DetachVolume replay fix of console-api#302, and it adds no flag or env read. It is before vws-console-api `ac413c5`, so the compute pin does not move (`docs/image-pins.md`). To move to a newer main commit, change only `imageTag` after that commit is published, and measure again on vws-test.
   - The workflow does not change the package visibility. If it is private, the nodes need pull credentials (needs checking).

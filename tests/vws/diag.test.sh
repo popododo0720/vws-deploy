@@ -4,14 +4,11 @@
 set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-GROUP=$(sed -n 's/^  group: //p' "${VWS_TEST_ROOT}/charts/vws/crds/vwsclusters.yaml")
 
 scenario() {
   rm -rf "${WORK:?}/$1"
   cp -r "${FIXTURES}/diag/ok" "${WORK}/$1"
   export VWS_FAKE_DIR="${WORK}/$1"
-  jq --arg v "${GROUP}/v1alpha1" '.apiVersion = $v' "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json" >"${WORK}/cr.json"
-  mv "${WORK}/cr.json" "${VWS_FAKE_DIR}/kubectl/get_vwsclusters.json"
 }
 unpack() { rm -rf "${WORK}/x"; mkdir "${WORK}/x"; tar -C "${WORK}/x" -xzf "$1"; }
 bundle_text() { find "${WORK}/x/vws-diag" -type f -exec cat {} +; }

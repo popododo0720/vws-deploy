@@ -49,8 +49,7 @@ type Config struct {
 	Now       func() time.Time
 	// Context bounds a running install.
 	Context context.Context
-	// APIVersion is the VWSCluster group/version. It comes from the CRD (R18: the group is
-	// written only in charts/vws/crds/vwsclusters.yaml), never from a constant here.
+	// APIVersion is the VWSCluster group/version supplied by the caller.
 	APIVersion string
 	// Credentials stores the initial admin password (#146). Nil: none is made.
 	Credentials cluster.Credentials

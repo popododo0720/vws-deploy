@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -97,7 +96,9 @@ func newHarness(t *testing.T, pf Preflight) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.srv = New(Config{Auth: auth, Cluster: h.cluster, Preflight: pf, Now: h.clock.now, APIVersion: crdAPIVersion(t)})
+	h.srv = New(Config{
+		Auth: auth, Cluster: h.cluster, Preflight: pf, Now: h.clock.now, APIVersion: "example.invalid/v1alpha1",
+	})
 	h.http = httptest.NewServer(h.srv.Handler())
 	t.Cleanup(func() {
 		select {
@@ -458,27 +459,12 @@ func TestHappyPath(t *testing.T) {
 		obj(t, spec, "storage")["driver"] != "rook-ceph" {
 		t.Fatalf("CR spec %v", spec)
 	}
-	if cr["apiVersion"] != crdAPIVersion(t) || cr["kind"] != "VWSCluster" {
+	if cr["apiVersion"] != "example.invalid/v1alpha1" || cr["kind"] != "VWSCluster" {
 		t.Fatalf("CR apiVersion %v kind %v", cr["apiVersion"], cr["kind"])
 	}
 	if _, ok := spec["roles"]; ok {
 		t.Fatal("roles leaked into the CR spec")
 	}
-}
-
-// crdAPIVersion reads group/version from the chart CRD, the one place the group is written (R18).
-func crdAPIVersion(t *testing.T) string {
-	t.Helper()
-	crd, err := os.ReadFile("../../../charts/vws/crds/vwsclusters.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	group := regexp.MustCompile(`(?m)^  group: (\S+)$`).FindSubmatch(crd)
-	version := regexp.MustCompile(`(?m)^    - name: (\S+)$`).FindSubmatch(crd)
-	if group == nil || version == nil {
-		t.Fatal("no group or version in the CRD")
-	}
-	return string(group[1]) + "/" + string(version[1])
 }
 
 func TestStepOrder(t *testing.T) {

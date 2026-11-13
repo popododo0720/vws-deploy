@@ -27,7 +27,7 @@ run_vws_real preflight --profile single-node;     expect_rc "all pass exits 0" 0
 assert_no_changes "preflight changes nothing"
 expect_line "ok has the nodes line" OK nodes
 run_vws_real -o json preflight --profile single-node; expect_rc "json exits 0" 0
-if jq -e '.command == "preflight" and .status == "ok" and (.checks | length) >= 15 and all(.checks[]; .level == "OK")' <<<"$OUT" >/dev/null; then
+if jq -e '.command == "preflight" and .status == "ok" and (.checks | length) >= 14 and all(.checks[]; .level == "OK")' <<<"$OUT" >/dev/null; then
   ok "json lists every check"; else bad "json lists every check" "$OUT"; fi
 
 run_vws_real preflight;                           expect_rc "no profile exits 2" 2
@@ -57,11 +57,6 @@ expect_line "a mismatched --node-ip warns" WARN node-ip
 edit_json kubectl/get_nodes.json '.items[0].metadata.annotations["k3s.io/node-args"] = "[\"server\"]"'
 run_vws_real preflight --profile single-node
 expect_line "a k3s node without --node-ip warns" WARN node-ip
-
-scenario small-node
-edit_json kubectl/get_nodes.json '.items[0].status.allocatable = {"cpu": "500m", "memory": "1Gi"}'
-run_vws_real preflight --profile single-node;     expect_rc "too little cpu and memory exits 1" 1
-expect_line "resources fail" FAIL node-resources
 
 scenario no-rights
 echo no >"$(fx kubectl/auth_can-i.json)"
@@ -194,5 +189,17 @@ run_vws_real preflight --profile single-node --links "${WORK}/nope.json"; expect
 scenario api-down
 rm "$(fx kubectl/version_.json)"
 run_vws_real preflight --profile single-node;     expect_rc "an unreachable API exits 3" 3
+
+# Exercise checkout checks without the retired chart validators.
+mkdir -p "${WORK}/source/.git" "${WORK}/source/scripts"
+printf '#!/usr/bin/env bash\n[[ $1 == bundle ]]\n' >"${WORK}/source/scripts/guard.sh"
+chmod +x "${WORK}/source/scripts/guard.sh"
+OUT=$(VWS_ROOT="${WORK}/source" VWS_SOURCE_CHECKS=1 bash -c '
+  source "$1"
+  vws_emit() { printf "%s %s %s\n" "$@"; }
+  vws_check_source
+' _ "${VWS_TEST_ROOT}/scripts/vws.d/lib/checks.sh")
+expect_line "source checks retain the bundle guard" OK source-bundle
+if [[ $OUT != *FAIL* ]]; then ok "source checks call no retired guard"; else bad "source checks" "$OUT"; fi
 
 finish_tests
