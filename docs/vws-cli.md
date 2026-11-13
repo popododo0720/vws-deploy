@@ -56,6 +56,54 @@ It never reaches a cluster or the external network. Admin commands use a loopbac
 
 ## Commands
 
+### vws install
+
+`vws install --profile lab --inventory hosts.yaml --packages DIR --credentials DIR`
+installs one lab host over SSH. Requires python3 with PyYAML, ssh and dpkg-deb
+locally, and root access (or passwordless sudo), apt-get, systemctl and keepalived
+on the Debian target. Supply exactly one `vws-etcd_*.deb`, `vws-global_*.deb` and
+`vws-region_*.deb`; this command does not build packages or download releases.
+`small` and `ha` remain vws-deploy#776.
+
+```yaml
+profile: lab
+hosts:
+  - name: lab-1
+    address: 192.0.2.1
+    ssh_user: root
+    roles: [etcd, global, region]
+vip:
+  address: 192.0.2.10/24
+```
+
+The inventory accepts only these keys, one IPv4 host with all three roles, and
+an IPv4 VIP with an optional prefix (default /32). The VIP uses the packaged
+keepalived template's `vmbr0` interface and router id 83. Use a dedicated lab
+host and reserve that router id. Unknown, duplicate and secret-looking keys
+are refused. `--global-config FILE` defaults to `global.yaml` beside the
+inventory and passes the same validation as `vws config validate`.
+
+The credential directory contains the file names in
+`packaging/vws-global/README.md`, `packaging/vws-etcd/README.md`, plus
+`region-kek` and `region.key` from `packaging/vws-region/vws-region.service`.
+`iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
+credential sources are refused. All required inputs are checked before SSH.
+Private files go to root-owned 0600 files in `/etc/vws/credentials` (0700),
+except `/etc/vws/region.key` (0600). Public certificates go to `/etc/vws` (0644).
+Package, credential and config contents travel only on SSH stdin.
+
+Installation starts etcd, then global units, then region, and runs each shipped
+readiness helper. Only after every check passes does it enable keepalived.
+Changing a file or package disables keepalived first; a failed check disables
+it and exits 1 naming the host and check. A rerun compares file bytes, ownership,
+permissions and package versions, restarts changed services, and preserves
+unchanged files. It also reruns readiness, so retrying after an interruption is
+safe. Text prints one `changed` or `unchanged` line per step; `-o json` prints
+the same list. Invalid local inputs exit 2 before SSH. Each external call has
+a 180-second deadline; SSH connection failures retry twice with 1/2-second
+backoff. Remote output is withheld to keep credentials out of diagnostics.
+This is not live PVE verification or a lab memory budget measurement.
+
 ### vws region
 
 `vws region add NAME`, `edit NAME`, `remove NAME --yes`, `list`, `show NAME`,
