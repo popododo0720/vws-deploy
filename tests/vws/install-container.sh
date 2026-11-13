@@ -34,6 +34,7 @@ case "$verb" in
         rm -f "$INSTALL_STATE/is-enabled-$1" "$INSTALL_STATE/is-active-$1"
         ;;
     restart) test -f "$INSTALL_STATE/is-active-$1" ;;
+    daemon-reload) ;;
     *) exit 1 ;;
 esac
 SH
@@ -43,10 +44,27 @@ args=(install --profile lab --inventory "$work/hosts.yaml" --packages "$work/pac
 snapshot() {
     find /etc/vws /etc/keepalived /usr/lib/vws -printf '%p %m %u %g %y\n' | sort
     find /etc/vws /etc/keepalived /usr/lib/vws -type f -exec sha256sum {} + | sort
+    find /etc/systemd/system -name 50-vws-memory.conf -exec sha256sum {} + | sort
 }
 bash "$root/scripts/vws" "${args[@]}" > "$work/first.out" 2> "$work/first.err"
 grep -q 'changed' "$work/first.out"
 test -f "$INSTALL_STATE/is-enabled-keepalived"
+python3 - <<'PY'
+from pathlib import Path
+root = Path("/etc/systemd/system")
+for group, mib, services in (
+        ("global", 1024, ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console")),
+        ("region", 512, ("vws-region",)),
+        ("etcd", 512, ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"))):
+    name = f"vws-lab-{group}.slice"
+    config = root / (name + ".d") / "50-vws-memory.conf"
+    assert config.read_text() == f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n"
+    for service in services:
+        config = root / (service + ".service.d") / "50-vws-memory.conf"
+        limit = f"MemoryMax={mib}M\n" if group == "region" else ""
+        assert config.read_text() == f"[Service]\nSlice={name}\n{limit}"
+    assert config.stat().st_uid == 0 and config.stat().st_mode & 0o777 == 0o644
+PY
 snapshot > "$work/before"
 bash "$root/scripts/vws" -o json "${args[@]}" > "$work/again.out" 2> "$work/again.err"
 python3 - "$work/again.out" <<'PY'

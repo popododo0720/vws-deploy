@@ -18,6 +18,9 @@ with (s / "argv").open("a") as f:
     f.write(json.dumps(sys.argv) + "\n")
 with (s / "payload").open("ab") as f:
     f.write(d)
+if "/etc/systemd/system/" in c:
+    with (s / "units").open("a") as f:
+        f.write(json.dumps({"command": c, "data": d.decode()}) + "\n")
 if os.environ.get("INSTALL_FAIL") and os.environ["INSTALL_FAIL"] in c:
     sys.stderr.write("fixture-private-admin-kek")
     sys.exit(1)
@@ -107,6 +110,70 @@ class Install(unittest.TestCase):
             with self.subTest(data=data):
                 (self.work / "global.yaml").write_text(data)
                 self.refused()
+
+    def test_lab_memory_budget(self):
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        units = [json.loads(line) for line in (self.work / "state/units").read_text().splitlines()]
+        for group, mib in (("global", 1024), ("region", 512), ("etcd", 512)):
+            slice_name = f"vws-lab-{group}.slice"
+            self.assertTrue(any(f"/{slice_name}.d/50-vws-memory.conf" in row["command"]
+                                and f"MemoryMax={mib}M\nMemorySwapMax=0\n" in row["data"]
+                                for row in units), group)
+        for service, group in (("vws-iam", "global"), ("vws-aws-proxy", "global"),
+                               ("vws-console-api", "global"), ("vws-console", "global"),
+                               ("vws-region", "region"), ("vws-etcd", "etcd"),
+                               ("vws-etcd-snapshot", "etcd"), ("vws-etcd-defrag", "etcd")):
+            limit = "MemoryMax=512M\n" if group == "region" else ""
+            self.assertTrue(any(f"/{service}.service.d/50-vws-memory.conf" in row["command"]
+                                and row["data"] == f"[Service]\nSlice=vws-lab-{group}.slice\n{limit}"
+                                for row in units), service)
+        log = (self.work / "state/argv").read_text()
+        self.assertLess(log.index("systemctl daemon-reload"), log.index("systemctl is-enabled"))
+
+    def test_memory_input_boundaries(self):
+        path = self.work / "hosts.yaml"
+        good = path.read_text()
+        for memory in ("{global: 1025, region: 512, etcd: 512}",
+                       "{global: 0, region: 512, etcd: 512}",
+                       "{global: -1, region: 512, etcd: 512}",
+                       "{global: '512;bad', region: 512, etcd: 512}",
+                       "{global: true, region: 512, etcd: 512}",
+                       "{global: 512, region: 512}", "null",
+                       "{global: 512, region: 512, etcd: 512, extra: 1}"):
+            with self.subTest(memory=memory):
+                path.write_text(good + "memory_mib: " + memory + "\n")
+                self.refused()
+
+    def test_custom_budget_and_reload_failure_recovery(self):
+        path = self.work / "hosts.yaml"
+        path.write_text(path.read_text() + "memory_mib: {global: 768, region: 768, etcd: 256}\n")
+        self.env["INSTALL_FAIL"] = "systemctl daemon-reload"
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        log = (self.work / "state/argv").read_text()
+        self.assertNotIn("enable --now keepalived", log)
+        self.env.pop("INSTALL_FAIL")
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MemoryMax=768M", (self.work / "state/units").read_text())
+        units = [json.loads(line) for line in (self.work / "state/units").read_text().splitlines()]
+        self.assertTrue(any("/vws-region.service.d/50-vws-memory.conf" in row["command"]
+                            and row["data"] == "[Service]\nSlice=vws-lab-region.slice\nMemoryMax=768M\n"
+                            for row in units))
+        self.assertFalse((self.work / "state/pending").exists())
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)))
+
+    def test_memory_controller_unavailable(self):
+        self.env["INSTALL_FAIL"] = "/sys/fs/cgroup/cgroup.controllers"
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("memory controller failed", result.stderr)
+        log = (self.work / "state/argv").read_text()
+        self.assertNotIn("apt-get install", log)
+        self.assertNotIn("enable --now keepalived", log)
 
     def test_member_name_boundaries(self):
         path = self.work / "hosts.yaml"

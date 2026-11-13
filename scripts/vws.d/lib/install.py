@@ -21,7 +21,14 @@ PRIVATE = (
 ).split()
 PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam.pem".split()
 SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str,
-                                   "roles": [str]}], "vip": {"address": str}}
+                                   "roles": [str]}], "vip": {"address": str},
+          "memory_mib": {"global": str, "region": str, "etcd": str}}
+LAB_MEMORY_MIB = {"global": 1024, "region": 512, "etcd": 512}
+LAB_SERVICES = {
+    "global": ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"),
+    "region": ("vws-region",),
+    "etcd": ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"),
+}
 PENDING = "/var/lib/vws-install/pending"
 DIRTY = ("test ! -L /var/lib/vws-install; install -d -m 700 -o root -g root /var/lib/vws-install; "
          "test ! -L " + PENDING + "; touch " + PENDING)
@@ -73,6 +80,12 @@ def inventory(path):
         cfg = globalconfig.decode(nodes[0], SCHEMA)
         if cfg.get("profile") != "lab" or len(cfg.get("hosts", [])) != 1:
             raise Invalid("lab inventory requires one host")
+        memory = cfg.get("memory_mib", LAB_MEMORY_MIB)
+        if (set(memory) != set(LAB_MEMORY_MIB)
+                or any(not re.fullmatch(r"[1-9][0-9]{0,3}", str(v)) for v in memory.values())
+                or sum(int(v) for v in memory.values()) > 2048):
+            raise Invalid("lab memory_mib requires positive global, region and etcd budgets totaling <= 2048 MiB")
+        cfg["memory_mib"] = {k: int(v) for k, v in memory.items()}
         host = cfg["hosts"][0]
         if (set(host.get("roles", [])) != {"etcd", "global", "region"}
                 or len(host["roles"]) != 3
@@ -199,7 +212,23 @@ fi
 
     def install(self, cfg, config, files, packages):
         try:
+            self.run("memory controller", "test -f /sys/fs/cgroup/cgroup.controllers && "
+                     "grep -qw memory /sys/fs/cgroup/cgroup.controllers")
             changed = False
+            for group, mib in cfg["memory_mib"].items():
+                slice_name = "vws-lab-" + group + ".slice"
+                changed = self.write(
+                    "/etc/systemd/system/" + slice_name + ".d/50-vws-memory.conf", "644",
+                    f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n".encode()) or changed
+                for service in LAB_SERVICES[group]:
+                    # The region package also sets a per-service 512 MiB limit.
+                    limit = f"MemoryMax={mib}M\n" if group == "region" else ""
+                    changed = self.write(
+                        "/etc/systemd/system/" + service + ".service.d/50-vws-memory.conf", "644",
+                        f"[Service]\nSlice={slice_name}\n{limit}".encode()) or changed
+            # Reload even after an interrupted write whose reply never reached us.
+            self.run("load memory budget", "systemctl daemon-reload")
+            self.emit("memory budget")
             for path, mode, data in files:
                 changed = self.write(path, mode, data) or changed
             changed = self.write("/etc/vws/global.yaml", "644", config) or changed

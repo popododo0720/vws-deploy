@@ -73,9 +73,34 @@ hosts:
     roles: [etcd, global, region]
 vip:
   address: 192.0.2.10/24
+memory_mib:
+  global: 1024
+  region: 512
+  etcd: 512
 ```
 
-The inventory accepts only these keys, one IPv4 host with all three roles, and
+The optional `memory_mib` mapping defaults to the values above. All three
+values must be positive whole MiB, totaling at most 2048 MiB; an over-budget
+inventory exits 2 before SSH. Installation requires the target's cgroup v2
+memory controller. It places the four global services together in
+`vws-lab-global.slice`, the region service in `vws-lab-region.slice`, and etcd
+with its snapshot/defrag services in `vws-lab-etcd.slice`. Each slice gets
+`MemoryAccounting=yes`, its budget as `MemoryMax`, and `MemorySwapMax=0`.
+These are aggregate group limits, including service children, so the global
+processes cannot each consume the full global budget. Drop-ins live under
+`/etc/systemd/system/` as `50-vws-memory.conf`; the installer reloads systemd
+before reconciling services, including recovery after an interrupted write.
+
+On the 8 GiB lab box this caps VWS at 2 GiB, leaves 2 GiB for the two 1 GiB
+test VMs, and 4 GiB for PVE, the OS and other overhead. These limits are a
+budget, not measured working sets or a guarantee that an arbitrary workload
+fits. Reaching a limit can cause a cgroup OOM and service restart. Check
+`systemctl show vws-lab-global.slice vws-lab-region.slice vws-lab-etcd.slice
+-p MemoryCurrent -p MemoryMax -p MemorySwapMax` and journald for OOMs on the
+live box after phase 1. Keep VM admission's `host_reserve_mib: 2048` setting
+consistent with the host's measured overhead.
+
+The inventory accepts only the documented keys, one IPv4 host with all three roles, and
 an IPv4 VIP with an optional prefix (default /32). The VIP uses the packaged
 keepalived template's `vmbr0` interface and router id 83. Use a dedicated lab
 host and reserve that router id. Unknown, duplicate and secret-looking keys
@@ -101,7 +126,9 @@ safe. Text prints one `changed` or `unchanged` line per step; `-o json` prints
 the same list. Invalid local inputs exit 2 before SSH. Each external call has
 a 180-second deadline; SSH connection failures retry twice with 1/2-second
 backoff. Remote output is withheld to keep credentials out of diagnostics.
-This is not live PVE verification or a lab memory budget measurement.
+Live PVE verification and working-set measurement remain deferred until after
+phase 1. For AWS access during a global-layer outage, use
+[the break-glass procedure](operator/break-glass.md).
 
 ### vws region
 
