@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only gate and L0 cleanup for the single-node verification cluster."""
+"""Gated live steps and cleanup for the single-node verification cluster."""
+import hashlib
+import ipaddress
 import json
 import os
 import re
 import signal
 import ssl
+import subprocess
 import sys
 import time
 import uuid
@@ -37,13 +40,15 @@ class Client:
                 or any(not s or any(ord(c) <= 32 or ord(c) >= 127 for c in s)
                        for s in (self.console, self.token))):
             raise Refused("invalid console or runner credential")
-        self.secrets = (self.console, self.token, self.token.partition("=")[2])
+        self.secrets = (self.console, self.token, self.token.partition("=")[2],
+                        os.environ.get("VWS_VERIFY_SECRET_ACCESS_KEY", ""),
+                        os.environ.get("VWS_VERIFY_ACCESS_KEY_ID", ""))
         self.base = origin(os.environ.get("VWS_API_URL", "").rstrip("/"))
         self.pve = origin(os.environ.get("VWS_LIVE_PVE_URL", "").rstrip("/"))
         self.opener = build_opener(ProxyHandler({}), NoRedirect(),
                                   HTTPSHandler(context=ssl.create_default_context(cafile=a.pve_ca_file)))
         self.console_opener = build_opener(ProxyHandler({}), NoRedirect())
-        self.a, self.steps = a, []
+        self.a, self.steps, self.instances = a, [], set()
         if a.operation not in ("gate", "identity"):
             _, self.node = json.loads((Path(a.results) / ".gate.json").read_text())
 
@@ -88,6 +93,10 @@ class Client:
             raise Refused("invalid region name")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.a.snippets_storage):
             raise Refused("invalid snippets storage")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", self.a.run_id):
+            raise Refused("invalid run ID")
+        if os.environ.get("VWS_VERIFY_INSTANCE_TYPE", "vws.small") != "vws.small":
+            raise Refused("only vws.small is permitted")
         cap = self.request("/api/v1/regions/" + self.a.region + "/capabilities", console=True)
         if not isinstance(cap, dict) or cap.get("kind") != "proxmox":
             raise Refused("capability kind must be proxmox")
@@ -192,6 +201,7 @@ class Client:
         try:
             ident = self.config_uuid(self.request(path + "/config"))
             if ident:
+                self.remember(ident)
                 self.delete_snippet(v, ident)
             if v.get("status") == "running":
                 self.wait(v["node"], self.request(path + "/status/stop", "POST"))
@@ -216,22 +226,183 @@ class Client:
                         self.item("sweep/snapshot/" + str(v["vmid"]) + "/" + snapshot["name"],
                                   lambda path=path, v=v: self.wait(v["node"], self.request(path, "DELETE")))
 
-    def slots(self):
+    def slots(self, need=None):
         vms = [v for v in self.resources() if self.candidate(v) and
                "vws.holder" not in v.get("tags", "").split(";")]
-        passed = (not self.a.fail_at and len(vms) + self.a.need <= 2 and
+        passed = (self.a.fail_at != "slots" and len(vms) + (self.a.need if need is None else need) <= 2 and
                   all(0 <= int(v["maxmem"]) <= 1024 ** 3 for v in vms))
         self.emit("slots", passed, "two VM / 1 GiB limit" if not passed else "")
+        return passed
+
+    def ec2(self, operation, **parameters):
+        if operation == "run-instances":
+            if (parameters.get("InstanceType") != "vws.small"
+                    or os.environ.get("VWS_VERIFY_INSTANCE_TYPE", "vws.small") != "vws.small"
+                    or parameters.get("MinCount") != 1 or parameters.get("MaxCount") != 1):
+                raise Refused("only one vws.small per create is permitted")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", self.a.run_id):
+                raise Refused("invalid run ID")
+            if not any(t.get("Key") == "vws-live-run" and t.get("Value") == self.a.run_id
+                       for spec in parameters.get("TagSpecifications", []) if spec.get("ResourceType") == "instance"
+                       for t in spec.get("Tags", [])):
+                raise Refused("create requires the live run tag")
+            if not self.slots(1):
+                raise Refused("create refused by slot guard")
+        required = ("EC2_ENDPOINT", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "IMAGE_ID", "KEY_NAME")
+        if any(not os.environ.get("VWS_VERIFY_" + key) for key in required):
+            raise Refused("EC2 endpoint, access keys, image and existing key name are required")
+        endpoint = os.environ["VWS_VERIFY_EC2_ENDPOINT"]
+        u = urlsplit(endpoint)
+        origin(endpoint.removesuffix(u.path))
+        domains = ("ama" + "zonaws.com", "ama" + "zonaws.com.cn", "api.aws")
+        if any(u.hostname.rstrip(".").lower() == d or u.hostname.rstrip(".").lower().endswith("." + d)
+               for d in domains):
+            raise Refused("AWS-owned EC2 endpoint refused")
+        env = dict(PATH=os.environ.get("PATH", ""), HOME=self.a.results,
+                   AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                   AWS_EC2_METADATA_DISABLED="true", AWS_RETRY_MODE="standard", AWS_MAX_ATTEMPTS="3",
+                   AWS_PAGER="", AWS_ENDPOINT_URL_EC2=endpoint, AWS_DEFAULT_REGION=self.a.region,
+                   AWS_ACCESS_KEY_ID=os.environ["VWS_VERIFY_ACCESS_KEY_ID"],
+                   AWS_SECRET_ACCESS_KEY=os.environ["VWS_VERIFY_SECRET_ACCESS_KEY"])
+        args = ["aws", "--cli-connect-timeout", "10", "--cli-read-timeout", "20",
+                "ec2", operation, "--output", "json", "--cli-input-json", json.dumps(parameters)]
+        process = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            out, _ = process.communicate(timeout=90)
+            if process.returncode:
+                raise Refused("EC2 " + operation + " failed")
+            return json.loads(out)
+        except subprocess.TimeoutExpired:
+            raise Refused("EC2 " + operation + " timed out") from None
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    @staticmethod
+    def instance_id(config):
+        ident = Client.config_uuid(config)
+        if not ident:
+            return None
+        value = "\0".join(("vws-pve-instance-v1", "pve-test", ident))
+        return "i-" + hashlib.sha256(value.encode()).hexdigest()[:17]
+
+    def create(self, token):
+        tags = [{"Key": "vws-live-run", "Value": self.a.run_id}, {"Key": "live-long", "Value": "x" * 128}]
+        args = dict(ImageId=os.environ.get("VWS_VERIFY_IMAGE_ID", ""), InstanceType="vws.small",
+                    MinCount=1, MaxCount=1, ClientToken=token,
+                    KeyName=os.environ.get("VWS_VERIFY_KEY_NAME", ""),
+                    UserData="I2Nsb3VkLWNvbmZpZwo=", TagSpecifications=[dict(ResourceType="instance", Tags=tags)])
+        if os.environ.get("VWS_VERIFY_SUBNET_ID"):
+            args["SubnetId"] = os.environ["VWS_VERIFY_SUBNET_ID"]
+        ident = self.ec2("run-instances", **args)["Instances"][0]["InstanceId"]
+        if not re.fullmatch(r"i-[0-9a-f]{17}", ident):
+            raise Refused("invalid instance ID")
+        self.instances.add(ident)
+        self.until(lambda: self.verify_instance(ident, tags), "launch did not become visible")
+        return ident
+
+    def remember(self, ident):
+        manifest = Path(self.a.results) / ".run-vms.json"
+        known = set(json.loads(manifest.read_text())) if manifest.exists() else set()
+        manifest.write_text(json.dumps(sorted(known | {ident})))
+
+    def until(self, action, message):
+        deadline = time.monotonic() + 120
+        while not action():
+            if time.monotonic() + 1 >= deadline:
+                raise Refused(message)
+            time.sleep(1)
+
+    def verify_instance(self, ident, tags):
+        data = self.ec2("describe-instances", InstanceIds=[ident])
+        instances = [i for r in data["Reservations"] for i in r["Instances"]]
+        if not instances or instances[0]["State"]["Name"] == "pending":
+            return False
+        instance = instances[0]
+        ipaddress.IPv4Address(instance["PrivateIpAddress"])
+        if any(t not in instance["Tags"] for t in tags):
+            raise Refused("DescribeInstances tags mismatch")
+        for v in self.resources():
+            if self.candidate(v):
+                config = self.request(self.vm_path(v) + "/config")
+                if self.instance_id(config) == ident:
+                    self.remember(self.config_uuid(config))
+                    if "vws.live." + self.a.run_id not in config.get("tags", "").split(";"):
+                        raise Refused("PVE launch tag missing")
+                    return True
+        return False
+
+    def run_vms(self):
+        found = []
+        for v in self.resources():
+            if self.candidate(v):
+                config = self.request(self.vm_path(v) + "/config")
+                if ("vws.live." + self.a.run_id in config.get("tags", "").split(";")
+                        or self.instance_id(config) in self.instances):
+                    found.append(v)
+        return found
+
+    def live_step(self):
+        try:
+            token = self.a.run_id + "-" + self.a.operation
+            first = self.create(token)
+            before = {v["vmid"] for v in self.resources() if self.candidate(v)}
+            if self.a.operation == "l2":
+                if self.create(token) != first or before != {
+                        v["vmid"] for v in self.resources() if self.candidate(v)}:
+                    raise Refused("ClientToken retry created a second VM")
+            else:
+                second = self.create(token + "-second")
+                if first == second or len(self.run_vms()) != 2:
+                    raise Refused("L7 requires two distinct VMs")
+            if self.a.fail_at == self.a.operation:
+                raise Refused("injected step failure")
+            if self.a.operation == "l7":
+                self.ec2("terminate-instances", InstanceIds=sorted(self.instances))
+                self.until(lambda: not self.run_vms(), "terminated VMs still exist")
+                data = self.ec2("describe-instances")
+                if any(i["InstanceId"] in self.instances and i["State"]["Name"] != "terminated"
+                       for r in data["Reservations"] for i in r["Instances"]):
+                    raise Refused("terminated instances still listed")
+            self.emit(self.a.operation, True)
+        finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            for v in self.run_vms():
+                self.item("cleanup/" + str(v["vmid"]), lambda v=v: self.delete_vm(v))
+
+    def final(self):
+        for v in self.resources():
+            if v.get("type") != "qemu" or v.get("pool") != "vws-live":
+                continue
+            if not v.get("template"):
+                config = self.request(self.vm_path(v) + "/config")
+                if "vws.holder" not in v.get("tags", "").split(";"):
+                    raise Refused("pool contains a non-holder VM")
+                if any(re.fullmatch(r"(?:unused|scsi|virtio|sata|ide)[0-9]+", k) for k in config):
+                    raise Refused("holder contains leftover volumes")
+            if any(s["name"] != "current" for s in self.request(self.vm_path(v) + "/snapshot")):
+                raise Refused("pool contains snapshots")
+        manifest = Path(self.a.results) / ".run-vms.json"
+        known = json.loads(manifest.read_text()) if manifest.exists() else []
+        snippets = self.request("/nodes/" + quote(self.node, safe="") + "/storage/" +
+                                quote(self.a.snippets_storage, safe="") + "/content?content=snippets")
+        if any(s["volid"] == self.a.snippets_storage + ":snippets/vws-" + ident + "-user.yaml"
+               for s in snippets for ident in known):
+            raise Refused("run snippets remain")
+        self.emit("final", True)
 
 
 def main():
     p = Parser(allow_abbrev=False)
-    p.add_argument("operation", choices=("gate", "identity", "sweep", "slots", "results"))
+    p.add_argument("operation", choices=("gate", "identity", "sweep", "slots", "l2", "l7", "final", "results"))
     p.add_argument("--region", required=True)
     p.add_argument("--results")
     p.add_argument("--snippets-storage", default="local")
     p.add_argument("--pve-ca-file")
-    p.add_argument("--fail-at", choices=("slots",))
+    p.add_argument("--run-id", default=uuid.uuid4().hex)
+    p.add_argument("--fail-at", choices=("slots", "l2", "l7"))
     p.add_argument("--phase", choices=("l0-start", "l0-end"))
     p.add_argument("--need", type=int, default=0)
     p.add_argument("--exit", type=int, default=0)
@@ -241,7 +412,7 @@ def main():
         p.error("")
     if a.operation == "results":
         steps = []
-        for name in ("l0-start", "slots", "l0-end"):
+        for name in ("l0-start", "slots", "l2", "l7", "l0-end", "final"):
             path = Path(a.results) / (name + ".json")
             if path.exists():
                 data = json.loads(path.read_text())
@@ -251,8 +422,11 @@ def main():
         return int(result == "fail" and not a.exit)
     c = Client(a)
     try:
-        getattr(c, a.operation)()
-    except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        if a.operation in ("l2", "l7"):
+            c.live_step()
+        else:
+            getattr(c, a.operation)()
+    except Exception as e:
         message = str(e) if isinstance(e, Refused) else "invalid API response"
         if a.operation == "identity":
             fail(redact(message, c.secrets), 3)
@@ -263,7 +437,7 @@ def main():
         raise
     finally:
         if a.operation not in ("gate", "identity"):
-            c.save(a.phase if a.operation == "sweep" else "slots")
+            c.save(a.phase if a.operation == "sweep" else a.operation)
     return (3 if a.operation == "gate" else 1) if any(s["result"] == "fail" for s in c.steps) else 0
 
 
