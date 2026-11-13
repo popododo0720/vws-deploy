@@ -21,11 +21,12 @@ import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGETS = ("fake", "vws")
+PROFILES = ("aws", "pve")
 RESULTS = ("pass", "fail", "skip")
 OWNERS = {
-    "image": "vws-compute",
-    "instance": "vws-compute",
-    "volume": "vws-storage",
+    "image": "vws-console-api",
+    "instance": "vws-console-api",
+    "volume": "vws-console-api",
     "vpc": "vws-network",
     "subnet": "vws-network",
     "security-group": "vws-network",
@@ -33,9 +34,9 @@ OWNERS = {
     "bucket": "vws-storage",
     "object": "vws-storage",
     "provider": "vws-deploy",
-    "aws_instance": "vws-compute",
-    "aws_ebs_volume": "vws-storage",
-    "aws_volume_attachment": "vws-storage",
+    "aws_instance": "vws-console-api",
+    "aws_ebs_volume": "vws-console-api",
+    "aws_volume_attachment": "vws-console-api",
     "aws_vpc": "vws-network",
     "aws_subnet": "vws-network",
     "aws_security_group": "vws-network",
@@ -87,6 +88,7 @@ class Config:
     secret_key: str
     image_id: str
     instance_type: str
+    profile: str = "aws"
 
 
 def check_endpoint(name, url, allowed):
@@ -113,8 +115,11 @@ def load_config(env):
     target = need("VWS_COMPAT_TARGET")
     if target not in TARGETS:
         raise ConfigError(f"VWS_COMPAT_TARGET must be one of {TARGETS}, got {target!r}")
+    profile = env.get("VWS_COMPAT_PROFILE", "aws").strip()
+    if profile not in PROFILES:
+        raise ConfigError(f"VWS_COMPAT_PROFILE must be one of {PROFILES}, got {profile!r}")
     allowed = {h.strip().lower() for h in need("VWS_COMPAT_ALLOWED_HOSTS").split(",") if h.strip()}
-    region = env.get("VWS_COMPAT_REGION", "").strip() or "vws-1"
+    region = env.get("VWS_COMPAT_REGION", "").strip() or ("pve-test-1" if profile == "pve" else "vws-1")
     if not re.fullmatch(r"[a-z0-9-]{1,32}", region):
         raise ConfigError(f"VWS_COMPAT_REGION {region!r} is not a region name")
     image_id = env.get("VWS_COMPAT_IMAGE_ID", "").strip()
@@ -132,6 +137,7 @@ def load_config(env):
         secret_key=need("VWS_COMPAT_SECRET_ACCESS_KEY"),
         image_id=image_id,
         instance_type=instance_type,
+        profile=profile,
     )
 
 
@@ -145,6 +151,7 @@ def child_env(cfg, work, run_id):
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": home,
+        "TMPDIR": work,
         "AWS_ACCESS_KEY_ID": cfg.access_key,
         "AWS_SECRET_ACCESS_KEY": cfg.secret_key,
         "AWS_REGION": cfg.region,
@@ -215,12 +222,15 @@ class Runner:
 
 
 class Matrix:
-    def __init__(self, tool):
+    def __init__(self, tool, profile="aws"):
         self.tool = tool
+        self.profile = profile
         self.rows = []
 
     def step(self, resource, action, fn, needs=()):
         """Record one row. fn returns a value for later steps or raises Fail; a missing need is a skip."""
+        if self.profile == "pve":
+            action += " (pve)"
         missing = [name for name, value in needs if value is None]
         if missing:
             self.rows.append(Row(self.tool, resource, action, "skip", "needs " + ", ".join(missing)))
@@ -243,7 +253,7 @@ def expect(cond, message):
 
 
 def awscli_scenarios(r, cfg, run_id, work):
-    m = Matrix("aws-cli")
+    m = Matrix("aws-cli", cfg.profile)
     cleanup = []
 
     def created(key, *argv):
@@ -259,48 +269,50 @@ def awscli_scenarios(r, cfg, run_id, work):
 
     image = m.step("image", "describe-images", first_image) or cfg.image_id or None
 
-    def create_vpc():
-        vpc = r.aws("ec2", "create-vpc", "--cidr-block", "10.232.0.0/16")["Vpc"]["VpcId"]
-        created(vpc, "ec2", "delete-vpc", "--vpc-id", vpc)
-        return vpc
+    if cfg.profile == "aws":
+        def create_vpc():
+            vpc = r.aws("ec2", "create-vpc", "--cidr-block", "10.232.0.0/16")["Vpc"]["VpcId"]
+            created(vpc, "ec2", "delete-vpc", "--vpc-id", vpc)
+            return vpc
 
-    vpc = m.step("vpc", "create-vpc", create_vpc)
-    m.step("vpc", "describe-vpcs", lambda: expect(
-        [v["VpcId"] for v in r.aws("ec2", "describe-vpcs", "--vpc-ids", vpc)["Vpcs"]] == [vpc],
-        "describe-vpcs did not return the new VPC"), needs=[("vpc", vpc)])
+        vpc = m.step("vpc", "create-vpc", create_vpc)
+        m.step("vpc", "describe-vpcs", lambda: expect(
+            [v["VpcId"] for v in r.aws("ec2", "describe-vpcs", "--vpc-ids", vpc)["Vpcs"]] == [vpc],
+            "describe-vpcs did not return the new VPC"), needs=[("vpc", vpc)])
 
-    def create_subnet():
-        subnet = r.aws("ec2", "create-subnet", "--vpc-id", vpc, "--cidr-block", "10.232.1.0/24")["Subnet"]["SubnetId"]
-        created(subnet, "ec2", "delete-subnet", "--subnet-id", subnet)
-        return subnet
+        def create_subnet():
+            subnet = r.aws("ec2", "create-subnet", "--vpc-id", vpc, "--cidr-block", "10.232.1.0/24")["Subnet"]["SubnetId"]
+            created(subnet, "ec2", "delete-subnet", "--subnet-id", subnet)
+            return subnet
 
-    subnet = m.step("subnet", "create-subnet", create_subnet, needs=[("vpc", vpc)])
-    m.step("subnet", "describe-subnets", lambda: expect(
-        [s["SubnetId"] for s in r.aws("ec2", "describe-subnets", "--subnet-ids", subnet)["Subnets"]] == [subnet],
-        "describe-subnets did not return the new subnet"), needs=[("subnet", subnet)])
+        subnet = m.step("subnet", "create-subnet", create_subnet, needs=[("vpc", vpc)])
+        m.step("subnet", "describe-subnets", lambda: expect(
+            [s["SubnetId"] for s in r.aws("ec2", "describe-subnets", "--subnet-ids", subnet)["Subnets"]] == [subnet],
+            "describe-subnets did not return the new subnet"), needs=[("subnet", subnet)])
 
-    def create_sg():
-        sg = r.aws("ec2", "create-security-group", "--group-name", run_id, "--description", "vws compat",
-                   "--vpc-id", vpc)["GroupId"]
-        created(sg, "ec2", "delete-security-group", "--group-id", sg)
-        return sg
+        def create_sg():
+            sg = r.aws("ec2", "create-security-group", "--group-name", run_id, "--description", "vws compat",
+                       "--vpc-id", vpc)["GroupId"]
+            created(sg, "ec2", "delete-security-group", "--group-id", sg)
+            return sg
 
-    sg = m.step("security-group", "create-security-group", create_sg, needs=[("vpc", vpc)])
-    m.step("security-group", "authorize-security-group-ingress", lambda: r.aws(
-        "ec2", "authorize-security-group-ingress", "--group-id", sg, "--protocol", "tcp", "--port", "22",
-        "--cidr", "10.232.0.0/16"), needs=[("security-group", sg)])
+        sg = m.step("security-group", "create-security-group", create_sg, needs=[("vpc", vpc)])
+        m.step("security-group", "authorize-security-group-ingress", lambda: r.aws(
+            "ec2", "authorize-security-group-ingress", "--group-id", sg, "--protocol", "tcp", "--port", "22",
+            "--cidr", "10.232.0.0/16"), needs=[("security-group", sg)])
 
-    def describe_sg():
-        groups = r.aws("ec2", "describe-security-groups", "--group-ids", sg)["SecurityGroups"]
-        expect(len(groups) == 1, "describe-security-groups did not return the new group")
-        ports = [p.get("FromPort") for p in groups[0].get("IpPermissions", [])]
-        expect(22 in ports, f"ingress rule for port 22 missing, got ports {ports}")
+        def describe_sg():
+            groups = r.aws("ec2", "describe-security-groups", "--group-ids", sg)["SecurityGroups"]
+            expect(len(groups) == 1, "describe-security-groups did not return the new group")
+            ports = [p.get("FromPort") for p in groups[0].get("IpPermissions", [])]
+            expect(22 in ports, f"ingress rule for port 22 missing, got ports {ports}")
 
-    m.step("security-group", "describe-security-groups", describe_sg, needs=[("security-group", sg)])
+        m.step("security-group", "describe-security-groups", describe_sg, needs=[("security-group", sg)])
 
     def run_instance():
+        network = ["--subnet-id", subnet, "--security-group-ids", sg] if cfg.profile == "aws" else []
         inst = r.aws("ec2", "run-instances", "--image-id", image, "--instance-type", cfg.instance_type,
-                     "--subnet-id", subnet, "--security-group-ids", sg, "--count", "1",
+                     *network, "--count", "1",
                      "--tag-specifications", f"ResourceType=instance,Tags=[{{Key=vws-compat,Value={run_id}}}]",
                      )["Instances"][0]["InstanceId"]
         created(inst, "ec2", "terminate-instances", "--instance-ids", inst)
@@ -308,7 +320,7 @@ def awscli_scenarios(r, cfg, run_id, work):
         return inst
 
     inst = m.step("instance", "run-instances", run_instance,
-                  needs=[("image", image), ("subnet", subnet), ("security-group", sg)])
+                  needs=[("image", image)] + ([("subnet", subnet), ("security-group", sg)] if cfg.profile == "aws" else []))
 
     def describe_instance():
         res = r.aws("ec2", "describe-instances", "--instance-ids", inst)["Reservations"]
@@ -341,31 +353,32 @@ def awscli_scenarios(r, cfg, run_id, work):
 
     m.step("volume", "detach-volume", detach, needs=[("attach-volume", attached)])
 
-    def allocate():
-        alloc = r.aws("ec2", "allocate-address", "--domain", "vpc")["AllocationId"]
-        created(alloc, "ec2", "release-address", "--allocation-id", alloc)
-        return alloc
+    if cfg.profile == "aws":
+        def allocate():
+            alloc = r.aws("ec2", "allocate-address", "--domain", "vpc")["AllocationId"]
+            created(alloc, "ec2", "release-address", "--allocation-id", alloc)
+            return alloc
 
-    alloc = m.step("address", "allocate-address", allocate)
-    assoc = m.step("address", "associate-address", lambda: r.aws(
-        "ec2", "associate-address", "--allocation-id", alloc, "--instance-id", inst)["AssociationId"],
-        needs=[("address", alloc), ("instance", inst)])
+        alloc = m.step("address", "allocate-address", allocate)
+        assoc = m.step("address", "associate-address", lambda: r.aws(
+            "ec2", "associate-address", "--allocation-id", alloc, "--instance-id", inst)["AssociationId"],
+            needs=[("address", alloc), ("instance", inst)])
 
-    def describe_address():
-        addrs = r.aws("ec2", "describe-addresses", "--allocation-ids", alloc)["Addresses"]
-        expect(len(addrs) == 1, "describe-addresses did not return the address")
-        if assoc:
-            expect(addrs[0].get("InstanceId") == inst, f"address is on {addrs[0].get('InstanceId')}, want {inst}")
+        def describe_address():
+            addrs = r.aws("ec2", "describe-addresses", "--allocation-ids", alloc)["Addresses"]
+            expect(len(addrs) == 1, "describe-addresses did not return the address")
+            if assoc:
+                expect(addrs[0].get("InstanceId") == inst, f"address is on {addrs[0].get('InstanceId')}, want {inst}")
 
-    m.step("address", "describe-addresses", describe_address, needs=[("address", alloc)])
-    m.step("address", "disassociate-address", lambda: r.aws(
-        "ec2", "disassociate-address", "--association-id", assoc), needs=[("associate-address", assoc)])
+        m.step("address", "describe-addresses", describe_address, needs=[("address", alloc)])
+        m.step("address", "disassociate-address", lambda: r.aws(
+            "ec2", "disassociate-address", "--association-id", assoc), needs=[("associate-address", assoc)])
 
-    def release():
-        r.aws("ec2", "release-address", "--allocation-id", alloc)
-        deleted(alloc)
+        def release():
+            r.aws("ec2", "release-address", "--allocation-id", alloc)
+            deleted(alloc)
 
-    m.step("address", "release-address", release, needs=[("address", alloc)])
+        m.step("address", "release-address", release, needs=[("address", alloc)])
 
     def stop():
         r.aws("ec2", "stop-instances", "--instance-ids", inst)
@@ -394,13 +407,14 @@ def awscli_scenarios(r, cfg, run_id, work):
 
     m.step("volume", "delete-volume", delete(vol, "ec2", "delete-volume", "--volume-id", vol),
            needs=[("volume", vol)])
-    m.step("security-group", "delete-security-group",
-           delete(sg, "ec2", "delete-security-group", "--group-id", sg), needs=[("security-group", sg)])
-    m.step("subnet", "delete-subnet", delete(subnet, "ec2", "delete-subnet", "--subnet-id", subnet),
-           needs=[("subnet", subnet)])
-    m.step("vpc", "delete-vpc", delete(vpc, "ec2", "delete-vpc", "--vpc-id", vpc), needs=[("vpc", vpc)])
+    if cfg.profile == "aws":
+        m.step("security-group", "delete-security-group",
+               delete(sg, "ec2", "delete-security-group", "--group-id", sg), needs=[("security-group", sg)])
+        m.step("subnet", "delete-subnet", delete(subnet, "ec2", "delete-subnet", "--subnet-id", subnet),
+               needs=[("subnet", subnet)])
+        m.step("vpc", "delete-vpc", delete(vpc, "ec2", "delete-vpc", "--vpc-id", vpc), needs=[("vpc", vpc)])
 
-    s3_scenarios(m, r, run_id, work, created, deleted)
+        s3_scenarios(m, r, run_id, work, created, deleted)
     leftovers = run_cleanup(r, cleanup)
     return m.rows, leftovers, image
 
@@ -552,13 +566,19 @@ def tf_init(r, tfdir, attempts=3):
     return error
 
 
-def terraform_scenarios(r, work, image):
+def terraform_scenarios(r, work, image, profile="aws"):
     rows = []
     tfdir = os.path.join(work, "terraform")
-    shutil.copytree(os.path.join(HERE, "terraform"), tfdir)
+    source = "terraform-pve" if profile == "pve" else "terraform"
+    shutil.copytree(os.path.join(HERE, source), tfdir)
+    if profile == "pve":
+        shutil.copyfile(os.path.join(HERE, "terraform", ".terraform.lock.hcl"),
+                        os.path.join(tfdir, ".terraform.lock.hcl"))
     addrs = [f"{t}.this" for t in tf_addresses(tfdir)]
 
     def row(addr, action, result, detail=""):
+        if profile == "pve":
+            action += " (pve)"
         rows.append(Row("terraform", TF_ADDR.match(addr).group(1), action, result, detail))
 
     def skip_all(action, detail):
@@ -567,11 +587,11 @@ def terraform_scenarios(r, work, image):
 
     init_error = tf_init(r, tfdir)
     if init_error:
-        rows.append(Row("terraform", "provider", "init", "fail", init_error))
+        rows.append(Row("terraform", "provider", "init (pve)" if profile == "pve" else "init", "fail", init_error))
         for action in ("apply", "plan", "destroy"):
             skip_all(action, "needs init")
         return rows, []
-    rows.append(Row("terraform", "provider", "init", "pass"))
+    rows.append(Row("terraform", "provider", "init (pve)" if profile == "pve" else "init", "pass"))
     targets = []
     if image is None:
         targets = [f"-target={a}" for a in addrs if a not in TF_NEEDS_IMAGE]
@@ -580,6 +600,8 @@ def terraform_scenarios(r, work, image):
                 for action in ("apply", "plan", "destroy"):
                     row(a, action, "skip", "needs image")
         addrs = [a for a in addrs if a not in TF_NEEDS_IMAGE]
+    if not addrs:
+        return rows, []
     r.env["TF_VAR_image_id"] = image or ""
 
     try:
@@ -605,6 +627,8 @@ def terraform_scenarios(r, work, image):
                 c = ev["change"]
                 changed[c["resource"]["addr"]] = c["action"]
         perrs = tf_errors(plan.stdout, r) if plan.returncode == 1 else {}
+        if profile == "pve" and plan.returncode != 0:
+            perrs.setdefault("", f"plan after apply exited {plan.returncode}, expected 0")
     except Fail as e:
         changed, perrs = {}, {"": str(e)}
     for a in addrs:
@@ -653,6 +677,7 @@ def render_matrix(doc):
         "# VWS compatibility matrix",
         "",
         f"Target `{doc['target']}`, run `{doc['run_id']}`, {doc['started']}.",
+        f"Profile `{doc.get('profile', 'aws')}`.",
         "Tools: " + ", ".join(f"{k} {v}" for k, v in sorted(doc["tools"].items())) + ".",
         "Terraform AWS provider: pinned in tests/compat/terraform/main.tf.",
         "",
@@ -688,10 +713,11 @@ def cmd_run(out_dir):
             return 2
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     cli_rows, cli_left, image = awscli_scenarios(r, cfg, run_id, work)
-    tf_rows, tf_left = terraform_scenarios(r, work, image)
+    tf_rows, tf_left = terraform_scenarios(r, work, image, cfg.profile)
     rows = cli_rows + tf_rows
     doc = {
         "target": cfg.target,
+        "profile": cfg.profile,
         "run_id": run_id,
         "started": started,
         "endpoints": {"ec2": urllib.parse.urlsplit(cfg.ec2_endpoint).hostname,

@@ -30,6 +30,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.ec2_endpoint, "http://127.0.0.1:8081")
         self.assertEqual(cfg.region, "vws-1")
         self.assertEqual(cfg.instance_type, "t3.micro")
+        self.assertEqual(cfg.profile, "aws")
+
+    def test_pve_profile_defaults_and_overrides(self):
+        cfg = compat.load_config({**GOOD, "VWS_COMPAT_PROFILE": "pve"})
+        self.assertEqual((cfg.profile, cfg.region, cfg.instance_type), ("pve", "pve-test-1", "t3.micro"))
+        cfg = compat.load_config({**GOOD, "VWS_COMPAT_PROFILE": "pve",
+                                  "VWS_COMPAT_REGION": "pve-lab", "VWS_COMPAT_INSTANCE_TYPE": "vws.small"})
+        self.assertEqual((cfg.region, cfg.instance_type), ("pve-lab", "vws.small"))
 
     def test_rejects_bad_input(self):
         cases = {
@@ -41,6 +49,7 @@ class ConfigTest(unittest.TestCase):
             "not http": {"VWS_COMPAT_EC2_ENDPOINT": "ftp://127.0.0.1"},
             "userinfo": {"VWS_COMPAT_EC2_ENDPOINT": "http://u:p@127.0.0.1:8081"},
             "bad target": {"VWS_COMPAT_TARGET": "prod"},
+            "bad profile": {"VWS_COMPAT_PROFILE": "unknown"},
             "empty secret": {"VWS_COMPAT_SECRET_ACCESS_KEY": "  "},
             "bad image": {"VWS_COMPAT_IMAGE_ID": "ami-$(id)"},
             "bad region": {"VWS_COMPAT_REGION": "us east"},
@@ -176,6 +185,19 @@ class ScenarioTest(unittest.TestCase):
         self.assertEqual(image, "ami-0123456789abcdef0")
         self.assertEqual(len({(r.resource, r.action) for r in rows}), len(rows), "row keys are unique")
 
+    def test_pve_cli_only_uses_ec2_and_ebs_without_network_arguments(self):
+        cfg = compat.load_config({**GOOD, "VWS_COMPAT_PROFILE": "pve"})
+        fake = FakeAws()
+        rows, left, _ = compat.awscli_scenarios(fake, cfg, "pve-test", self.work)
+        self.assertEqual({r.resource for r in rows}, {"image", "instance", "volume"})
+        self.assertTrue(all(r.action.endswith(" (pve)") and r.result == "pass" for r in rows))
+        self.assertEqual(left, [])
+        launch = next(c for c in fake.calls if c[:2] == ("ec2", "run-instances"))
+        self.assertNotIn("--subnet-id", launch)
+        self.assertNotIn("--security-group-ids", launch)
+        self.assertEqual(launch[launch.index("--instance-type") + 1], "t3.micro")
+        self.assertTrue(all(c[0] == "ec2" for c in fake.calls))
+
     def test_failed_create_skips_dependents_and_keeps_independent_rows(self):
         rows, left, _ = compat.awscli_scenarios(FakeAws(fail_on={"ec2 run-instances"}), self.cfg, "x", self.work)
         by = {(r.resource, r.action): r for r in rows}
@@ -285,6 +307,56 @@ class TerraformNoImageTest(unittest.TestCase):
             self.assertIn("-target=aws_vpc.this", apply)
 
 
+class PveTerraformTest(unittest.TestCase):
+    def test_missing_image_skips_every_pve_resource(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = compat.Runner({}, d, [])
+            with mock.patch.object(r, "run", return_value=compat.subprocess.CompletedProcess([], 0, "", "")) as run:
+                rows, left = compat.terraform_scenarios(r, d, None, "pve")
+            self.assertEqual(len(rows), 10)
+            self.assertEqual([r.result for r in rows], ["pass"] + ["skip"] * 9)
+            self.assertEqual(left, [])
+            self.assertEqual(run.call_count, 1)
+
+    def test_profile_has_only_instance_volume_and_attachment(self):
+        self.assertEqual(compat.tf_addresses(os.path.join(HERE, "terraform-pve")),
+                         ["aws_instance", "aws_ebs_volume", "aws_volume_attachment"])
+        with open(os.path.join(HERE, "terraform-pve", "main.tf"), encoding="utf-8") as f:
+            config = f.read()
+        self.assertNotIn("subnet_id", config)
+        self.assertIn("default_tags", config)
+        self.assertIn("skip_region_validation", config)
+
+    def test_plan_requires_zero_detailed_exitcode(self):
+        types = ["aws_instance", "aws_ebs_volume", "aws_volume_attachment"]
+        state = "\n".join(t + ".this" for t in types)
+        for code in (0, 1, 2):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as d:
+                r = compat.Runner({}, d, [])
+                calls = []
+                states = iter([state, ""])
+
+                def run(argv, timeout, cwd=None):
+                    calls.append(argv)
+                    stdout = next(states) if argv[:3] == ["terraform", "state", "list"] else ""
+                    return compat.subprocess.CompletedProcess(argv, code if argv[1] == "plan" else 0, stdout, "")
+
+                with mock.patch.object(r, "run", side_effect=run):
+                    rows, left = compat.terraform_scenarios(r, d, "ami-0123456789abcdef0", "pve")
+                self.assertEqual(left, [])
+                self.assertEqual(len(rows), 10)
+                for row in rows:
+                    self.assertTrue(row.action.endswith(" (pve)"))
+                    self.assertEqual(row.result, "fail" if code and row.action == "plan (pve)" else "pass")
+                    if row.resource != "provider":
+                        self.assertEqual(row.owner, "vws-console-api")
+                self.assertIn("-detailed-exitcode", next(c for c in calls if c[1] == "plan"))
+                md = compat.render_matrix({"target": "fake", "run_id": "pve", "started": "test",
+                                           "profile": "pve", "tools": {}, "leftovers": [],
+                                           "rows": [dict(compat.dataclasses.asdict(r), owner=r.owner) for r in rows]})
+                self.assertIn("| terraform | aws_instance | plan (pve) |", md)
+
+
 def doc(target="vws"):
     rows = [
         compat.Row("aws-cli", "instance", "run-instances", "fail", "InvalidParameterValue"),
@@ -307,7 +379,7 @@ class OutputTest(unittest.TestCase):
     def test_plan_issues_one_per_failing_row(self):
         planned = compat.plan_issues(doc())
         self.assertEqual([(o, t) for o, t, _ in planned], [
-            ("vws-compute", "compat: aws-cli instance run-instances fails against VWS"),
+            ("vws-console-api", "compat: aws-cli instance run-instances fails against VWS"),
             ("vws-network", "compat: terraform aws_vpc apply fails against VWS"),
         ])
         self.assertIn("Part of popododo0720/vws-deploy#133", planned[0][2])
