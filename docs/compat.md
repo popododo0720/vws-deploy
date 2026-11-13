@@ -20,6 +20,25 @@ destroy with Terraform.
   group, an instance, an EBS volume and its attachment, an EIP and its association, and an S3 bucket and object.
   Every resource gets an `apply`, a `plan` (pass means no change after apply) and a `destroy` row.
 
+`VWS_COMPAT_PROFILE=aws` is the default and keeps the full scenario above.
+`VWS_COMPAT_PROFILE=pve` selects `tests/compat/terraform-pve/main.tf`: only `aws_instance`,
+`aws_ebs_volume` and `aws_volume_attachment`, with provider `default_tags` and no `subnet_id`.
+The scenario relies on the region's default bridge subnet. Its CLI scenario runs image discovery, the instance lifecycle
+and EBS create, describe, attach, detach and delete calls. It creates no VPC, subnet, security group,
+Elastic IP or S3 resources. Pve actions have a ` (pve)` suffix, for example
+`terraform | aws_instance | plan (pve)`. A pve plan passes only when
+`terraform plan -detailed-exitcode` exits 0; exit 2 is a failure even without a resource diagnostic.
+Both profiles share the provider version and lock file in `tests/compat/terraform/`.
+The pve provider omits S3 configuration because this profile uses only EC2/EBS.
+
+The [first generated pve matrix](compat-pve.md) was measured on 2026-11-13 against console-api
+`0b2a95fc5280d0581c9539df400215d560bae82d`: pass 1, fail 3, skip 17, with no leftovers.
+This is not an all-pass compatibility claim. The backend's `DescribeImages` still returns empty inventory.
+Its EC2 Query `RunInstances` parser requires `SubnetId` even for a pve region, and the stock Terraform
+provider's launch is rejected with `InvalidParameterValue: unsupported`. Supplying the seeded template ID
+lets the run expose both launch failures instead of skipping every resource. Consequently no real
+post-apply no-change plan has been observed at this pin; the exit-code assertion is covered by unit tests.
+
 A step whose input a failed step should have made is `skip` with `needs <input>`, so one failure does not hide or
 fail the rows after it. Every name the run creates has the run ID `vws-compat-<8 hex>` (bucket and security group
 names, the `vws-compat` tag). At the end the run deletes, newest first, what a failed step left, and lists what it
@@ -34,12 +53,13 @@ checks their sha256.
 | Variable | Meaning |
 | --- | --- |
 | `VWS_COMPAT_TARGET` | `fake` or `vws`. Only a `vws` run can open issues |
+| `VWS_COMPAT_PROFILE` | `aws` (default) or `pve`; other values are refused |
 | `VWS_COMPAT_EC2_ENDPOINT`, `VWS_COMPAT_S3_ENDPOINT` | VWS endpoint URLs, http or https |
 | `VWS_COMPAT_ALLOWED_HOSTS` | comma list; each endpoint host must be in it |
 | `VWS_COMPAT_ACCESS_KEY_ID`, `VWS_COMPAT_SECRET_ACCESS_KEY` | VWS test credentials |
-| `VWS_COMPAT_REGION` | default `vws-1` |
+| `VWS_COMPAT_REGION` | default `vws-1` for aws, `pve-test-1` for pve |
 | `VWS_COMPAT_IMAGE_ID` | image for instances; default the first image describe-images returns. Without an image, Terraform still runs the resources that need none |
-| `VWS_COMPAT_INSTANCE_TYPE` | default `t3.micro` |
+| `VWS_COMPAT_INSTANCE_TYPE` | default `t3.micro`, mapped by console-api to `vws.small` |
 
 The run refuses an AWS-owned endpoint host (`AWS_OWNED` in `tests/compat/compat.py`) and any host outside the
 allowlist. aws and terraform get only the environment the script builds. That is the credentials above, a
@@ -58,8 +78,15 @@ matrix, writes the matrix to the job summary and uploads `results.json` and `mat
 - Pull requests that change `tests/compat/`, `scripts/versions.env` or the workflow run against
   `vws-console-api -backend fake` at `CONSOLE_API_FAKE_REF`. A fake run checks the harness and measures the
   console-api API surface. It is not VWS.
+- The same PR workflow runs the pve profile against the real Proxmox backend and EC2 Query surface
+  with the upstream `pvefake` HTTPS transport. `tests/compat/pvefake/main.go` builds inside console-api
+  at `CONSOLE_API_PROXMOX_FAKE_REF`; it seeds one public template, a bridge and local storage, and prints
+  the template's deterministic image ID. This pin is separate from the existing aws fake pin.
+  Its generated matrix and JSON are uploaded as `compat-matrix-fake-pve`.
+  A successful harness invocation writes the matrix even when API compatibility rows fail; read the
+  row results, not just the job status. This is also how the existing aws matrix reports gaps.
 - A dispatch with `target: vws` runs against VWS. It reads the endpoints, allowlist, region, image and instance
-  type from the `VWS_COMPAT_*` repo variables and the credentials from the `VWS_COMPAT_ACCESS_KEY_ID` and
+  type and profile from the `VWS_COMPAT_*` repo variables and the credentials from the `VWS_COMPAT_ACCESS_KEY_ID` and
   `VWS_COMPAT_SECRET_ACCESS_KEY` secrets. `runner` picks a runner that reaches the endpoints.
   With `open_issues: true` it runs `compat.py issues --apply` with the `VWS_COMPAT_ISSUE_TOKEN` secret, a token with
   issue write on the owner repos only.
@@ -74,8 +101,8 @@ tried once: a create whose reply was lost is found by title on the next run. The
 
 | Resource | Owner |
 | --- | --- |
-| image, instance, `aws_instance` | vws-compute |
-| volume, `aws_ebs_volume`, `aws_volume_attachment` | vws-storage |
+| image, instance, `aws_instance` | vws-console-api |
+| volume, `aws_ebs_volume`, `aws_volume_attachment` | vws-console-api |
 | vpc, subnet, security-group, address, `aws_vpc`, `aws_subnet`, `aws_security_group`, `aws_eip`, `aws_eip_association` | vws-network |
 | bucket, object, `aws_s3_bucket`, `aws_s3_object` | vws-storage |
 | provider (`terraform init`) | vws-deploy |
