@@ -14,7 +14,7 @@ for file in "${VWS_TEST_ROOT}"/scripts/vws.d/*.sh; do
 done
 
 help_text=$OUT
-for name in render apply reconfigure upgrade rollback; do
+for name in render apply reconfigure upgrade rollback diag doctor preflight status verify-reboot; do
   if grep -qE "^  ${name} +" <<<"$help_text"; then
     bad "help excludes retired ${name}" "$OUT"
   else
