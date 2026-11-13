@@ -21,6 +21,8 @@ shellcheck "$src/build.sh" "$src/check-ready" "$src/postinst" "$src/prerm" \
 /usr/sbin/visudo -c -f "$src/sudoers"
 python3 "$src/check-policy.py" "$src/sudoers"
 python3 "$src/test-policy.py" "$src/check-policy.py" "$src/sudoers" "$tmp"
+python3 "$src/check-instance-types.py" "$src/region.yaml"
+python3 "$src/test-instance-types.py" "$src/check-instance-types.py" "$src/region.yaml" "$tmp"
 printf 'vws-region ALL=(root) NOPASSWD: ALL\n' > "$tmp/broad-sudoers"
 /usr/sbin/visudo -c -f "$tmp/broad-sudoers"
 if python3 "$src/check-policy.py" "$tmp/broad-sudoers"; then

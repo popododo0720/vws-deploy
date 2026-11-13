@@ -12,8 +12,8 @@ templates:
   tag: vws-image
 instance_types:
   vws.small:
-    cores: 2
-    memory_mib: 2048
+    cores: 1
+    memory_mib: 1024
 scheduler:
   policy: spread
   host_reserve_mib: 2048
