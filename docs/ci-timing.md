@@ -19,9 +19,9 @@ columns are one run each, named by head SHA.
 Cause: test growth run serially. In run 42212058830 (8b77f45, 2026-11-06) the Check
 step took 300s and `scripts/guard.sh all` 288s of it. Timed locally per subcommand,
 `guard.sh vws` took 180s, `agents` 27s and `placeholders` 10s; everything else was under 6s.
-`guard.sh vws` runs `tests/vws/run.sh`: 25 suites, 1487 cases at 8b77f45. The slow suites wait on
-fake-cluster polls rather than compute: `verify-reboot.test.sh` takes 37s of wall time and 6s
-of CPU.
+`tests/vws/run.sh` covered 25 suites and 1487 cases at 8b77f45. Those historical measurements
+included retired cluster polling suites. Part 1 of #775 removes those suites; the runner still
+discovers every remaining `*.test.sh` dynamically.
 
 Fix (this change): `tests/vws/run.sh` runs the suites in parallel, twice `nproc` at a time, and
 prints their output in name order. Measured on this box pinned to 4 CPUs (`taskset -c 0-3`, the

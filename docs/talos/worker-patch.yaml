@@ -1,7 +1,0 @@
-# Example only. Not applied to any cluster; the values must be confirmed in the T2 lab (unverified).
-machine:
-  kernel:
-    modules:
-      - name: openvswitch
-      - name: geneve
-      - name: rbd

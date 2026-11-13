@@ -1,6 +1,6 @@
 # The `vws` command
 
-The admin CLI for configuration, regions and AWS accounts. The remaining Kubernetes read and diagnostic commands stay until #775. Chart deployment commands have been retired; use `docs/operator/regions.md` for the supported deployment path.
+The admin CLI for configuration, regions and AWS accounts. The legacy installer entry points and Kubernetes-gated scenario runner remain during the staged cleanup in #775. Chart deployment commands have been retired; use `docs/operator/regions.md` for the supported deployment path.
 
 ```
 scripts/vws [flags] <command> [args]
@@ -249,29 +249,6 @@ table of console-api's `TestParseRefusesWhatIsNotBootstrap`.
 
 Shows the command list, common flags and exit codes. With `-o json`, one entry per command. Needs no cluster tools.
 
-### vws preflight
-
-`vws preflight --profile single-node|small|ha [--links FILE]`: checks before installing. It never writes to the cluster (read verbs only). Each check function lives in `scripts/vws.d/lib/checks.sh`, and status and doctor use the same functions (#43 section 4).
-
-| Check name | Method | Failure |
-| --- | --- | --- |
-| `tools` | `helm version --short` starts with `HELM_VERSION` | WARN |
-| `api` | `kubectl version`, prints the current context name | no answer is exit code 3 |
-| `k8s-minor` | server minor = `KUBERNETES_VERSION` minor | WARN |
-| `install-rights` | `kubectl auth can-i create` for namespaces, CRDs, cluster/namespace RBAC and the kinds the chart creates | FAIL with the missing verbs/resources |
-| `nodes` | Ready nodes ≥ the profile minimum (1/3/6) | FAIL |
-| `default-storageclass` | a default StorageClass exists | FAIL |
-| `ceph-block`, `ceph-block-snapshot` | StorageClass and VolumeSnapshotClass `ceph-block` | WARN before the bundle |
-| `crd-<group>` | the bundle CRD groups (kubevirt.io, cdi.kubevirt.io, kubeovn.io, k8s.cni.cncf.io, snapshot.storage.k8s.io) are Established | WARN when missing, FAIL when not Established |
-| `kubevirt-phase`, `cdi-phase` | the KubeVirt/CDI CR phase is Deployed | WARN when missing, FAIL on another phase |
-| `kernel-indirect` | indirect check through the existence of `kubevirt.io/schedulable` nodes (no `--node-probe`, decision 3) | WARN |
-| `release` | helm release `vws` is `pending-*`/`failed` | FAIL |
-| `source` | in a checkout, `guard.sh bundle` | FAIL. Skipped with `VWS_SOURCE_CHECKS=0` (harness) |
-| `node-network`, `node-ip/<node>`, `node-links/<node>` | the cluster's VWSCluster `spec.network.nodes` (#128, `lib/nodenet.py`). Whether each node's InternalIP is inside the management CIDR. With `--links FILE` (`talosctl -n <all nodes> get links -o json`), whether each node has the host network interfaces (`<nic>` or `<nic>.<vlan>`) and underlay NICs with an MTU of at least the CR value | an IP outside, a missing interface, a too-small MTU or a node missing from links is FAIL. Without `--links`, `node-links` WARN (unconfirmed). OK when there is no CR or no `nodes` |
-| `vm-mtu`, `vm-mtu-set` | whether the tunnel NIC MTU (the minimum over nodes from `--links`, else `spec.network.underlayMTU`) is at least the VM MTU (`vmMTU`, else 9001) + tunnel overhead (#236). Below 9216 the OK message states the recommended value | when too small, WARN, and it writes the lowered `spec.network.vmMTU` and the read `underlayMTU` to VWSCluster `vws` with `kubectl patch` (`vm-mtu-set` OK; if refused, WARN with a hint to use the operator kubeconfig). These two fields are all preflight writes; it never touches NIC MTUs. With no basis, `vm-mtu` WARN (unconfirmed) |
-
-Any FAIL exits 1, WARN also exits 1 under `--strict`, and 3 when evaluation is impossible. The harness `tests/vws/preflight.test.sh` changes one file of `tests/fixtures/preflight/ok` per scenario and checks each check's pass/fail.
-
 ### vws init
 
 `vws init` starts the legacy installer API TUI inside the installer pod. `vws init --print-url` prints its connection details through `vws-installer print-url`. These entry points remain until #775. CR creation with `--from` or interactive chart questions is retired.
@@ -280,66 +257,9 @@ Any FAIL exits 1, WARN also exits 1 under `--strict`, and 3 when evaluation is i
 
 `vws installer finish`: deletes the temporary installation cluster-admin binding (`vws-installer-temp`) and confirms it is really gone. Design and reasons are in `docs/installer.md`. The confirmation uses `kubectl auth can-i` (a SelfSubjectAccessReview; outside the pod, `--as=system:serviceaccount:vws:vws-installer`, i.e. a SubjectAccessReview) and checks that `* *`, `create clusterrolebindings`, `create clusterroles`, `delete namespaces`, `create customresourcedefinitions` and `get secrets` are all `no`, and that the operator rights `get vwsclusters` and `patch vwsclusters/status` are `yes`. Any mismatch exits 1; an unreadable answer exits 3. If the binding is already gone, `unchanged`, and the confirmation runs again (idempotent). Before the delete it reads only the consumed label of Secret `vws-initial-admin` (#208), never its data: `WARN credential` when the initial admin password was never handed out (afterwards only a cluster-admin kubeconfig reads it), `OK` when it was or when there is no Secret (sign-in off). It never blocks the revoke.
 
-### vws status
-
-`vws status` reads the API, the installed VWSCluster generation, the Helm release revision and state, and PodDisruptionBudgets. It makes no mutating calls. When the operator role cannot read Helm release Secrets, the release check warns and asks for the operator's own kubeconfig. `--strict` makes a warning exit 1.
-
-### vws doctor
-
-`vws doctor` adds restart loops, Pending PVCs, platform CRD and KubeVirt/CDI readiness, read rights and Ceph health to `vws status`. It is read only. Every failure names a next action.
-
-### vws diag
-
-`vws diag [--out FILE] [--since 1h]`: writes one diagnostic bundle (tar.gz) for incident reports. It only reads the cluster and uploads nothing (#43 section 7).
-
-| File | Content |
-| --- | --- |
-| `vwscluster.json` | VWSCluster spec and status (without managedFields) |
-| `helm-status.json`, `helm-history.json`, `helm-values.json` | `helm status/history`, `helm get values -a`. The operator role cannot read Secrets, so these become `unavailable: ...` (running again with user credentials fills them) |
-| `cluster.txt` | `get nodes,pods,pvc,pdb,events -A -o wide` |
-| `pods/<ns>_<pod>.describe.txt`, `.log` | only unhealthy pods (not Running/Succeeded, or with unready containers) in the release namespace and the bundle namespaces (kubevirt, cdi, kube-system, rook-ceph). Logs cover `--since` (default 1h), 500 lines per pod |
-| `crds.txt`, `kubevirt-status.json`, `cdi-status.json`, `cephcluster-status.json` | CRD names, the status of each CR |
-| `configmaps.json` | release namespace ConfigMap names and per-key sizes (no data) |
-| `status.json`, `doctor.json` | the output of `vws status`/`doctor` (#56) when this build has them |
-| `versions.env`, `kubectl-version.txt`, `helm-version.txt`, `context.txt` | versions and the context name |
-| `README`, `REDACTION_REPORT` | instructions, masked counts per pattern (no values) |
-
-Not collected: any Secret (no call reads secrets), ConfigMap data, environment variables, node host files, VM consoles or disks.
-
-Masking: the key name rule comes first. Values of keys with secret-shaped names (case-insensitive: `passw`, `passphrase`, `token`, `secret`, `credential`, `private`, `apikey`/`api-key`/`api_key`, `dsn`, `auth`, names ending in `key` after a `-`/`_`/`.` separator, camelCase `...Key`) are hidden whatever their shape; for nested objects/lists, everything below. JSON files (such as `helm get values -a -o json`) are parsed structurally, only the values become `"[REDACTED]"`, and they are written back as valid JSON; YAML/text is handled line by line (including indented blocks). `secretName`, `secretRef` and `secretKeyRef` are Secret name references and stay. Similar names such as `keys`, `monkey` and `privileged`, and image digests, are not hidden. Then `lib/redact.py` scans every file and replaces with `[REDACTED]` lines that contain PEM private key blocks, `Bearer` tokens, `token` values, base64 values of 40 or more characters under `data:`/`binaryData:`, runs of 12 or more digits, or credential URLs (`://user:pass@`). The scanner first checks that it catches an obviously fake canary for each pattern. If the scanner is missing (no python3 in PATH) or misses a canary, it writes no bundle and exits 3 (fail closed). Image digests (hex) are outside `data:` and are not hidden. Masking is not complete: a person reviews the bundle before sharing it (the README says so too).
-
-Files: created with umask 077 and mode 0600; an existing file of the same name is not overwritten (exit 2). If the API does not answer, 3.
-
-### vws verify-reboot
-
-`vws verify-reboot --snapshot FILE [--allow-unmanaged-pod NS/NAME]... [--allow-vm-restart NS/NAME]...` (before the reboot), `vws verify-reboot --drained NODE [--timeout 5m]` (after the drain, before the reboot), `vws verify-reboot --check FILE [--timeout 20m] [--allow-health-check CODE]... [--ceph-health-file FILE | --skip-ceph-gate]` (after the reboot). This command does not reboot (a person or `talosctl` does). Read only (#43 section 8).
-
-`--snapshot` emits `WARN krbd` for each node with a `rbd.csi.ceph.com` VolumeAttachment. Drain those nodes before rebooting (krbd shutdown hang, #116; the procedure is in [platform-bundle.md](platform-bundle.md)).
-
-- `--snapshot` fails (1) and writes no file when a pod on a node declares no controller (no `ownerReferences` entry with `controller: true`; other owner references do not count), because `kubectl drain` refuses to delete it. It names each pod with its node. Delete the pod, or pass `--allow-unmanaged-pod NS/NAME` (repeatable) to accept it.
-- `--snapshot` also fails (1) and writes no file when a VMI on a node has `spec.evictionStrategy` unset or `None`, because a drain shuts it down and restarts it elsewhere instead of live-migrating it. It names each VMI with its node. Set `evictionStrategy` to `LiveMigrate` on its VirtualMachine, or pass `--allow-vm-restart NS/NAME` (repeatable) to accept the restart. Neither allowlist can be widened through an environment variable (#189).
-- `--drained NODE [--timeout 5m]`: 0 when the node is cordoned and no `rbd.csi.ceph.com` VolumeAttachment is attached, 1 when the node is not cordoned or the detach did not finish within `--timeout`, 3 when unreadable. The CSI detach lags the drain, so it re-reads the attachments every `VWS_VERIFY_INTERVAL` (default 10 seconds) and prints the remaining PV names; the detach is a FAIL only when it is still incomplete at the timeout. Do not reboot on non-zero (#150, #193).
-- `--snapshot` emits `WARN infra` when one or fewer nodes can take the KubeVirt infra pods (virt-api, virt-controller, virt-exportproxy). It counts schedulable nodes that have every nodeSelector label, or control-plane nodes when there is no nodePlacement. Draining that node stalls on the PDBs (#168). It only reads and does not count as a failure.
-- If any list in the snapshot cannot be read, it exits 3 and leaves no file (`snapshot failed: ...; do not reboot`). This keeps anyone from rebooting without the krbd check (#150).
-- Snapshot (0600, never overwritten): node names and boot IDs, ready/desired per service, pod **counts** per namespace, release namespace PVC names and phases, the **number** of keys in VWS ConfigMaps, `runStrategy: Always` VM names and states. No pod UIDs, ConfigMap data or Secrets.
-- Confirmation gates (startup order, each duration printed): `api` → `nodes` (every node in the snapshot is Ready) → `cni` (kube-ovn pods Ready) → `csi` (Ceph `HEALTH_OK`, or `HEALTH_WARN` whose active check codes are all in `--allow-health-check`; the same for every profile including single-node) → `bundle` (KubeVirt and CDI CRs `Deployed`) → `services` (snapshot services have ready == desired). States worth waiting for are re-checked every `VWS_VERIFY_INTERVAL` (default 10 seconds).
-- `--allow-health-check CODE` (repeatable, empty list by default): on `HEALTH_WARN`, the `csi` gate passes only when **every** active check code in CephCluster `status.ceph.details` is in the list. If any code is outside the list, it waits while showing that code by name and exits 3 at `--timeout`. It cannot be widened through environment variables. Nothing is muted in Ceph (#150). The single-node profile has no exception (#154). Warning codes raised because the pool size is 1 must also be confirmed with `ceph health detail` and passed explicitly. `POOL_NO_REDUNDANCY` is **only an example**. Until measured on a real single-node cluster, do not assume this code appears, and do not add it to the allowlist unconfirmed (#158).
-  - vws-test example: because AES keys are allowed for krbd, `ceph health detail` shows three codes, `AUTH_INSECURE_CLIENT_KEY_TYPE`, `AUTH_INSECURE_KEYS_ALLOWED` and `AUTH_INSECURE_KEYS_CREATABLE` (measured 2026-10-13). `vws verify-reboot --check before.json --allow-health-check AUTH_INSECURE_CLIENT_KEY_TYPE --allow-health-check AUTH_INSECURE_KEYS_ALLOWED --allow-health-check AUTH_INSECURE_KEYS_CREATABLE`.
-- External Ceph (#166, storage driver `existing`, no CephCluster CRD, as on vws-test): the `csi` gate never passes silently.
-  - `--ceph-health-file FILE`: reads a file made **after** the reboot with `ceph health detail -f json > FILE` (`.status`, `.checks`). The verdict is the same as for a CephCluster, and `--allow-health-check` applies to the check codes the same way. If the file is not newer than the snapshot, unreadable or malformed, it waits (3 at `--timeout`). The gate re-reads the file while waiting, so it may be rewritten in between.
-  - `--skip-ceph-gate`: only when there is no CephCluster CRD at all, it skips the gate and emits `WARN gate-csi SKIPPED ... Ceph health was NOT checked`. It does not count as OK. With `--ceph-health-file` present, the file wins.
-  - With neither, it exits 1 and names both options. When the CRD exists but no CephCluster yet (Rook starting), it waits even with `--skip-ceph-gate`.
-  - When a CephCluster exists it is always read, and the file is not used.
-- The blocked gate is the **first line** of the output. A state that cannot pass (a node gone, Ceph `HEALTH_ERR`, an operator `Failed`, a service without workloads) is 1; still not passing at `--timeout` is 3.
-- Comparison after the gates (1 on failure): the snapshot's Bound PVCs are Bound under the same names, ConfigMap key counts are equal or higher, every Always VM is Running, and no pod has restarts above the threshold (`VWS_VERIFY_RESTARTS`, default 3). If no node's boot ID changed, `WARN reboot not observed`.
-- Whether a node rebooted is judged by its `status.nodeInfo.bootID` (it changes on every reboot), not by boot time.
-- Real reboot/power-cut measurement is unverified: cluster-verification-list I9, etcd runbook scenario 7 (A7).
-
 ### vws backup
 
-`vws backup [--out DIR] [--etcd-snapshot FILE]` reads the cluster and writes `vws-backup-<UTC>/` (0700, files 0600; an existing directory is refused, exit 2): the VWSCluster spec, `helm get values -a`, history and manifest, the release-namespace ConfigMaps labelled `app.kubernetes.io/part-of=vws` (WARN when there are none), `manifest.json` (files with size and sha256, versions, profile, VolumeSnapshot names, CephCluster health, the etcd snapshot path and whether it is under 24 hours old) and `SHA256SUMS`. Secrets, Ceph/VM disks and etcd itself are not included. The CR and helm files are scanned with `scripts/vws.d/lib/redact.py` first; any hit is a FAIL and nothing is written. Helm keeps its release in Secrets, so the operating role cannot run it: use your own kubeconfig. Copying the directory off the node is up to you. Not yet checked on a real cluster (cluster-verification-list I8).
-
-`vws backup --etcd [--out FILE]` writes one snapshot of the vws-etcd cluster (IAM and the admin registry; no VM disks or Proxmox data) to `vws-etcd-<UTC>.db` or `FILE` (0600; an existing file is refused, exit 2). etcdctl reads the member and the client certificate from `ETCDCTL_ENDPOINTS` (one https URL), `ETCDCTL_CACERT`, `ETCDCTL_CERT` and `ETCDCTL_KEY` (from `packaging/vws-etcd/vws-etcd-tls`); anything else exits 2. `ETCDCTL_COMMAND_TIMEOUT` bounds the save (default 60s). A failed save or a snapshot that does not verify with `etcdutl snapshot status` is a FAIL and leaves no file. Kubernetes and helm are not needed in this mode. `tests/vws/etcd.test.sh` runs it against real etcd.
+`vws backup --etcd [--out FILE]` writes one snapshot of the vws-etcd cluster (IAM and the admin registry; no VM disks or Proxmox data) to `vws-etcd-<UTC>.db` or `FILE` (0600; an existing file is refused, exit 2). etcdctl reads the member and the client certificate from `ETCDCTL_ENDPOINTS` (one https URL), `ETCDCTL_CACERT`, `ETCDCTL_CERT` and `ETCDCTL_KEY` (from `packaging/vws-etcd/vws-etcd-tls`); anything else exits 2. `ETCDCTL_COMMAND_TIMEOUT` bounds the save (default 60s). A failed save or a snapshot that does not verify with `etcdutl snapshot status` is a FAIL and leaves no file. `--etcd` is required; omitting it exits 2 with the supported usage. `tests/vws/etcd.test.sh` runs it against real etcd.
 
 ### vws restore
 

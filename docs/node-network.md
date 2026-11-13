@@ -2,7 +2,7 @@
 
 The design and decisions are in vws-deploy#125. This document shows how an operator writes them in the CR, with examples for 1, 2 and 4 NICs.
 
-VWS does not configure host networking (R10). The OS creates NICs, VLAN subinterfaces (`<nic>.<vlan>`), node IPs and MTUs first. The CR describes that state, `vws preflight` compares against it, and `vws apply` derives the Kube-OVN, Rook and vws-network settings from it.
+VWS does not configure host networking (R10). The OS creates NICs, VLAN subinterfaces (`<nic>.<vlan>`), node IPs and MTUs first. The CR describes that state for the legacy installer API.
 
 ## Fields
 
@@ -94,7 +94,7 @@ The three examples in this document pass `vws render` validation (run by hand wh
 
 ## Changes in operation
 
-Changing `nodes` reconfigures the nodes. A Kube-OVN interface or MTU change restarts kube-ovn-cni, and a Ceph network change redeploys the mons. Change one network at a time and check node by node, as `vws verify-reboot` does. Whether this is disruption-free was not measured on a real cluster (needs checking).
+Changing `nodes` reconfigures the nodes. A Kube-OVN interface or MTU change restarts kube-ovn-cni, and a Ceph network change redeploys the mons. Change one network at a time and check node by node. Whether this is disruption-free was not measured on a real cluster (needs checking).
 
 ## Extension points (not implemented)
 

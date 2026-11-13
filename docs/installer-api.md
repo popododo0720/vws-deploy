@@ -70,7 +70,7 @@ When validation fails, the value is stored as `invalid` and the response is 400 
 
 ## Preflight engine (#143)
 
-`internal/preflight` builds checks from the step values. It reads only the Kubernetes API and an optional links file (R10). It ports #128's node network checks (`scripts/vws.d/lib/nodenet.py`) with the same rules. nodenet.py in `vws preflight` stays for the CLI outside the pod.
+`internal/preflight` builds checks from the step values. It reads only the Kubernetes API and an optional links file (R10). It implements #128's node network checks inside the installer API.
 
 | Step | id | Severity | Content |
 | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ When validation fails, the value is stored as `invalid` and the response is 400 
 | storage | `storage.nfs` | info, unknown | the NFS server is not contacted |
 | profile | `profile.nodes` | error | Ready node count ≥ 1 for single-node, 3 for small, 6 for ha (`VWS_PROFILE_MIN_NODES`) |
 
-NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes> get links -o json`, the same input as nodenet.py). A links entry's `node` is a node name or InternalIP. When links does not know a node, `nic.links` is unknown and the network option `options.nics` is empty for that node.
+NICs and MTUs are read from `vws-installer -links FILE` (`talosctl -n <all nodes> get links -o json`, the installer node-link snapshot format). A links entry's `node` is a node name or InternalIP. When links does not know a node, `nic.links` is unknown and the network option `options.nics` is empty for that node.
 
 The bootstrap Deployment passes `-links=/etc/vws-installer/links/links.json` and mounts the optional ConfigMap `vws-installer-links` there read-only (#205). The operator supplies the snapshot at install time, after `kubectl apply -f build/bootstrap.yaml` (which creates the namespace `vws`):
 
