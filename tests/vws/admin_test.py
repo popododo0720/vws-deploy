@@ -183,6 +183,15 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
                 expected("GET", BASE + "/" + NAME + "/health", result=health)
                 result = run(["health", NAME])
                 check("health fields", all(v in result.stdout for v in ("QUORUM", "LEADER", "ONLINE NODES", "LAST ERROR", "node1")))
+            failed = dict(REGION, lastError={"time": "2026-11-13T00:00:00Z", "message": "region registration push failed"})
+            for mode in ("text", "json"):
+                expected("POST", body=create, status=201, result=failed)
+                result = run(["add", NAME] + FIELDS + [SECRET_FLAG, "-", "-o", mode], code=1, stdin=SECRET)
+                check("add reports lastError on push failure", "region registration push failed" in result.stderr)
+                expected("GET", BASE + "/" + NAME)
+                expected("PATCH", BASE + "/" + NAME, {SECRET_KEY: SECRET}, result=failed)
+                result = run(["edit", NAME, SECRET_FLAG, "-", "-o", mode], code=1, stdin=SECRET)
+                check("edit reports lastError on push failure", "region registration push failed" in result.stderr)
             steps = {"steps": [dict(name="tls", result="FAIL", message="TLS handshake failed"),
                                dict(name="version", result="SKIPPED", message="previous step failed")]}
             expected("POST", BASE + "/" + NAME + "/test", {}, result=steps)
