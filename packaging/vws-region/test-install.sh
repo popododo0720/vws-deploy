@@ -50,10 +50,16 @@ python3 - <<'PY'
 import subprocess
 
 helper = "/usr/lib/vws/vws-region-helper"
-fixed = ("registration-write", "token-write", "token-read", "lease-write")
+fixed = ("registration-write", "lease-write")
 cases = [(True, (verb,)) for verb in fixed]
 cases += [(False, (verb, "extra")) for verb in fixed]
 cases += [(False, ()), (False, ("unknown",))]
+fingerprint = "0123456789abcdef" * 4
+for verb in ("token-write", "token-read", "token-delete"):
+    cases.append((True, (verb, fingerprint)))
+    cases += [(False, (verb, value)) for value in
+              (fingerprint[:-1], fingerprint + "0", fingerprint.upper(), "")]
+    cases += [(False, (verb, fingerprint, "extra")), (False, (verb,))]
 for verb in ("lock", "unlock"):
     cases += [(True, (verb, name)) for name in ("a", "A0_-", "a" * 64)]
     cases += [(False, (verb, name)) for name in

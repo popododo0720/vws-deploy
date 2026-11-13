@@ -6,9 +6,10 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 helper = "/usr/lib/vws/vws-region-helper"
-expected = []
-for operation in ("registration-write", "token-write", "token-read", "lease-write"):
-    expected.append(f"vws-region ALL=(root) NOPASSWD: {helper} {operation}")
+expected = [f"vws-region ALL=(root) NOPASSWD: {helper} registration-write"]
+for operation in ("token-write", "token-read", "token-delete"):
+    expected.append(f"vws-region ALL=(root) NOPASSWD: {helper} ^{operation} [0-9a-f]{{64}}$")
+expected.append(f"vws-region ALL=(root) NOPASSWD: {helper} lease-write")
 for operation in ("lock", "unlock", "snippet-write", "snippet-delete"):
     name = (r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}" if operation in ("lock", "unlock")
             else r"vws-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-user[.]yaml")
@@ -30,7 +31,7 @@ for line in expected:
     if not arguments.startswith("^"):
         continue
     verb = arguments.split(" ", 1)[0][1:]
-    valid = ("a" * 64 if verb in ("lock", "unlock")
+    valid = ("a" * 64 if verb in ("lock", "unlock", "token-write", "token-read", "token-delete")
              else "vws-01234567-89ab-cdef-0123-456789abcdef-user.yaml")
     assert re.fullmatch(arguments, f"{verb} {valid}"), arguments
     for invalid in ("", "../escape", "valid extra", "wrong.yaml"):
