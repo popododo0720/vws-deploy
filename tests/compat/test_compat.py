@@ -74,6 +74,22 @@ class ConfigTest(unittest.TestCase):
             with open(env["AWS_CONFIG_FILE"], encoding="utf-8") as f:
                 self.assertIn("addressing_style = path", f.read())
 
+    def test_live_config_requires_small_pve_image_and_run_id(self):
+        env = {**GOOD, "VWS_COMPAT_TARGET": "live", "VWS_COMPAT_PROFILE": "pve",
+               "VWS_COMPAT_INSTANCE_TYPE": "vws.small", "VWS_COMPAT_LIVE_RUN_ID": "live-780",
+               "VWS_COMPAT_IMAGE_ID": "ami-0123456789abcdef0"}
+        env.pop("VWS_COMPAT_S3_ENDPOINT")
+        cfg = compat.load_config(env)
+        self.assertEqual(cfg.s3_endpoint, cfg.ec2_endpoint)
+        for key, value in (("VWS_COMPAT_INSTANCE_TYPE", "vws.medium"),
+                           ("VWS_COMPAT_PROFILE", "aws"), ("VWS_COMPAT_IMAGE_ID", ""),
+                           ("VWS_COMPAT_LIVE_RUN_ID", "../bad")):
+            with self.subTest(key=key), self.assertRaises(compat.ConfigError):
+                compat.load_config({**env, key: value})
+        with tempfile.TemporaryDirectory() as work:
+            child = compat.child_env(cfg, work, "live-780")
+            self.assertEqual(child["TF_VAR_live_run_id"], "live-780")
+
 
 class RunnerTest(unittest.TestCase):
     def test_detail_redacts_and_truncates(self):
@@ -326,6 +342,42 @@ class PveTerraformTest(unittest.TestCase):
         self.assertNotIn("subnet_id", config)
         self.assertIn("default_tags", config)
         self.assertIn("skip_region_validation", config)
+        self.assertIn('variable "live_run_id"', config)
+        self.assertIn('"vws-live-run" = var.live_run_id', config)
+
+    def test_live_matrix_rows_and_apply_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = compat.Runner({"TF_VAR_live_run_id": "live-780"}, d, [])
+            state = "\n".join(t + ".this" for t in compat.tf_addresses(os.path.join(HERE, "terraform-pve")))
+            states = iter([state, ""])
+            calls = []
+
+            def run(argv, timeout, cwd=None):
+                calls.append(argv[1])
+                out = next(states) if argv[1] == "state" else ""
+                return compat.subprocess.CompletedProcess(argv, 0, out, "")
+
+            with mock.patch.object(r, "run", side_effect=run):
+                rows, left = compat.terraform_scenarios(
+                    r, d, "ami-0123456789abcdef0", "pve", lambda: calls.append("guard"))
+            self.assertEqual(left, [])
+            self.assertEqual(calls[:3], ["init", "guard", "apply"])
+            self.assertEqual(len(rows), 10)
+            self.assertTrue(all(row.action.endswith(" (pve, live)") and row.result == "pass" for row in rows))
+
+    def test_live_run_omits_cli_lifecycle(self):
+        cfg = compat.load_config({**GOOD, "VWS_COMPAT_TARGET": "live", "VWS_COMPAT_PROFILE": "pve",
+                                  "VWS_COMPAT_INSTANCE_TYPE": "vws.small",
+                                  "VWS_COMPAT_LIVE_RUN_ID": "live-780",
+                                  "VWS_COMPAT_IMAGE_ID": "ami-0123456789abcdef0"})
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(compat.shutil, "which", return_value="/tool"), \
+                mock.patch.object(compat, "tool_versions", return_value={}), \
+                mock.patch.object(compat, "awscli_scenarios") as cli, \
+                mock.patch.object(compat, "terraform_scenarios", return_value=([], [])) as tf:
+            self.assertEqual(compat.run_matrix(cfg, d), 0)
+            cli.assert_not_called()
+            self.assertEqual(tf.call_args.args[2], cfg.image_id)
 
     def test_plan_requires_zero_detailed_exitcode(self):
         types = ["aws_instance", "aws_ebs_volume", "aws_volume_attachment"]

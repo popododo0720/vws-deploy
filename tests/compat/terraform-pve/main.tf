@@ -28,6 +28,11 @@ variable "instance_type" {
   type = string
 }
 
+variable "live_run_id" {
+  type    = string
+  default = ""
+}
+
 provider "aws" {
   region                      = var.region
   max_retries                 = 5
@@ -43,9 +48,9 @@ provider "aws" {
   }
 
   default_tags {
-    tags = {
+    tags = merge({
       "vws-compat" = var.run_id
-    }
+    }, var.live_run_id == "" ? {} : { "vws-live-run" = var.live_run_id })
   }
 }
 
