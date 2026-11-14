@@ -7,10 +7,11 @@
 #                 requires VWS_VERIFY_REGION and live.py console/PVE credentials;
 #                 VWS_VERIFY_PVE_CA_FILE supplies the trusted PVE CA
 #   scenarios     vws nightly --results DIR --timeout SECONDS
+#   conformance   vws nightly-conformance --results DIR/conformance --timeout SECONDS
 #   feature-map-pr vws nightly-pr --results DIR --log-url URL --repo REPO
 #   publish       vws nightly-publish --results DIR (the results JSON to the nightly-results branch)
 # A failed step skips the steps after it, except that feature-map-pr and publish still run after failed
-# scenarios so the passes and the failures are recorded. Each step has a hard limit (VWS_E2E_LIMITS). DIR (default
+# scenarios or conformance so the passes and the failures are recorded. Each step has a hard limit (VWS_E2E_LIMITS). DIR (default
 # $XDG_STATE_HOME/vws-nightly/<UTC time>) gets the scenario files of vws nightly and e2e/: one log per
 # step, steps.jsonl and summary.json. On a failure it opens one incident issue in REPO with the failing
 # step and the log tails (secret-looking env values redacted); a rerun of the same run reuses it. Then it posts
@@ -26,7 +27,7 @@ VWS_NEED=(jq timeout flock gh python3)
 VWS_NIGHTLY_E2E_VWS=${VWS_NIGHTLY_E2E_VWS:-}
 # Seconds before the second incident attempt (doubled before the third). Tests set 0.
 VWS_NIGHTLY_E2E_BACKOFF=${VWS_NIGHTLY_E2E_BACKOFF:-5}
-declare -A VWS_E2E_LIMITS=([scenarios]=21600 [feature-map-pr]=600 [publish]=600)
+declare -A VWS_E2E_LIMITS=([scenarios]=21600 [conformance]=1830 [feature-map-pr]=600 [publish]=600)
 
 vws_e2e_dir='' vws_e2e_failed=''
 
@@ -236,10 +237,12 @@ vws_cmd_main() {
 
   if [[ -z $vws_e2e_failed ]]; then
     vws_e2e_step scenarios nightly --results "$results" --timeout "$timeout_s"
+    vws_e2e_step conformance nightly-conformance --results "${results}/conformance" --timeout 1800
     vws_e2e_step feature-map-pr nightly-pr --results "$results" --log-url "$log_url" --repo "$repo"
     vws_e2e_step publish nightly-publish --results "$results"
   else
     vws_e2e_record scenarios skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
+    vws_e2e_record conformance skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
     vws_e2e_record feature-map-pr skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
     vws_e2e_record publish skipped 0 "$(date -u +%FT%TZ)" "skipped after ${vws_e2e_failed} failed"
   fi

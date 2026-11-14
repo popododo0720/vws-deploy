@@ -73,16 +73,17 @@ summary() { jq -r "$2" "${WORK}/$1/e2e/summary.json"; }
 r="r/20261105T130000Z"
 e2e --results "${WORK}/$r" --timeout 60 --wake-thread 339
 expect_rc "every step passes: exit 0" 0
-if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'nightly\nnightly-pr\nnightly-publish' ]]; then ok "nightly, nightly-pr and nightly-publish run once, in order"
+if [[ $(cut -d' ' -f1 "$FAKE_VWS_LOG") == $'nightly\nnightly-conformance\nnightly-pr\nnightly-publish' ]]; then ok "nightly, conformance, nightly-pr and nightly-publish run once, in order"
 else bad "step order" "$(cat "$FAKE_VWS_LOG")"; fi
 expect_text "nightly writes into the run directory" "$(cat "$FAKE_VWS_LOG")" "nightly --results ${WORK}/$r --timeout 60"
+expect_text "conformance gets its own directory and hard timeout" "$(cat "$FAKE_VWS_LOG")" "nightly-conformance --results ${WORK}/$r/conformance --timeout 1800"
 expect_text "nightly-publish gets the run" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results ${WORK}/$r"
 expect_text "nightly-pr gets the run and the log URL" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results ${WORK}/$r --log-url ${url} --repo popododo0720/vws-deploy"
 if ! grep -q '^env ' "$FAKE_VWS_LOG"; then ok "no step inherits an OS_* variable"; else bad "OS env leaked" "$(cat "$FAKE_VWS_LOG")"; fi
 if [[ ! -s $FAKE_OS_LOG ]]; then ok "no step calls openstack"; else bad "openstack called" "$(cat "$FAKE_OS_LOG")"; fi
 assert_no_changes "the scope check only reads the cluster"
 expect_text "the scope check reads the PVE subscription" "$(cat "${WORK}/identity.calls")" "/nodes/node1/subscription"
-if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass" ]]; then
+if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass,pass" ]]; then
   ok "summary.json records the run and five passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
 if [[ ! -s $FAKE_GH_LOG ]]; then ok "a passing run with a wake thread opens no incident and posts no wake"; else bad "gh on pass" "$(cat "$FAKE_GH_LOG")"; fi
 
@@ -94,6 +95,7 @@ FAKE_nightly=fail e2e --results "${WORK}/$r"
 expect_rc "a failed scenario: exit 1" 1
 expect_text "the failed step is named" "$OUT" "FAIL  e2e/scenarios  vws nightly exited 1; FAIL  nightly  broken"
 expect_text "feature-map-pr still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results"
+expect_text "conformance still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-conformance --results"
 expect_text "publish still runs after failed scenarios" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results"
 expect_text "the incident is reported" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/9001"
 expect_text "the incident has the incident label and names the step" "$(cat "$FAKE_GH_LOG")" \
@@ -177,6 +179,14 @@ FAKE_nightly=fail FAKE_GH_LIST='[{"title":"incident: nightly e2e 20261105T130200
   e2e --results "${WORK}/$r"
 expect_text "a rerun of the same run reuses (even when another step fails) the open incident" "$OUT" "OK    e2e/incident  https://github.com/popododo0720/vws-deploy/issues/77"
 if ! grep -q 'issue create' "$FAKE_GH_LOG"; then ok "a rerun opens no second incident"; else bad "duplicate" "$(cat "$FAKE_GH_LOG")"; fi
+
+r="r/20261105T130340Z"
+FAKE_nightly_conformance=fail e2e --results "${WORK}/$r"
+expect_rc "a failed conformance: exit 1" 1
+expect_text "conformance failure is named" "$OUT" "FAIL  e2e/conformance  vws nightly-conformance exited 1"
+expect_text "feature-map-pr still runs after failed conformance" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results"
+expect_text "publish still runs after failed conformance" "$(cat "$FAKE_VWS_LOG")" "nightly-publish --results"
+expect_text "incident identifies conformance" "$(cat "$FAKE_GH_BODY")" 'failed at step `conformance`'
 
 r="r/20261105T130350Z"
 FAKE_nightly_publish=fail e2e --results "${WORK}/$r"

@@ -375,12 +375,67 @@ gate; 130/143 cancellation after the end sweep.
 
 `vws nightly-publish --results DIR [--root DIR] [--remote NAME] [--init]` keeps the results JSON of a nightly run off main (vws-deploy#290, design [docs/design/nightly-e2e.md](design/nightly-e2e.md)). It copies every scenario result `DIR/NAME.json` to `metrics/nightly/<run>/` on the orphan branch `nightly-results`, where `<run>` is the basename of `DIR` (for example `20261031T130000Z`), and pushes one fast-forward commit `metrics: nightly results <run>` with `Part of #252` and the trailer `Results-Generator: vws-nightly-publish`. Logs are not published. Each file must be an ASCII JSON object of at most 1 MiB, or nothing is published; a file whose name is not a scenario name is skipped (WARN). The branch is never merged and never opened as a PR, and the checkout at `--root` (default this repo) keeps its branch, index and files. Before it adds a commit it refuses a branch with any commit it did not write: a merge, a commit without the trailer, another subject, or a path outside `metrics/nightly/`. A missing branch is created only with `--init`, once. A rerun of the same run replaces that run's directory and pushes nothing when the files are the same. A push that loses a race, or a remote it cannot reach, is retried on the new head three times in all, each git call under 120 seconds. `--dry-run` is refused. Exit codes: 0 pushed, already there, or no result in `DIR` (WARN); 1 the branch is refused, missing without `--init`, a file is bad, or the push failed; 2 usage error; 3 a missing tool or a `--root` that is not the top of a git checkout.
 
+### vws nightly-conformance
+
+`vws nightly-conformance [--conformance DIR] [--results DIR] [--timeout SECONDS]`
+runs a reviewed vws-conformance checkout's unchanged `scripts/pve-test.sh` from the external
+verification box (vws-deploy#831). `--conformance` defaults to `VWS_CONF_DIR`. The entrypoint
+forces target `pve-test`, the account allowlist and `-full -read-only`. The operator trigger
+is this same command typed on the box; the existing box timer reaches it through `vws nightly-e2e`.
+There is no repository timer or GitHub Actions runner for this command.
+
+Supply these variables in the runner environment:
+
+| Variable | Value |
+| --- | --- |
+| `VWS_CONF_ALLOWED_HOSTS` | Comma-separated exact nested box endpoint hosts |
+| `VWS_CONF_EC2_ENDPOINT`, `VWS_CONF_IAM_ENDPOINT` | Nested box VWS endpoint URLs |
+| `VWS_CONF_REGION` | Nested box region, for example `pve-test-1` |
+| `VWS_CONF_ACCOUNT_ID` | Allowed throwaway VWS account |
+| `VWS_CONF_ACCESS_KEY_ID`, `VWS_CONF_SECRET_ACCESS_KEY` | Throwaway VWS credentials |
+| `VWS_CONF_SESSION_TOKEN` | Optional throwaway VWS session token |
+| `VWS_CONF_CONSOLE_API_VERSION` | Optional deployed revision for report metadata |
+
+When a key variable is unset, the runner reads `conf-access-key-id` or
+`conf-secret-access-key` under `CREDENTIALS_DIRECTORY`. Configure the box unit's
+`LoadCredential=` entries outside this repo; environment values take precedence. Keys never go in
+arguments. Do not use real AWS credentials. No GitHub workflow or development bot gets box keys.
+Before any conformance process starts, HTTP(S) endpoints must have hosts in the allowlist;
+AWS-owned hosts (the `AWS_OWNED` suffix list in `scripts/vws.d/lib/conformance.py`,
+including subdomains and trailing-dot forms) are refused even when allowlisted.
+An optional `VWS_CONF_S3_ENDPOINT` is checked too. The conformance harness guards DNS/dials
+and verifies the account against `VWS_CONF_ALLOWED_ACCOUNTS`, forced to the configured account.
+
+Results default to `$XDG_STATE_HOME/vws-nightly-conformance/<UTC>` (or
+`~/.local/state/vws-nightly-conformance/<UTC>`). Use a new directory for every invocation;
+an existing path is refused so a rerun cannot mix old reports with current evidence.
+`VWS_CONF_OUT` is set to `DIR/reports`; reports remain in their upstream run-ID subdirectories.
+`run.log`, `summary.json` (exit, UTC times, target and case counts), and `reports.tar.gz`
+stay on the box with owner-only permissions. Known secret environment values and loaded keys
+are redacted from logs and report files before archiving. Reports are archived on failure,
+timeout and SIGTERM too; power loss or SIGKILL cannot guarantee a completed archive.
+
+The hard timeout defaults to 1800 seconds, followed by up to 10 seconds for termination.
+The runner preserves the conformance exit status, including exit 7; timeout is 124, SIGTERM
+is 143, usage is 2, and a pre-run refusal is 3. A successful command with a missing, invalid,
+wrong-target or unsafe report returns 1. Report validation never hides an original nonzero exit.
+Reports have no creating-case field: their IDs are checked against the 29 non-creating cases
+in vws-conformance `internal/engine/read_only.go` at
+`eafa1698a00b5b8b3009d11992b14869dfd0f4ec`. Unknown cases, including Describe cases with
+creating fixtures, fail closed. A reviewed selection change requires updating this allowlist.
+`creatingCases: 0` means every reported ID matched; a missing/unsafe report records null.
+This is report evidence, not proof of network traffic; real-box verification waits until phase 1.
+
 ### vws nightly-e2e
 
-`vws [--context CTX] nightly-e2e --log-url URL [--results DIR] [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]` runs the full-stack nightly on vws-test (vws-deploy#253, design [docs/design/nightly-e2e.md](design/nightly-e2e.md)). It first removes every `OS_*` variable, so no step gets OpenStack credentials. Then it runs four steps in order:
+`vws [--context CTX] nightly-e2e --log-url URL [--results DIR] [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]` runs the full-stack nightly on vws-test (vws-deploy#253, design [docs/design/nightly-e2e.md](design/nightly-e2e.md)). It first removes every `OS_*` variable, so no step gets OpenStack credentials. Then it runs five steps in order:
 
 - `scope`: within 60 seconds, `live.py identity` must pass the shared PVE gate and read a server ID equal to `vwsTest.pveServerId` in `docs/feature-map.json`. It requires `VWS_VERIFY_REGION` and the console/PVE credentials described under `vws verify`; `VWS_VERIFY_PVE_CA_FILE` supplies `--pve-ca-file`. A missing identity, failed gate, retired map or mismatch skips every later step.
 - `scenarios`: `vws nightly --results DIR --timeout SECONDS` (limit 21600 seconds).
+- `conformance`: `vws nightly-conformance --results DIR/conformance --timeout 1800`
+  (outer limit 1830 seconds). `VWS_CONF_DIR` and the runner configuration above are required;
+  missing configuration fails the step. It also runs after failed scenarios. A failed conformance
+  step still allows `feature-map-pr` and `publish`.
 - `feature-map-pr`: `vws nightly-pr --results DIR --log-url URL --repo REPO` (limit 600 seconds). It also runs after failed scenarios, so the passes are still recorded.
 - `publish`: `vws nightly-publish --results DIR` (limit 600 seconds) pushes the results JSON to the `nightly-results` branch. It also runs after failed scenarios, so the failures are recorded too.
 

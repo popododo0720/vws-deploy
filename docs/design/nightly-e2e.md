@@ -1,7 +1,8 @@
 # Nightly full-stack e2e on vws-test (vws-deploy#253)
 
 One command, `vws nightly-e2e`, runs the whole nightly on vws-test: a PVE scope check, then
-`vws nightly` (every feature-map scenario), `vws nightly-pr` (the feature-map PR), and
+`vws nightly` (every feature-map scenario), `vws nightly-conformance` (read-only conformance),
+`vws nightly-pr` (the feature-map PR), and
 `vws nightly-publish` (the results branch). It writes a JSON summary and
 opens an `incident` issue when a step fails. The command reference is `docs/vws-cli.md`.
 
@@ -11,6 +12,17 @@ Chosen: the box starts it. The box already reaches vws-test and already runs `vw
 a timer at 22:00 KST (vws-deploy#290). The timer and the env file with the vws-test credentials
 stay on the box, outside this repo, because R10 forbids units here. A manual run is the same
 command typed on the box; it replaces the issue's `workflow_dispatch`.
+
+After the nested box exists, the timer's `vws nightly-e2e` invocation also runs the required
+conformance step. Set `VWS_CONF_DIR` to the reviewed vws-conformance checkout on the box.
+For an operator-triggered conformance-only run, type `vws nightly-conformance` on that same box.
+The runner supplies `VWS_CONF_ALLOWED_HOSTS` (the exact nested box host), EC2/IAM endpoints,
+region and throwaway account in its environment. Throwaway VWS keys come from that environment
+or the systemd `conf-access-key-id` and `conf-secret-access-key` credentials; see
+`docs/vws-cli.md`. No workflow or development bot receives these credentials.
+Conformance reports and their archive stay under `DIR/conformance` on the box, including on
+failure or SIGTERM. Failed scenarios still allow conformance, and a failed conformance step
+still allows the feature-map PR and publish steps, so other nightly results are recorded.
 
 Rejected:
 
@@ -36,6 +48,14 @@ the nightly uses the console/PVE APIs and VWS endpoints:
   retired map or mismatch skips all later steps;
 - `tests/vws/nightly-e2e.test.sh` puts a fake `openstack` first on PATH and fails if any step
   calls it.
+
+Conformance forces the `pve-test` target through the reviewed `scripts/pve-test.sh`, which
+selects only non-creating cases. Before launching it, the runner refuses AWS-owned endpoint
+hosts and hosts outside `VWS_CONF_ALLOWED_HOSTS`; the conformance harness also guards endpoint
+dials and the account. Reports have no creating-case flag, so the runner checks their case IDs
+against the reviewed 29-case read-only selection, including Describe cases that need no fixtures.
+Unknown IDs fail closed. A real nightly, zero creating cases on the box and no traffic to real
+AWS remain live checks deferred until after phase 1.
 
 The scope gate requires the console origin and token file (`VWS_API_URL`,
 `VWS_API_TOKEN_FILE`), runner-pinned `VWS_LIVE_PVE_URL`, the systemd `pve-token` credential
