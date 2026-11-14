@@ -292,7 +292,7 @@ Shows the command list, common flags and exit codes. With `-o json`, one entry p
 
 `vws nightly-live --region NAME [--results DIR] [--snippets-storage ID]
 [--pve-ca-file FILE] [--run-id ID] [--fail-at STEP]` runs Proxmox L0 cleanup,
-guarded L2 launches and L7 termination. It is a sibling of `vws nightly`, which remains the
+guarded L2 launches, L7 termination and L9 Terraform compatibility. It is a sibling of `vws nightly`, which remains the
 feature-map scenario runner called by `vws nightly-e2e`.
 
 Set `VWS_API_URL` to the console HTTPS origin, `VWS_API_TOKEN_FILE` to a
@@ -333,11 +333,14 @@ and must finish with exitstatus OK.
 
 Set `VWS_VERIFY_EC2_ENDPOINT`, `VWS_VERIFY_ACCESS_KEY_ID`,
 `VWS_VERIFY_SECRET_ACCESS_KEY`, `VWS_VERIFY_IMAGE_ID` and
-`VWS_VERIFY_KEY_NAME` (an existing key pair). Install `aws` on the runner.
+`VWS_VERIFY_KEY_NAME` (an existing key pair). Install `aws` and `terraform` on the runner
+(see `tests/compat/install.sh` for pinned versions). Terraform needs access to the
+provider registry or a populated `TF_PLUGIN_CACHE_DIR`.
 `VWS_VERIFY_SUBNET_ID` optionally selects the launch subnet.
 `VWS_VERIFY_INSTANCE_TYPE` defaults to `vws.small`; every other value fails
-before a call. EC2 credentials go only to the aws subprocess environment;
-neither API replies nor subprocess stderr are copied to results.
+before a call. EC2 credentials go only to subprocess environments.
+L2/L7 never copy API replies or stderr into results; L9 records the compatibility
+tool's redacted matrix details.
 
 Every RunInstances call, including the same-token retry, passes the shared
 `slots --need 1` guard: fewer than two non-template, non-holder pool VMs,
@@ -352,18 +355,34 @@ run ID is generated once per invocation; an explicit ID must match
 L2 deletes its VM before L7 creates a fresh pair, then L7 terminates both
 through EC2 and confirms their absence. Each step cleans up in a finally
 block, including errors, timeouts, SIGINT and SIGTERM; the end sweep follows.
-`--fail-at slots|l2|l7` injects a failure (live steps fail after creation).
+After L7, L9 runs the compatibility tool with profile `pve`, target `live`,
+the runner's region, image and EC2 credentials, and instance type `vws.small`.
+It checks `slots --need 1` before starting Terraform and immediately before apply.
+The live target runs only Terraform: instance and 1 GiB volume creation,
+attachment, a plan with no changes, then destroy. It uses no S3 API or separate
+S3 endpoint. The EC2 endpoint host is the compatibility allowlist.
+Terraform's default tags include `vws-live-run=<runid>` so PVE cleanup finds
+the instance. Matrix actions carry `(pve, live)`.
+If an exception escapes the matrix runner or a signal interrupts it, a bounded
+120-second Terraform destroy runs before per-step PVE cleanup and the end sweep.
+The matrix runner also attempts destroy after apply failures and timeouts.
+A matrix failure fails L9.
+`--fail-at slots|l2|l7|l9` injects a failure (L9 fails after apply).
 After the end sweep, a separate final assertion requires zero non-template,
 non-holder pool VMs, no holder disks, no snapshots on remaining pool VMs,
 and no snippets for the VM UUIDs recorded by this invocation. Foreign and
-unidentified orphan snippets remain untouched. L3-L6 and L8 are deferred.
+unidentified orphan snippets remain untouched. L9 is enabled; L3-L6 and L8 remain deferred.
 
 Results default to `$XDG_STATE_HOME/vws-nightly-live/<UTC>` (or
-`$HOME/.local/state/...`): `l0-start.json`, `slots.json`, `l2.json`, `l7.json`,
+`$HOME/.local/state/...`): `l0-start.json`, `slots.json`, `l2.json`, `l7.json`, `l9.json`,
 `l0-end.json`, `final.json`, and aggregated `results.json`. A failing final
 assertion fails the job and aggregate result. Old step results are removed
 under the run lock. A sibling `nightly-live.lock` refuses concurrent runs; stale
-lock files alone do not hold the lock. Exit codes: 0 all steps and both
+lock files alone do not hold the lock.
+`l9.json` and the aggregate include L9's matrix rows. The full compatibility
+reports and Terraform work directory are under `l9/`; treat that directory as
+private runner state because Terraform state can contain sensitive values.
+Exit codes: 0 all steps and both
 sweeps passed; 1 step or sweep failure; 2 usage; 3 environment or refused
 gate; 130/143 cancellation after the end sweep.
 

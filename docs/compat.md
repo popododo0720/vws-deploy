@@ -31,6 +31,18 @@ Elastic IP or S3 resources. Pve actions have a ` (pve)` suffix, for example
 Both profiles share the provider version and lock file in `tests/compat/terraform/`.
 The pve provider omits S3 configuration because this profile uses only EC2/EBS.
 
+`VWS_COMPAT_TARGET=live` runs only the pve Terraform scenario with the supplied
+image; L2/L7 in `vws nightly-live` cover the CLI lifecycle separately.
+The live target requires `pve`, `vws.small`, an image and
+`VWS_COMPAT_LIVE_RUN_ID` matching `[a-z0-9][a-z0-9-]{0,39}`.
+It marks every Terraform action `(pve, live)` and adds
+`vws-live-run=<runid>` to the provider default tags. The optional Terraform
+`live_run_id` variable defaults to empty, leaving fake CI tags unchanged.
+`vws nightly-live` invokes this same matrix runner with a slot assertion
+immediately before apply, emergency destroy on interruption, and PVE cleanup.
+Use that guarded command for the nested box; a standalone matrix invocation
+does not provide the pool gate or end sweep.
+
 The [first generated pve matrix](compat-pve.md) was measured on 2026-11-13 against console-api
 `0b2a95fc5280d0581c9539df400215d560bae82d`: pass 1, fail 3, skip 17, with no leftovers.
 This is not an all-pass compatibility claim. The backend's `DescribeImages` still returns empty inventory.
@@ -52,14 +64,15 @@ checks their sha256.
 
 | Variable | Meaning |
 | --- | --- |
-| `VWS_COMPAT_TARGET` | `fake` or `vws`. Only a `vws` run can open issues |
+| `VWS_COMPAT_TARGET` | `fake`, `vws` or `live`. Only a `vws` run can open issues |
 | `VWS_COMPAT_PROFILE` | `aws` (default) or `pve`; other values are refused |
-| `VWS_COMPAT_EC2_ENDPOINT`, `VWS_COMPAT_S3_ENDPOINT` | VWS endpoint URLs, http or https |
+| `VWS_COMPAT_EC2_ENDPOINT`, `VWS_COMPAT_S3_ENDPOINT` | VWS endpoint URLs, http or https; pve uses only EC2 and needs no S3 endpoint |
 | `VWS_COMPAT_ALLOWED_HOSTS` | comma list; each endpoint host must be in it |
 | `VWS_COMPAT_ACCESS_KEY_ID`, `VWS_COMPAT_SECRET_ACCESS_KEY` | VWS test credentials |
 | `VWS_COMPAT_REGION` | default `vws-1` for aws, `pve-test-1` for pve |
 | `VWS_COMPAT_IMAGE_ID` | image for instances; default the first image describe-images returns. Without an image, Terraform still runs the resources that need none |
 | `VWS_COMPAT_INSTANCE_TYPE` | default `t3.micro`, mapped by console-api to `vws.small` |
+| `VWS_COMPAT_LIVE_RUN_ID` | required for target `live`; the nightly run ID used for PVE cleanup tags |
 
 The run refuses an AWS-owned endpoint host (`AWS_OWNED` in `tests/compat/compat.py`) and any host outside the
 allowlist. aws and terraform get only the environment the script builds. That is the credentials above, a
