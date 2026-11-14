@@ -32,6 +32,8 @@ class LiveTests(unittest.TestCase):
         s.calls, s.errors, s.resource_reads = [], [], 0
         s.replies, s.uuids = {}, {}
         s.ec2_calls, s.tokens, s.instances, s.config_extra = [], {}, {}, {}
+        s.tf_calls = []
+        s.tf_block = s.tf_apply_fail = s.tf_destroy_fail = s.tf_keep_volume = False
         s.next_vmid = 201
         s.ec2_block = s.no_ip = s.no_live_tag = s.keep_snippet = False
         s.arrived, s.release, ready = threading.Event(), threading.Event(), threading.Event()
@@ -64,6 +66,9 @@ class LiveTests(unittest.TestCase):
         (self.work / "aws").write_text("#!/usr/bin/env bash\nexec python3 " +
                                        str(ROOT / "tests/vws/live_aws.py") + ' "$@"\n')
         (self.work / "aws").chmod(0o700)
+        (self.work / "terraform").write_text("#!/usr/bin/env bash\nexec python3 " +
+                                             str(ROOT / "tests/vws/live_terraform.py") + ' "$@"\n')
+        (self.work / "terraform").chmod(0o700)
         self.env.update(PATH=str(self.work) + ":" + self.env["PATH"],
                         VWS_VERIFY_EC2_ENDPOINT=self.base + "/ec2", VWS_VERIFY_ACCESS_KEY_ID=ACCESS,
                         VWS_VERIFY_SECRET_ACCESS_KEY=EC2_SECRET, VWS_VERIFY_IMAGE_ID="ami-" + "a" * 17,
@@ -288,7 +293,7 @@ class LiveTests(unittest.TestCase):
 
     def test_launch_contract_and_stale_results(self):
         self.results.mkdir()
-        for name in ("l2", "l7", "final"):
+        for name in ("l2", "l7", "l9", "final"):
             (self.results / (name + ".json")).write_text('{"result":"fail","steps":[]}')
         self.run_cli(args=["--run-id", "contract-772"])
         creates = [args for op, args in self.s.ec2_calls if op == "run-instances"]
@@ -301,7 +306,7 @@ class LiveTests(unittest.TestCase):
             self.assertIn({"Key": "live-long", "Value": "x" * 128}, args["TagSpecifications"][0]["Tags"])
         data = json.loads((self.results / "results.json").read_text())
         self.assertEqual([s["name"] for s in data["steps"]],
-                         ["l0-start", "slots", "l2", "l7", "l0-end", "final"])
+                         ["l0-start", "slots", "l2", "l7", "l9", "l0-end", "final"])
         self.assertEqual(data["result"], "pass")
         self.assertFalse(any(v["vmid"] >= 201 for v in self.s.vms))
 
@@ -402,6 +407,79 @@ class LiveTests(unittest.TestCase):
                     p.kill()
                     p.communicate()
             self.run_cli()
+
+    def test_l9_rows_and_restart(self):
+        for n in range(2):
+            self.run_cli(args=["--run-id", f"terraform-780-{n}"])
+            step = json.loads((self.results / "l9.json").read_text())
+            aggregate = json.loads((self.results / "results.json").read_text())
+            self.assertEqual(step["rows"], next(s["rows"] for s in aggregate["steps"] if s["name"] == "l9"))
+            self.assertEqual(len(step["rows"]), 10)
+            self.assertTrue(all(r["action"].endswith(" (pve, live)") and r["result"] == "pass"
+                                for r in step["rows"]))
+            self.assertEqual(step["result"], "pass")
+            self.assertFalse(any(v["vmid"] == 301 for v in self.s.vms))
+            self.assertNotIn(103, self.s.config_extra)
+        applies = [args for op, args in self.s.tf_calls if op == "apply"]
+        self.assertEqual(len(applies), 2)
+        self.assertEqual([a["run_id"] for a in applies], ["terraform-780-0", "terraform-780-1"])
+        self.assertTrue(all(a["instance_type"] == "vws.small" and
+                            a["image"] == self.env["VWS_VERIFY_IMAGE_ID"] for a in applies))
+
+    def test_l9_capacity_and_instance_type_refused(self):
+        self.results.mkdir()
+        (self.results / ".gate.json").write_text(json.dumps([self.base, "node1"]))
+        self.command = ["python3", str(ROOT / "scripts/vws.d/lib/live.py"), "l9",
+                        "--region", "pve-test-1", "--results", str(self.results)]
+        self.run_cli(1)
+        self.assertIn("slot guard", self.outputs[-1])
+        self.s.vms = []
+        self.run_cli(1, env=dict(self.env, VWS_VERIFY_INSTANCE_TYPE="vws.medium"))
+        self.assertIn("only vws.small", self.outputs[-1])
+        self.assertEqual(self.s.tf_calls, [])
+
+    def test_l9_failure_destroy_sweep_final_and_resume(self):
+        for injected in (True, False):
+            self.s.tf_apply_fail = not injected
+            self.run_cli(1, ["--fail-at", "l9"] if injected else [])
+            self.assertIn("destroy", [op for op, _ in self.s.tf_calls])
+            self.assertEqual(json.loads((self.results / "l9.json").read_text())["result"], "fail")
+            self.assertEqual(json.loads((self.results / "final.json").read_text())["result"], "pass")
+            self.assertTrue((self.results / "l0-end.json").exists())
+            self.assertFalse(any(v["vmid"] == 301 for v in self.s.vms))
+            self.assertNotIn(103, self.s.config_extra)
+            self.s.tf_apply_fail = False
+            self.run_cli()
+
+    def test_l9_signal_during_apply(self):
+        self.s.tf_block = True
+        p = subprocess.Popen(self.command, env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(self.s.arrived.wait(20), "Terraform apply not reached")
+            os.kill(p.pid, signal.SIGTERM)
+            out, err = p.communicate(timeout=30)
+            self.outputs.append(out + err)
+            self.assertEqual(p.returncode, 143, out + err)
+            self.assertIn("destroy", [op for op, _ in self.s.tf_calls])
+            self.assertEqual(json.loads((self.results / "l9.json").read_text())["result"], "fail")
+            self.assertEqual(json.loads((self.results / "final.json").read_text())["result"], "pass")
+            self.assertTrue((self.results / "l0-end.json").exists())
+            self.assertFalse(any(v["vmid"] == 301 for v in self.s.vms))
+            self.assertNotIn(103, self.s.config_extra)
+        finally:
+            self.s.release.set()
+            if p.poll() is None:
+                p.kill()
+                p.communicate()
+
+    def test_l9_destroy_failure_falls_back_and_volume_fails_final(self):
+        self.s.tf_destroy_fail = True
+        self.run_cli(1)
+        self.assertFalse(any(v["vmid"] == 301 for v in self.s.vms))
+        self.assertEqual(json.loads((self.results / "final.json").read_text())["result"], "fail")
+        self.assertIn("holder contains leftover volumes", (self.results / "final.json").read_text())
+        self.assertTrue((self.results / "l0-end.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Gated live steps and cleanup for the single-node verification cluster."""
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -86,6 +87,8 @@ class Client:
     def save(self, name):
         data = dict(result="fail" if any(s["result"] == "fail" for s in self.steps) else "pass",
                     steps=self.steps)
+        if name == "l9":
+            data["rows"] = getattr(self, "matrix_rows", [])
         (Path(self.a.results) / (name + ".json")).write_text(json.dumps(data) + "\n")
 
     def check_gate(self):
@@ -393,16 +396,69 @@ class Client:
             raise Refused("run snippets remain")
         self.emit("final", True)
 
+    def l9(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests/compat"))
+        import compat
+
+        def guard():
+            if os.environ.get("VWS_VERIFY_INSTANCE_TYPE", "vws.small") != "vws.small":
+                raise Refused("only vws.small is permitted")
+            if not self.slots(1):
+                raise Refused("L9 refused by slot guard")
+
+        guard()
+        endpoint = os.environ.get("VWS_VERIFY_EC2_ENDPOINT", "")
+        cfg = compat.load_config(dict(
+            VWS_COMPAT_TARGET="live", VWS_COMPAT_PROFILE="pve",
+            VWS_COMPAT_INSTANCE_TYPE="vws.small", VWS_COMPAT_REGION=self.a.region,
+            VWS_COMPAT_EC2_ENDPOINT=endpoint,
+            VWS_COMPAT_ALLOWED_HOSTS=urlsplit(endpoint).hostname or "",
+            VWS_COMPAT_ACCESS_KEY_ID=os.environ.get("VWS_VERIFY_ACCESS_KEY_ID", ""),
+            VWS_COMPAT_SECRET_ACCESS_KEY=os.environ.get("VWS_VERIFY_SECRET_ACCESS_KEY", ""),
+            VWS_COMPAT_IMAGE_ID=os.environ.get("VWS_VERIFY_IMAGE_ID", ""),
+            VWS_COMPAT_LIVE_RUN_ID=self.a.run_id))
+        out = Path(self.a.results).resolve() / "l9"
+        complete = False
+        try:
+            with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+                code = compat.run_matrix(cfg, str(out), guard, self.a.fail_at == "l9")
+            if code:
+                raise Refused("L9 compatibility runner failed")
+            data = json.loads((out / "results.json").read_text())
+            self.matrix_rows = data["rows"]
+            complete = True
+            if data["leftovers"] or any(r["result"] != "pass" for r in self.matrix_rows):
+                raise Refused("L9 compatibility matrix failed")
+            self.emit("l9", True)
+        finally:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            try:
+                tfdir = out / "work/terraform"
+                if not complete and tfdir.exists():
+                    env = compat.child_env(cfg, str(out / "work"), self.a.run_id)
+                    env["TF_VAR_image_id"] = cfg.image_id
+                    runner = compat.Runner(env, str(tfdir), self.secrets)
+                    try:
+                        destroyed = runner.run(["terraform", "destroy", "-auto-approve",
+                                                "-input=false", "-json"], 120)
+                        self.emit("l9/destroy", destroyed.returncode == 0)
+                    except (compat.Fail, OSError):
+                        self.emit("l9/destroy", False, "Terraform cleanup failed")
+            finally:
+                for v in self.run_vms():
+                    self.item("cleanup/" + str(v["vmid"]), lambda v=v: self.delete_vm(v))
+
 
 def main():
     p = Parser(allow_abbrev=False)
-    p.add_argument("operation", choices=("gate", "identity", "sweep", "slots", "l2", "l7", "final", "results"))
+    p.add_argument("operation", choices=("gate", "identity", "sweep", "slots", "l2", "l7", "l9", "final", "results"))
     p.add_argument("--region", required=True)
     p.add_argument("--results")
     p.add_argument("--snippets-storage", default="local")
     p.add_argument("--pve-ca-file")
     p.add_argument("--run-id", default=uuid.uuid4().hex)
-    p.add_argument("--fail-at", choices=("slots", "l2", "l7"))
+    p.add_argument("--fail-at", choices=("slots", "l2", "l7", "l9"))
     p.add_argument("--phase", choices=("l0-start", "l0-end"))
     p.add_argument("--need", type=int, default=0)
     p.add_argument("--exit", type=int, default=0)
@@ -412,11 +468,11 @@ def main():
         p.error("")
     if a.operation == "results":
         steps = []
-        for name in ("l0-start", "slots", "l2", "l7", "l0-end", "final"):
+        for name in ("l0-start", "slots", "l2", "l7", "l9", "l0-end", "final"):
             path = Path(a.results) / (name + ".json")
             if path.exists():
                 data = json.loads(path.read_text())
-                steps.append(dict(name=name, result=data["result"], steps=data["steps"]))
+                steps.append(dict(name=name, **data))
         result = "fail" if a.exit or any(s["result"] == "fail" for s in steps) else "pass"
         (Path(a.results) / "results.json").write_text(json.dumps(dict(result=result, steps=steps)) + "\n")
         return int(result == "fail" and not a.exit)

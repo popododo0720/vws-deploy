@@ -55,14 +55,14 @@ vws_cmd_main() {
     esac
   done
   [[ -n $region ]] || vws_usage "nightly-live requires --region"
-  [[ -z $fail_at || $fail_at =~ ^(slots|l2|l7)$ ]] || vws_usage "nightly-live: --fail-at accepts slots, l2, l7"
+  [[ -z $fail_at || $fail_at =~ ^(slots|l2|l7|l9)$ ]] || vws_usage "nightly-live: --fail-at accepts slots, l2, l7, l9"
   [[ -z $VWS_DRY_RUN ]] || vws_die_env "nightly-live requires a gated run"
   results=${results:-"${XDG_STATE_HOME:-${HOME}/.local/state}/vws-nightly-live/$(date -u +%Y%m%dT%H%M%SZ)"}
   umask 077
   mkdir -p -- "$results" || vws_die_env "cannot create live results"
   exec {lock_fd}>"$(dirname "$results")/nightly-live.lock" || vws_die_env "cannot open live lock"
   flock -n "$lock_fd" || vws_die_env "another nightly-live run holds the lock"
-  rm -f -- "$results"/{.gate,.run-vms,l0-start,l0-end,slots,l2,l7,final,results}.json
+  rm -f -- "$results"/{.gate,.run-vms,l0-start,l0-end,slots,l2,l7,l9,final,results}.json
   run_id=${run_id:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}
   live_args=(--region "$region" --results "$results" --snippets-storage "$snippets" --run-id "$run_id")
   [[ -z $ca ]] || live_args+=(--pve-ca-file "$ca")
@@ -76,5 +76,6 @@ vws_cmd_main() {
   if ((status == 0)); then vws_live_call slots "${live_args[@]}" --need 0 || status=1; fi
   if ((status == 0)); then vws_live_call l2 "${live_args[@]}" || status=1; fi
   if ((status == 0)); then vws_live_call l7 "${live_args[@]}" || status=1; fi
+  if ((status == 0)); then vws_live_call l9 "${live_args[@]}" || status=1; fi
   exit "$status"
 }

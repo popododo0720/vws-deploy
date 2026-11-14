@@ -29,14 +29,39 @@ class Stub(BaseHTTPRequestHandler):
         s = self.server
         path = unquote(self.path)
         s.calls.append((self.command, path))
-        auth = ("EC2 " + ACCESS + ":" + EC2_SECRET if path == "/ec2" else
+        auth = ("EC2 " + ACCESS + ":" + EC2_SECRET if path in ("/ec2", "/terraform") else
                 "Bearer " + TOKEN if path.startswith("/api/v1/") else "PVEAPIToken" + "=vws@pve!live=" + SECRET)
         if self.headers.get("Authorization") != auth:
             s.errors.append("authorization mismatch")
         if path.startswith(PVE) and self.headers.get("Host") != f"127.0.0.1:{s.server_port}":
             s.errors.append("PVE origin did not match the runner pin")
         status, data = 200, {}
-        if path == "/ec2":
+        if path == "/terraform":
+            operation, args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            s.tf_calls.append((operation, args))
+            if operation == "apply":
+                if s.calls[-2] != ("GET", PVE + "/cluster/resources?type=vm"):
+                    s.errors.append("Terraform apply had no immediate slot assertion")
+                if args["instance_type"] != "vws.small":
+                    s.errors.append("Terraform used an oversized instance")
+                s.vms.append(dict(type="qemu", pool="vws-live", node="node1", vmid=301,
+                                  status="running", maxmem=1024 ** 3, tags="vws.live." + args["run_id"]))
+                s.snapshots[301] = ["current", "terraform"]
+                s.tf_previous_volumes = s.config_extra.get(103, {}).copy()
+                s.config_extra.setdefault(103, {})["virtio9"] = "local:vm-103-disk-9,size=1G"
+                if s.tf_block:
+                    s.arrived.set()
+                    s.release.wait()
+                data = {"fail": s.tf_apply_fail}
+            elif operation == "destroy" and not s.tf_destroy_fail:
+                s.vms = [v for v in s.vms if v["vmid"] != 301]
+                if not s.tf_keep_volume:
+                    s.config_extra.pop(103, None)
+                    if s.tf_previous_volumes:
+                        s.config_extra[103] = s.tf_previous_volumes
+            elif operation == "destroy":
+                data = {"fail": True}
+        elif path == "/ec2":
             operation, args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             s.ec2_calls.append((operation, args))
             if operation == "run-instances":

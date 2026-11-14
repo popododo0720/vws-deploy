@@ -14,13 +14,14 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TARGETS = ("fake", "vws")
+TARGETS = ("fake", "vws", "live")
 PROFILES = ("aws", "pve")
 RESULTS = ("pass", "fail", "skip")
 OWNERS = {
@@ -89,6 +90,7 @@ class Config:
     image_id: str
     instance_type: str
     profile: str = "aws"
+    live_run_id: str = ""
 
 
 def check_endpoint(name, url, allowed):
@@ -128,16 +130,24 @@ def load_config(env):
     instance_type = env.get("VWS_COMPAT_INSTANCE_TYPE", "").strip() or "t3.micro"
     if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9]+", instance_type):
         raise ConfigError(f"VWS_COMPAT_INSTANCE_TYPE {instance_type!r} is not an instance type")
+    live_run_id = env.get("VWS_COMPAT_LIVE_RUN_ID", "")
+    if target == "live" and (profile != "pve" or instance_type != "vws.small"
+                             or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", live_run_id)
+                             or not image_id):
+        raise ConfigError("live requires pve, vws.small, an image and a valid live run ID")
+    ec2 = check_endpoint("VWS_COMPAT_EC2_ENDPOINT", need("VWS_COMPAT_EC2_ENDPOINT"), allowed)
     return Config(
         target=target,
         region=region,
-        ec2_endpoint=check_endpoint("VWS_COMPAT_EC2_ENDPOINT", need("VWS_COMPAT_EC2_ENDPOINT"), allowed),
-        s3_endpoint=check_endpoint("VWS_COMPAT_S3_ENDPOINT", need("VWS_COMPAT_S3_ENDPOINT"), allowed),
+        ec2_endpoint=ec2,
+        s3_endpoint=(ec2 if profile == "pve" else
+                     check_endpoint("VWS_COMPAT_S3_ENDPOINT", need("VWS_COMPAT_S3_ENDPOINT"), allowed)),
         access_key=need("VWS_COMPAT_ACCESS_KEY_ID"),
         secret_key=need("VWS_COMPAT_SECRET_ACCESS_KEY"),
         image_id=image_id,
         instance_type=instance_type,
         profile=profile,
+        live_run_id=live_run_id if target == "live" else "",
     )
 
 
@@ -178,6 +188,8 @@ def child_env(cfg, work, run_id):
     }
     if os.environ.get("TF_PLUGIN_CACHE_DIR"):
         env["TF_PLUGIN_CACHE_DIR"] = os.environ["TF_PLUGIN_CACHE_DIR"]
+    if cfg.target == "live":
+        env["TF_VAR_live_run_id"] = cfg.live_run_id
     return env
 
 
@@ -199,13 +211,18 @@ class Runner:
         return text if len(text) <= DETAIL_MAX else text[: DETAIL_MAX - 3] + "..."
 
     def run(self, argv, timeout, cwd=None):
+        proc = subprocess.Popen(argv, cwd=cwd or self.cwd, env=self.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
         try:
-            proc = subprocess.run(
-                argv, cwd=cwd or self.cwd, env=self.env, capture_output=True, text=True, timeout=timeout
-            )
+            out, err = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err)
         except subprocess.TimeoutExpired:
             raise Fail(f"{' '.join(argv[:3])} timed out after {timeout}s") from None
-        return proc
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
 
     def aws(self, *args, timeout=180):
         argv = ["aws", *args, "--output", "json", "--cli-connect-timeout", "10", "--cli-read-timeout", "60"]
@@ -566,7 +583,7 @@ def tf_init(r, tfdir, attempts=3):
     return error
 
 
-def terraform_scenarios(r, work, image, profile="aws"):
+def terraform_scenarios(r, work, image, profile="aws", before_apply=None, fail_after_apply=False):
     rows = []
     tfdir = os.path.join(work, "terraform")
     source = "terraform-pve" if profile == "pve" else "terraform"
@@ -575,10 +592,11 @@ def terraform_scenarios(r, work, image, profile="aws"):
         shutil.copyfile(os.path.join(HERE, "terraform", ".terraform.lock.hcl"),
                         os.path.join(tfdir, ".terraform.lock.hcl"))
     addrs = [f"{t}.this" for t in tf_addresses(tfdir)]
+    suffix = " (pve, live)" if r.env.get("TF_VAR_live_run_id") else " (pve)"
 
     def row(addr, action, result, detail=""):
         if profile == "pve":
-            action += " (pve)"
+            action += suffix
         rows.append(Row("terraform", TF_ADDR.match(addr).group(1), action, result, detail))
 
     def skip_all(action, detail):
@@ -587,11 +605,11 @@ def terraform_scenarios(r, work, image, profile="aws"):
 
     init_error = tf_init(r, tfdir)
     if init_error:
-        rows.append(Row("terraform", "provider", "init (pve)" if profile == "pve" else "init", "fail", init_error))
+        rows.append(Row("terraform", "provider", "init" + suffix if profile == "pve" else "init", "fail", init_error))
         for action in ("apply", "plan", "destroy"):
             skip_all(action, "needs init")
         return rows, []
-    rows.append(Row("terraform", "provider", "init (pve)" if profile == "pve" else "init", "pass"))
+    rows.append(Row("terraform", "provider", "init" + suffix if profile == "pve" else "init", "pass"))
     targets = []
     if image is None:
         targets = [f"-target={a}" for a in addrs if a not in TF_NEEDS_IMAGE]
@@ -604,11 +622,15 @@ def terraform_scenarios(r, work, image, profile="aws"):
         return rows, []
     r.env["TF_VAR_image_id"] = image or ""
 
+    if before_apply:
+        before_apply()
     try:
         apply = r.run(["terraform", "apply", "-auto-approve", "-input=false", "-json", *targets], 1800, cwd=tfdir)
         out, errs = apply.stdout, tf_errors(apply.stdout, r)
     except Fail as e:
         out, errs = "", {"": str(e)}
+    if fail_after_apply:
+        raise Fail("injected step failure after apply")
     state = tf_state(r, tfdir)
     done = tf_completed(out, "create") | state
     for a in addrs:
@@ -700,20 +722,27 @@ def cmd_run(out_dir):
     except ConfigError as e:
         print(f"compat: {e}", file=sys.stderr)
         return 2
-    run_id = "vws-compat-" + secrets.token_hex(4)
+    return run_matrix(cfg, out_dir)
+
+
+def run_matrix(cfg, out_dir, before_apply=None, fail_after_apply=False):
+    run_id = cfg.live_run_id if cfg.target == "live" else "vws-compat-" + secrets.token_hex(4)
     out_dir = os.path.abspath(out_dir)
     work = os.path.join(out_dir, "work")
     if os.path.exists(work):
         shutil.rmtree(work)
     os.makedirs(work)
-    r = Runner(child_env(cfg, work, run_id), work, [cfg.secret_key])
+    r = Runner(child_env(cfg, work, run_id), work, [cfg.secret_key, cfg.access_key])
     for tool in ("aws", "terraform"):
         if shutil.which(tool, path=r.env["PATH"]) is None:
             print(f"compat: {tool} is not on PATH (tests/compat/install.sh)", file=sys.stderr)
             return 2
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    cli_rows, cli_left, image = awscli_scenarios(r, cfg, run_id, work)
-    tf_rows, tf_left = terraform_scenarios(r, work, image, cfg.profile)
+    if cfg.target == "live":
+        cli_rows, cli_left, image = [], [], cfg.image_id
+    else:
+        cli_rows, cli_left, image = awscli_scenarios(r, cfg, run_id, work)
+    tf_rows, tf_left = terraform_scenarios(r, work, image, cfg.profile, before_apply, fail_after_apply)
     rows = cli_rows + tf_rows
     doc = {
         "target": cfg.target,
