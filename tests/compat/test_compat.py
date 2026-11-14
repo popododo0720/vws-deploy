@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -277,12 +278,13 @@ class TerraformParseTest(unittest.TestCase):
         self.assertEqual([t for t in types if t not in compat.OWNERS], [])
 
     def test_init_retries_then_reports(self):
-        with tempfile.TemporaryDirectory() as d:
-            stub(d, "terraform", "import sys; sys.stderr.write('TLS handshake timeout'); sys.exit(1)")
-            r = compat.Runner({"PATH": d}, d, [])
-            with mock.patch.object(compat.time, "sleep") as sleep:
-                self.assertEqual(compat.tf_init(r, d), "TLS handshake timeout")
-            self.assertEqual([c.args for c in sleep.call_args_list], [(10,), (20,)])
+        r = compat.Runner({}, ".", [])
+        failed = subprocess.CompletedProcess(["terraform"], 1, "", "TLS handshake timeout")
+        with mock.patch.object(r, "run", return_value=failed) as run, \
+                mock.patch.object(compat.time, "sleep") as sleep:
+            self.assertEqual(compat.tf_init(r, "."), "TLS handshake timeout")
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([c.args for c in sleep.call_args_list], [(10,), (20,)])
 
 
 TF_STUB = """import json, os, sys
