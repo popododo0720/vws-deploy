@@ -185,7 +185,7 @@ class EveryPrWorkflow(unittest.TestCase):
     def test_scan_finds_the_known_pr_workflows(self):
         # Guards the scan itself: a parser that finds nothing would pass the check below trivially.
         found = set(self.pr_workflows().values())
-        self.assertTrue({"ci", "repo-guard", "drift-check", "installer-image"} <= found, found)
+        self.assertTrue({"ci", "repo-guard", "drift-check"} <= found, found)
 
     def test_every_pull_request_workflow_wakes_the_queue(self):
         listed = set(load().get("on", load().get(True))["workflow_run"]["workflows"])

@@ -18,8 +18,8 @@ idx_before=$(sha256sum "${clone}/.git/index")
 
 run=20261031T130000Z res="${WORK}/res/20261031T130000Z"
 mkdir -p "$res"
-jq -n '{scenario: "s3-basic", result: "pass", cluster: "vws-test", finishedAt: "2026-10-31T13:05:00Z"}' >"${res}/s3-basic.json"
-jq -n '{scenario: "ec2-run", result: "fail", cluster: "vws-test", finishedAt: "2026-10-31T13:09:00Z"}' >"${res}/ec2-run.json"
+jq -n '{scenario: "s3-basic", result: "pass", cluster: "pve-test", finishedAt: "2026-10-31T13:05:00Z"}' >"${res}/s3-basic.json"
+jq -n '{scenario: "ec2-run", result: "fail", cluster: "pve-test", finishedAt: "2026-10-31T13:09:00Z"}' >"${res}/ec2-run.json"
 echo 'log line' >"${res}/s3-basic.log"
 publish() { run_vws_real nightly-publish --root "$clone" "$@"; }
 head_of() { git -C "$origin" rev-parse -q --verify "$br" || true; }

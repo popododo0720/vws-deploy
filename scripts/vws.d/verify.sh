@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary: run vws-test scenarios with JSON step evidence and record their results in the feature map
+# summary: run pve-test scenarios with JSON step evidence and record their results in the feature map
 # Sourced by scripts/vws. Usage: vws verify list
 #        vws verify scenario NAME [--json] [--fail-at STEP] [--result FILE] [--map FILE]
 #        vws verify --update-feature-map [--map FILE] RESULT.json...
@@ -8,11 +8,11 @@
 # gated PVE target whose serverid is vwsTest.pveServerId in the map.
 # Requires VWS_VERIFY_REGION and the live.py console/PVE credentials; VWS_VERIFY_PVE_CA_FILE pins the PVE CA.
 # --update-feature-map, vws-deploy#252. RESULT.json is a scenario result:
-#   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "vws-test", "finishedAt": RFC3339, "evidence": "link",
+#   {"scenario": "NAME", "result": "pass"|"fail", "cluster": "pve-test", "finishedAt": RFC3339, "evidence": "link",
 #    "pveServerId": "PVE node serverid", "signature": "SSHSIG"}
 # pveServerId must equal vwsTest.pveServerId in the map, and signature must verify against a key in
 # vwsTest.signers (vws-deploy#288), else the result is refused (FAIL).
-# Only a pass on vws-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
+# Only a pass on pve-test moves a feature's last pass forward. Features without a scenario are WARN unverified.
 # Exit: 0 ok/warn, 1 a result refused (FAIL), 2 usage or invalid result/fingerprint ("FAIL: <reason>",
 # map unchanged; includes finishedAt > 5 min in the future), 3 map unreadable.
 # The feature-map modes change local files only and never touch the cluster.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# summary: nightly full-stack e2e on vws-test: scope check, every scenario, the feature-map PR, the results branch, an incident and a lead wake on failure
-# Sourced by scripts/vws. Usage: vws [--context CTX] nightly-e2e --log-url URL [--results DIR]
+# summary: nightly full-stack e2e on pve-test: scope check, every scenario, the feature-map PR, the results branch, an incident and a lead wake on failure
+# Sourced by scripts/vws. Usage: vws nightly-e2e --log-url URL [--results DIR]
 #   [--timeout SECONDS] [--repo OWNER/NAME] [--wake-thread N]
 # vws-deploy#253, design docs/design/nightly-e2e.md. Removes every OS_* variable, then runs in order:
 #   scope         the gated PVE server ID is vwsTest.pveServerId in docs/feature-map.json
@@ -86,9 +86,9 @@ vws_e2e_incident_body() { # RUN LOG_URL
   local f name
   jq -r --arg run "$1" --arg url "$2" --arg dir "$vws_e2e_dir" --arg step "$vws_e2e_failed" '
     (map(select(.name == $step)) | first) as $f |
-    "## What happened\n\nNightly full-stack e2e run \($run) on vws-test failed at step `\($step)` (exit \($f.exit)): \($f.message | gsub("[\r\n`]"; " "))\n\nRun log: \($url)\nSummary on the box: \($dir)/summary.json\n\n| Step | Result | Exit | Started (UTC) | Log |\n|---|---|---|---|---|",
+    "## What happened\n\nNightly full-stack e2e run \($run) on pve-test failed at step `\($step)` (exit \($f.exit)): \($f.message | gsub("[\r\n`]"; " "))\n\nRun log: \($url)\nSummary on the box: \($dir)/summary.json\n\n| Step | Result | Exit | Started (UTC) | Log |\n|---|---|---|---|---|",
     (.[] | "| \(.name) | \(.result) | \(.exit) | \(.startedAt) | \(.log) |"),
-    "\n## Impact\n\nvws-test only. The table shows which steps ran, failed or were skipped.\n\n## How it was detected\n\n`vws nightly-e2e` (vws-deploy#253) opened this issue when the run failed.\n\n## Root cause\n\nNot known yet. Triage from the logs below.\n\n## The check that would have caught this\n\nTo fill in during triage. The step that caught it is `\($step)` of `vws nightly-e2e`.\n\n## Follow-up issue and PR links\n\nNone yet.\n\n## Logs"
+    "\n## Impact\n\npve-test only. The table shows which steps ran, failed or were skipped.\n\n## How it was detected\n\n`vws nightly-e2e` (vws-deploy#253) opened this issue when the run failed.\n\n## Root cause\n\nNot known yet. Triage from the logs below.\n\n## The check that would have caught this\n\nTo fill in during triage. The step that caught it is `\($step)` of `vws nightly-e2e`.\n\n## Follow-up issue and PR links\n\nNone yet.\n\n## Logs"
   ' -s "${vws_e2e_dir}/steps.jsonl"
   vws_e2e_tail "step ${vws_e2e_failed}" "${vws_e2e_dir}/${vws_e2e_failed}.log" 60
   [[ $vws_e2e_failed == scenarios ]] || return 0
@@ -125,7 +125,7 @@ vws_e2e_wake_body() { # RUN LOG_URL INCIDENT KEY
     --arg head "$head" --arg key "$4" '
     (map(select(.name == $step)) | first) as $f |
     "<!-- vws-orchestrate:lead-wake -->",
-    "vws nightly-e2e: run \($run) on vws-test failed at step `\($step)` (main at `\($head)`).", "",
+    "vws nightly-e2e: run \($run) on pve-test failed at step `\($step)` (main at `\($head)`).", "",
     "Reason: step `\($step)` exit \($f.exit): \($f.message | gsub("[\r\n`]"; " ")).",
     "Step log: `\($dir)/\($step).log`", "Run log: \($url)", "Incident: \($inc)"' -s "${vws_e2e_dir}/steps.jsonl"
   if [[ $vws_e2e_failed == scenarios ]]; then
@@ -212,7 +212,7 @@ vws_cmd_main() {
   flock -n "$lock_fd" || vws_die_env "another nightly-e2e run holds $(dirname "$results")/nightly-e2e.lock"
   : >"${vws_e2e_dir}/steps.jsonl"
 
-  # No step may reach OpenStack: vws-test is reached only through its cluster API and VWS endpoints.
+  # No step may reach OpenStack: pve-test is reached only through its cluster API and VWS endpoints.
   for v in "${!OS_@}"; do unset "$v"; done
   local -a vws_e2e_cmd=(bash "${VWS_ROOT}/scripts/vws")
   [[ -z $VWS_NIGHTLY_E2E_VWS ]] || vws_e2e_cmd=("$VWS_NIGHTLY_E2E_VWS")
@@ -230,9 +230,9 @@ vws_cmd_main() {
   elif ! uid=$(timeout --kill-after=10 60 "${identity[@]}" 2>"${vws_e2e_dir}/scope.log"); then
     vws_e2e_record scope fail 3 "$started" "cannot identify the PVE target; nothing ran"
   elif [[ $uid != "$want" ]]; then
-    vws_e2e_record scope fail 3 "$started" "PVE server ID ${uid} is not vws-test (${want}); nothing ran"
+    vws_e2e_record scope fail 3 "$started" "PVE server ID ${uid} is not pve-test (${want}); nothing ran"
   else
-    vws_e2e_record scope pass 0 "$started" "PVE target is vws-test (server ID ${uid})"
+    vws_e2e_record scope pass 0 "$started" "PVE target is pve-test (server ID ${uid})"
   fi
 
   if [[ -z $vws_e2e_failed ]]; then
@@ -271,7 +271,7 @@ vws_cmd_main() {
     fi
   fi
   jq -s --arg run "$run" --arg s "$started" --arg t "$(date -u +%FT%TZ)" --arg url "$log_url" --arg i "$incident" \
-    '{run: $run, cluster: "vws-test", startedAt: $s, finishedAt: $t, logUrl: $url,
+    '{run: $run, cluster: "pve-test", startedAt: $s, finishedAt: $t, logUrl: $url,
       result: (if any(.[]; .result == "fail") then "fail" else "pass" end),
       incident: (if $i == "" then null else $i end), steps: .}' \
     "${vws_e2e_dir}/steps.jsonl" >"${vws_e2e_dir}/summary.json" || vws_die_env "cannot write ${vws_e2e_dir}/summary.json"

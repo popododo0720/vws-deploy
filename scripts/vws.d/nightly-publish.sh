@@ -124,7 +124,7 @@ vws_cmd_main() {
       vws_emit OK nightly-publish "${VWS_PUBLISH_BRANCH} already holds run ${run}"
       return 0
     fi
-    commit=$(printf 'metrics: nightly results %s\n\nScenario results of the vws-test nightly run %s, written by vws nightly-publish.\n\nPart of #252\n%s\n' \
+    commit=$(printf 'metrics: nightly results %s\n\nScenario results of the pve-test nightly run %s, written by vws nightly-publish.\n\nPart of #252\n%s\n' \
       "$run" "$run" "$VWS_PUBLISH_TRAILER" | git -C "$root" commit-tree "$tree" "${parents[@]}") ||
       vws_die_env "cannot create the results commit"
     # Not forced: a branch that moved since the fetch rejects the push, and the loop starts over on it.

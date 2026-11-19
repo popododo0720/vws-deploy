@@ -26,27 +26,15 @@ command_name=
 args=()
 while (($#)); do
   case $1 in
-    --context | --namespace | -n | -o)
+    -o)
       (($# >= 2)) || vws_usage "$1 needs a value"
-      case $1 in
-        --context) VWS_CONTEXT=$2 ;;
-        --namespace | -n) VWS_NAMESPACE=$2 ;;
-        -o)
-          [[ $2 == text || $2 == json ]] || vws_usage "-o must be text or json"
-          VWS_OUTPUT=$2
-          ;;
-      esac
+      [[ $2 == text || $2 == json ]] || vws_usage "-o must be text or json"
+      VWS_OUTPUT=$2
       shift 2
       ;;
-    --context=* | --namespace=* | -o=*)
-      case $1 in
-        --context=*) VWS_CONTEXT=${1#*=} ;;
-        --namespace=*) VWS_NAMESPACE=${1#*=} ;;
-        -o=*)
-          [[ ${1#*=} == text || ${1#*=} == json ]] || vws_usage "-o must be text or json"
-          VWS_OUTPUT=${1#*=}
-          ;;
-      esac
+    -o=*)
+      [[ ${1#*=} == text || ${1#*=} == json ]] || vws_usage "-o must be text or json"
+      VWS_OUTPUT=${1#*=}
       shift
       ;;
     --dry-run) VWS_DRY_RUN=1; shift ;;
@@ -73,7 +61,7 @@ while (($#)); do
       ;;
   esac
 done
-export VWS_CONTEXT VWS_NAMESPACE VWS_OUTPUT VWS_DRY_RUN VWS_YES VWS_STRICT
+export VWS_OUTPUT VWS_DRY_RUN VWS_YES VWS_STRICT
 
 [[ -n $command_name ]] || vws_usage "no command; try: scripts/vws help"
 [[ $command_name =~ ^[a-z][a-z0-9-]*$ ]] || vws_usage "unknown command; try: scripts/vws help"

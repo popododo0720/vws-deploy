@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # vws verify list and vws verify scenario: JSON step evidence, exit codes, injected and real failures with a
-# clean teardown, SIGTERM cleanup, the vws-test fingerprint gate, and a result the feature map accepts.
+# clean teardown, SIGTERM cleanup, the pve-test fingerprint gate, and a result the feature map accepts.
 # The scenario is ec2-volume-reboot; aws is the fake in tests/fixtures/bin/aws, a small EC2 kept on disk.
 set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
@@ -51,7 +51,7 @@ if jq -se 'length > 0 and all(.[]; (keys == ["cmd","duration_ms","evidence","res
 expect_text "steps run in order and cleanup is idempotent" "$(steps)" "$all_pass"
 expect_text "cleanup of a deleted resource reports it" "$OUT" '"evidence":"already gone"'
 expect_text "the cmd field shows the call" "$OUT" '"cmd":"vws_ec2_run"'
-if jq -e '.scenario == "ec2-volume-reboot" and .result == "pass" and .cluster == "vws-test" and .pveServerId == "TestServer826"
+if jq -e '.scenario == "ec2-volume-reboot" and .result == "pass" and .cluster == "pve-test" and .pveServerId == "TestServer826"
     and .evidence == $e' --arg e "${WORK}/r1.steps.jsonl" "${WORK}/r1.json" >/dev/null; then
   ok "the result file names the cluster and the steps file"; else bad "result file" "$(cat "${WORK}/r1.json")"; fi
 if [[ $(cat "${WORK}/r1.steps.jsonl") == "$OUT" ]]; then ok "the steps file holds the printed lines"; else bad "steps file" "$(cat "${WORK}/r1.steps.jsonl")"; fi
@@ -158,7 +158,7 @@ rm -rf "$ec2"
 echo '{"serverid":"OtherServer826"}' >"${WORK}/identity.json"
 run_vws_real verify scenario "$scenario" --map "$map"
 expect_rc "another cluster is refused" 3
-expect_text "the refusal names both server IDs" "$ERR" "OtherServer826 is not vws-test (TestServer826); nothing ran"
+expect_text "the refusal names both server IDs" "$ERR" "OtherServer826 is not pve-test (TestServer826); nothing ran"
 if ! grep -q '^aws' "$VWS_FAKE_LOG"; then ok "a refused cluster gets no aws call"; else bad "no aws call" "$(cat "$VWS_FAKE_LOG")"; fi
 echo '{"serverid":"TestServer826"}' >"${WORK}/identity.json"
 jq '.vwsTest.pveServerId = null' "$map" >"${WORK}/nofp.json"

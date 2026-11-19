@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Record signed scenario results and render the feature map.
-Only a signed vws-test pass with pveServerId matching the map moves lastPass forward.
+Only a signed pve-test pass with pveServerId matching the map moves lastPass forward.
 Retired map/result identities are refused; signing follows docs/design/result-signing.md.
 
 Update exits 0 for recorded/ignored results, 1 for refusals, 2 for invalid
@@ -14,9 +14,9 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9), "KST")
-CLUSTER = "vws-test"
+CLUSTER = "pve-test"
 CLOCK_SKEW = timedelta(minutes=5)
-PRINCIPAL = "vws-test"
+PRINCIPAL = "pve-test"
 NAMESPACE = "vws-feature-map@vws-deploy"
 SSH_TIMEOUT = 30
 
@@ -213,10 +213,10 @@ def update(map_path, results):
         elif r.get("cluster") != CLUSTER:
             out.append(f"WARN\tfeature-map\t{sc}: result is from {r.get('cluster')!r}, not {CLUSTER}; ignored")
         elif not want_id:
-            out.append(f"FAIL\tfeature-map\t{sc}: no vws-test fingerprint (vwsTest.pveServerId) in {map_path}; refused")
+            out.append(f"FAIL\tfeature-map\t{sc}: no pve-test fingerprint (vwsTest.pveServerId) in {map_path}; refused")
             failed = True
         elif r.get("pveServerId") != want_id:
-            out.append(f"FAIL\tfeature-map\t{sc}: pveServerId {r.get('pveServerId')!r} does not match the vws-test fingerprint; refused")
+            out.append(f"FAIL\tfeature-map\t{sc}: pveServerId {r.get('pveServerId')!r} does not match the pve-test fingerprint; refused")
             failed = True
         elif not signers:
             out.append(f"FAIL\tfeature-map\t{sc}: no trusted signer (vwsTest.signers) in {map_path}; refused")

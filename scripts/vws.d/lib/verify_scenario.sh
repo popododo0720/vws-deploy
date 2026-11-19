@@ -134,7 +134,7 @@ vws_sc_write_result() { # pass|fail
   [[ -n $vws_sc_result ]] || return 0
   jq -n --arg s "$vws_sc_name" --arg r "$1" --arg u "$vws_sc_server_id" --arg e "$vws_sc_steps" \
     --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{scenario: $s, result: $r, cluster: "vws-test", finishedAt: $t, pveServerId: $u, evidence: $e}' \
+    '{scenario: $s, result: $r, cluster: "pve-test", finishedAt: $t, pveServerId: $u, evidence: $e}' \
     >"${vws_sc_result}.tmp" || vws_die_env "cannot write ${vws_sc_result}"
   if [[ -n ${VWS_RESULT_SIGNING_KEY:-} ]]; then
     python3 "${VWS_ROOT}/scripts/vws.d/lib/feature_map.py" sign "${vws_sc_result}.tmp" "$VWS_RESULT_SIGNING_KEY" ||
@@ -179,7 +179,7 @@ vws_sc_check_endpoint() { # VAR: the endpoint variable to check
 }
 
 # vws_sc_main NAME MAP FAIL_AT RESULT: exit 0 every step passed, 1 a step or a cleanup failed, 2 usage,
-# 3 environment (tool or variable missing, cluster unreadable, cluster is not vws-test). Nothing runs before
+# 3 environment (tool or variable missing, cluster unreadable, cluster is not pve-test). Nothing runs before
 # the gated PVE server ID matches vwsTest.pveServerId in MAP.
 vws_sc_main() {
   local map=$2 file var want status=pass
@@ -201,12 +201,12 @@ vws_sc_main() {
     vws_die_env "vwsTest.kubeSystemUID is retired (vws-deploy#826); set vwsTest.pveServerId"
   fi
   want=$(jq -r '.vwsTest.pveServerId // empty' "$map" 2>/dev/null) || vws_die_env "feature map ${map} is unreadable"
-  [[ -n $want ]] || vws_die_env "feature map ${map} has no vws-test fingerprint; nothing ran"
+  [[ -n $want ]] || vws_die_env "feature map ${map} has no pve-test fingerprint; nothing ran"
   [[ -n ${VWS_VERIFY_REGION:-} ]] || vws_die_env "scenario ${vws_sc_name} needs VWS_VERIFY_REGION; nothing ran"
   local -a identity=(python3 "${VWS_ROOT}/scripts/vws.d/lib/live.py" identity --region "$VWS_VERIFY_REGION")
   [[ -z ${VWS_VERIFY_PVE_CA_FILE:-} ]] || identity+=(--pve-ca-file "$VWS_VERIFY_PVE_CA_FILE")
   vws_sc_server_id=$("${identity[@]}") || vws_die_env "cannot identify the PVE target; nothing ran"
-  [[ $vws_sc_server_id == "$want" ]] || vws_die_env "PVE server ID ${vws_sc_server_id} is not vws-test (${want}); nothing ran"
+  [[ $vws_sc_server_id == "$want" ]] || vws_die_env "PVE server ID ${vws_sc_server_id} is not pve-test (${want}); nothing ran"
 
   vws_sc_tmp=$(mktemp -d)
   # shellcheck disable=SC2064 # expand now: the paths are fixed for this run
