@@ -16,7 +16,9 @@ packaging/vws-global/build.sh 1.0.0-1 ./vws-console-api ./vws-aws-proxy \
 sudo apt-get install ./build/vws-global_1.0.0-1_amd64.deb
 ```
 
-The builder packages supplied inputs without downloading or compiling. Go
+`packaging/build.sh VERSION [OUTPUT_DIR]` does all of the above from source for
+the pinned release set and builds the three packages (`vws-etcd`, `vws-global`,
+`vws-region`). The builder here packages supplied inputs without downloading or compiling. Go
 binaries must be built for Debian 12 amd64 (prefer `CGO_ENABLED=0`). Installation
 creates separate system users but does not enable or start services. Repeat
 configuration preserves operator credentials and data; removal stops services,

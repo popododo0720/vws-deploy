@@ -28,6 +28,7 @@ amd64 etcd build compatible with the installed `etcd-client`. The package instal
 `/usr/bin/vws-etcd`, the helpers together under `/usr/lib/vws/etcd/`, and five units under
 `/usr/lib/systemd/system/`. Installation creates the system user `vws-etcd`, its data directory
 `/var/lib/vws-etcd` (0700), and `/etc/vws/credentials` (root:root 0700). It enables and starts nothing.
+`vws install` (docs/vws-cli.md) enables the member and both timers on the one lab host.
 Reinstall, removal and purge preserve the data and credentials; purge removes the conffile.
 
 Before starting, edit the non-secret conffile `/etc/vws/etcd.conf`:
