@@ -98,10 +98,10 @@ if failed:
 PY
 }
 
-# r8_scan PATH...: print lines that change a cluster. The only allowed callers are exactly
-# vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
+# r8_scan PATH...: print lines that change a cluster. This repo has no Kubernetes caller, so any
+# kubectl or helm change, with or without a prefix, fails.
 r8_scan() {
-  grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
+  grep -R -n -P '(?<![\w-])[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
     "$@"
 }
 
@@ -564,13 +564,13 @@ cmd_observability() {
   # Examples: config only, each with its rights or mounts and its component stability, and valid.
   local examples=docs/observability/collector-examples
   [[ -d $examples ]] || die "R25: ${examples} is missing"
-  for name in k8s_cluster k8sobjects kubeletstats hostmetrics filelog; do
+  for name in hostmetrics journald; do
     example="${examples}/${name}.yaml"
     [[ -f $example ]] || die "R25: ${example} is missing"
     grep -q '^# Needs: ' "$example" || die "R25: ${example} has no '# Needs:' line"
     grep -q '^# Stability: ' "$example" || die "R25: ${example} has no '# Stability:' line"
     ! grep -q -E '^(apiVersion|kind):' "$example" || die "R25: ${example} is a manifest; examples are collector config only"
-    K8S_NODE_NAME=node-0 HOST_ROOT=/ KUBELET_AUTH_TYPE=none otelcol-contrib validate --config="$example" || die "R25: otelcol-contrib validate rejects ${example}"
+    otelcol-contrib validate --config="$example" || die "R25: otelcol-contrib validate rejects ${example}"
   done
 }
 
