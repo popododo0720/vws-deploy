@@ -57,8 +57,9 @@ It never reaches a cluster or the external network. Admin commands use a loopbac
 installs one lab host over SSH. Requires python3 with PyYAML, ssh and dpkg-deb
 locally, and root access (or passwordless sudo), apt-get, systemctl and keepalived
 on the Debian target. Supply exactly one `vws-etcd_*.deb`, `vws-global_*.deb` and
-`vws-region_*.deb`; this command does not build packages or download releases.
-`small` and `ha` remain vws-deploy#776.
+`vws-region_*.deb`; this command does not build packages or download releases
+(`packaging/build.sh VERSION` builds them). `small` and `ha` remain vws-deploy#776.
+The runbook is `docs/operator/vm-install.md`.
 
 ```yaml
 profile: lab
@@ -106,6 +107,18 @@ inventory and passes the same validation as `vws config validate`.
 The credential directory contains the file names in
 `packaging/vws-global/README.md`, `packaging/vws-etcd/README.md`, plus
 `region-kek` and `region.key` from `packaging/vws-region/vws-region.service`.
+The command creates these names when the directory lacks them, 0600, and never
+rewrites one that exists: `region-kek`, `admin-kek`, `iam-kek/`, the etcd set
+(`ca.crt`, `member.*`, `client.*`, `etcd-ca.pem`, `api-etcd*.pem`,
+`iam-etcd*.pem`) and the internal set (`internal-ca.pem`, `iam.pem`,
+`iam-key.pem`, `api-mtls*.pem`). Both sets come from
+`packaging/vws-etcd/vws-etcd-tls`, which needs openssl and flock locally and
+keeps each CA key in `etcd-tls/` or `internal-tls/` in that directory. A set
+with only some files present is not completed; the missing file exits 2.
+`console-token`, `vws-access-key`, `vws-secret-key`, `aws-source` and
+`region.key` are always yours to supply. The command enables and starts the
+package services, `vws-etcd-snapshot.timer`, `vws-etcd-defrag.timer` and
+keepalived.
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
 credential sources are refused. All required inputs are checked before SSH.
 Private files go to root-owned 0600 files in `/etc/vws/credentials` (0700),
