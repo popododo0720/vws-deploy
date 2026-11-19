@@ -3,7 +3,8 @@
 # Writes the TLS material of a vws-etcd cluster:
 #   OUTDIR/ca.crt, OUTDIR/ca.key   the cluster CA; ca.key stays on the operator host, never on a member
 #   OUTDIR/<name>/                 ca.crt, member.crt, member.key for each member (server and peer,
-#                                  CN vws-etcd-member, SAN = the member IP and name)
+#                                  CN vws-etcd-member, SAN = the member IP, 127.0.0.1 and the name;
+#                                  127.0.0.1 is the loopback client listener of vws-etcd-config)
 #   OUTDIR/client/                 ca.crt, client.crt, client.key (CN vws-etcd-client) for vws-iam,
 #                                  the admin registry, vws backup and the snapshot timer
 # The CN split matters: peers accept only CN vws-etcd-member (peer allowed-cn in vws-etcd-config),
@@ -49,7 +50,9 @@ for i in "${!vws_etcd_names[@]}"; do
   name=${vws_etcd_names[i]}
   [[ ! -e $out/$name ]] || continue
   mkdir "$work/$name"
-  leaf "$work/$name" member vws-etcd-member serverAuth,clientAuth "IP:${vws_etcd_ips[i]},DNS:${name}"
+  san="IP:${vws_etcd_ips[i]}"
+  [[ ${vws_etcd_ips[i]} == 127.0.0.1 ]] || san+=",IP:127.0.0.1"
+  leaf "$work/$name" member vws-etcd-member serverAuth,clientAuth "${san},DNS:${name}"
   mv "$work/$name" "$out/$name"
   echo "vws-etcd: wrote ${out}/${name}"
 done

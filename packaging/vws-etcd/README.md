@@ -3,6 +3,10 @@
 The etcd cluster that holds vws-iam and the admin registry (design.md 10.1.1). The `ha` profile runs three
 members: two global VMs and a witness, which may be a PVE node. The `lab` and `small` profiles run one.
 Every listener is https, and both the client and the peer port require a certificate from the cluster CA.
+The client port listens on the member address and on 127.0.0.1, and the member certificate names both, so
+vws-iam and vws-console-api on the same host reach it at `https://127.0.0.1:2379`. A member certificate
+made before this (no 127.0.0.1 in its SAN) must be reissued: delete the member directory and run
+`vws-etcd-tls` again.
 The peer port also requires CN `vws-etcd-member`, so a client certificate cannot join as a member.
 
 | File | Runs on | Does |
