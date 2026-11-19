@@ -15,7 +15,7 @@ Last pass is a vws-test scenario run (KST). `unverified` means the feature has n
 | Security group create / ingress rules | vws-console-api | vws-network#117 | N/A: no scenario yet | unverified | - |
 | Elastic IP allocate / associate | vws-console-api | - | N/A: no scenario yet | unverified | - |
 | Direct subnets as shared EC2 subnets and network interfaces | vws-console-api | vws-console-api#60 | N/A: no scenario yet; the API is open in vws-console-api#60 | unverified | - |
-| S3 object put / get (AWS forwarding) | vws-console-api | vws-deploy#51 | `scripts/vws verify scenario s3-basic` | never passed | - |
+| S3 object put / get (AWS forwarding) | vws-console-api | vws-deploy#51 | N/A: no scenario yet; the retired s3-basic scenario signed CreateBucket with the PVE gate region, and AWS forwarding needs a separate AWS-region check | unverified | - |
 | IAM users and access keys | vws-iam | vws-iam#3 | N/A: no scenario yet | unverified | - |
 | IAM groups and roles | vws-iam | vws-iam#1 | N/A: no scenario yet; the IAM Phase 1 design is open in vws-iam#1 | unverified | - |
 | IAM policy evaluation (Authorize) | vws-iam | vws-iam#4 | N/A: no scenario yet | unverified | - |

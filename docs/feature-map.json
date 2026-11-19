@@ -11,7 +11,7 @@
     {"feature": "Security group create / ingress rules", "repo": "vws-console-api", "issue": "vws-network#117", "scenario": null, "na": "no scenario yet"},
     {"feature": "Elastic IP allocate / associate", "repo": "vws-console-api", "issue": null, "scenario": null, "na": "no scenario yet"},
     {"feature": "Direct subnets as shared EC2 subnets and network interfaces", "repo": "vws-console-api", "issue": "vws-console-api#60", "scenario": null, "na": "no scenario yet; the API is open in vws-console-api#60"},
-    {"feature": "S3 object put / get (AWS forwarding)", "repo": "vws-console-api", "issue": "vws-deploy#51", "scenario": "s3-basic"},
+    {"feature": "S3 object put / get (AWS forwarding)", "repo": "vws-console-api", "issue": "vws-deploy#51", "scenario": null, "na": "no scenario yet; the retired s3-basic scenario signed CreateBucket with the PVE gate region, and AWS forwarding needs a separate AWS-region check"},
     {"feature": "IAM users and access keys", "repo": "vws-iam", "issue": "vws-iam#3", "scenario": null, "na": "no scenario yet"},
     {"feature": "IAM groups and roles", "repo": "vws-iam", "issue": "vws-iam#1", "scenario": null, "na": "no scenario yet; the IAM Phase 1 design is open in vws-iam#1"},
     {"feature": "IAM policy evaluation (Authorize)", "repo": "vws-iam", "issue": "vws-iam#4", "scenario": null, "na": "no scenario yet"},

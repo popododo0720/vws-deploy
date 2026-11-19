@@ -23,7 +23,7 @@
     "Node reboot recovery"
   ],
   "later": [
-    {"feature": "S3 object put / get (AWS forwarding)", "reason": "vws-deploy#132 moves S3 out of core into the first official plugin (phase 2, vws-deploy#179). The row stays because the nightly runs its s3-basic scenario."},
+    {"feature": "S3 object put / get (AWS forwarding)", "reason": "vws-deploy#132 moves S3 out of core into the first official plugin (phase 2, vws-deploy#179). The row stays unverified: no scenario covers it until a separate AWS-region check exists."},
     {"feature": "S3 bucket operations", "reason": "Phase 2 with the rest of S3 (vws-deploy#132, #179)."},
     {"feature": "Console S3 pages", "reason": "Phase 2 with the rest of S3; vws-console#69 and #83 are on the phase-2 hold in vws-deploy#132."}
   ]
