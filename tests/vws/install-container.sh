@@ -48,7 +48,11 @@ snapshot() {
 }
 bash "$root/scripts/vws" "${args[@]}" > "$work/first.out" 2> "$work/first.err"
 grep -q 'changed' "$work/first.out"
-test -f "$INSTALL_STATE/is-enabled-keepalived"
+for unit in vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy \
+    vws-console-api vws-console vws-region keepalived; do
+    test -f "$INSTALL_STATE/is-enabled-$unit"
+    test -f "$INSTALL_STATE/is-active-$unit"
+done
 python3 - <<'PY'
 from pathlib import Path
 root = Path("/etc/systemd/system")

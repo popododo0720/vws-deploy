@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install operator-supplied lab packages; all payloads travel on SSH stdin."""
 import argparse
+import base64
 import ipaddress
 import json
 import os
@@ -9,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 
 import globalconfig
@@ -29,6 +31,20 @@ LAB_SERVICES = {
     "region": ("vws-region",),
     "etcd": ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"),
 }
+PACKAGING = Path(__file__).resolve().parents[3] / "packaging"
+# Generated TLS sets: state directory, vws-etcd-tls member, and credential name -> file below the state
+# directory ({} is the member). The internal set names its one member iam, on the loopback IAM listener.
+TLS = (
+    ("etcd-tls", None, {
+        "ca.crt": "ca.crt", "etcd-ca.pem": "ca.crt", "member.crt": "{}/member.crt",
+        "member.key": "{}/member.key", "client.crt": "client/client.crt",
+        "client.key": "client/client.key", "api-etcd.pem": "client/client.crt",
+        "api-etcd-key.pem": "client/client.key", "iam-etcd.pem": "client/client.crt",
+        "iam-etcd-key.pem": "client/client.key"}),
+    ("internal-tls", "iam=127.0.0.1", {
+        "internal-ca.pem": "ca.crt", "iam.pem": "{}/member.crt", "iam-key.pem": "{}/member.key",
+        "api-mtls.pem": "client/client.crt", "api-mtls-key.pem": "client/client.key"}),
+)
 PENDING = "/var/lib/vws-install/pending"
 DIRTY = ("test ! -L /var/lib/vws-install; install -d -m 700 -o root -g root /var/lib/vws-install; "
          "test ! -L " + PENDING + "; touch " + PENDING)
@@ -100,6 +116,47 @@ def inventory(path):
         raise Invalid("invalid inventory") from None
 
 
+def generate(source, host):
+    """Create the per-install secrets that are absent; an existing path is never rewritten."""
+    def absent(name):
+        return not (source / name).exists() and not (source / name).is_symlink()
+
+    def put(name, data):
+        # Link a complete 0600 file into place: a crash leaves no partial secret, a race no overwrite.
+        if not absent(name):
+            return
+        fd, temporary = tempfile.mkstemp(dir=source, prefix=".vws-install.")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.link(temporary, source / name)
+        except FileExistsError:
+            pass
+        finally:
+            os.unlink(temporary)
+
+    def key():
+        return base64.b64encode(os.urandom(32)) + b"\n"
+
+    os.umask(0o077)
+    source.mkdir(exist_ok=True)
+    put("region-kek", os.urandom(32))
+    put("admin-kek", key())
+    if absent("iam-kek"):
+        staged = Path(tempfile.mkdtemp(dir=source, prefix=".vws-install."))
+        (staged / "active").write_text("k1\n")
+        (staged / "k1").write_bytes(key())
+        staged.rename(source / "iam-kek")
+    for state, members, names in TLS:
+        # A set is generated whole or resumed from its state directory, never mixed into supplied files.
+        if all(absent(name) for name in names) or (source / state / "ca.key").is_file():
+            members = members or host["name"] + "=" + host["address"]
+            if local(["bash", str(PACKAGING / "vws-etcd/vws-etcd-tls"), str(source / state), members]).returncode:
+                raise Invalid("cannot generate " + state + "; openssl and flock are required")
+            for name, path in names.items():
+                put(name, (source / state / path.format(members.split("=")[0])).read_bytes())
+
+
 def inputs(args):
     cfg = inventory(args.inventory)
     config = read_file(args.global_config or args.inventory.parent / "global.yaml")
@@ -110,6 +167,7 @@ def inputs(args):
     source = args.credentials
     if source.is_symlink() or ".." in source.parts or any(p.is_symlink() for p in source.parents):
         raise Invalid("unsafe credentials directory")
+    generate(source, cfg["hosts"][0])
     files = []
     for names, dest, mode in ((PRIVATE, "/etc/vws/credentials/", "600"),
                               (PUBLIC, "/etc/vws/", "644"), (["region.key"], "/etc/vws/", "600")):
@@ -235,8 +293,7 @@ fi
             host = self.host
             changed = self.write("/etc/vws/etcd.conf", "644",
                                  f'NAME={host["name"]}\nLIST={host["name"]}={host["address"]}\n'.encode()) or changed
-            template = Path(__file__).resolve().parents[3] / "packaging/vws-region/keepalived.conf"
-            vip = template.read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
+            vip = (PACKAGING / "vws-region/keepalived.conf").read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
             changed = self.write("/etc/keepalived/keepalived.conf", "644", vip.encode()) or changed
             changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
             for name, version, payload in packages:
@@ -253,7 +310,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Dpk
 """, payload)
                 self.emit(name + " package", upgrade)
                 services, probes = {
-                    "vws-etcd": (["vws-etcd"], [("etcd", "CREDENTIALS_DIRECTORY=/run/credentials/vws-etcd.service /usr/lib/vws/etcd/check-ready")]),
+                    "vws-etcd": (["vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer"], [("etcd", "CREDENTIALS_DIRECTORY=/run/credentials/vws-etcd.service /usr/lib/vws/etcd/check-ready")]),
                     "vws-global": (["vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"],
                                    [(p, "/usr/lib/vws/check-global-ready " + p) for p in ("iam", "proxy", "api", "console")]),
                     "vws-region": (["vws-region"], [("region", "/usr/lib/vws/check-region-ready")]),

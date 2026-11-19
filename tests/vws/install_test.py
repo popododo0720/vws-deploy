@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import base64
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -50,6 +52,12 @@ elif "echo changed" in c:
         sys.exit(255)
     print("changed" if changed else "unchanged")
 """
+
+
+# Names vws install creates when the credentials directory lacks them.
+GENERATED = ("region-kek admin-kek ca.crt member.crt member.key client.crt client.key etcd-ca.pem "
+             "api-etcd.pem api-etcd-key.pem iam-etcd.pem iam-etcd-key.pem internal-ca.pem iam.pem "
+             "iam-key.pem api-mtls.pem api-mtls-key.pem").split()
 
 
 class Install(unittest.TestCase):
@@ -185,9 +193,92 @@ class Install(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_credential(self):
-        (self.work / "credentials/admin-kek").unlink()
+        (self.work / "credentials/console-token").unlink()
         result = self.refused()
-        self.assertEqual(result.stderr, "vws: required regular file: admin-kek\n")
+        self.assertEqual(result.stderr, "vws: required regular file: console-token\n")
+
+    def remove_generated(self):
+        source = self.work / "credentials"
+        for name in GENERATED:
+            (source / name).unlink()
+        shutil.rmtree(source / "iam-kek")
+        return source
+
+    def secrets(self, source):
+        return {str(p.relative_to(source)): (p.read_bytes(), p.stat().st_mode & 0o777)
+                for p in source.rglob("*") if p.is_file()}
+
+    def test_first_install_generates_missing_secrets_once(self):
+        source = self.remove_generated()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.secrets(source)
+        self.assertEqual(len(first["region-kek"][0]), 32)
+        for name in ("admin-kek", "iam-kek/k1"):
+            self.assertEqual(len(base64.b64decode(first[name][0], validate=False)), 32, name)
+        self.assertEqual(first["iam-kek/active"][0], b"k1\n")
+        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region.key"}
+        self.assertEqual({name for name, (_, mode) in first.items() if mode != 0o600}, supplied)
+        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1, DNS:lab-1"),
+                              ("etcd-ca.pem", "api-etcd.pem", ""), ("etcd-ca.pem", "iam-etcd.pem", ""),
+                              ("internal-ca.pem", "iam.pem", "IP Address:127.0.0.1, DNS:iam"),
+                              ("internal-ca.pem", "api-mtls.pem", "")):
+            subprocess.run(["openssl", "verify", "-CAfile", source / ca, source / leaf],
+                           check=True, capture_output=True)
+            shown = subprocess.run(["openssl", "x509", "-in", source / leaf, "-noout", "-ext",
+                                    "subjectAltName"], capture_output=True, text=True).stdout
+            self.assertIn(san, shown, leaf)
+        self.assertNotEqual(first["ca.crt"][0], first["internal-ca.pem"][0])
+        # The CA keys stay on the operator host; the generated KEK reaches the target on stdin only.
+        payload = (self.work / "state/payload").read_bytes()
+        self.assertIn(first["region-kek"][0], payload)
+        for state in ("etcd-tls", "internal-tls"):
+            self.assertNotIn(first[state + "/ca.key"][0], payload)
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
+        self.assertEqual(self.secrets(source), first)
+        output = (result.stdout + result.stderr + again.stdout + again.stderr
+                  + (self.work / "state/argv").read_text())
+        self.assertNotIn(first["admin-kek"][0].decode().strip(), output)
+
+    def test_interrupted_generation_resumes_without_new_keys(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        first = self.secrets(source)
+        # Power loss between two links: the state directory is complete, some names are not linked yet.
+        for name in ("api-etcd.pem", "iam-key.pem", "admin-kek"):
+            (source / name).unlink()
+        self.assertEqual(self.run_install().returncode, 0)
+        after = self.secrets(source)
+        self.assertNotEqual(after.pop("admin-kek"), first.pop("admin-kek"))
+        self.assertEqual(after, first)
+
+    def test_supplied_tls_set_is_never_completed_with_generated_files(self):
+        source = self.work / "credentials"
+        (source / "member.key").unlink()
+        (source / "iam.pem").unlink()
+        before = self.secrets(source)
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: required regular file: member.key\n")
+        self.assertEqual(self.secrets(source), before)
+
+    def test_generation_without_openssl_is_refused(self):
+        self.remove_generated()
+        (self.work / "bin/openssl").write_text("#!/bin/sh\nexit 1\n")
+        (self.work / "bin/openssl").chmod(0o755)
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: cannot generate etcd-tls; openssl and flock are required\n")
+        self.assertFalse((self.work / "credentials/ca.crt").exists())
+
+    def test_installed_units_are_enabled_and_started(self):
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = (self.work / "state/argv").read_text()
+        for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
+                     "vws-aws-proxy", "vws-console-api", "vws-console", "vws-region", "keepalived"):
+            self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
+            self.assertIn(f"systemctl enable --now {unit} ", log)
 
     def test_symlink_and_traversal(self):
         path = self.work / "credentials/admin-kek"
