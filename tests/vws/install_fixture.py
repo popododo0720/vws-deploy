@@ -6,12 +6,14 @@ PRIVATE = ("ca.crt member.crt member.key client.crt client.key admin-kek console
            "vws-access-key vws-secret-key api-etcd-key.pem api-mtls-key.pem aws-source "
            "iam-etcd-key.pem iam-key.pem region-kek region.key").split()
 PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam.pem".split()
+# What only the region role reads, and what only the etcd and global roles read.
+REGION = "region-kek region.key region.crt global-ca.pem".split()
 
 
 def prepare(root):
     for directory in ("credentials/iam-kek", "packages", "bin", "state"):
         (root / directory).mkdir(parents=True, exist_ok=True)
-    for name in PRIVATE + PUBLIC + ["iam-kek/active", "iam-kek/key1"]:
+    for name in PRIVATE + PUBLIC + ["region.crt", "global-ca.pem", "iam-kek/active", "iam-kek/key1"]:
         (root / "credentials" / name).write_text("fixture-private-" + name.replace("/", "-") + "\n")
     (root / "hosts.yaml").write_text("""profile: lab
 hosts:
@@ -21,6 +23,7 @@ hosts:
 vip:
   address: 192.0.2.10/24
 """)
+    (root / "region.yaml").write_text("read_only: true\ndefault_project: lab\n")
     (root / "global.yaml").write_text("""iam:
   etcd_endpoints: [https://127.0.0.1:2379]
   tls:

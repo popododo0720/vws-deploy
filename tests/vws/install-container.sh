@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:?}/install-target.XXXXXX")
-trap 'rm -rf "$work"; rm -f /var/lib/vws-install-fail' EXIT
+trap 'rm -rf "$work" /etc/pve/vws; rm -f /var/lib/vws-install-fail' EXIT
 python3 "$root/tests/vws/install_fixture.py" "$work"
 export INSTALL_STATE="$work/state"
 export PATH="$work/bin:$PATH"
@@ -38,7 +38,32 @@ case "$verb" in
     *) exit 1 ;;
 esac
 SH
-chmod +x "$work/bin/ssh" "$work/bin/systemctl"
+# The VIP is on the interface exactly while the fake keepalived is active.
+cat > "$work/bin/ip" <<'SH'
+#!/bin/sh
+set -eu
+test ! -f "$INSTALL_STATE/is-active-keepalived" || echo '2: vmbr0    inet 192.0.2.10/24 scope global vmbr0'
+SH
+chmod +x "$work/bin/ssh" "$work/bin/systemctl" "$work/bin/ip"
+global_units="vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy vws-console-api vws-console"
+
+# A global host (Debian VM or bare metal, no PVE): etcd and the global services, nothing of the region.
+mkdir "$work/global"
+sed -e 's/^    roles: .*/    roles: [etcd, global]/' -e '/^vip:/,+1d' "$work/hosts.yaml" > "$work/global/hosts.yaml"
+cp "$work/global.yaml" "$work/global/"
+bash "$root/scripts/vws" install --profile lab --inventory "$work/global/hosts.yaml" \
+    --packages "$work/packages" --credentials "$work/credentials" > "$work/global.out" 2> "$work/global.err"
+for unit in $global_units; do
+    test -f "$INSTALL_STATE/is-enabled-$unit"
+    test -f "$INSTALL_STATE/is-active-$unit"
+done
+if grep -q -e keepalived -e vws-region "$INSTALL_STATE/systemctl" "$work/global.out"; then exit 1; fi
+test ! -e /etc/keepalived
+test ! -e /etc/vws/region.key
+test ! -e /etc/vws/region.yaml
+test ! -e /etc/vws/credentials/region-kek
+test ! -e /usr/lib/vws/check-region-ready
+test ! -e /etc/systemd/system/vws-lab-region.slice.d
 args=(install --profile lab --inventory "$work/hosts.yaml" --packages "$work/packages"
       --credentials "$work/credentials")
 snapshot() {
@@ -46,10 +71,18 @@ snapshot() {
     find /etc/vws /etc/keepalived /usr/lib/vws -type f -exec sha256sum {} + | sort
     find /etc/systemd/system -name 50-vws-memory.conf -exec sha256sum {} + | sort
 }
+# The same host as a PVE node too. Before the region is registered the daemon runs without the VIP.
+bash "$root/scripts/vws" "${args[@]}" > "$work/unregistered.out" 2> "$work/unregistered.err"
+grep -q '^lab-1 region registration pending$' "$work/unregistered.out"
+grep -q 'the region is not registered' "$work/unregistered.err"
+test -f "$INSTALL_STATE/is-active-vws-region"
+test ! -f "$INSTALL_STATE/is-enabled-keepalived"
+mkdir -p /etc/pve/vws
+echo '{}' > /etc/pve/vws/registration.json
 bash "$root/scripts/vws" "${args[@]}" > "$work/first.out" 2> "$work/first.err"
-grep -q 'changed' "$work/first.out"
-for unit in vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy \
-    vws-console-api vws-console vws-region keepalived; do
+grep -q '^lab-1 keepalived changed$' "$work/first.out"
+grep -q '^lab-1 region VIP unchanged$' "$work/first.out"
+for unit in $global_units vws-region keepalived; do
     test -f "$INSTALL_STATE/is-enabled-$unit"
     test -f "$INSTALL_STATE/is-active-$unit"
 done

@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-from install_fixture import prepare, PRIVATE
+from install_fixture import prepare, PRIVATE, REGION
 
 ROOT = Path(__file__).resolve().parents[2]
 SSH = r"""#!/usr/bin/env python3
@@ -26,7 +26,9 @@ if "/etc/systemd/system/" in c:
 if os.environ.get("INSTALL_FAIL") and os.environ["INSTALL_FAIL"] in c:
     sys.stderr.write("fixture-private-admin-kek")
     sys.exit(1)
-if c == "test ! -f /var/lib/vws-install/pending || echo pending":
+if "registration.json" in c:
+    if (s / "registered").exists(): print("registered")
+elif c == "test ! -f /var/lib/vws-install/pending || echo pending":
     if (s / "pending").exists(): print("pending")
 elif c == "rm -f /var/lib/vws-install/pending":
     (s / "pending").unlink(missing_ok=True)
@@ -66,6 +68,8 @@ class Install(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.work = Path(self.tmp.name)
         prepare(self.work)
+        # The fake PVE node already holds a registration; the unregistered case removes it.
+        (self.work / "state/registered").touch()
         shim = self.work / "bin/ssh"
         shim.write_text(SSH)
         shim.chmod(0o755)
@@ -104,6 +108,12 @@ class Install(unittest.TestCase):
                     good.replace("name: lab-1", "name: '-oProxyCommand=bad'"),
                     good.replace("address: 192.0.2.1", "address: 192.0.2.1;bad"),
                     good.replace("roles: [etcd, global, region]", "roles: [etcd]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [global]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [etcd, region]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [etcd, global]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [region, region]"),
+                    good.replace("vip:\n  address: 192.0.2.10/24\n", ""),
+                    good.replace("192.0.2.10/24", "192.0.2.10/33"),
                     good + "password: hidden\n", good + "---\nprofile: lab\n",
                     good.replace("roles: [etcd, global, region]", "roles: [{secret: hidden}]"),
                     "profile: lab\nhosts: &loop [*loop]\n",
@@ -200,7 +210,7 @@ class Install(unittest.TestCase):
     def remove_generated(self):
         source = self.work / "credentials"
         for name in GENERATED:
-            (source / name).unlink()
+            (source / name).unlink(missing_ok=True)
         shutil.rmtree(source / "iam-kek")
         return source
 
@@ -217,9 +227,10 @@ class Install(unittest.TestCase):
         for name in ("admin-kek", "iam-kek/k1"):
             self.assertEqual(len(base64.b64decode(first[name][0], validate=False)), 32, name)
         self.assertEqual(first["iam-kek/active"][0], b"k1\n")
-        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region.key"}
+        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region.key",
+                    "region.crt", "global-ca.pem"}
         self.assertEqual({name for name, (_, mode) in first.items() if mode != 0o600}, supplied)
-        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1"),
+        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1, IP Address:127.0.0.1, DNS:lab-1"),
                               ("etcd-ca.pem", "api-etcd.pem", ""), ("etcd-ca.pem", "iam-etcd.pem", ""),
                               ("internal-ca.pem", "iam.pem", "IP Address:127.0.0.1, DNS:iam"),
                               ("internal-ca.pem", "api-mtls.pem", "")):
@@ -280,6 +291,120 @@ class Install(unittest.TestCase):
             self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
             self.assertIn(f"systemctl enable --now {unit} ", log)
 
+    def global_host(self):
+        """A Debian VM or bare-metal host: no PVE, so no region inputs and no vws-region package."""
+        path = self.work / "hosts.yaml"
+        path.write_text(path.read_text().replace("roles: [etcd, global, region]", "roles: [etcd, global]")
+                        .replace("vip:\n  address: 192.0.2.10/24\n", ""))
+        for name in REGION:
+            (self.work / "credentials" / name).unlink()
+        (self.work / "region.yaml").unlink()
+        next((self.work / "packages").glob("vws-region_*.deb")).unlink()
+
+    def region_host(self):
+        """A PVE node: only the region inputs and the vws-region package."""
+        path = self.work / "hosts.yaml"
+        path.write_text(path.read_text().replace("roles: [etcd, global, region]", "roles: [region]"))
+        source = self.work / "credentials"
+        shutil.rmtree(source / "iam-kek")
+        for path in list(source.iterdir()):
+            if path.name not in REGION:
+                path.unlink()
+        (self.work / "global.yaml").unlink()
+        for name in ("vws-etcd", "vws-global"):
+            next((self.work / "packages").glob(name + "_*.deb")).unlink()
+
+    def test_global_host_gets_no_region_and_no_keepalived(self):
+        self.global_host()
+        source = self.remove_generated()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
+                     "vws-aws-proxy", "vws-console-api", "vws-console"):
+            self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
+        log = (self.work / "state/argv").read_text()
+        for absent in ("keepalived", "vws-region", "region.", "region-kek", "global-ca.pem", "registration",
+                       "check-region-ready", "address show"):
+            self.assertNotIn(absent, result.stdout + log, absent)
+        self.assertFalse((source / "region-kek").exists())
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
+
+    def test_global_host_readiness_failure_does_not_touch_keepalived(self):
+        self.global_host()
+        self.env["INSTALL_FAIL"] = "check-global-ready api"
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lab-1: api readiness failed", result.stderr)
+        self.assertNotIn("keepalived", (self.work / "state/argv").read_text())
+
+    def test_role_inputs(self):
+        self.global_host()
+        path = self.work / "hosts.yaml"
+        good = path.read_text()
+        path.write_text(good + "vip:\n  address: 192.0.2.10/24\n")
+        self.assertEqual(self.refused().stderr,
+                         "vws: vip is required with the region role and refused without it\n")
+        path.write_text(good)
+        self.assertEqual(self.refused([*self.args, "--region-config", str(self.work / "global.yaml")]).stderr,
+                         "vws: --region-config requires the region role\n")
+
+    def test_region_host_waits_for_registration_then_checks_the_vip(self):
+        self.region_host()
+        (self.work / "credentials/region-kek").unlink()
+        (self.work / "state/registered").unlink()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len((self.work / "credentials/region-kek").read_bytes()), 32)
+        self.assertIn("lab-1 vws-region changed\n", result.stdout)
+        self.assertIn("lab-1 region registration pending\n", result.stdout)
+        self.assertIn("lab-1: the region is not registered", result.stderr)
+        log = (self.work / "state/argv").read_text()
+        for path in ("/etc/vws/region.crt", "/etc/vws/global-ca.pem", "/etc/vws/region.key",
+                     "/etc/vws/region.yaml", "/etc/vws/credentials/region-kek",
+                     "/etc/keepalived/keepalived.conf"):
+            self.assertTrue(any(f'"$t" {path}\n' in json.loads(line)[-1] for line in log.splitlines()), path)
+        for absent in ("enable --now keepalived", "check-region-ready", "address show", "vws-etcd",
+                       "vws-iam", "global.yaml", "etcd.conf", "admin-kek"):
+            self.assertNotIn(absent, result.stdout + log, absent)
+        (self.work / "state/registered").touch()
+        (self.work / "state/argv").unlink()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("lab-1 keepalived changed\nlab-1 region VIP unchanged\n", result.stdout)
+        log = (self.work / "state/argv").read_text()
+        self.assertLess(log.index("check-region-ready"), log.index("enable --now keepalived"))
+        self.assertLess(log.index("enable --now keepalived"),
+                        log.index("inet 192.0.2.10/"))
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
+
+    def test_region_host_inputs_and_vip_failure(self):
+        self.region_host()
+        self.env["INSTALL_FAIL"] = "address show"
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lab-1: region VIP failed", result.stderr)
+        log = (self.work / "state/argv").read_text()
+        self.assertLess(log.rindex("address show"), log.rindex("disable --now keepalived"))
+        self.env.pop("INSTALL_FAIL")
+        (self.work / "state/argv").unlink()
+        region = self.work / "region.yaml"
+        for data in ("- not a mapping\n", "[", "a: 1\n---\nb: 2\n"):
+            with self.subTest(data=data):
+                region.write_text(data)
+                self.assertEqual(self.refused().stderr,
+                                 "vws: invalid region.yaml; see packaging/vws-region/region.yaml\n")
+        region.write_text("read_only: true\n")
+        for name in ("region.crt", "global-ca.pem", "region.key"):
+            with self.subTest(name=name):
+                kept = (self.work / "credentials" / name).read_bytes()
+                (self.work / "credentials" / name).unlink()
+                self.assertEqual(self.refused().stderr, f"vws: required regular file: {name}\n")
+                (self.work / "credentials" / name).write_bytes(kept)
+
     def test_symlink_and_traversal(self):
         path = self.work / "credentials/admin-kek"
         path.unlink()
@@ -321,6 +446,8 @@ class Install(unittest.TestCase):
         log = (self.work / "state/argv").read_text()
         self.assertLess(log.index("etcd/check-ready"), log.index("check-global-ready"))
         self.assertLess(log.index("check-global-ready"), log.index("check-region-ready"))
+        self.assertLess(log.index("check-region-ready"), log.index("enable --now keepalived"))
+        self.assertIn("lab-1 region VIP unchanged\n", result.stdout)
 
     def test_readiness_failure(self):
         for probe in ("etcd/check-ready", "check-global-ready api", "check-region-ready"):
