@@ -1,9 +1,36 @@
 #!/usr/bin/env bash
-# Run only as root inside a disposable Debian container.
+# Installs the packages for real into the root filesystem of the machine it runs on, so it runs only as
+# root in a disposable container: the Docker or Podman marker, or VWS_INSTALL_TEST_DISPOSABLE=1 for another
+# throwaway machine. The checks come before any write.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+refuse() { echo "install-container.sh: refused: $1" >&2; exit 2; }
+test "$(id -u)" -eq 0 || refuse "needs root in a disposable container"
+if ! test -e /.dockerenv && ! test -e /run/.containerenv && test "${VWS_INSTALL_TEST_DISPOSABLE:-}" != 1; then
+    refuse "this is not a disposable container (no /.dockerenv or /run/.containerenv); set VWS_INSTALL_TEST_DISPOSABLE=1 only on a throwaway machine"
+fi
+if grep -qs ' /etc/pve ' /proc/mounts; then refuse "/etc/pve is a mount: this is a real PVE node"; fi
+for path in /etc/vws /etc/keepalived /etc/pve/vws/registration.json /var/lib/vws-install-fail; do
+    if test -e "$path" || test -L "$path"; then refuse "$path exists; start from a clean container"; fi
+done
+# Remember what the test creates of the registration state and remove only that.
+made_pve=0; made_pve_vws=0; made_registration=0
+test -d /etc/pve || made_pve=1
+test -d /etc/pve/vws || made_pve_vws=1
+register() {
+    mkdir -p /etc/pve/vws
+    echo '{}' > /etc/pve/vws/registration.json
+    made_registration=1
+}
+cleanup() {
+    rm -rf "${work:-}"
+    rm -f /var/lib/vws-install-fail
+    if test "$made_registration" -eq 1; then rm -f /etc/pve/vws/registration.json; fi
+    if test "$made_pve_vws" -eq 1; then rmdir /etc/pve/vws 2>/dev/null || true; fi
+    if test "$made_pve" -eq 1; then rmdir /etc/pve 2>/dev/null || true; fi
+}
+trap cleanup EXIT
 work=$(mktemp -d "${TMPDIR:?}/install-target.XXXXXX")
-trap 'rm -rf "$work" /etc/pve/vws; rm -f /var/lib/vws-install-fail' EXIT
 python3 "$root/tests/vws/install_fixture.py" "$work"
 export INSTALL_STATE="$work/state"
 export PATH="$work/bin:$PATH"
@@ -77,8 +104,7 @@ grep -q '^lab-1 region registration pending$' "$work/unregistered.out"
 grep -q 'the region is not registered' "$work/unregistered.err"
 test -f "$INSTALL_STATE/is-active-vws-region"
 test ! -f "$INSTALL_STATE/is-enabled-keepalived"
-mkdir -p /etc/pve/vws
-echo '{}' > /etc/pve/vws/registration.json
+register
 bash "$root/scripts/vws" "${args[@]}" > "$work/first.out" 2> "$work/first.err"
 grep -q '^lab-1 keepalived changed$' "$work/first.out"
 grep -q '^lab-1 region VIP unchanged$' "$work/first.out"
