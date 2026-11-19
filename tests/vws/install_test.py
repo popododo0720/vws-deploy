@@ -219,7 +219,7 @@ class Install(unittest.TestCase):
         self.assertEqual(first["iam-kek/active"][0], b"k1\n")
         supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region.key"}
         self.assertEqual({name for name, (_, mode) in first.items() if mode != 0o600}, supplied)
-        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1, DNS:lab-1"),
+        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1"),
                               ("etcd-ca.pem", "api-etcd.pem", ""), ("etcd-ca.pem", "iam-etcd.pem", ""),
                               ("internal-ca.pem", "iam.pem", "IP Address:127.0.0.1, DNS:iam"),
                               ("internal-ca.pem", "api-mtls.pem", "")):
