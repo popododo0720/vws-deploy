@@ -4,7 +4,7 @@ export PATH := /tmp/bin:$(PATH)
 
 include scripts/versions.env
 
-.PHONY: check hooks guard vws-test
+.PHONY: check hooks guard pve-test
 
 check:
 	$(MAKE) hooks
@@ -17,8 +17,8 @@ guard:
 	scripts/guard.sh all
 
 # make vws-<command> is an alias for scripts/vws <command>. Flags go through ARGS, for example
-# make vws-help ARGS="-o json". vws-test runs the harness with fake kubectl and helm.
-vws-test:
+# make vws-help ARGS="-o json". pve-test runs the harness with the fake aws-cli and loopback stubs.
+pve-test:
 	tests/vws/run.sh
 
 vws-%:
