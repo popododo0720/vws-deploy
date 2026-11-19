@@ -13,7 +13,7 @@ start_identity_stub
 map="${WORK}/map.json"
 cat >"$map" <<'JSON'
 {"vwsTest": {"pveServerId": "TestServer826"}, "features": [
-  {"feature": "S3 object put / get (RGW)", "repo": "vws-storage", "issue": "vws-deploy#51", "scenario": "s3-basic"}
+  {"feature": "S3 object put / get (AWS forwarding)", "repo": "vws-console-api", "issue": "vws-deploy#51", "scenario": "s3-basic"}
 ]}
 JSON
 jq --arg k "$(test_signer)" '.vwsTest.signers = [$k]' "$map" >"${map}.new" && mv "${map}.new" "$map"

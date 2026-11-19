@@ -427,14 +427,14 @@ class OutputTest(unittest.TestCase):
     def test_matrix_counts_escapes_and_lists_leftovers(self):
         md = compat.render_matrix(doc())
         self.assertIn("pass 1, fail 2, skip 1.", md)
-        self.assertIn("| terraform | aws_vpc | apply | fail | vws-network | a \\| b |", md)
+        self.assertIn("| terraform | aws_vpc | apply | fail | vws-console-api | a \\| b |", md)
         self.assertIn("- vpc-1: refused", md)
 
     def test_plan_issues_one_per_failing_row(self):
         planned = compat.plan_issues(doc())
         self.assertEqual([(o, t) for o, t, _ in planned], [
             ("vws-console-api", "compat: aws-cli instance run-instances fails against VWS"),
-            ("vws-network", "compat: terraform aws_vpc apply fails against VWS"),
+            ("vws-console-api", "compat: terraform aws_vpc apply fails against VWS"),
         ])
         self.assertIn("Part of popododo0720/vws-deploy#133", planned[0][2])
         self.assertNotRegex(planned[0][2], r"(?i)\b(closes|fixes|resolves)\b")
@@ -474,7 +474,7 @@ else:
                 calls = [json.loads(line) for line in f]
             creates = [c for c in calls if c[:2] == ["issue", "create"]]
             self.assertEqual(len(creates), 1, "the second run finds the issue the first one opened")
-            self.assertIn("popododo0720/vws-network", creates[0])
+            self.assertIn("popododo0720/vws-console-api", creates[0])
 
 
 class IssueCreateTest(unittest.TestCase):

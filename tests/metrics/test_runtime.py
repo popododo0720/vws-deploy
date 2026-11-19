@@ -30,7 +30,7 @@ def routes(head=H, history=None, files=None, tree_extra=None, rate=4000):
     r = {
         "rate_limit": {"body": {"resources": {"core": {"remaining": rate}}}},
         D: {"body": {"archived": False}},
-        f"{O}/vws-hypervisor": {"body": {"archived": True}},
+        f"{O}/vws-archived-sample": {"body": {"archived": True}},
         f"{D}/git/ref/heads/factory-metrics": {"body": {"object": {"sha": head}}} if head else {"status": 404, "body": {"message": "Not Found"}},
         f"{D}/commits?sha={head}&per_page=100": {"body": history or [root_commit()]},
         f"{D}/commits/{head}": {"body": {"sha": head, "commit": {"tree": {"sha": T}}, "files": files or [{"filename": "metrics/README.md"}]}},
@@ -48,7 +48,7 @@ class Env(unittest.TestCase):
         os.symlink(os.path.join(HERE, "stub_gh.py"), os.path.join(self.bin, "gh"))
         self.repos = os.path.join(self.tmp, "repos.tsv")
         with open(self.repos, "w") as f:
-            f.write("# repo\tkind\nvws-deploy\tgo\nvws-hypervisor\tgo\n")
+            f.write("# repo\tkind\nvws-deploy\tgo\nvws-archived-sample\tgo\n")
         self.routes_file = os.path.join(self.tmp, "routes.json")
         self.set_routes(routes())
         self.calls_file = os.path.join(self.tmp, "calls.jsonl")
@@ -119,7 +119,7 @@ class DryRun(Env):
         self.assertEqual(self.writes(), [])
         with open(self.local()) as f:
             d = json.load(f)
-        self.assertEqual((d["day"], d["archived_skipped"], d["snapshot_at"]), (DAY, ["vws-hypervisor"], "2026-10-21T00:00:00Z"))
+        self.assertEqual((d["day"], d["archived_skipped"], d["snapshot_at"]), (DAY, ["vws-archived-sample"], "2026-10-21T00:00:00Z"))
         self.assertNotIn(f"{D}/git/ref/heads/factory-metrics", [c["path"] for c in self.calls()], "dry-run never reads the branch")
         self.assertFalse(any(c["gh_token_set"] for c in self.calls()), "GH_TOKEN must be removed")
         self.assertTrue(os.path.exists(os.path.join(self.state, "metrics-etag-cache.json")))

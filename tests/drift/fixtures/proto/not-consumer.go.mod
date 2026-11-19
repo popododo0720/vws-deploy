@@ -1,4 +1,4 @@
-module github.com/popododo0720/vws-hypervisor
+module github.com/popododo0720/vws-conformance
 
 go 1.26.0
 

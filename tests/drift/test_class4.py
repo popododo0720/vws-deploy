@@ -56,18 +56,18 @@ class VendoredPins(unittest.TestCase):
         self.assertEqual(repo_pins()[VQ]["*"], hashlib.sha256(local(VQ)).hexdigest())
 
     def test_storage_140_copy_is_drift(self):
-        # vws-storage#140 head 919f516: "copy unchanged" that dropped vws-deploy#471's skip list (review 5638072542).
+        # vws-iam#140 head 919f516: "copy unchanged" that dropped vws-deploy#471's skip list (review 5638072542).
         raw = fixture("vws-storage-140-919f516-verify-queue.yml")
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
                          "1db525d00d9c5e1752509b763a952a2ba34eed5c097e61fb826fbecc0d96a0d0")
-        issues, notes = dc.vendored_issues("vws-storage", {VQ: raw, CE: local_ce()}, repo_pins())
+        issues, notes = dc.vendored_issues("vws-iam", {VQ: raw, CE: local_ce()}, repo_pins())
         self.assertEqual(len(issues), 1)
         self.assertIn("verify-queue.yml differs from the vws-deploy pin", issues[0])
         self.assertIn("got 1db525d00d9c", issues[0])
         self.assertEqual(notes, [])
 
     def test_byte_identical_copy_passes(self):
-        self.assertEqual(dc.vendored_issues("vws-storage", {VQ: local(VQ), CE: local_ce()}, repo_pins()), ([], []))
+        self.assertEqual(dc.vendored_issues("vws-iam", {VQ: local(VQ), CE: local_ce()}, repo_pins()), ([], []))
 
     def test_check_english_copy_passes_and_one_byte_off_is_drift(self):
         raw = fixture("vws-lib-main-check-english.sh")
@@ -83,20 +83,18 @@ class VendoredPins(unittest.TestCase):
         self.assertEqual(dc.vendored_issues("vws-lib", {VQ: None, CE: raw}, repo_pins()), ([], []))
 
     def test_missing_check_english_is_drift(self):
-        # vws-deploy#423: vws-compute had no scripts/check-english.sh and drift-check said nothing.
+        # vws-deploy#423: a repo had no scripts/check-english.sh and drift-check said nothing.
         for got in ({}, {CE: None}):
             with self.subTest(got=got):
-                self.assertEqual(dc.vendored_issues("vws-compute", got, repo_pins()),
+                self.assertEqual(dc.vendored_issues("vws-console-api", got, repo_pins()),
                                  (["no scripts/check-english.sh"], []))
 
     def test_vws_deploy_needs_no_check_english_copy(self):
         # vws-deploy runs the same check as scripts/guard.sh english (R22); it holds the pin, not a copy.
         self.assertEqual(dc.vendored_issues("vws-deploy", {CE: None}, repo_pins()), ([], []))
 
-    def test_archived_vws_hypervisor_needs_no_check_english_copy(self):
-        # vws-deploy#423 lead decision B: vws-hypervisor is archived and not needed, so it needs no copy.
-        self.assertEqual(dc.vendored_issues("vws-hypervisor", {CE: None}, repo_pins()), ([], []))
-        self.assertEqual(dc.VENDORED_REQUIRED[CE], {"vws-deploy", "vws-hypervisor"})
+    def test_only_vws_deploy_is_exempt_from_the_check_english_copy(self):
+        self.assertEqual(dc.VENDORED_REQUIRED[CE], {"vws-deploy"})
 
     def test_accepted_variant_is_a_note_only_for_its_repo(self):
         raw = b"variant\n"
@@ -226,7 +224,7 @@ class PrHeads(unittest.TestCase):
         saved = dc.content
         dc.content = lambda owner, repo, path, ref=None: (at_head or {}).get((path, ref))
         try:
-            return dc.class4_head_issues("o", "vws-storage", heads, script, repo_pins(), pending or {}, {}, api=api)
+            return dc.class4_head_issues("o", "vws-iam", heads, script, repo_pins(), pending or {}, {}, api=api)
         finally:
             dc.content = saved
 
