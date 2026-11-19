@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -1238,3 +1239,31 @@ class LargeContents(unittest.TestCase):
         got, calls = self.run_content({"repos/o/r/contents/AGENTS.md": self.LARGE, "repos/o/r/git/blobs/b1": blob})
         self.assertEqual(got, body)
         self.assertIn("repos/o/r/git/blobs/b1", calls)
+
+
+class HomeLedgerRow(unittest.TestCase):
+    """vws-deploy's own repos.tsv row names only files and checks that this tree has (drift reads main)."""
+
+    def row(self):
+        with open(os.path.join(ROOT, ".github", "drift", "repos.tsv")) as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t") + ["", "", ""]
+                if cols[0] == "vws-deploy":
+                    return cols[1], cols[2], cols[3].split()
+        self.fail("no vws-deploy row in repos.tsv")
+
+    def test_no_golangci_config_that_is_missing(self):
+        kind, cfg, _ = self.row()
+        if kind == "go":
+            self.assertTrue(os.path.exists(os.path.join(ROOT, cfg)), f"{cfg} is listed but not in the tree")
+        else:
+            self.assertEqual(cfg, "-")
+            self.assertFalse(os.path.exists(os.path.join(ROOT, "installer")), "installer/ is back: make the row go again")
+
+    def test_required_checks_are_ci_jobs(self):
+        _, _, checks = self.row()
+        with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
+            text = f.read()
+        jobs = set(re.findall(r"^  ([a-z][a-z0-9-]*):\s*$", text.split("\njobs:\n", 1)[1], re.M))
+        for name in checks:
+            self.assertIn(name, jobs, f"repos.tsv requires {name}, which ci.yml does not define")
