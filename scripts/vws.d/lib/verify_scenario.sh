@@ -145,7 +145,7 @@ vws_sc_write_result() { # pass|fail
   mv "${vws_sc_result}.tmp" "$vws_sc_result" || vws_die_env "cannot write ${vws_sc_result}"
 }
 
-# vws_aws ARGS...: aws-cli against VWS only (VWS_VERIFY_ENDPOINT, and VWS_VERIFY_EC2_ENDPOINT for ec2). It gets a throwaway HOME and config, no shared credentials,
+# vws_aws ARGS...: aws-cli against VWS only (VWS_VERIFY_EC2_ENDPOINT). It gets a throwaway HOME and config, no shared credentials,
 # IMDS off, standard retries (5 attempts), connect and read timeouts and an overall deadline. The secret key
 # travels in the environment only and never in argv.
 vws_aws() {
@@ -155,9 +155,8 @@ vws_aws() {
     ((limit > 0)) || { echo "the signal grace is spent" >&2; return 1; }
   fi
   local -a ep=()
-  [[ -z ${VWS_VERIFY_ENDPOINT:-} ]] || ep+=(AWS_ENDPOINT_URL="$VWS_VERIFY_ENDPOINT")
   [[ -z ${VWS_VERIFY_EC2_ENDPOINT:-} ]] || ep+=(AWS_ENDPOINT_URL_EC2="$VWS_VERIFY_EC2_ENDPOINT")
-  [[ -f $cfg ]] || printf '[default]\ns3 =\n  addressing_style = path\n' >"$cfg"
+  [[ -f $cfg ]] || printf '[default]\n' >"$cfg"
   env -i PATH="$PATH" HOME="${vws_sc_tmp}" AWS_CONFIG_FILE="$cfg" AWS_SHARED_CREDENTIALS_FILE=/dev/null \
     AWS_EC2_METADATA_DISABLED=true AWS_RETRY_MODE=standard AWS_MAX_ATTEMPTS=5 AWS_PAGER='' \
     AWS_ACCESS_KEY_ID="$VWS_VERIFY_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$VWS_VERIFY_SECRET_ACCESS_KEY" \
@@ -196,9 +195,7 @@ vws_sc_main() {
   for var in "${VWS_SCENARIO_ENV[@]}"; do
     [[ -n ${!var:-} ]] || vws_die_env "scenario ${vws_sc_name} needs ${var}; nothing ran"
   done
-  for var in VWS_VERIFY_ENDPOINT VWS_VERIFY_EC2_ENDPOINT; do
-    [[ -z ${!var:-} ]] || vws_sc_check_endpoint "$var"
-  done
+  [[ -z ${VWS_VERIFY_EC2_ENDPOINT:-} ]] || vws_sc_check_endpoint VWS_VERIFY_EC2_ENDPOINT
   [[ -f $map ]] || vws_die_env "feature map ${map} not found"
   if jq -e '.vwsTest | has("kubeSystemUID") and (has("pveServerId") | not)' "$map" >/dev/null 2>&1; then
     vws_die_env "vwsTest.kubeSystemUID is retired (vws-deploy#826); set vwsTest.pveServerId"

@@ -46,12 +46,12 @@ expect_text "the missing scenario is named" "$OUT" "scenario ec2-keypair in ${ma
 expect_text "every missing scenario is named" "$OUT" "scenario sts-assume-role in ${map} does not exist"
 expect_text "the md itself is current" "$OUT" "${WORK}/fm/feature-map.md matches"
 cp "$map" "${map}.scenarios"
-jq '.features[0].scenario = "../s3-basic" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
+jq '.features[0].scenario = "../ec2-volume-reboot" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a path as a scenario name fails the check" 1
-expect_text "the path is named" "$OUT" "scenario ../s3-basic in ${map} does not exist"
-# From here to the restore, the map names only s3-basic, which exists.
-jq '.features[0].scenario = "s3-basic" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
+expect_text "the path is named" "$OUT" "scenario ../ec2-volume-reboot in ${map} does not exist"
+# From here to the restore, the map names only ec2-volume-reboot, which exists.
+jq '.features[0].scenario = "ec2-volume-reboot" | .features[1].scenario = null | .features[1].na = "test"' "${map}.scenarios" >"$map"
 python3 "${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" render "$map"
 run_vws_real verify --check-feature-map --map "$map"; expect_rc "a fresh md passes the check" 0
 echo "edited" >>"${WORK}/fm/feature-map.md"
@@ -221,9 +221,9 @@ unknown_scenarios() { # MAP
   jq -r '.features[].scenario // empty' "$1" | sort -u | comm -23 - <(awk '$1 == "OK" {print $2}' <<<"$OUT" | sort -u)
 }
 missing=$(unknown_scenarios "${VWS_TEST_ROOT}/docs/feature-map.json")
-if [[ -z $missing ]] && jq -e 'any(.features[]; .scenario == "s3-basic")' "${VWS_TEST_ROOT}/docs/feature-map.json" >/dev/null; then
-  ok "docs/feature-map.json names only known scenarios, s3-basic among them"; else bad "known scenarios" "unknown: ${missing:-none}"; fi
-jq '.features[0].scenario = "s3-basik"' "${VWS_TEST_ROOT}/docs/feature-map.json" >"${WORK}/fm/typo.json"
-expect_text "a typo'd scenario name is caught" "$(unknown_scenarios "${WORK}/fm/typo.json")" "s3-basik"
+if [[ -z $missing ]] && jq -e 'any(.features[]; .scenario == "ec2-volume-reboot")' "${VWS_TEST_ROOT}/docs/feature-map.json" >/dev/null; then
+  ok "docs/feature-map.json names only known scenarios, ec2-volume-reboot among them"; else bad "known scenarios" "unknown: ${missing:-none}"; fi
+jq '.features[0].scenario = "ec2-volume-reboik"' "${VWS_TEST_ROOT}/docs/feature-map.json" >"${WORK}/fm/typo.json"
+expect_text "a typo'd scenario name is caught" "$(unknown_scenarios "${WORK}/fm/typo.json")" "ec2-volume-reboik"
 
 finish_tests
