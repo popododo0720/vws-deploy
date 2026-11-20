@@ -96,8 +96,8 @@ needs the next section first.
 This page does not install `vws-region`. The package is one `vws-region@<region>` instance per Proxmox
 cluster, with no sudo, keepalived or VIP (`packaging/vws-region/README.md`). Installing instances with
 `vws install` and the full runbook are vws-deploy#850, and the rehearsal on a real cluster is #851.
-Until #850, the region role of `vws install` keeps the behavior it has on main: it accepts it only on
-the lab host with all three roles ([`vws install`](../vws-cli.md#vws-install)).
+Until #850, `vws install` refuses the `region` role and `vip` of the old per-node layout
+([`vws install`](../vws-cli.md#vws-install)); install and enable instances by hand as the package README says.
 
 ## Not for production: the in-memory store
 
