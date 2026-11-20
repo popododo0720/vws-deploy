@@ -372,7 +372,7 @@ fi
             for path, mode, data in files:
                 changed = self.write(path, mode, data) or changed
             if self.region:
-                template = PACKAGING / "vws-region/keepalived.conf"
+                template = Path(__file__).with_name("keepalived.conf")
                 vip = template.read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
                 changed = self.write("/etc/keepalived/keepalived.conf", "644", vip.encode()) or changed
             changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
