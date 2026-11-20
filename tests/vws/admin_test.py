@@ -178,11 +178,17 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             if not MANUAL:
                 expected("GET", BASE + "/" + NAME)
                 run(["show", NAME])
-                health = dict(status="ok", quorate=True, leader="node1",
-                              nodes=[dict(name="node1", online=True)], lastError=None)
-                expected("GET", BASE + "/" + NAME + "/health", result=health)
-                result = run(["health", NAME])
-                check("health fields", all(v in result.stdout for v in ("QUORUM", "LEADER", "ONLINE NODES", "LAST ERROR", "node1")))
+                for key, node in (("apiNode", "node1"), ("leader", "node2"), ("apiNode", None)):
+                    health = dict(status="ok", quorate=True, nodes=[dict(name="node1", online=True)],
+                                  lastError=None)
+                    if node:
+                        health[key] = node
+                    expected("GET", BASE + "/" + NAME + "/health", result=health)
+                    result = run(["health", NAME])
+                    row = result.stdout.splitlines()[-1].split("\t")
+                    check("health fields", all(v in result.stdout for v in ("QUORUM", "API NODE", "ONLINE NODES", "LAST ERROR"))
+                          and "LEADER" not in result.stdout)
+                    check("health shows " + key + " " + str(node), row[2] == (node or "-") and row[3] == "node1")
             failed = dict(REGION, lastError={"time": "2026-11-13T00:00:00Z", "message": "region registration push failed"})
             for mode in ("text", "json"):
                 expected("POST", body=create, status=201, result=failed)

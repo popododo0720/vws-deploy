@@ -219,9 +219,11 @@ def text_output(kind, operation, data, credentials):
         for step in data["steps"]:
             emit("\t".join(str(step[k]) for k in ("name", "result", "message")))
     elif operation == "health":
-        emit("STATUS\tQUORUM\tLEADER\tONLINE NODES\tLAST ERROR")
+        emit("STATUS\tQUORUM\tAPI NODE\tONLINE NODES\tLAST ERROR")
         nodes = ",".join(n["name"] for n in data["nodes"] if n["online"])
-        emit(f"{data['status']}\t{data['quorate']}\t{data['leader'] or '-'}\t"
+        # A daemon from before the quorum gate reports `leader`; one from after reports `apiNode`.
+        api_node = data.get("apiNode") or data.get("leader")
+        emit(f"{data['status']}\t{data['quorate']}\t{api_node or '-'}\t"
               f"{nodes or '-'}\t{(data.get('lastError') or {}).get('message', '-')}")
     elif data is not None:
         fields = (["project", "pools", "awsAccounts"] if kind == "project" else
