@@ -84,7 +84,8 @@ jobs:
             packaging/vws-region/test-install.sh /src/build/vws-region_0.0.0-1_amd64.deb
           '
 
-  # The real daemon, built from the console-api commit the release pins, must accept the flags the unit passes.
+  # The real daemon, built from the console-api commit the release pins, must accept the flags the unit passes,
+  # and that API must accept the region registration the CLI sends.
   region-flags:
     runs-on: ubuntu-latest
     steps:
@@ -108,6 +109,14 @@ jobs:
           (cd /tmp/console-api && CGO_ENABLED=0 go build -trimpath -o /tmp/vws-region ./cmd/vws-region)
           mkdir -p build/flags-test
           python3 packaging/vws-region/test-flags.py packaging/vws-region build/flags-test /tmp/vws-region
+
+      # The pinned API's own validator must accept the body `vws region add` sends (two --pve-api-url).
+      - name: Check the region registration body against the pinned API validator
+        run: |
+          python3 tests/vws/region_contract.py build/region-contract build/region-contract/body.json
+          cp tests/vws/region_contract_test.go.txt /tmp/console-api/internal/surface/console/vws_deploy_region_contract_test.go
+          (cd /tmp/console-api && VWS_REGION_BODY="$GITHUB_WORKSPACE/build/region-contract/body.json" \
+            go test -count=1 -run TestVWSDeployRegionAddBody ./internal/surface/console/)
 
   check:
     runs-on: ubuntu-latest
