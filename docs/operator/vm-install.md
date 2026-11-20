@@ -62,11 +62,15 @@ Limits of the generated set:
   key does not match is refused; both exit 2 before any SSH call.
 - If the host address in `hosts.yaml` changes, the member certificate no longer names it and the
   command refuses to continue. With retained generated state (`etcd-tls/ca.key` and a `ca.crt` equal to
-  `etcd-tls/ca.crt`), reissue it from the same CA: delete `member.crt`, `member.key` and
-  `etcd-tls/<name>/` in the credentials directory, then run `vws install` again. The CA, the client
-  certificates and every other key stay as they are. With a set you supply, deleting files does not help:
-  reissue the member certificate under your own CA with the new address and `127.0.0.1` in its subject
-  alternative names, then replace `member.crt` and `member.key` together.
+  `etcd-tls/ca.crt`) and every other credential still equal to its `etcd-tls/` counterpart, reissue it
+  from the same CA: delete `member.crt`, `member.key` and `etcd-tls/<name>/` in the credentials
+  directory, then run `vws install` again. The CA, the client certificates and every other key stay as
+  they are. If you supplied a credential that differs from `etcd-tls/` (for example a separate
+  `api-etcd.pem` and `api-etcd-key.pem` signed by the retained CA), deleting files does not help: the
+  rerun exits 2 because that file differs from the retained state. Reissue the member pair under the
+  same CA with the new address and `127.0.0.1` in its subject alternative names, replace `member.crt`
+  and `member.key`, and keep the separate client credentials. With a set under your own CA, reissue the
+  member certificate under that CA the same way and replace `member.crt` and `member.key` together.
 
 ## 3. Install the global host
 

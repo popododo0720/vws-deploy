@@ -150,11 +150,13 @@ Inputs by role, all checked before SSH:
   the host address and 127.0.0.1, because `vws-iam` and `vws-console-api` use
   `https://127.0.0.1:2379`. When the inventory address changes, the old member
   certificate no longer covers it and the command exits 2 before SSH. With
-  retained generated state (`etcd-tls/` with its CA key and the same `ca.crt`),
-  reissue it from the same CA: delete `member.crt`, `member.key` and
-  `etcd-tls/<name>/` in the credentials directory and run the command again.
-  With TLS you supply, reissue the member certificate under your own CA with the
-  new address and 127.0.0.1, then replace `member.crt` and `member.key` together.
+  retained generated state (`etcd-tls/` with its CA key and the same `ca.crt`) and every other
+  credential equal to its `etcd-tls/` counterpart, reissue it from the same CA: delete `member.crt`,
+  `member.key` and `etcd-tls/<name>/` in the credentials directory and run the command again. If a
+  credential you supplied differs from `etcd-tls/` (for example a separate `api-etcd.pem` signed by the
+  retained CA), deleting files does not help and the rerun exits 2: reissue the member pair under the
+  same CA with the new address and 127.0.0.1, then replace `member.crt` and `member.key`, keeping the
+  separate client credentials. With TLS under your own CA, do the same with that CA.
 - `region`: `region-kek` and `region.key`, always yours to supply as before
   (`packaging/vws-region/vws-region.service`).
 
