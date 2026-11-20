@@ -9,7 +9,7 @@ An unset identity refuses every result. The map stays null until the nested PVE 
 Retired map identities are invalid input (exit 2); retired Kubernetes result identities are
 refused (exit 1). Missing or mismatched PVE identities are also refused.
 
-## Chosen: an SSH signature from a key only the vws-test runner holds
+## Chosen: an SSH signature from a key only the pve-test runner holds
 
 - `vws verify scenario --result FILE` signs the result when `VWS_RESULT_SIGNING_KEY` names an SSH
   private key file. The signature is an SSHSIG made by `ssh-keygen -Y sign` with namespace
@@ -19,8 +19,8 @@ refused (exit 1). Missing or mismatched PVE identities are also refused.
   same function, so the bytes cannot drift between bash and Python.
 - The trust root is `vwsTest.signers` in `docs/feature-map.json`: a list of
   [allowed_signers](https://man.openbsd.org/ssh-keygen#ALLOWED_SIGNERS) lines for principal
-  `vws-test`. `--update-feature-map` runs `ssh-keygen -Y verify -I vws-test -n
-  vws-feature-map@vws-deploy` against those lines for every vws-test result. An unsigned result, a
+  `pve-test`. `--update-feature-map` runs `ssh-keygen -Y verify -I pve-test -n
+  vws-feature-map@vws-deploy` against those lines for every pve-test result. An unsigned result, a
   bad or tampered signature, a key not listed, or an empty list is refused with FAIL (exit 1) and
   changes nothing in the map; other valid results in the same call are still recorded.
 - Only the public key is in the repo. Anyone can verify; only the holder of the private key can
@@ -34,7 +34,7 @@ needs no extra Python package.
 - **HMAC.** The verifier needs the same key as the signer. Every checkout that runs
   `--update-feature-map` (a developer, CI, the nightly PR) would hold a key that can also forge.
 - **Sigstore/cosign keyless.** It binds a result to an OIDC identity such as a GitHub Actions
-  workflow, which is the better fit once results come from CI. The nightly runs on the vws-test box
+  workflow, which is the better fit once results come from CI. The nightly runs on the pve-test box
   today (vws-deploy#290), with no OIDC identity, and verifying needs cosign, network access to the
   transparency log and a pinned identity regex. It can replace the SSH key later by changing
   `verify_signature()` only.
@@ -44,7 +44,7 @@ needs no extra Python package.
 ## Trust root and key rotation
 
 The operator procedure is in `docs/vws-cli.md` under `vws verify`. In short: the private key is
-created on the vws-test runner and never leaves it, its public line goes into `vwsTest.signers`
+created on the pve-test runner and never leaves it, its public line goes into `vwsTest.signers`
 through a reviewed PR, and rotation lists the new key next to the old one until the runner signs
 with the new key, then removes the old line. A removed key's results are refused from then on.
 

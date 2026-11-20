@@ -19,9 +19,9 @@ main_before=$(git -C "$origin" rev-parse refs/heads/main)
 
 run="20261031T130000Z" res="${WORK}/res/20261031T130000Z"
 mkdir -p "$res"
-jq -n '{scenario: "ec2-run", result: "pass", cluster: "vws-test", finishedAt: "2026-10-31T13:05:00Z",
+jq -n '{scenario: "ec2-run", result: "pass", cluster: "pve-test", finishedAt: "2026-10-31T13:05:00Z",
   evidence: "https://example.invalid/ec2-run"}' >"${res}/ec2-run.json"
-jq -n '{scenario: "sts-assume-role", result: "fail", cluster: "vws-test", finishedAt: "2026-10-31T13:09:00Z"}' >"${res}/sts-assume-role.json"
+jq -n '{scenario: "sts-assume-role", result: "fail", cluster: "pve-test", finishedAt: "2026-10-31T13:09:00Z"}' >"${res}/sts-assume-role.json"
 echo '{"features": [{"scenario": "ec2-run", "lastPass": "2026-10-31T13:05:00Z"}]}' >"${clone}/docs/feature-map.json"
 echo '# Feature map (nightly)' >"${clone}/docs/feature-map.md"
 

@@ -292,3 +292,49 @@ get_caller_identity	PASS	AWS account identity matched
 On failure the messages are fixed: `AssumeRole failed` (then
 `get_caller_identity` is `SKIPPED`), or `AWS account identity check failed`.
 They never carry AWS error text. The command exits 1 unless both steps PASS.
+
+## Notes carried over from retired designs
+
+The in-cluster backend designs (volume types, zone model, node networks, VM MTU, AMI and EBS
+import) were deleted with the Kubernetes installer in #775. These points still apply to a Proxmox
+region and an AWS account, and are kept here.
+
+### Zones are sets of Proxmox nodes
+
+A zone in step 4 is a letter plus the Proxmox nodes it holds (`--zones`). VWS cannot tell whether the
+nodes of two zones have separate power or network, so list nodes by their real failure domain. If all
+nodes share one, all zones share it: an outage of that domain takes every zone down, and a second
+region (a second Proxmox cluster) is the only protection. On AWS a cross-zone volume attach fails with
+`InvalidVolume.ZoneMismatch`; whether the Proxmox backend returns that code is not checked here
+(needs checking).
+
+### EBS volume types map to Proxmox storages
+
+The EBS volume type a caller asks for is resolved through `storages` in the region's `region.yaml`
+(for example `gp3: local-lvm`). Every storage named there needs the storage ACL from
+[permissions.md](permissions.md). Changing the mapping means editing `region.yaml`; there is no
+admin page for it.
+
+### Host networking belongs to the operator
+
+VWS does not configure host networking on a Proxmox node. The bridge named by `default_bridge`
+(for example `vmbr0`) or the SDN vnet must exist, with its VLANs, addresses and MTU, before the region
+is registered. Two networks on the same NIC and VLAN are one L2, so their CIDR and MTU must match, and
+CIDRs of different networks must not overlap. On AWS a VM inside a VPC sees MTU 9001 while paths out
+through the gateway are 1500; the bridge and NIC MTU on a Proxmox node must be at least the VM MTU
+plus any tunnel overhead. This is not verified on Proxmox yet (needs checking).
+
+### Moving AWS images and snapshots to a Proxmox region
+
+- The bytes leave AWS on the operator's workstation with the operator's own AWS credentials
+  (`aws ec2 export-image`, or `coldsnap download` for an EBS snapshot; an AMI's root device is an EBS
+  snapshot). VWS stores no AWS credential for this step.
+- Only HVM AMIs boot as a full KVM VM; a paravirtual AMI has no bootloader.
+- An initramfs built only for the AWS host may lack the virtio drivers a Proxmox VM uses (virtio disk
+  and NIC). Check that a stock AWS-published Linux AMI and an Ubuntu AMI boot unmodified before relying
+  on it; this is not verified on Proxmox yet.
+
+### The in-memory store is not for production
+
+Where a VWS service offers an in-memory store (`memstore`), it loses all data on restart and is not
+recommended for production. Use etcd (`docs/etcd-runbook.md`).

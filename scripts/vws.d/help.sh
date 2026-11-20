@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary: list the commands and the common flags
-# Sourced by scripts/vws. Needs no cluster tool.
+# Sourced by scripts/vws. Needs no external tool.
 
 vws_cmd_main() {
   local file name summary
@@ -16,15 +16,13 @@ vws_cmd_main() {
 usage: scripts/vws [flags] <command> [args]
 
 flags (before or after the command):
-  --context NAME     kubeconfig context
-  -n, --namespace N  namespace
   -o text|json       output format (default text)
-  --dry-run          print changing kubectl and helm calls instead of running them
+  --dry-run          print the request an admin command would send instead of sending it
   -y, --yes          confirm a destructive command
   --strict           exit 1 on WARN as well as FAIL
   -h, --help         this text
 
-exit codes: 0 ok, 1 a check failed, 2 usage error, 3 environment (tool missing, cluster unreachable)
+exit codes: 0 ok, 1 a check failed, 2 usage error, 3 environment (tool missing, service unreachable)
 
 commands:
 USAGE

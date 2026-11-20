@@ -98,10 +98,10 @@ if failed:
 PY
 }
 
-# r8_scan PATH...: print lines that change a cluster. The only allowed callers are exactly
-# vws_kubectl and vws_helm (the vws CLI wrappers with --dry-run); any other prefix fails.
+# r8_scan PATH...: print lines that change a cluster. This repo has no Kubernetes caller, so any
+# kubectl or helm change, with or without a prefix, fails.
 r8_scan() {
-  grep -R -n -P '(?<![\w-])(?!vws_kubectl\s|vws_helm\s)[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
+  grep -R -n -P '(?<![\w-])[\w-]*(?:kubectl\s+(?:apply|create|delete|replace)|helm\s+(?:install|upgrade|uninstall))\b|(?<![\w-])(?:kind|k3d)\s+create\b' \
     "$@"
 }
 
@@ -338,9 +338,6 @@ cmd_agents() {
     || die "R13: a workflow uses an action not pinned by full SHA (python3 -m unittest discover -s .github/drift -v, #700)"
   scripts/guard-agents.sh agents AGENTS.md || die "R13: AGENTS.md lost the Insider-risk guardrails"
   scripts/guard-agents.sh rules AGENTS.md || die "R13: a row of the AGENTS.md rule table has no enforcer"
-  [[ -f installer/internal/archtest/arch_test.go ]] || die "R26: installer/internal/archtest/arch_test.go is missing"
-  grep -q -x -F '        run: ../scripts/guard-agents.sh archtest ../AGENTS.md' .github/workflows/ci.yml ||
-    die "R26: the ci installer job does not run scripts/guard-agents.sh archtest"
   [[ $(grep -c -E '^def (spec_state|spec_gate)\(' .github/orchestrate/rules/common.py) == 2 ]] ||
     die "R27: .github/orchestrate/rules/common.py lost spec_state() or spec_gate()"
   (cd tests/orchestrate && python3 -m unittest test_spec_first test_decide.SpecFirst >/dev/null 2>&1) ||
@@ -365,7 +362,7 @@ cmd_agents() {
 }
 
 # vws_layout_check DIR: every scripts/vws.d/<name>.sh has a summary, vws_cmd_main, a test and a doc
-# entry, and no command calls kubectl or helm directly (only vws_kubectl and vws_helm honor --dry-run).
+# entry, and no command calls kubectl or helm (this repo has no Kubernetes caller).
 vws_layout_check() {
   local root=$1 file name
   [[ -x ${root}/scripts/vws ]] || { echo "R17: scripts/vws is not executable" >&2; return 1; }
@@ -378,7 +375,7 @@ vws_layout_check() {
     [[ -f ${root}/tests/vws/${name}.test.sh ]] || { echo "R17: vws.d/${name}.sh has no tests/vws/${name}.test.sh" >&2; return 1; }
     grep -q -x "### vws ${name}" "${root}/docs/vws-cli.md" || { echo "R17: docs/vws-cli.md has no '### vws ${name}'" >&2; return 1; }
     if grep -v '^[[:space:]]*#' "$file" | grep -q -E '(^|[;&|(])[[:space:]]*(kubectl|helm)[[:space:]]+[a-z-]'; then
-      echo "R17: vws.d/${name}.sh calls kubectl or helm directly; use vws_kubectl and vws_helm" >&2
+      echo "R17: vws.d/${name}.sh calls kubectl or helm; this repo has no Kubernetes caller" >&2
       return 1
     fi
   done
@@ -408,174 +405,6 @@ cmd_vws() {
   rm -f "$tmp/scripts/vws.d/orphan.sh"
   printf '#!/usr/bin/env bash\n# no summary\nvws_cmd_main() { :; }\n' > "$tmp/scripts/vws.d/nosummary.sh"
   ! vws_layout_check "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "R17: a command without a summary was accepted"; }
-  rm -rf "$tmp"
-}
-
-# bootstrap_check FILE TTL: the bootstrap template keeps the installer rules (R20).
-bootstrap_check() {
-  python3 - "$1" "$2" <<'PY'
-import sys
-import yaml
-
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-ttl = int(sys.argv[2])
-by = {(d["kind"], d["metadata"]["name"]): d for d in docs}
-
-def fail(msg):
-    sys.exit(f"R20: {msg}")
-
-text = open(sys.argv[1]).read()
-for bad in ("privileged: true", "hostPath:", "hostNetwork: true", "hostPID: true", "hostIPC: true"):
-    if bad in text:
-        fail(f"bootstrap.yaml has {bad}")
-pods = [d["spec"] for d in docs if d["kind"] == "Pod"] + [d["spec"]["template"]["spec"] for d in docs if d["kind"] in ("Deployment", "Job")]
-for spec in pods:
-    for c in spec["containers"]:
-        if "@sha256:" not in c["image"]:
-            fail(f"image {c['image']} is not pinned by digest")
-        if (c.get("securityContext") or {}).get("allowPrivilegeEscalation") is not False:
-            fail(f"container {c['name']} allows privilege escalation")
-admin = [d for d in docs if d["kind"] == "ClusterRoleBinding" and d["roleRef"]["name"] == "cluster-admin"]
-if [d["metadata"]["name"] for d in admin] != ["vws-installer-temp"]:
-    fail("cluster-admin is bound only by vws-installer-temp")
-if int((admin[0]["metadata"].get("annotations") or {}).get("vws-installer-ttl-seconds", "0")) != ttl:
-    fail("vws-installer-temp has no vws-installer-ttl-seconds annotation equal to INSTALLER_TTL_SECONDS")
-if [d["metadata"]["name"] for d in docs if d["kind"] == "Pod"]:
-    fail("the installer runs as the Deployment vws-installer, not a bare Pod")
-dep = by.get(("Deployment", "vws-installer"))
-if dep is None or dep["spec"].get("replicas") != 1 or (dep["spec"].get("strategy") or {}).get("type") != "Recreate":
-    fail("the installer is the Deployment vws-installer with replicas 1 and strategy Recreate (one draft session)")
-tpl = dep["spec"]["template"]
-if "activeDeadlineSeconds" in tpl["spec"] or tpl["spec"].get("restartPolicy", "Always") != "Always":
-    fail("a Deployment pod cannot set activeDeadlineSeconds or restartPolicy; the reaper bounds the rights")
-want_version = "VWS_API_GROUP/VWS_CRD_VERSION"
-installer = tpl["spec"]["containers"][0]
-want_cmd = ["/opt/vws/bin/vws-installer", f"-api-version={want_version}", "-listen=0.0.0.0:8443",
-            "-state-dir=/tmp/vws-installer", "-vws=/opt/vws/scripts/vws",
-            "-links=/etc/vws-installer/links/links.json"]
-if installer.get("command") != want_cmd or installer.get("args"):
-    fail(f"the installer container runs {installer.get('command')} {installer.get('args') or ''}; want {want_cmd} (#191, #205)")
-# -links reads links.json from the optional, operator-created ConfigMap vws-installer-links (#205).
-links_vol = [v["name"] for v in tpl["spec"].get("volumes", [])
-             if v.get("configMap") == {"name": "vws-installer-links", "optional": True}]
-links_mount = [m for m in installer.get("volumeMounts", []) if m["name"] in links_vol]
-if len(links_mount) != 1 or links_mount[0].get("mountPath") != "/etc/vws-installer/links" \
-        or links_mount[0].get("readOnly") is not True or "subPath" in links_mount[0]:
-    fail("the installer needs ConfigMap vws-installer-links (optional) mounted read-only at /etc/vws-installer/links, no subPath (#205)")
-for kind in ("readinessProbe", "livenessProbe"):
-    if ((installer.get(kind) or {}).get("tcpSocket") or {}).get("port") != "api":
-        fail(f"the installer container needs a tcpSocket {kind} on port api")
-svc = by.get(("Service", "vws-installer"))
-if svc is None or svc["spec"].get("type", "ClusterIP") != "ClusterIP":
-    fail("the installer Service vws-installer must be type ClusterIP")
-for key in ("externalIPs", "loadBalancerIP", "externalName"):
-    if key in svc["spec"]:
-        fail(f"the installer Service sets {key}")
-if any("nodePort" in p for p in svc["spec"]["ports"]):
-    fail("the installer Service sets a nodePort")
-if not svc["spec"].get("selector") or any(tpl["metadata"]["labels"].get(k) != v for k, v in svc["spec"]["selector"].items()):
-    fail("the installer Service selector does not match the installer pod")
-names = {p["name"] for c in tpl["spec"]["containers"] for p in c.get("ports", [])}
-if any(p["targetPort"] not in names for p in svc["spec"]["ports"]):
-    fail("the installer Service targets a port the pod does not name")
-if [d["metadata"]["name"] for d in docs if d["kind"] in ("Ingress", "Service") and d["metadata"]["name"] != "vws-installer"]:
-    fail("bootstrap.yaml exposes the installer through a second Service or an Ingress")
-reaper = by.get(("Job", "vws-installer-reaper"))
-if reaper is None:
-    fail("the reaper Job that deletes vws-installer-temp at its TTL is missing")
-if reaper["spec"].get("activeDeadlineSeconds", 0) <= ttl:
-    fail("the reaper deadline must be longer than the TTL, or it is killed before its delete")
-if "delete clusterrolebinding vws-installer-temp" not in reaper["spec"]["template"]["spec"]["containers"][0]["args"][0]:
-    fail("the reaper does not delete vws-installer-temp")
-for d in docs:
-    if d["kind"] in ("Role", "ClusterRole"):
-        for rule in d["rules"]:
-            if "*" in rule["verbs"] or "*" in rule["resources"]:
-                fail(f"{d['kind']} {d['metadata']['name']} uses a wildcard")
-            if "secrets" in rule["resources"]:
-                fail(f"{d['kind']} {d['metadata']['name']} keeps access to secrets")
-            if set(rule.get("apiGroups", [])) & {"rbac.authorization.k8s.io"}:
-                fail(f"{d['kind']} {d['metadata']['name']} keeps RBAC rights")
-            if d["kind"] == "ClusterRole" and set(rule["verbs"]) - {"get", "list"}:
-                fail(f"ClusterRole {d['metadata']['name']} writes cluster objects after finish")
-# The operating ClusterRole holds exactly this list (vws-deploy#77): group, resource, get and list only.
-OPERATOR_READ = {
-    ("", "nodes"), ("storage.k8s.io", "storageclasses"), ("snapshot.storage.k8s.io", "volumesnapshotclasses"),
-    ("apiextensions.k8s.io", "customresourcedefinitions"), ("kubevirt.io", "kubevirts"), ("cdi.kubevirt.io", "cdis"),
-    ("ceph.rook.io", "cephclusters"), ("", "persistentvolumeclaims"),
-}
-read = by.get(("ClusterRole", "vws-operator-read"))
-if read is None:
-    fail("the ClusterRole vws-operator-read is missing")
-have = set()
-for rule in read["rules"]:
-    if sorted(rule["verbs"]) != ["get", "list"]:
-        fail(f"vws-operator-read rule {rule['resources']} has verbs {rule['verbs']}; only get and list")
-    if rule.get("resourceNames") or rule.get("nonResourceURLs"):
-        fail("vws-operator-read uses resourceNames or nonResourceURLs")
-    for group in rule["apiGroups"]:
-        for resource in rule["resources"]:
-            if (group, resource) not in OPERATOR_READ:
-                fail(f"vws-operator-read grants {group or 'core'}/{resource}, which is not in the allowed list (docs/rbac.md)")
-            have.add((group, resource))
-if have != OPERATOR_READ:
-    fail(f"vws-operator-read lacks {sorted(OPERATOR_READ - have)}")
-PY
-}
-
-cmd_bootstrap() {
-  local tmp ttl gomod goimage
-  gomod=$(sed -n 's/^go //p' installer/go.mod)
-  goimage=$(sed -n 's/^INSTALLER_GO_IMAGE=//p' scripts/versions.env)
-  [[ $goimage == *"/golang:${gomod}-"*"@sha256:"* ]] || die "R20: INSTALLER_GO_IMAGE ${goimage} must be golang:${gomod} (installer/go.mod) pinned by digest"
-  grep -q '^FROM ${GO_IMAGE} AS build$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must build vws-installer from GO_IMAGE"
-  grep -q '^COPY --from=build /out/vws-installer /opt/vws/bin/vws-installer$' bootstrap/Containerfile || die "R20: bootstrap/Containerfile must copy vws-installer to /opt/vws/bin"
-  ttl=$(sed -n 's/^INSTALLER_TTL_SECONDS=//p' scripts/versions.env)
-  tmp=$(mktemp -d)
-  # Keep the retired API placeholders in the template; only check its security structure.
-  local image
-  image=$(sed -n 's/^VWS_INSTALLER_IMAGE=//p' scripts/versions.env)
-  sed -e "s#INSTALLER_IMAGE#${image}#g" \
-    -e "s#REAPER_DEADLINE_SECONDS#$((ttl + 600))#g" \
-    -e "s#INSTALLER_TTL_SECONDS#${ttl}#g" bootstrap/bootstrap.yaml > "$tmp/bootstrap.yaml"
-  bootstrap_check "$tmp/bootstrap.yaml" "$ttl" || die "R20: bootstrap rules"
-  bad_bootstrap() { # NAME SED
-    sed -e "$2" "$tmp/bootstrap.yaml" > "$tmp/b.yaml"
-    cmp -s "$tmp/bootstrap.yaml" "$tmp/b.yaml" && { rm -rf "$tmp"; die "R20: negative test '$1' changed nothing"; }
-    ! bootstrap_check "$tmp/b.yaml" "$ttl" 2>/dev/null || { rm -rf "$tmp"; die "R20: $1 was accepted"; }
-  }
-  bad_bootstrap "a tag instead of a digest" 's#installer@sha256:[0-9a-f]*#installer:latest#'
-  bad_bootstrap "a privileged container" 's#^\( *\)allowPrivilegeEscalation: false#\1allowPrivilegeEscalation: false\n\1privileged: true#'
-  bad_bootstrap "privilege escalation" '0,/allowPrivilegeEscalation: false/s//allowPrivilegeEscalation: true/'
-  bad_bootstrap "a binding without a TTL" '/vws-installer-ttl-seconds: /d'
-  bad_bootstrap "a NodePort Service" 's/^  type: ClusterIP$/  type: NodePort/'
-  bad_bootstrap "two installer replicas" 's/^  replicas: 1$/  replicas: 2/'
-  bad_bootstrap "a rolling update" 's/^    type: Recreate$/    type: RollingUpdate/'
-  bad_bootstrap "a deadline on the Deployment pod" 's/^      serviceAccountName: vws-installer$/&\n      activeDeadlineSeconds: 60/'
-  bad_bootstrap "a Service that selects nothing" '/^  selector:$/{n;s/name: vws-installer/name: other/}'
-  bad_bootstrap "a Service on an unnamed port" 's/targetPort: api/targetPort: web/'
-  bad_bootstrap "a bare installer Pod" 's/^kind: Deployment$/kind: Pod/'
-  bad_bootstrap "an idle installer" 's#^\( *\)- /opt/vws/bin/vws-installer$#\1- sleep\n\1- infinity#'
-  bad_bootstrap "a hard-coded API version" 's#-api-version=[^ ]*#-api-version=example.com/v1#'
-  bad_bootstrap "an API on another port" 's#-listen=0.0.0.0:8443#-listen=0.0.0.0:9443#'
-  bad_bootstrap "no -links" '/- -links=/d'
-  bad_bootstrap "-links outside the mount" 's#-links=/etc/vws-installer/links/#-links=/tmp/#'
-  bad_bootstrap "no links ConfigMap" 's/name: vws-installer-links$/name: other-links/'
-  bad_bootstrap "a required links ConfigMap" 's/^            optional: true$/            optional: false/'
-  bad_bootstrap "a writable links mount" '/mountPath: \/etc\/vws-installer\/links$/{n;s/readOnly: true/readOnly: false/}'
-  bad_bootstrap "a subPath links mount" 's#^\( *\)mountPath: /etc/vws-installer/links$#&\n\1subPath: links.json#'
-  bad_bootstrap "no readiness probe" 's/^          readinessProbe:$/          startupProbe:/'
-  bad_bootstrap "no reaper" 's/name: vws-installer-reaper/name: something-else/'
-  bad_bootstrap "a reaper deadline equal to the TTL" "s/activeDeadlineSeconds: $((ttl + 600))/activeDeadlineSeconds: ${ttl}/"
-  bad_bootstrap "a second cluster-admin binding" 's/name: vws-operator-read$/name: cluster-admin/'
-  bad_bootstrap "the operating Role reading secrets" 's/resources: \[pods, /resources: [secrets, pods, /'
-  bad_bootstrap "a wildcard rule" 's/resources: \[nodes\]/resources: ["*"]/'
-  bad_bootstrap "watch on kubevirts" '/resources: \[kubevirts\]/{n;s/verbs: \[get, list\]/verbs: [get, list, watch]/}'
-  bad_bootstrap "a resource outside the list" 's/resources: \[kubevirts\]/resources: [kubevirts, virtualmachines]/'
-  bad_bootstrap "a write verb on PVCs" '/resources: \[persistentvolumeclaims\]$/{n;s/verbs: \[get, list\]/verbs: [get, list, delete]/}'
-  bad_bootstrap "a group outside the list" 's/apiGroups: \[ceph.rook.io\]/apiGroups: [ceph.rook.io, objectbucket.io]/'
-  bad_bootstrap "pods cluster-wide" 's/resources: \[cdis\]/resources: [cdis, pods]/'
-  bad_bootstrap "an allowed read removed" '/resources: \[cephclusters\]/s/cephclusters/cephblockpools/'
   rm -rf "$tmp"
 }
 
@@ -735,13 +564,13 @@ cmd_observability() {
   # Examples: config only, each with its rights or mounts and its component stability, and valid.
   local examples=docs/observability/collector-examples
   [[ -d $examples ]] || die "R25: ${examples} is missing"
-  for name in k8s_cluster k8sobjects kubeletstats hostmetrics filelog; do
+  for name in hostmetrics journald; do
     example="${examples}/${name}.yaml"
     [[ -f $example ]] || die "R25: ${example} is missing"
     grep -q '^# Needs: ' "$example" || die "R25: ${example} has no '# Needs:' line"
     grep -q '^# Stability: ' "$example" || die "R25: ${example} has no '# Stability:' line"
     ! grep -q -E '^(apiVersion|kind):' "$example" || die "R25: ${example} is a manifest; examples are collector config only"
-    K8S_NODE_NAME=node-0 HOST_ROOT=/ KUBELET_AUTH_TYPE=none otelcol-contrib validate --config="$example" || die "R25: otelcol-contrib validate rejects ${example}"
+    otelcol-contrib validate --config="$example" || die "R25: otelcol-contrib validate rejects ${example}"
   done
 }
 
@@ -812,7 +641,6 @@ cmd_all() {
   cmd_cursor
   cmd_agents
   cmd_vws
-  cmd_bootstrap
   cmd_bundle
   cmd_hooks
   cmd_docs
@@ -827,7 +655,7 @@ cmd_all() {
 
 usage() {
   cat <<'EOF' >&2
-usage: guard.sh <layout|assets|ci|cursor|agents|bundle|no-charts|observability|vws|bootstrap|hooks|docs|english|secrets|commits|commit-msg|all>
+usage: guard.sh <layout|assets|ci|cursor|agents|bundle|no-charts|observability|vws|hooks|docs|english|secrets|commits|commit-msg|all>
 EOF
 }
 
@@ -843,7 +671,6 @@ case "$command_name" in
   no-charts) cmd_no_charts ;;
   observability) cmd_observability ;;
   vws) cmd_vws ;;
-  bootstrap) cmd_bootstrap ;;
   hooks) cmd_hooks ;;
   docs) cmd_docs ;;
   english) cmd_english ;;

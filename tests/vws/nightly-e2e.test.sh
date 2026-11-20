@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vws nightly-e2e: runs scope, scenarios, feature-map-pr and publish in order on vws-test only, writes a
+# vws nightly-e2e: runs scope, scenarios, feature-map-pr and publish in order on pve-test only, writes a
 # JSON summary, opens one incident and posts one lead wake on a failure (each reused on a rerun), posts nothing on a
 # pass and never reaches OpenStack.
 set -euo pipefail
@@ -81,7 +81,6 @@ expect_text "nightly-publish gets the run" "$(cat "$FAKE_VWS_LOG")" "nightly-pub
 expect_text "nightly-pr gets the run and the log URL" "$(cat "$FAKE_VWS_LOG")" "nightly-pr --results ${WORK}/$r --log-url ${url} --repo popododo0720/vws-deploy"
 if ! grep -q '^env ' "$FAKE_VWS_LOG"; then ok "no step inherits an OS_* variable"; else bad "OS env leaked" "$(cat "$FAKE_VWS_LOG")"; fi
 if [[ ! -s $FAKE_OS_LOG ]]; then ok "no step calls openstack"; else bad "openstack called" "$(cat "$FAKE_OS_LOG")"; fi
-assert_no_changes "the scope check only reads the cluster"
 expect_text "the scope check reads the PVE subscription" "$(cat "${WORK}/identity.calls")" "/nodes/node1/subscription"
 if [[ $(summary "$r" '[.result, .run, .incident, ([.steps[].result] | join(","))] | join(" ")') == "pass 20261105T130000Z  pass,pass,pass,pass,pass" ]]; then
   ok "summary.json records the run and five passed steps"; else bad "summary" "$(cat "${WORK}/$r/e2e/summary.json")"; fi
@@ -121,7 +120,7 @@ expect_text "the wake is reported" "$OUT" "OK    e2e/wake  popododo0720/vws-depl
 expect_text "the wake goes to the thread's comments" "$(cat "$FAKE_GH_LOG")" "api repos/popododo0720/vws-deploy/issues/339/comments -F body=@"
 wake=$(cat "$FAKE_GH_WAKE")
 if [[ $(head -n1 <<<"$wake") == '<!-- vws-orchestrate:lead-wake -->' ]]; then ok "the wake's first line is the lead-wake marker"; else bad "marker" "$wake"; fi
-expect_text "the wake names the run and the step" "$wake" "run 20261105T130250Z on vws-test failed at step \`scenarios\`"
+expect_text "the wake names the run and the step" "$wake" "run 20261105T130250Z on pve-test failed at step \`scenarios\`"
 expect_text "the wake names the step log" "$wake" "Step log: \`${WORK}/$w/e2e/scenarios.log\`"
 expect_text "the wake names the failed scenario and its log" "$wake" "- scenario \`ec2-run\` failed, log \`${WORK}/$w/ec2-run.log\`"
 expect_text "the wake links the incident and the run log" "$wake" $'Run log: https://logs.invalid/run\nIncident: https://github.com/popododo0720/vws-deploy/issues/9001'
@@ -198,7 +197,7 @@ echo '{"serverid":"OtherServer826"}' >"${WORK}/identity.json"
 r="r/20261105T130400Z"
 e2e --results "${WORK}/$r"
 expect_rc "another cluster: exit 1" 1
-expect_text "the scope failure names the cluster" "$OUT" "FAIL  e2e/scope  PVE server ID OtherServer826 is not vws-test"
+expect_text "the scope failure names the cluster" "$OUT" "FAIL  e2e/scope  PVE server ID OtherServer826 is not pve-test"
 if [[ ! -s $FAKE_VWS_LOG ]]; then ok "on another cluster no step runs"; else bad "ran elsewhere" "$(cat "$FAKE_VWS_LOG")"; fi
 expect_text "the scope failure opens an incident" "$(cat "$FAKE_GH_LOG")" "issue create"
 expect_text "the incident body names the scope step" "$(cat "$FAKE_GH_BODY")" "failed at step \`scope\`"

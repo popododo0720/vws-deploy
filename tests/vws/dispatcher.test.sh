@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The dispatcher, the shared library and the fake tools themselves.
+# The dispatcher and the shared library.
 set -euo pipefail
 # shellcheck source=tests/vws/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -12,7 +12,7 @@ run_vws nope;                       expect_rc "unknown command exits 2" 2
 expect_text "unknown command is reported" "$ERR" "unknown command"
 run_vws '../etc/passwd';            expect_rc "a path as command exits 2" 2
 run_vws --bogus readonly;           expect_rc "unknown flag before the command exits 2" 2
-run_vws readonly --context;         expect_rc "flag without value exits 2" 2
+run_vws readonly -o;              expect_rc "flag without value exits 2" 2
 run_vws -o xml readonly;            expect_rc "bad -o value exits 2" 2
 
 canary=gate-canary-768
@@ -75,21 +75,28 @@ for value in "$canary" "token-secret=$canary" "external-id=$canary"; do
   fi
 done
 
-# A missing tool exits 3. PATH has the system tools and the fake kubectl, but no helm.
-mkdir -p "${WORK}/nohelm"
+# A missing tool exits 3, and help needs none.
+mkdir -p "${WORK}/notool"
 for tool in bash env jq cat grep sed awk mktemp rm dirname basename sort tr wc head date cut printf mkdir; do
-  path=$(command -v "$tool") && ln -sf "$path" "${WORK}/nohelm/${tool}"
+  path=$(command -v "$tool") && ln -sf "$path" "${WORK}/notool/${tool}"
 done
-ln -sf "${FIXTURES}/bin/kubectl" "${WORK}/nohelm/kubectl"
-reset_log
+cat >"${WORK}/needs-tool.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+# summary: fixture, needs a tool that is not installed
+# shellcheck disable=SC2034
+VWS_NEED=(vws-absent-tool)
+vws_cmd_main() { :; }
+FIXTURE
+mkdir -p "${WORK}/needs"
+cp "${WORK}/needs-tool.sh" "${WORK}/needs/needs.sh"
 set +e
-OUT=$(PATH="${WORK}/nohelm" VWS_COMMAND_DIR="${FIXTURES}/commands" bash "$VWS_BIN" readonly 2>"${WORK}/err")
+OUT=$(PATH="${WORK}/notool" VWS_COMMAND_DIR="${WORK}/needs" bash "$VWS_BIN" needs 2>"${WORK}/err")
 RC=$?
 set -e
 ERR=$(cat "${WORK}/err")
-expect_rc "helm missing exits 3" 3
-expect_text "missing tool is named" "$ERR" "helm"
-OUT=$(PATH="${WORK}/nohelm" bash "$VWS_BIN" help 2>&1) && ok "help needs no cluster tool" || bad "help needs no cluster tool" "$OUT"
+expect_rc "a missing tool exits 3" 3
+expect_text "missing tool is named" "$ERR" "vws-absent-tool"
+OUT=$(PATH="${WORK}/notool" bash "$VWS_BIN" help 2>&1) && ok "help needs no external tool" || bad "help needs no external tool" "$OUT"
 
 # Output.
 run_vws -o json readonly;           expect_rc "json readonly exits 0" 0
@@ -100,30 +107,16 @@ run_vws readonly;                   expect_text "text output has OK lines" "$OUT
 run_vws_real -o json help
 if jq -e '.checks[] | select(.name == "help")' <<<"$OUT" >/dev/null; then ok "help lists itself in json"; else bad "help lists itself in json" "$OUT"; fi
 
-# A read scenario changes nothing, and the assertion can tell (control cases below).
 run_vws readonly
-assert_no_changes "read scenario makes no changing call"
-if [[ $(wc -l <"$VWS_FAKE_LOG") -eq 2 ]]; then ok "calls are logged"; else bad "calls are logged" "$(cat "$VWS_FAKE_LOG")"; fi
-run_vws mutating;                   assert_changes "control: apply is seen as a changing call"
-run_vws --dry-run mutating;         expect_rc "dry-run exits 0" 0
-assert_no_changes "dry-run makes no changing call"
-expect_text "dry-run says what it skipped" "$ERR" "DRYRUN kubectl apply"
-run_vws --dry-run readonly
-if [[ $(wc -l <"$VWS_FAKE_LOG") -eq 2 ]]; then ok "dry-run still runs reads"; else bad "dry-run still runs reads" "$(cat "$VWS_FAKE_LOG")"; fi
-
-# Common flags reach the tools.
-run_vws --context lab -n vws readonly
-expect_text "context reaches kubectl" "$(cat "$VWS_FAKE_LOG")" "--context=lab"
-expect_text "namespace reaches kubectl" "$(cat "$VWS_FAKE_LOG")" "--namespace=vws"
-expect_text "context reaches helm" "$(cat "$VWS_FAKE_LOG")" "--kube-context=lab"
-run_vws readonly --context=lab
-expect_text "flags work after the command" "$(cat "$VWS_FAKE_LOG")" "--context=lab"
+if [[ $(wc -l <"$VWS_FAKE_LOG") -eq 0 ]]; then ok "a read scenario makes no tool call"; else bad "a read scenario makes no tool call" "$(cat "$VWS_FAKE_LOG")"; fi
+run_vws --dry-run readonly;         expect_rc "dry-run exits 0" 0
+run_vws readonly --dry-run;         expect_rc "flags work after the command" 0
 
 # Destructive commands.
 run_vws destructive;                expect_rc "destructive without --yes exits 2" 2
-assert_no_changes "destructive without --yes makes no call"
+expect_text "the refusal names the action" "$ERR" "needs --yes"
 run_vws --yes destructive;          expect_rc "destructive with --yes exits 0" 0
-assert_changes "destructive with --yes deletes"
+expect_text "destructive with --yes runs" "$OUT" "deleted"
 
 # WARN, FAIL and --strict.
 run_vws warn;                       expect_rc "WARN exits 0" 0
@@ -131,13 +124,5 @@ run_vws --strict warn;              expect_rc "WARN with --strict exits 1" 1
 run_vws fail;                       expect_rc "FAIL exits 1" 1
 run_vws -o json fail
 if jq -e '.status == "fail"' <<<"$OUT" >/dev/null; then ok "json status is fail"; else bad "json status is fail" "$OUT"; fi
-
-# The fake tools fail on a call nobody planned.
-run_vws unfixtured;                 expect_rc "a call without fixture fails" 1
-expect_text "the missing fixture is named" "$ERR" "no fixture"
-
-# The harness catches a changing call when one is logged.
-printf 'kubectl\tdelete\tdelete pod x\n' >"$VWS_FAKE_LOG"
-if [[ -n $(changing_calls) ]]; then ok "control: a logged delete is found"; else bad "control: a logged delete is found" "not found"; fi
 
 finish_tests

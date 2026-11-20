@@ -1,12 +1,10 @@
-# Node CPU, memory, load, disk, filesystem, network and paging: one collector per node.
-# Needs: the host root mounted read-only at /hostfs (root_path), no API rights. Host NIC counters
-#   most likely also need the host network namespace (unverified, T2). The process scraper stays off
-#   because it needs more rights. These are the R10 exceptions a later issue must approve (#47).
+# Node CPU, memory, load, disk, filesystem, network and paging: one collector per VM or bare-metal host.
+# Needs: nothing beyond a collector running on the host itself (root_path is /), no API rights. The
+#   process scraper stays off because it needs more rights.
 # Stability: hostmetrics receiver metrics beta, logs development (collector-contrib README, 2026-10-12).
 receivers:
   hostmetrics:
-    # HOST_ROOT is unset in a pod; scripts/guard.sh sets it to / because validate stats the path.
-    root_path: ${env:HOST_ROOT:-/hostfs}
+    root_path: /
     collection_interval: 30s
     scrapers:
       cpu: {}

@@ -1,0 +1,32 @@
+# systemd journal of the VWS units as logs: one collector per VM that runs VWS services.
+# Needs: read access to the journal (the collector user is in the systemd-journal group) and the
+#   journalctl binary on PATH. No API rights, no mount outside the VM's own /var/log/journal.
+# Stability: journald receiver logs alpha (collector-contrib README, 2026-11-19; verify before use).
+receivers:
+  journald:
+    start_at: end
+    units:
+      - vws-etcd.service
+      - vws-iam.service
+      - vws-console-api.service
+      - vws-aws-proxy.service
+      - vws-console.service
+      - vws-region.service
+    priority: info
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch: {}
+exporters:
+  otlp:
+    endpoint: otel-collector:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    logs:
+      receivers: [journald]
+      processors: [memory_limiter, batch]
+      exporters: [otlp]

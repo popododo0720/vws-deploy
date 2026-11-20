@@ -10,7 +10,7 @@ name: ci-fail-caller
 
 on:
   workflow_run:
-    workflows: [ci, drift-check, installer-image]
+    workflows: [ci, drift-check]
     types: [completed]
 
 permissions: {}

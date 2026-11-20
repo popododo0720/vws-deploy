@@ -1,6 +1,6 @@
-# Nightly full-stack e2e on vws-test (vws-deploy#253)
+# Nightly full-stack e2e on pve-test (vws-deploy#253)
 
-One command, `vws nightly-e2e`, runs the whole nightly on vws-test: a PVE scope check, then
+One command, `vws nightly-e2e`, runs the whole nightly on pve-test: a PVE scope check, then
 `vws nightly` (every feature-map scenario), `vws nightly-conformance` (read-only conformance),
 `vws nightly-pr` (the feature-map PR), and
 `vws nightly-publish` (the results branch). It writes a JSON summary and
@@ -8,8 +8,8 @@ opens an `incident` issue when a step fails. The command reference is `docs/vws-
 
 ## Runner
 
-Chosen: the box starts it. The box already reaches vws-test and already runs `vws nightly` from
-a timer at 22:00 KST (vws-deploy#290). The timer and the env file with the vws-test credentials
+Chosen: the box starts it. The box already reaches pve-test and already runs `vws nightly` from
+a timer at 22:00 KST (vws-deploy#290). The timer and the env file with the pve-test credentials
 stay on the box, outside this repo, because R10 forbids units here. A manual run is the same
 command typed on the box; it replaces the issue's `workflow_dispatch`.
 
@@ -26,18 +26,18 @@ still allows the feature-map PR and publish steps, so other nightly results are 
 
 Rejected:
 
-- **A self-hosted GitHub Actions runner with vws-test reach.** vws-deploy is public. A pull
+- **A self-hosted GitHub Actions runner with pve-test reach.** vws-deploy is public. A pull
   request can add a workflow that runs on any runner label, so a stranger's code would run on a
-  host that holds vws-test credentials. GitHub's own guidance is to not attach self-hosted
+  host that holds pve-test credentials. GitHub's own guidance is to not attach self-hosted
   runners to public repositories.
-- **A GitHub-hosted runner.** It cannot reach vws-test.
+- **A GitHub-hosted runner.** It cannot reach pve-test.
 
 Cost of the choice: there is no Actions run page per night. The record of a run is the summary
 JSON on the box, the nightly PR (it links the run log) and the incident issue on a failure.
 
 ## Scope
 
-The nightly makes no OpenStack API call. vws-test is the nested PVE box pve-test-1, and
+The nightly makes no OpenStack API call. pve-test is the nested PVE box pve-test-1, and
 the nightly uses the console/PVE APIs and VWS endpoints:
 
 - the command removes every `OS_*` variable from its environment before any step, so no step
@@ -118,4 +118,4 @@ Rejected:
 - Building the CR that pins main of every service and the pinned proto tag. The command takes the
   CR file as given.
 - The console-api e2e suite as a step.
-- Three recorded nightly runs and a forced failure on vws-test (needs the box and the cluster).
+- Three recorded nightly runs and a forced failure on pve-test (needs the box and the cluster).

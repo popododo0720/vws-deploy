@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the pinned helm, otelcol-contrib and etcd binaries for optional legacy checks.
+# Install the pinned otelcol-contrib and etcd binaries the guards and tests use.
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -17,12 +17,6 @@ fetch() {
   echo "${sha}  ${file}" | sha256sum -c -
 }
 
-fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
-  "$HELM_SHA256" "$work/helm.tgz"
-tar -xzf "$work/helm.tgz" -C "$work"
-install -m 755 "$work/linux-amd64/helm" "$dest/helm"
-
-
 fetch "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTELCOL_VERSION}/otelcol-contrib_${OTELCOL_VERSION}_linux_amd64.tar.gz" \
   "$OTELCOL_SHA256" "$work/otelcol.tgz"
 tar -xzf "$work/otelcol.tgz" -C "$work" otelcol-contrib
@@ -35,4 +29,4 @@ for bin in etcd etcdctl etcdutl; do
   install -m 755 "$work/etcd-${ETCD_VERSION}-linux-amd64/${bin}" "$dest/${bin}"
 done
 
-echo "installed helm, otelcol-contrib and etcd in ${dest}"
+echo "installed otelcol-contrib and etcd in ${dest}"

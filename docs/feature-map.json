@@ -1,5 +1,5 @@
 {
-  "vwsTest": {"pveServerId": null, "note": "serverid of the nested PVE box pve-test-1 from GET /nodes/{node}/subscription, read by live.py identity; null until the box exists. Signers are the allowed_signers lines (principal vws-test) whose key may sign results, empty until the vws-test runner key is listed (vws-deploy#288)", "signers": []},
+  "vwsTest": {"pveServerId": null, "note": "serverid of the nested PVE box pve-test-1 from GET /nodes/{node}/subscription, read by live.py identity; null until the box exists. Signers are the allowed_signers lines (principal pve-test) whose key may sign results, empty until the pve-test runner key is listed (vws-deploy#288)", "signers": []},
   "features": [
     {"feature": "EC2 RunInstances / TerminateInstances", "repo": "vws-console-api", "issue": null, "scenario": "ec2-volume-reboot"},
     {"feature": "EC2 DescribeInstances / StopInstances / StartInstances", "repo": "vws-console-api", "issue": null, "scenario": null, "na": "no scenario yet; ec2-volume-reboot runs, reboots and terminates an instance but never stops or starts one"},
@@ -20,7 +20,7 @@
     {"feature": "Console login", "repo": "vws-console", "issue": null, "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
     {"feature": "Console EC2 Instances list and Launch Instance wizard", "repo": "vws-console", "issue": "vws-console#1", "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
     {"feature": "Console IAM pages", "repo": "vws-console", "issue": "vws-console#47", "scenario": null, "na": "browser UI; vws verify scenarios call the APIs only, and there is no browser e2e suite yet"},
-    {"feature": "Installer web wizard and TUI", "repo": "vws-deploy", "issue": "vws-deploy#139", "scenario": null, "na": "no scenario yet; the installer runs before the stack and no nightly step bootstraps a cluster, so only the installer Go tests under installer/ (API and TUI) run, in CI"},
+    {"feature": ".deb and systemd install", "repo": "vws-deploy", "issue": null, "scenario": null, "na": "no nightly scenario; tests/vws/install.test.sh and the packaging tests (packaging/vws-etcd, packaging/vws-global and packaging/vws-region test.sh and test-install.sh) run in CI on a disposable Debian target"},
     {"feature": "Node reboot recovery", "repo": "vws-deploy", "issue": "vws-deploy#51", "scenario": null, "na": "no scenario yet; node reboot recovery needs a replacement for the retired Kubernetes recovery command"}
   ]
 }

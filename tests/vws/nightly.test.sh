@@ -33,7 +33,7 @@ case $mode in
   none) exit 0 ;;
   crash) echo "boom" >&2; exit 4 ;;
 esac
-jq -n --arg s "$name" --arg r "$mode" '{scenario: $s, result: $r, cluster: "vws-test",
+jq -n --arg s "$name" --arg r "$mode" '{scenario: $s, result: $r, cluster: "pve-test",
   finishedAt: "2026-10-30T13:00:00Z", pveServerId: "TestServer826", evidence: "https://example.invalid/\($s)"}' >"$out"
 if [[ -n ${FAKE_RETIRED_RESULT:-} ]]; then
   jq '.clusterUID = .pveServerId | del(.pveServerId)' "$out" >"${out}.old"
@@ -49,7 +49,6 @@ export FAKE_FM="${VWS_TEST_ROOT}/scripts/vws.d/lib/feature_map.py" FAKE_KEY="${W
 write_map; : >"$FAKE_RUNS"
 run_vws_real nightly --map "$map" --results "${WORK}/r1"
 expect_rc "all scenarios pass: exit 0" 0
-assert_no_changes "the command itself makes no cluster call"
 if [[ $(cat "$FAKE_RUNS") == $'ec2-keypair\nec2-run\nsts-assume-role' ]]; then ok "each scenario runs once, in name order, never overlapping"
 else bad "run order" "$(cat "$FAKE_RUNS")"; fi
 if jq -e '[.features[0,1,2].lastPass] == ["2026-10-30T13:00:00Z","2026-10-30T13:00:00Z","2026-10-30T13:00:00Z"]' "$map" >/dev/null; then

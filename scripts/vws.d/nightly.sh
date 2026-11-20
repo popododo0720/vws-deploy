@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # summary: run every feature-map scenario one at a time and record the results in the feature map
-# Sourced by scripts/vws. Usage: vws [--context CTX] nightly [--map FILE] [--results DIR] [--timeout SECONDS]
+# Sourced by scripts/vws. Usage: vws nightly [--map FILE] [--results DIR] [--timeout SECONDS]
 # vws-deploy#290 (Part of #252). Reads the scenario names from the map (docs/feature-map.json by
 # default), runs each one in name order with `scripts/vws verify scenario NAME --result FILE --map MAP`
 # (vws-deploy#287), one at a time and each under --timeout (default 1800 s, then SIGTERM, then
 # SIGKILL 30 s later), and then records every result written with the same update that
-# `vws verify --update-feature-map` runs. Only a vws-test pass moves a feature's last pass forward.
+# `vws verify --update-feature-map` runs. Only a pve-test pass moves a feature's last pass forward.
 # Writes under DIR (default $XDG_STATE_HOME/vws-nightly/<UTC time>): NAME.json and NAME.log per
 # scenario. A second run while one holds DIR/../nightly.lock stops with exit 3, so runs never overlap.
 # Exit: 0 every scenario passed (or none exists: WARN), 1 a scenario failed, timed out or wrote no
@@ -65,7 +65,7 @@ vws_cmd_main() {
   fi
   local -a runner
   if [[ -n $VWS_NIGHTLY_RUNNER ]]; then runner=("$VWS_NIGHTLY_RUNNER"); else
-    runner=(bash "${VWS_ROOT}/scripts/vws" verify scenario) # inherits the exported VWS_CONTEXT
+    runner=(bash "${VWS_ROOT}/scripts/vws" verify scenario)
   fi
   while IFS= read -r name; do
     if [[ ! $name =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then

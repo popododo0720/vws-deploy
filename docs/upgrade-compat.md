@@ -12,7 +12,6 @@ the row links the issue or PR that carries the work.
 
 | Repo | Persisted records | Fixture and test | Status |
 | --- | --- | --- | --- |
-| vws-deploy | `VWSCluster` record, including `status.appliedValuesHash`, `specHistory` and the `Applied` condition | `testdata/upgrade/0.1.0/`; `tests/vws/upgrade-compat.test.sh` and `scripts/guard.sh upgrade-compat` | Done, #445 |
 | vws-storage | SQLite rows for volumes, snapshots, create-operation tokens and operations | `testdata/upgrade/0.1.0/storage.db`; `TestUpgradeFrom010RecordsRoundTrip` and `TestUpgradeFrom010DecodesStoredRecords` | Done, vws-storage#129 |
 | vws-console-api | Detach records, operation-id labels, the held map and the idempotency record | `testdata/upgrade/ceaf591/`; `TestPreviousReleaseRecords` and `TestPreviousReleaseIdempotencyRecord` | Done, vws-console-api#341 |
 | vws-compute | One ConfigMap per resource (`instance`, `image`, `keypair`) plus the request-id indexes and the key-name and volume claims | `testdata/upgrade/89f2ca3/configmaps.json`; `TestPreviousReleaseRecordsDecode` | Done, vws-compute#132 |
