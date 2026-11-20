@@ -11,7 +11,7 @@ receivers:
       - vws-console-api.service
       - vws-aws-proxy.service
       - vws-console.service
-      - vws-region.service
+      - vws-region@*.service
     priority: info
 processors:
   memory_limiter:

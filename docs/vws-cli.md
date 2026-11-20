@@ -158,7 +158,7 @@ Inputs by role, all checked before SSH:
   same CA with the new address and 127.0.0.1, then replace `member.crt` and `member.key`, keeping the
   separate client credentials. With TLS under your own CA, do the same with that CA.
 - `region`: `region-kek` and `region.key`, always yours to supply as before
-  (`packaging/vws-region/vws-region.service`).
+  (`packaging/vws-region/vws-region@.service`; the per-instance install is vws-deploy#850).
 
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
 credential sources are refused. Private files go to root-owned 0600 files in
@@ -219,7 +219,7 @@ attempt has a 20-second deadline and the whole call a 65-second deadline.
 
 Text lists name, cluster name, PVE API URL, region endpoint, token ID,
 secret metadata (`set · fingerprint`), and zones. Health prints status, quorum,
-leader, online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
+the API node (`apiNode`, or `leader` from an older daemon), online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
 1 on any FAIL, including with `-o json`. JSON output passes the API JSON through
 (DELETE 204 has no body). A 403 prints the command's missing `vws:Admin*`
 permission and requestId, and exits 3. Other API errors print code, message and

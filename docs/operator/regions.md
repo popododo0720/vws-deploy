@@ -9,7 +9,7 @@ The order is:
 
 1. Write the bootstrap `/etc/vws/global.yaml` on the global layer.
 2. Create the read-only Proxmox user and token.
-3. Set up the region daemon VIP on the Proxmox nodes.
+3. Run one region daemon instance for the cluster.
 4. Register the region (console or CLI) and test the connection.
 5. Create the AWS role with an ExternalId and register the AWS account.
 
@@ -45,10 +45,11 @@ The Proxmox token secret and the AWS ExternalId go in, and never come back out.
   bound to the AWS account ID, so a sealed value copied to another record
   doesn't open.
 - The Proxmox token secret isn't kept by the global layer at all. The registry
-  records only that it's set and its fingerprint; the region daemon on the
-  Proxmox nodes holds the secret, under its own region KEK
-  (`/etc/vws/credentials/region-kek`, see
-  [packaging/vws-region/README.md](../../packaging/vws-region/README.md)).
+  records only that it's set and its fingerprint; the region daemon of that
+  cluster holds the secret in its state file,
+  `/var/lib/vws-region/<region>/registration.json` (mode 0600, in a 0700
+  directory only the daemon can use). See
+  [packaging/vws-region/README.md](../../packaging/vws-region/README.md).
 - Reads return only metadata: whether the secret is set and a fingerprint (the
   first 4 bytes of its SHA-256, in hex). The CLI prints it as
   `set · <fingerprint>`, or `not set`.
@@ -135,23 +136,29 @@ Before the expiry date, create a new token value and send it with
 `vws region edit NAME --token-secret-file PATH` (or the API token secret field
 on the Edit page).
 
-## Step 3: the region daemon VIP
+## Step 3: the region daemon instance
 
-The region daemon (`vws-region` package) runs on every Proxmox node. keepalived
-holds one VIP and moves it to a node whose daemon is ready. That VIP is the
-region endpoint you register in step 4.
+One `vws-region@<region>` instance serves one Proxmox cluster. It does not run
+on a Proxmox node and needs no `/etc/pve`; it needs to reach the cluster's port
+8006, and the global host needs to reach the instance's port. Install the
+`vws-region` package on the host you chose, then for each cluster put the
+instance files in place and start it, for example for `pve-seoul-1`:
 
-The package ships an example at
-`/usr/share/doc/vws-region/examples/keepalived.conf`. Its health script,
-`/usr/lib/vws/check-region-ready`, asks `http://127.0.0.1:8085/readyz` with a
-2-second limit. The instance starts in BACKUP, and `init_fail` keeps a node from
-taking the VIP before it's ready. Set the interface, the VIP and prefix, a
-shared unused `virtual_router_id`, and a distinct priority per node, then run
-`keepalived --config-test` before starting it. The full procedure, with the
-failover test, is in
-[packaging/vws-region/README.md](../../packaging/vws-region/README.md#vip-configuration-and-failover-test).
+```
+/etc/vws-region/pve-seoul-1.env           listen address, ops address
+/etc/vws-region/pve-seoul-1/region.yaml   pools, storages, bridges
+/etc/vws-region/pve-seoul-1/region.crt    server certificate
+/etc/vws-region/pve-seoul-1/region.key    its private key
+/etc/vws-region/pve-seoul-1/global-ca.pem CA of the global client certificate
+systemctl enable --now vws-region@pve-seoul-1
+```
 
-The region's TLS certificate must cover the VIP address or name.
+Two instances on one host need different ports in their `.env` files. The
+instance keeps its state in `/var/lib/vws-region/pve-seoul-1`. The region
+endpoint you register in step 4 is the instance's address, and its TLS
+certificate must cover that address or name. The package's README lists
+the files and the readiness probe. The install command and the full runbook for
+this flow are vws-deploy#850.
 
 ## Step 4: register the region
 
