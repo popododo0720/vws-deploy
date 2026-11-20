@@ -288,6 +288,36 @@ class Install(unittest.TestCase):
         self.assertEqual(self.secrets(source), before)
         self.assertEqual((self.work / "state/argv").read_text(), calls)
 
+    def test_resume_needs_every_present_credential_in_the_retained_state(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        # The IAM leaf is gone from the retained state, the operator supplies a leaf from another CA and
+        # the client certificate is absent: nothing may be filled in around the foreign pair.
+        shutil.rmtree(source / "internal-tls/iam")
+        (source / "iam.pem").write_bytes((other / "iam/member.crt").read_bytes())
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        (source / "api-mtls.pem").unlink()
+        before = self.secrets(source)
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: iam.pem differs from internal-tls/; replace the whole "
+                         "internal-tls set or delete its files and internal-tls/\n")
+        self.assertEqual(self.secrets(source), before)
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+
+    def test_supplied_member_certificate_is_reissued_under_the_own_ca(self):
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. Reissue it under your own CA "
+                         "with 192.0.2.9 and 127.0.0.1 in its subject alternative names, then replace "
+                         "member.crt and member.key together\n")
+        self.assertNotIn("delete", result.stderr)
+
     def test_certificate_and_key_must_be_one_pair(self):
         source = self.work / "credentials"
         other = self.work / "other"

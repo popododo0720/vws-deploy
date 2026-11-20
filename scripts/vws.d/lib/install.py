@@ -174,7 +174,7 @@ def generate(source, host, roles):
             # Resume from the state directory only when every file already there is that state's own.
             for name in present:
                 theirs = source / state / names[name].format(member)
-                if theirs.is_file() and read_file(source / name) != theirs.read_bytes():
+                if not theirs.is_file() or read_file(source / name) != theirs.read_bytes():
                     raise Invalid(name + " differs from " + state + "/; replace the whole " + state
                                   + " set or delete its files and " + state + "/")
             if local(["bash", str(PACKAGING / "vws-etcd/vws-etcd-tls"), str(source / state), members]).returncode:
@@ -190,8 +190,15 @@ def generate(source, host, roles):
         for address in (host["address"], "127.0.0.1"):
             shown = local(["openssl", "x509", "-noout", "-checkip", address, "-in", str(certificate)])
             if shown.returncode or b"does match" not in shown.stdout or b"NOT" in shown.stdout:
-                raise Invalid("member.crt does not name " + address + ". To reissue it from the same CA, delete "
-                              "member.crt, member.key and etcd-tls/" + host["name"] + "/, then run again")
+                kept = source / "etcd-tls"
+                if ((kept / "ca.key").is_file() and (kept / "ca.crt").is_file() and (source / "ca.crt").is_file()
+                        and (source / "ca.crt").read_bytes() == (kept / "ca.crt").read_bytes()):
+                    fix = ("To reissue it from the same CA, delete member.crt, member.key and etcd-tls/"
+                           + host["name"] + "/, then run again")
+                else:
+                    fix = ("Reissue it under your own CA with " + host["address"] + " and 127.0.0.1 "
+                           "in its subject alternative names, then replace member.crt and member.key together")
+                raise Invalid("member.crt does not name " + address + ". " + fix)
 
 
 def public(command, path):

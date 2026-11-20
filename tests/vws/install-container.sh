@@ -137,7 +137,8 @@ paths += [p for directory in (Path("/etc/vws"), Path("/etc/keepalived"), Path("/
 content = b"\n".join(p.read_bytes() for p in paths)
 for p in (root / "credentials").rglob("*"):
     if p.is_file() and p.name not in ("etcd-ca.pem", "api-etcd.pem", "internal-ca.pem",
-                                     "api-mtls.pem", "iam-etcd.pem", "iam.pem"):
+                                     "api-mtls.pem", "iam-etcd.pem", "iam.pem",
+                                     "ca.crt", "member.crt", "client.crt"):
         assert p.read_bytes().strip() not in content, p.name
 credentials = Path("/etc/vws/credentials")
 for p in [credentials, *credentials.rglob("*")]:
