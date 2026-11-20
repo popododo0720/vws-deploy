@@ -55,7 +55,13 @@ Limits of the generated set:
   `iam-etcd*.pem` yourself to separate them.
 - Leaf certificates last 825 days and the CAs 10 years. To rotate, delete the leaf files and their
   directory under `etcd-tls/` or `internal-tls/`, then run `vws install` again.
-- A set you supply in part is not completed; the missing file is reported instead.
+- A set you supply in part is not completed; the missing file is reported instead. A replaced file
+  that differs from the kept `etcd-tls/` or `internal-tls/` state, and a certificate whose key does
+  not match, are refused before any SSH call.
+- If the host address in `hosts.yaml` changes, the member certificate no longer names it and the
+  command refuses to continue. To reissue it from the same CA, delete `member.crt`, `member.key` and
+  `etcd-tls/<name>/` in the credentials directory, then run `vws install` again. The CA, the client
+  certificates and every other key stay as they are.
 
 ## 3. Install the global host
 
