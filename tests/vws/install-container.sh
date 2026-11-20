@@ -53,10 +53,12 @@ chmod +x "$work/bin/ssh" "$work/bin/systemctl"
 global_units="vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy vws-console-api vws-console"
 
 # A global host (Debian VM or bare metal, no PVE): etcd and the global services, nothing of the region.
-mkdir "$work/global"
-sed -e 's/^    roles: .*/    roles: [etcd, global]/' -e '/^vip:/,+1d' "$work/hosts.yaml" > "$work/global/hosts.yaml"
-cp "$work/global.yaml" "$work/global/"
-bash "$root/scripts/vws" install --profile lab --inventory "$work/global/hosts.yaml" \
+# The region role and VIP of the per-node layout are refused until #850.
+sed -e 's/^    roles: .*/    roles: [etcd, global, region]/' "$work/hosts.yaml" > "$work/region-hosts.yaml"
+if bash "$root/scripts/vws" install --profile lab --inventory "$work/region-hosts.yaml" \
+    --packages "$work/packages" --credentials "$work/credentials" >/dev/null 2>&1; then exit 1; fi
+test ! -e /etc/vws
+bash "$root/scripts/vws" install --profile lab --inventory "$work/hosts.yaml" \
     --packages "$work/packages" --credentials "$work/credentials" > "$work/global.out" 2> "$work/global.err"
 for unit in $global_units; do
     test -f "$INSTALL_STATE/is-enabled-$unit"
@@ -72,27 +74,24 @@ test ! -e /etc/systemd/system/vws-lab-region.slice.d
 args=(install --profile lab --inventory "$work/hosts.yaml" --packages "$work/packages"
       --credentials "$work/credentials")
 snapshot() {
-    find /etc/vws /etc/keepalived /usr/lib/vws -printf '%p %m %u %g %y\n' | sort
-    find /etc/vws /etc/keepalived /usr/lib/vws -type f -exec sha256sum {} + | sort
+    find /etc/vws /usr/lib/vws -printf '%p %m %u %g %y\n' | sort
+    find /etc/vws /usr/lib/vws -type f -exec sha256sum {} + | sort
     find /etc/systemd/system -name 50-vws-memory.conf -exec sha256sum {} + | sort
 }
 bash "$root/scripts/vws" "${args[@]}" > "$work/first.out" 2> "$work/first.err"
 grep -q 'changed' "$work/first.out"
-test -f "$INSTALL_STATE/is-enabled-keepalived"
 python3 - <<'PY'
 from pathlib import Path
 root = Path("/etc/systemd/system")
 for group, mib, services in (
         ("global", 1024, ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console")),
-        ("region", 512, ("vws-region",)),
         ("etcd", 512, ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"))):
     name = f"vws-lab-{group}.slice"
     config = root / (name + ".d") / "50-vws-memory.conf"
     assert config.read_text() == f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n"
     for service in services:
         config = root / (service + ".service.d") / "50-vws-memory.conf"
-        limit = f"MemoryMax={mib}M\n" if group == "region" else ""
-        assert config.read_text() == f"[Service]\nSlice={name}\n{limit}"
+        assert config.read_text() == f"[Service]\nSlice={name}\n"
     assert config.stat().st_uid == 0 and config.stat().st_mode & 0o777 == 0o644
 PY
 snapshot > "$work/before"
@@ -112,7 +111,6 @@ touch /var/lib/vws-install/pending
 : > "$INSTALL_STATE/systemctl"
 bash "$root/scripts/vws" "${args[@]}" > "$work/restart.out" 2> "$work/restart.err"
 grep -q '^restart vws-etcd$' "$INSTALL_STATE/systemctl"
-grep -q '^restart vws-region$' "$INSTALL_STATE/systemctl"
 test ! -f /var/lib/vws-install/pending
 touch /var/lib/vws-install-fail
 : > "$INSTALL_STATE/systemctl"
@@ -120,20 +118,17 @@ rc=0
 bash "$root/scripts/vws" "${args[@]}" > "$work/fail.out" 2> "$work/fail.err" || rc=$?
 test "$rc" -eq 1
 grep -q 'lab-1: etcd readiness failed' "$work/fail.err"
-test ! -f "$INSTALL_STATE/is-enabled-keepalived"
-if grep -q '^enable --now keepalived$' "$INSTALL_STATE/systemctl"; then exit 1; fi
 rm /var/lib/vws-install-fail
 bash "$root/scripts/vws" "${args[@]}" > "$work/recovery.out" 2> "$work/recovery.err"
-test -f "$INSTALL_STATE/is-enabled-keepalived"
 python3 - "$work" <<'PY'
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])
 paths = list(root.glob("*.out")) + list(root.glob("*.err")) + [root / "state/argv",
         root / "hosts.yaml", root / "global.yaml"]
-paths += [p for directory in (Path("/etc/vws"), Path("/etc/keepalived"), Path("/usr/lib/vws"))
+paths += [p for directory in (Path("/etc/vws"), Path("/usr/lib/vws"))
           for p in directory.rglob("*") if p.is_file()
-          and "/credentials/" not in str(p) and p.name != "region.key"]
+          and "/credentials/" not in str(p)]
 content = b"\n".join(p.read_bytes() for p in paths)
 for p in (root / "credentials").rglob("*"):
     if p.is_file() and p.name not in ("etcd-ca.pem", "api-etcd.pem", "internal-ca.pem",
@@ -147,6 +142,6 @@ for p in [credentials, *credentials.rglob("*")]:
 for p in Path("/etc/vws").iterdir():
     if p.is_file():
         assert p.stat().st_uid == 0 and p.stat().st_gid == 0
-        assert p.stat().st_mode & 0o777 == (0o600 if p.name == "region.key" else 0o644), p
+        assert p.stat().st_mode & 0o777 == 0o644, p
 PY
 echo "install, unchanged rerun, readiness failure, recovery and secret isolation passed"
