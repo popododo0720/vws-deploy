@@ -1,6 +1,6 @@
 # Direct AWS access during a VWS outage
 
-Use this procedure when VWS IAM, the global API, its VIP or etcd is unavailable
+Use this procedure when VWS IAM, the global API or etcd is unavailable
 and an approved incident requires access to AWS resources. Direct AWS access
 uses AWS identities, authorization and endpoints. VWS-issued keys, VWS sessions
 and the proxy's source identity are not emergency credentials. This procedure
@@ -13,7 +13,7 @@ does not restore Proxmox access or VWS availability.
   incident plan needs. Require MFA and a short session; keep the source identity,
   MFA device and recovery instructions outside VWS and its hosts.
 - Keep an approved operator workstation and a network path to AWS DNS, STS and
-  the needed service endpoints that do not depend on the VWS VIP or proxy.
+  the needed service endpoints that do not depend on the VWS global host or proxy.
   Keep the AWS CLI installed there. The examples below use the commercial AWS
   partition and `us-east-1`; use the correct partition, region and endpoints
   from the account's incident plan.

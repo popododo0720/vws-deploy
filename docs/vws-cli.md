@@ -54,20 +54,23 @@ It never reaches a cluster or the external network. Admin commands use a loopbac
 ### vws install
 
 `vws install --profile lab --inventory hosts.yaml --packages DIR --credentials DIR`
-installs one lab host over SSH, by the roles of that host. Requires python3 with
-PyYAML, ssh and dpkg-deb locally, and root access (or passwordless sudo), apt-get
-and systemctl on the Debian target. This command does not build packages or
+installs the hosts of a lab inventory over SSH, by the roles of each host. Requires python3 with
+PyYAML, ssh, openssl and dpkg-deb locally, and root access (or passwordless sudo), apt-get
+and systemctl on each Debian target. This command does not build packages or
 download releases (`packaging/build.sh VERSION` builds them). `small` and `ha`
 remain vws-deploy#776. The runbook is `docs/operator/vm-install.md`.
 
 | `roles` | Host | Installs | Starts |
 | --- | --- | --- | --- |
-| `[etcd, global]` | a Debian VM or bare-metal machine | `vws-etcd_*.deb`, `vws-global_*.deb` | `vws-etcd`, its snapshot and defrag timers, `vws-iam`, `vws-aws-proxy`, `vws-console-api`, `vws-console` |
+| `[etcd, global]` | the global host: a Debian VM or bare-metal machine | `vws-etcd_*.deb`, `vws-global_*.deb` | `vws-etcd`, its snapshot and defrag timers, `vws-iam`, `vws-aws-proxy`, `vws-console-api`, `vws-console` |
+| `[etcd, global, region]` | the global host that also runs region instances | the above and `vws-region_*.deb` | the above and one `vws-region@<region>` per entry of `regions` |
+| `[region]` | a separate Debian host, in or outside the Proxmox cluster, never a Proxmox node | `vws-region_*.deb` | one `vws-region@<region>` per entry of `regions` |
 
-No other role list is accepted. The `region` role and `vip` of the per-node
-layout are refused: `vws install` installs no `vws-region`, region file or
-keepalived (vws-deploy#849); region instances come with vws-deploy#850. Supply
-exactly one `.deb` of each package the roles need.
+An inventory has exactly one global host (`[etcd, global]`, with or without `region`) and any number
+of `[region]` hosts. No other role list is accepted. The role `region` and the `regions` list go
+together: a host has both or neither. The keys `vip` and `keepalived` do not exist; an inventory with
+them is refused as an unknown key, like any other key this page does not list. Supply exactly one
+`.deb` of each package the roles need.
 
 ```yaml
 # The global layer on a VM or bare metal.
@@ -76,19 +79,29 @@ hosts:
   - name: global-1
     address: 192.0.2.1
     ssh_user: root
-    roles: [etcd, global]
+    roles: [etcd, global, region]
+    regions:                      # one instance per Proxmox cluster
+      - name: pve-seoul-1
+        port: 8443                # mTLS API; ops_port (health, loopback) defaults to port + 1000
+  - name: region-1                # optional: a separate host for another cluster
+    address: 192.0.2.20
+    roles: [region]
+    regions:
+      - name: pve-busan-1
+        port: 8443
 memory_mib:
   global: 1024
   region: 512
   etcd: 512
 ```
 
-The optional `memory_mib` mapping defaults to the values above (the `region` budget is accepted but unused until #850). All three
+The optional `memory_mib` mapping defaults to the values above. All three
 values must be positive whole MiB, totaling at most 2048 MiB; an over-budget
 inventory exits 2 before SSH. Installation requires the target's cgroup v2
 memory controller. It places the four global services together in
-`vws-lab-global.slice`, and etcd
-with its snapshot/defrag services in `vws-lab-etcd.slice`. Each slice gets
+`vws-lab-global.slice`, etcd
+with its snapshot/defrag services in `vws-lab-etcd.slice`, and the region instances of a host together in
+`vws-lab-region.slice`. Each slice gets
 `MemoryAccounting=yes`, its budget as `MemoryMax`, and `MemorySwapMax=0`.
 These are aggregate group limits, including service children, so the global
 processes cannot each consume the full global budget. Drop-ins live under
@@ -105,7 +118,17 @@ fits. Reaching a limit can cause a cgroup OOM and service restart. Check
 live box after phase 1. Keep VM admission's `host_reserve_mib: 2048` setting
 consistent with the host's measured overhead.
 
-The inventory accepts only the documented keys and one IPv4 host. Unknown, duplicate and secret-looking keys are refused.
+The inventory accepts only the documented keys and IPv4 hosts. Unknown, duplicate and secret-looking keys are refused.
+
+Region instances (`regions`, one entry per Proxmox cluster) are checked before any SSH call:
+
+- `name` is the region name and the instance name: `pve-<name>-<number>`, at most 63 characters, unique in
+  the whole inventory.
+- `port` is the mTLS API port and `ops_port` the loopback health and metrics port (default `port` + 1000);
+  both are 1024 to 65535. Within one host no two instances share a port, an instance's two ports differ,
+  and on the global host they avoid the ports of its own services (2379, 2380, 3000, 8080 to 8084, 9095,
+  9096). Two hosts may use the same port.
+- Each host with instances needs `vws-region_*.deb`.
 
 Inputs by role, all checked before SSH:
 
@@ -135,8 +158,19 @@ Inputs by role, all checked before SSH:
   retained CA), deleting files does not help and the rerun exits 2: reissue the member pair under the
   same CA with the new address and 127.0.0.1, then replace `member.crt` and `member.key`, keeping the
   separate client credentials. With TLS under your own CA, do the same with that CA.
-- `region`: not read. Region instances take their key and certificates from `/etc/vws-region/<region>/`
-  (`packaging/vws-region/README.md`); installing them with this command is vws-deploy#850.
+- `region`: for each instance, the command writes `/etc/vws-region/<region>.env` (`VWS_REGION_ADDR=:<port>`
+  and `VWS_REGION_OPS_ADDR=127.0.0.1:<ops_port>`, no secret), `/etc/vws-region/<region>/region.yaml`,
+  `region.crt`, `region.key` (0600) and `global-ca.pem` (a copy of `internal-ca.pem`, the CA of the client
+  certificate of `vws-console-api`). The configuration is `regions/<region>.yaml` beside the inventory when it
+  exists, else the packaged example (`packaging/vws-region/region.yaml`); it must be one YAML mapping of at most
+  64 KiB and not a symlink. The key and certificate are `regions/<region>/region.key` and `region.crt` in the
+  credentials directory. When that directory is absent the command issues the pair from the retained
+  `internal-tls/` CA: EC P-256, 825 days, serverAuth only, with the host address, 127.0.0.1 and the region
+  name as subject alternative names. A pair you supply must chain to `internal-ca.pem`, be one key pair
+  and name the host address, 127.0.0.1 and the region name; otherwise the command exits 2 before SSH. If no
+  CA key is retained (you supplied the internal TLS set) and the pair is missing, it exits 2 as well. When
+  the host address changes, delete `regions/<region>/` and run again to reissue from the same CA. A
+  retained file is never rewritten.
 
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
 credential sources are refused. Private files go to root-owned 0600 files in
@@ -145,7 +179,14 @@ certificates and `global.yaml` go to `/etc/vws` (0644). Package,
 credential and config contents travel only on SSH stdin.
 
 Installation starts etcd, then the global units, and runs each shipped readiness
-helper; the etcd probe is repeated for up to 30 seconds after the start. A
+helper; the etcd probe is repeated for up to 30 seconds after the start. It then starts each region
+instance and waits up to 30 seconds for its answer. An instance with no state file in
+`/var/lib/vws-region/<region>/` whose `/readyz` says `unregistered` is reported as
+`vws-region@<region> registration unregistered`: that is the expected end of one install run, and the next
+step is `vws region add` (docs/operator/regions.md). An instance that has a state file must pass
+`check-region-ready`. An instance that does not answer fails the run with exit 1. Only an instance whose own
+files or memory drop-in changed is restarted, and every instance after an interrupted run or a package change.
+The command never removes an instance that you take out of the inventory. A
 failed check exits 1 naming the host and check. A rerun compares
 file bytes, ownership, permissions and package versions, restarts changed
 services, and preserves unchanged files. It also reruns readiness, so retrying

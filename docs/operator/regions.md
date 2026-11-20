@@ -9,7 +9,7 @@ The order is:
 
 1. Write the bootstrap `/etc/vws/global.yaml` on the global layer.
 2. Create the read-only Proxmox user and token.
-3. Run one region daemon instance for the cluster.
+3. Install one region daemon instance for the cluster (`vws install`).
 4. Register the region (console or CLI) and test the connection.
 5. Create the AWS role with an ExternalId and register the AWS account.
 
@@ -138,27 +138,52 @@ on the Edit page).
 
 ## Step 3: the region daemon instance
 
-One `vws-region@<region>` instance serves one Proxmox cluster. It does not run
-on a Proxmox node and needs no `/etc/pve`; it needs to reach the cluster's port
-8006, and the global host needs to reach the instance's port. Install the
-`vws-region` package on the host you chose, then for each cluster put the
-instance files in place and start it, for example for `pve-seoul-1`:
+One `vws-region@<region>` instance serves one Proxmox cluster and is the only process that talks to it. It
+does not run on a Proxmox node and needs no `/etc/pve`; it must reach the cluster's port 8006, and the
+global host must reach the instance's port. You declare the instance in the `regions:` list of the
+`vws install` inventory and run the command once; the inventory example, the files and the certificate are
+in [vm-install.md](vm-install.md#4-the-region-layer).
 
-```
-/etc/vws-region/pve-seoul-1.env           listen address, ops address
-/etc/vws-region/pve-seoul-1/region.yaml   pools, storages, bridges
-/etc/vws-region/pve-seoul-1/region.crt    server certificate
-/etc/vws-region/pve-seoul-1/region.key    its private key
-/etc/vws-region/pve-seoul-1/global-ca.pem CA of the global client certificate
-systemctl enable --now vws-region@pve-seoul-1
+```yaml
+hosts:
+  - name: global-1
+    address: 192.0.2.1
+    roles: [etcd, global, region]
+    regions:
+      - name: pve-seoul-1
+        port: 8443
 ```
 
-Two instances on one host need different ports in their `.env` files. The
-instance keeps its state in `/var/lib/vws-region/pve-seoul-1`. The region
-endpoint you register in step 4 is the instance's address, and its TLS
-certificate must cover that address or name. The package's README lists
-the files and the readiness probe. The install command and the full runbook for
-this flow are vws-deploy#850.
+```sh
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build --credentials credentials
+```
+
+The run ends with `global-1 vws-region@pve-seoul-1 registration unregistered`. The instance is running and
+has no registration yet, which is correct. Go on with step 4; there is no second install run. The instance keeps
+its state in `/var/lib/vws-region/pve-seoul-1`, and the region endpoint you register is `https://<address>:8443`
+(or `https://127.0.0.1:8443` when the instance is on the global host). The package's README lists the files
+and the readiness probe.
+
+### Where the instance runs
+
+The instance needs two things: to reach the cluster's nodes on port 8006, and to be reachable from the global
+host on its port. The global layer's client certificate and the instance's server certificate both come from the internal CA.
+There are three placements, and every one uses the same package.
+
+| Placement | Inventory | When |
+| --- | --- | --- |
+| The global host (default) | the global host gets `region` and a `regions` entry | The cluster is on the network of the global host. No extra machine. Several clusters mean several entries with different ports. |
+| A separate host | a host with `roles: [region]` | The cluster is remote, or you want the PVE token off the global host. A Debian 12 machine outside the cluster, or a VM inside it. |
+| A VM inside the managed cluster | the same `[region]` host | You want PVE HA to restart it on another node when its node dies. Keep that VM out of every pool VWS manages, or VWS can stop its own daemon. |
+
+Not supported: two instances for one cluster, and an instance on a Proxmox node.
+
+On the `ha` profile (two global hosts; `vws install` does not automate it yet, vws-deploy#776) run the
+instance of a cluster on one global host only, or on a separate host or VM. Two global hosts both running it
+would be two writers to one cluster.
+
+If the instance is down, only that region's API stops. VMs keep running, because VWS does not host them.
+The unit restarts on failure and reads its state file, so it needs no registration again.
 
 ## Step 4: register the region
 
@@ -168,7 +193,7 @@ The same region, `pve-seoul-1`, registered both ways. The values are examples.
 | --- | --- | --- |
 | name | Region name | `NAME` argument |
 | clusterName | Cluster name | `--cluster-name` |
-| pveApiUrls | Proxmox API URLs | `--pve-api-url`, repeated once per node |
+| pveApiUrls | Proxmox API URLs | `--pve-api-url`, repeated, one per address you want tried (1 to 16) |
 | regionEndpoint | Region endpoint | `--region-endpoint` |
 | caPem | CA certificate | `--ca-pem-file` |
 | tokenId | API token ID | `--token-id` |
@@ -182,8 +207,9 @@ match what Proxmox returns from `/cluster/status`.
 
 1. Open **Regions** (`/admin/regions`) and choose **Register region**.
 2. Fill in Region settings: Region name `pve-seoul-1`, Cluster name `seoul`,
-   Proxmox API URL `https://pve1.example.org:8006`, Region endpoint
-   `https://10.1.0.10:8443`, and the CA certificate.
+   Proxmox API URL `https://pve1.example.org:8006` (add a field for each other node of the cluster; one
+   address is enough for a load balancer you run in front of it), Region endpoint
+   `https://127.0.0.1:8443`, and the CA certificate.
 3. Under API token, set API token ID `vws@pve!inventory` and paste the token
    value into API token secret.
 4. Add an Availability Zone: Zone letter `a`, Nodes `pve1,pve2,pve3`.
@@ -202,7 +228,7 @@ scripts/vws region add pve-seoul-1 --cluster-name seoul \
   --pve-api-url https://pve1.example.org:8006 \
   --pve-api-url https://pve2.example.org:8006 \
   --token-id 'vws@pve!inventory' \
-  --region-endpoint https://10.1.0.10:8443 \
+  --region-endpoint https://127.0.0.1:8443 \
   --ca-pem-file ~/vws/pve-ca.pem \
   --zones '[{"letter":"a","nodes":["pve1","pve2","pve3"]}]' \
   --token-secret-file ~/vws/pve-token
@@ -247,6 +273,50 @@ Without `--token-secret-file`, the four Proxmox steps are `SKIPPED` with
 "tokenSecret is needed; only the region daemon stores it", and only
 `regionapi` runs. The global layer doesn't keep the token secret, so it can
 only test Proxmox with a secret you supply for that one call.
+
+## Move or recreate the daemon
+
+The PVE token secret lives only in the state file of the instance, and the global layer keeps only its
+fingerprint. So the old host keeps a working secret until you delete the token in PVE. Whether `vws region
+remove` or a changed `--region-endpoint` also asks the old instance to forget its registration depends on
+the vws-console-api release; do not rely on it. Do every step below.
+
+### Move the daemon
+
+Move an instance to another host, for example from the global host to a separate host, keeping its region
+name.
+
+1. In the inventory, take the entry out of the old host's `regions` and add it, with a port, to the new host
+   (a `[region]` host). Delete `regions/<region>/` in the credentials directory so the certificate is
+   reissued for the new address; `vws install` refuses the old one and tells you to.
+2. Create a new token for the cluster in PVE (step 2, with the permissions your region needs) and save it to
+   a file. Do not reuse the old token ID.
+3. Run `vws install` again. The new instance reports `registration unregistered`.
+4. Register the new endpoint and the new token:
+   `scripts/vws region edit <region> --region-endpoint https://<new-address>:8443 --token-id '<new id>'
+   --token-secret-file <file>`, then `scripts/vws region test <region> --token-secret-file <file>` and
+   `scripts/vws region health <region>`.
+5. Stop the old instance and delete what it holds: `systemctl disable --now vws-region@<region>`, then
+   remove `/etc/vws-region/<region>.env`, `/etc/vws-region/<region>/` and `/var/lib/vws-region/<region>`
+   on the old host. `vws install` never removes an instance for you.
+6. Delete the old token in PVE (Datacenter, Permissions, API Tokens, or `pveum user token remove
+   vws@pve <old token name>`). Do this last, and do it even if the old host is gone or you cannot reach it:
+   the old host still holds the secret and would otherwise keep working.
+
+Keep the region name: the registry and the project mappings refer to it.
+
+### Recreate the daemon
+
+Recreate an instance when its host or its state directory is lost, or you rebuild it from scratch. Its state
+file is gone, so it is a new, unregistered instance and the global layer has no secret to send it.
+
+1. Create a new token in PVE (step 2) and delete the old one at once if the old host may still run.
+2. If the host is new, change the address in the inventory and delete `regions/<region>/` as in the move.
+3. Run `vws install`. The instance reports `registration unregistered`.
+4. Register again with the new token: `scripts/vws region edit <region> --token-id '<id>'
+   --token-secret-file <file>`, and run `vws region test` and `vws region health`.
+
+The VMs of the region are not touched: they live in the cluster, not in the daemon.
 
 ## Step 5: the AWS account
 
