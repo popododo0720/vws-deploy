@@ -270,6 +270,55 @@ class Install(unittest.TestCase):
         self.assertEqual(result.stderr, "vws: required regular file: member.key\n")
         self.assertEqual(self.secrets(source), before)
 
+    def test_replaced_key_is_not_completed_from_retained_state(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        # The operator replaces the key and the cert is absent: the old state must not make a new cert.
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        (source / "iam.pem").unlink()
+        before = self.secrets(source)
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: iam-key.pem differs from internal-tls/; replace the whole "
+                         "internal-tls set or delete its files and internal-tls/\n")
+        self.assertEqual(self.secrets(source), before)
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+
+    def test_certificate_and_key_must_be_one_pair(self):
+        source = self.work / "credentials"
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: iam.pem and iam-key.pem are not one key pair\n")
+
+    def test_new_inventory_address_needs_a_member_certificate_for_it(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        ca = (source / "ca.crt").read_bytes()
+        calls = (self.work / "state/argv").read_text()
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. To reissue it from the same CA, "
+                         "delete member.crt, member.key and etcd-tls/lab-1/, then run again\n")
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+        # The documented fix keeps the CA and names the new address and loopback.
+        for name in ("member.crt", "member.key"):
+            (source / name).unlink()
+        shutil.rmtree(source / "etcd-tls/lab-1")
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((source / "ca.crt").read_bytes(), ca)
+        for address in ("192.0.2.9", "127.0.0.1"):
+            subprocess.run(["openssl", "verify", "-CAfile", source / "ca.crt", "-verify_ip", address,
+                            source / "member.crt"], check=True, capture_output=True)
+
     def test_generation_without_openssl_is_refused(self):
         self.remove_generated()
         (self.work / "bin/openssl").write_text("#!/bin/sh\nexit 1\n")

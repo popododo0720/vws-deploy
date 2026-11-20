@@ -57,6 +57,10 @@ TLS = (
         "internal-ca.pem": "ca.crt", "iam.pem": "{}/member.crt", "iam-key.pem": "{}/member.key",
         "api-mtls.pem": "client/client.crt", "api-mtls-key.pem": "client/client.key"}),
 )
+# Certificate and key that must be one pair.
+PAIRS = (("member.crt", "member.key"), ("client.crt", "client.key"), ("api-etcd.pem", "api-etcd-key.pem"),
+         ("iam-etcd.pem", "iam-etcd-key.pem"), ("iam.pem", "iam-key.pem"),
+         ("api-mtls.pem", "api-mtls-key.pem"))
 PENDING = "/var/lib/vws-install/pending"
 DIRTY = ("test ! -L /var/lib/vws-install; install -d -m 700 -o root -g root /var/lib/vws-install; "
          "test ! -L " + PENDING + "; touch " + PENDING)
@@ -162,13 +166,39 @@ def generate(source, host, roles):
         (staged / "k1").write_bytes(key())
         staged.rename(source / "iam-kek")
     for state, members, names in TLS:
-        # A set is generated whole or resumed from its state directory, never mixed into supplied files.
-        if all(absent(name) for name in names) or (source / state / "ca.key").is_file():
-            members = members or host["name"] + "=" + host["address"]
+        members = members or host["name"] + "=" + host["address"]
+        member = members.split("=")[0]
+        kept = source / state / "ca.key"
+        present = [name for name in names if not absent(name)]
+        if not present or (kept.is_file() and len(present) < len(names)):
+            # Resume from the state directory only when every file already there is that state's own.
+            for name in present:
+                theirs = source / state / names[name].format(member)
+                if theirs.is_file() and read_file(source / name) != theirs.read_bytes():
+                    raise Invalid(name + " differs from " + state + "/; replace the whole " + state
+                                  + " set or delete its files and " + state + "/")
             if local(["bash", str(PACKAGING / "vws-etcd/vws-etcd-tls"), str(source / state), members]).returncode:
                 raise Invalid("cannot generate " + state + "; openssl and flock are required")
             for name, path in names.items():
-                put(name, (source / state / path.format(members.split("=")[0])).read_bytes())
+                put(name, (source / state / path.format(member)).read_bytes())
+    for cert, private in PAIRS:
+        if not absent(cert) and not absent(private):
+            if public(["x509", "-noout", "-pubkey", "-in"], source / cert) != public(["pkey", "-pubout", "-in"], source / private):
+                raise Invalid(cert + " and " + private + " are not one key pair")
+    certificate = source / "member.crt"
+    if certificate.is_file():
+        for address in (host["address"], "127.0.0.1"):
+            shown = local(["openssl", "x509", "-noout", "-checkip", address, "-in", str(certificate)])
+            if shown.returncode or b"does match" not in shown.stdout or b"NOT" in shown.stdout:
+                raise Invalid("member.crt does not name " + address + ". To reissue it from the same CA, delete "
+                              "member.crt, member.key and etcd-tls/" + host["name"] + "/, then run again")
+
+
+def public(command, path):
+    result = local(["openssl", *command, str(path)])
+    if result.returncode or not result.stdout:
+        raise Invalid("cannot read " + path.name + " with openssl")
+    return result.stdout
 
 
 def inputs(args):
