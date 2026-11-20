@@ -53,15 +53,20 @@ Limits of the generated set:
 
 - vws-iam and console-api share one etcd client certificate. Supply `api-etcd*.pem` and
   `iam-etcd*.pem` yourself to separate them.
-- Leaf certificates last 825 days and the CAs 10 years. To rotate, delete the leaf files and their
-  directory under `etcd-tls/` or `internal-tls/`, then run `vws install` again.
-- A set you supply in part is not completed; the missing file is reported instead. A replaced file
-  that differs from the kept `etcd-tls/` or `internal-tls/` state, and a certificate whose key does
-  not match, are refused before any SSH call.
+- Leaf certificates last 825 days and the CAs 10 years. For an install with retained generated state
+  (the CA key in `etcd-tls/` or `internal-tls/`), rotate by deleting the leaf files and their directory
+  under that state directory, then run `vws install` again. For TLS you supply, reissue the leaves under
+  your own CA and replace each certificate and key together.
+- A set you supply in part is not completed; the missing file is reported instead. Every file that is
+  present must equal the kept `etcd-tls/` or `internal-tls/` file of the same name, and a certificate whose
+  key does not match is refused; both exit 2 before any SSH call.
 - If the host address in `hosts.yaml` changes, the member certificate no longer names it and the
-  command refuses to continue. To reissue it from the same CA, delete `member.crt`, `member.key` and
+  command refuses to continue. With retained generated state (`etcd-tls/ca.key` and a `ca.crt` equal to
+  `etcd-tls/ca.crt`), reissue it from the same CA: delete `member.crt`, `member.key` and
   `etcd-tls/<name>/` in the credentials directory, then run `vws install` again. The CA, the client
-  certificates and every other key stay as they are.
+  certificates and every other key stay as they are. With a set you supply, deleting files does not help:
+  reissue the member certificate under your own CA with the new address and `127.0.0.1` in its subject
+  alternative names, then replace `member.crt` and `member.key` together.
 
 ## 3. Install the global host
 

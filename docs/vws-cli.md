@@ -144,14 +144,17 @@ Inputs by role, all checked before SSH:
   keeps each CA key in `etcd-tls/` or `internal-tls/` in that directory. A set
   with only some files present is not completed with generated files; the
   missing file exits 2. The command resumes generation from the kept state only
-  when every file already present equals the state's own, and it exits 2 before
-  SSH when a certificate and its key are not one pair or a replaced file differs
-  from the state. The etcd member certificate names the host address and
-  127.0.0.1, because `vws-iam` and `vws-console-api` use
+  when every file already present has a byte-identical counterpart in the state,
+  and it exits 2 before SSH when a present file has none or differs, or when a
+  certificate and its key are not one pair. The etcd member certificate names
+  the host address and 127.0.0.1, because `vws-iam` and `vws-console-api` use
   `https://127.0.0.1:2379`. When the inventory address changes, the old member
-  certificate no longer covers it and the command exits 2 before SSH. To reissue
-  it from the same CA, delete `member.crt`, `member.key` and
+  certificate no longer covers it and the command exits 2 before SSH. With
+  retained generated state (`etcd-tls/` with its CA key and the same `ca.crt`),
+  reissue it from the same CA: delete `member.crt`, `member.key` and
   `etcd-tls/<name>/` in the credentials directory and run the command again.
+  With TLS you supply, reissue the member certificate under your own CA with the
+  new address and 127.0.0.1, then replace `member.crt` and `member.key` together.
 - `region`: `region-kek` and `region.key`, always yours to supply as before
   (`packaging/vws-region/vws-region.service`).
 
