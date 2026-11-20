@@ -75,12 +75,12 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
             apt-get update
-            apt-get install -y --no-install-recommends git python3 lintian shellcheck sudo curl
+            apt-get install -y --no-install-recommends git python3 lintian shellcheck curl
             packaging/vws-region/test.sh
             mkdir -p build
             printf "#!/bin/sh\nexit 0\n" > build/region-stub
             chmod +x build/region-stub
-            packaging/vws-region/build.sh 0.0.0-1 build/region-stub build/region-stub build
+            packaging/vws-region/build.sh 0.0.0-1 build/region-stub build
             packaging/vws-region/test-install.sh /src/build/vws-region_0.0.0-1_amd64.deb
           '
 
