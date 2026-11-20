@@ -3,7 +3,7 @@ set -eu
 case "$1" in
     remove|deconfigure)
         if [ -d /run/systemd/system ]; then
-            deb-systemd-invoke stop vws-region.service
+            systemctl stop 'vws-region@*.service'
         fi
         ;;
 esac

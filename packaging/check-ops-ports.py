@@ -27,7 +27,7 @@ def check(packaging):
     region = packaging / "vws-region"
     global_ = packaging / "vws-global"
     listeners = {
-        "region": flag((region / "vws-region.service").read_text(), "-ops-addr"),
+        "region": one(r"^VWS_REGION_OPS_ADDR=(\S+)$", (region / "region.env").read_text()),
     }
     config = (global_ / "global.yaml").read_text()
     block = one(r"^listeners:\n((?:[ \t]+[^\n]*\n)+)", config)
@@ -44,9 +44,7 @@ def check(packaging):
     proxy = (global_ / "vws-aws-proxy.service").read_text()
     listeners["proxy"] = "unix:" + flag(proxy, "-socket")
 
-    probes = {
-        "region": address(one(r"http://[^\s;]+", (region / "check-ready").read_text())),
-    }
+    probes = {}
     text = (global_ / "check-ready").read_text()
     cases = re.findall(r"^\s+(\w+)\)\s*(.*?);;", text, re.MULTILINE | re.DOTALL)
     for name, body in cases:
@@ -54,8 +52,10 @@ def check(packaging):
         socket = re.findall(r"socket=(\S+)", body)
         probes["api.ops" if name == "api" else name] = (
             "unix:" + socket[0] if socket else address(url))
-    if set(probes) != {"region", "api.ops", "iam", "console", "proxy"}:
+    if set(probes) != {"api.ops", "iam", "console", "proxy"}:
         raise ValueError(f"unexpected readiness services: {sorted(probes)}")
+    # A region instance reads its ops address from its own env file at run time, so only the
+    # shipped example is checked: it must not take a global listener's address.
     for name, probe in probes.items():
         if listeners[name] != probe:
             raise ValueError(f"{name}: listener {listeners[name]} != readiness {probe}")
