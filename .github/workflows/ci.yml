@@ -17,12 +17,22 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
             apt-get update
-            apt-get install -y --no-install-recommends python3 python3-yaml
+            apt-get install -y --no-install-recommends python3 python3-yaml openssl
             mkdir -p build/tmp
             export TMPDIR=/src/build/tmp
             bash tests/vws/install.test.sh
             bash tests/vws/install-container.sh
           '
+
+  # Real etcd with the certificates vws install generates, reached over the etcd URL of the packaged units.
+  etcd-real:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run the etcd suite on the pinned etcd
+        run: |
+          scripts/install-tools.sh
+          PATH="/tmp/bin:$PATH" bash tests/vws/etcd.test.sh
 
   etcd-package:
     runs-on: ubuntu-latest

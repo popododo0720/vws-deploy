@@ -4,6 +4,8 @@
 # member: the ha profile has three (two global VMs and a witness, which may be a PVE node), the lab and
 # small profiles one. Every listener is https and both the client and the peer port require a
 # certificate from the cluster CA (vws-etcd-tls); the peer port also requires CN vws-etcd-member.
+# The client port listens on the member address and on 127.0.0.1: vws-iam and vws-console-api on the
+# same host use https://127.0.0.1:2379 (packaging/vws-global), and the member certificate names both.
 # The TLS files are read from VWS_ETCD_TLS_DIR (default: the systemd credentials directory of
 # vws-etcd.service). VWS_ETCD_DATA_DIR, VWS_ETCD_CLIENT_PORT and VWS_ETCD_PEER_PORT override the
 # defaults /var/lib/vws-etcd, 2379 and 2380; a PEERPORT in the list overrides the peer port of that member.
@@ -28,11 +30,13 @@ for i in "${!vws_etcd_names[@]}"; do
 done
 [[ -n $ip ]] || vws_etcd_die "${self} is not in the member list"
 [[ $peer != *":${cport}" ]] || vws_etcd_die "the client and peer port are the same (${cport})"
+listen="https://${ip}:${cport}"
+[[ $ip == 127.0.0.1 ]] || listen+=",https://127.0.0.1:${cport}"
 
 cat <<EOF
 name: ${self}
 data-dir: ${data}
-listen-client-urls: https://${ip}:${cport}
+listen-client-urls: ${listen}
 advertise-client-urls: https://${ip}:${cport}
 listen-peer-urls: ${peer}
 initial-advertise-peer-urls: ${peer}

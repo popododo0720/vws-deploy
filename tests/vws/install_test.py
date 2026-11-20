@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import base64
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -52,6 +54,12 @@ elif "echo changed" in c:
 """
 
 
+# Names vws install creates when the credentials directory lacks them.
+GENERATED = ("admin-kek ca.crt member.crt member.key client.crt client.key etcd-ca.pem "
+             "api-etcd.pem api-etcd-key.pem iam-etcd.pem iam-etcd-key.pem internal-ca.pem iam.pem "
+             "iam-key.pem api-mtls.pem api-mtls-key.pem").split()
+
+
 class Install(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR", ROOT))
@@ -96,6 +104,13 @@ class Install(unittest.TestCase):
                     good.replace("name: lab-1", "name: '-oProxyCommand=bad'"),
                     good.replace("address: 192.0.2.1", "address: 192.0.2.1;bad"),
                     good.replace("roles: [etcd, global, region]", "roles: [etcd]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [region]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [global]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [etcd, region]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [etcd, global]"),
+                    good.replace("roles: [etcd, global, region]", "roles: [region, region]"),
+                    good.replace("vip:\n  address: 192.0.2.10/24\n", ""),
+                    good.replace("192.0.2.10/24", "192.0.2.10/33"),
                     good + "password: hidden\n", good + "---\nprofile: lab\n",
                     good.replace("roles: [etcd, global, region]", "roles: [{secret: hidden}]"),
                     "profile: lab\nhosts: &loop [*loop]\n",
@@ -185,9 +200,256 @@ class Install(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_credential(self):
-        (self.work / "credentials/admin-kek").unlink()
+        (self.work / "credentials/console-token").unlink()
         result = self.refused()
-        self.assertEqual(result.stderr, "vws: required regular file: admin-kek\n")
+        self.assertEqual(result.stderr, "vws: required regular file: console-token\n")
+
+    def remove_generated(self):
+        source = self.work / "credentials"
+        for name in GENERATED:
+            (source / name).unlink(missing_ok=True)
+        shutil.rmtree(source / "iam-kek")
+        return source
+
+    def secrets(self, source):
+        return {str(p.relative_to(source)): (p.read_bytes(), p.stat().st_mode & 0o777)
+                for p in source.rglob("*") if p.is_file()}
+
+    def test_first_install_generates_missing_secrets_once(self):
+        source = self.remove_generated()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.secrets(source)
+        for name in ("admin-kek", "iam-kek/k1"):
+            self.assertEqual(len(base64.b64decode(first[name][0], validate=False)), 32, name)
+        self.assertEqual(first["iam-kek/active"][0], b"k1\n")
+        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region-kek",
+                    "region.key"}
+        self.assertEqual({name for name, (_, mode) in first.items() if mode != 0o600}, supplied)
+        for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1, IP Address:127.0.0.1, DNS:lab-1"),
+                              ("etcd-ca.pem", "api-etcd.pem", ""), ("etcd-ca.pem", "iam-etcd.pem", ""),
+                              ("internal-ca.pem", "iam.pem", "IP Address:127.0.0.1, DNS:iam"),
+                              ("internal-ca.pem", "api-mtls.pem", "")):
+            subprocess.run(["openssl", "verify", "-CAfile", source / ca, source / leaf],
+                           check=True, capture_output=True)
+            shown = subprocess.run(["openssl", "x509", "-in", source / leaf, "-noout", "-ext",
+                                    "subjectAltName"], capture_output=True, text=True).stdout
+            self.assertIn(san, shown, leaf)
+        self.assertNotEqual(first["ca.crt"][0], first["internal-ca.pem"][0])
+        # The CA keys stay on the operator host; the generated KEK reaches the target on stdin only.
+        payload = (self.work / "state/payload").read_bytes()
+        self.assertIn(first["admin-kek"][0], payload)
+        for state in ("etcd-tls", "internal-tls"):
+            self.assertNotIn(first[state + "/ca.key"][0], payload)
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
+        self.assertEqual(self.secrets(source), first)
+        output = (result.stdout + result.stderr + again.stdout + again.stderr
+                  + (self.work / "state/argv").read_text())
+        self.assertNotIn(first["admin-kek"][0].decode().strip(), output)
+
+    def test_interrupted_generation_resumes_without_new_keys(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        first = self.secrets(source)
+        # Power loss between two links: the state directory is complete, some names are not linked yet.
+        for name in ("api-etcd.pem", "iam-key.pem", "admin-kek"):
+            (source / name).unlink()
+        self.assertEqual(self.run_install().returncode, 0)
+        after = self.secrets(source)
+        self.assertNotEqual(after.pop("admin-kek"), first.pop("admin-kek"))
+        self.assertEqual(after, first)
+
+    def test_supplied_tls_set_is_never_completed_with_generated_files(self):
+        source = self.work / "credentials"
+        (source / "member.key").unlink()
+        (source / "iam.pem").unlink()
+        before = self.secrets(source)
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: required regular file: member.key\n")
+        self.assertEqual(self.secrets(source), before)
+
+    def test_replaced_key_is_not_completed_from_retained_state(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        # The operator replaces the key and the cert is absent: the old state must not make a new cert.
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        (source / "iam.pem").unlink()
+        before = self.secrets(source)
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: iam-key.pem differs from internal-tls/; replace the whole "
+                         "internal-tls set or delete its files and internal-tls/\n")
+        self.assertEqual(self.secrets(source), before)
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+
+    def test_resume_needs_every_present_credential_in_the_retained_state(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        # The IAM leaf is gone from the retained state, the operator supplies a leaf from another CA and
+        # the client certificate is absent: nothing may be filled in around the foreign pair.
+        shutil.rmtree(source / "internal-tls/iam")
+        (source / "iam.pem").write_bytes((other / "iam/member.crt").read_bytes())
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        (source / "api-mtls.pem").unlink()
+        before = self.secrets(source)
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: iam.pem differs from internal-tls/; replace the whole "
+                         "internal-tls set or delete its files and internal-tls/\n")
+        self.assertEqual(self.secrets(source), before)
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+
+    def test_supplied_member_certificate_is_reissued_under_the_own_ca(self):
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. Reissue it under your own CA "
+                         "with 192.0.2.9 and 127.0.0.1 in its subject alternative names, then replace "
+                         "member.crt and member.key together\n")
+        self.assertNotIn("delete", result.stderr)
+
+    def test_certificate_and_key_must_be_one_pair(self):
+        source = self.work / "credentials"
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "iam=127.0.0.1"],
+                       check=True, capture_output=True)
+        (source / "iam-key.pem").write_bytes((other / "iam/member.key").read_bytes())
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: iam.pem and iam-key.pem are not one key pair\n")
+
+    def test_new_inventory_address_needs_a_member_certificate_for_it(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        ca = (source / "ca.crt").read_bytes()
+        calls = (self.work / "state/argv").read_text()
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. To reissue it from the same CA, "
+                         "delete member.crt, member.key and etcd-tls/lab-1/, then run again\n")
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+        # The documented fix keeps the CA and names the new address and loopback.
+        for name in ("member.crt", "member.key"):
+            (source / name).unlink()
+        shutil.rmtree(source / "etcd-tls/lab-1")
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((source / "ca.crt").read_bytes(), ca)
+        for address in ("192.0.2.9", "127.0.0.1"):
+            subprocess.run(["openssl", "verify", "-CAfile", source / "ca.crt", "-verify_ip", address,
+                            source / "member.crt"], check=True, capture_output=True)
+
+    def test_separate_client_certificate_is_kept_when_the_member_pair_is_reissued(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        state = source / "etcd-tls"
+        tmp = self.work / "reissue"
+        tmp.mkdir()
+
+        def issue(base, subject, extension, days="825"):
+            subprocess.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                            "-nodes", "-subj", "/CN=" + subject, "-keyout", tmp / (base + ".key"),
+                            "-out", tmp / (base + ".csr")], check=True, capture_output=True)
+            (tmp / (base + ".ext")).write_text(extension)
+            subprocess.run(["openssl", "x509", "-req", "-in", tmp / (base + ".csr"), "-CA", state / "ca.crt",
+                            "-CAkey", state / "ca.key", "-days", days, "-set_serial", "0x" + base.encode().hex(),
+                            "-extfile", tmp / (base + ".ext"), "-out", tmp / (base + ".crt")],
+                           check=True, capture_output=True)
+
+        issue("api", "console-api", "extendedKeyUsage=clientAuth\n")
+        (source / "api-etcd.pem").write_bytes((tmp / "api.crt").read_bytes())
+        (source / "api-etcd-key.pem").write_bytes((tmp / "api.key").read_bytes())
+        self.assertEqual(self.run_install().returncode, 0)
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. Deleting files will not work "
+                         "because the credentials you supplied differ from etcd-tls/. Reissue the member pair "
+                         "under the same CA with 192.0.2.9 and 127.0.0.1 in its subject alternative names, "
+                         "then replace member.crt and member.key, keeping your separate client credentials\n")
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+        # Following the message works: same CA, new pair, separate client credentials untouched.
+        issue("member", "lab-1", "extendedKeyUsage=serverAuth,clientAuth\n"
+              "subjectAltName=IP:192.0.2.9,IP:127.0.0.1,DNS:lab-1\n")
+        ca = (source / "ca.crt").read_bytes()
+        (source / "member.crt").write_bytes((tmp / "member.crt").read_bytes())
+        (source / "member.key").write_bytes((tmp / "member.key").read_bytes())
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((source / "ca.crt").read_bytes(), ca)
+        self.assertEqual((source / "api-etcd.pem").read_bytes(), (tmp / "api.crt").read_bytes())
+        subprocess.run(["openssl", "verify", "-CAfile", source / "ca.crt", "-verify_ip", "192.0.2.9",
+                        source / "member.crt"], check=True, capture_output=True)
+
+    def test_generation_without_openssl_is_refused(self):
+        self.remove_generated()
+        (self.work / "bin/openssl").write_text("#!/bin/sh\nexit 1\n")
+        (self.work / "bin/openssl").chmod(0o755)
+        result = self.refused()
+        self.assertEqual(result.stderr, "vws: cannot generate etcd-tls; openssl and flock are required\n")
+        self.assertFalse((self.work / "credentials/ca.crt").exists())
+
+    def test_installed_units_are_enabled_and_started(self):
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = (self.work / "state/argv").read_text()
+        for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
+                     "vws-aws-proxy", "vws-console-api", "vws-console", "vws-region", "keepalived"):
+            self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
+            self.assertIn(f"systemctl enable --now {unit} ", log)
+
+    def global_host(self):
+        """A Debian VM or bare-metal host: no PVE, so no region inputs and no vws-region package."""
+        path = self.work / "hosts.yaml"
+        path.write_text(path.read_text().replace("roles: [etcd, global, region]", "roles: [etcd, global]")
+                        .replace("vip:\n  address: 192.0.2.10/24\n", ""))
+        for name in ("region-kek", "region.key"):
+            (self.work / "credentials" / name).unlink()
+        next((self.work / "packages").glob("vws-region_*.deb")).unlink()
+
+    def test_global_host_gets_no_region_and_no_keepalived(self):
+        self.global_host()
+        source = self.remove_generated()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
+                     "vws-aws-proxy", "vws-console-api", "vws-console"):
+            self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
+        log = (self.work / "state/argv").read_text()
+        for absent in ("keepalived", "vws-region", "region.", "region-kek", "global-ca.pem", "registration",
+                       "check-region-ready", "address show"):
+            self.assertNotIn(absent, result.stdout + log, absent)
+        self.assertFalse((source / "region-kek").exists())
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
+
+    def test_global_host_readiness_failure_does_not_touch_keepalived(self):
+        self.global_host()
+        self.env["INSTALL_FAIL"] = "check-global-ready api"
+        result = self.run_install()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("lab-1: api readiness failed", result.stderr)
+        self.assertNotIn("keepalived", (self.work / "state/argv").read_text())
+
+    def test_role_inputs(self):
+        self.global_host()
+        path = self.work / "hosts.yaml"
+        good = path.read_text()
+        path.write_text(good + "vip:\n  address: 192.0.2.10/24\n")
+        self.assertEqual(self.refused().stderr,
+                         "vws: vip is required with the region role and refused without it\n")
 
     def test_symlink_and_traversal(self):
         path = self.work / "credentials/admin-kek"
@@ -230,6 +492,7 @@ class Install(unittest.TestCase):
         log = (self.work / "state/argv").read_text()
         self.assertLess(log.index("etcd/check-ready"), log.index("check-global-ready"))
         self.assertLess(log.index("check-global-ready"), log.index("check-region-ready"))
+        self.assertLess(log.index("check-region-ready"), log.index("enable --now keepalived"))
 
     def test_readiness_failure(self):
         for probe in ("etcd/check-ready", "check-global-ready api", "check-region-ready"):

@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
-# Run only as root inside a disposable Debian container.
+# Installs the packages for real into the root filesystem of the machine it runs on, so it runs only as
+# root in a disposable container: the Docker or Podman marker, or VWS_INSTALL_TEST_DISPOSABLE=1 for another
+# throwaway machine. The checks come before any write.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+refuse() { echo "install-container.sh: refused: $1" >&2; exit 2; }
+test "$(id -u)" -eq 0 || refuse "needs root in a disposable container"
+if ! test -e /.dockerenv && ! test -e /run/.containerenv && test "${VWS_INSTALL_TEST_DISPOSABLE:-}" != 1; then
+    refuse "this is not a disposable container (no /.dockerenv or /run/.containerenv); set VWS_INSTALL_TEST_DISPOSABLE=1 only on a throwaway machine"
+fi
+if grep -qs ' /etc/pve ' /proc/mounts; then refuse "/etc/pve is a mount: this is a real PVE node"; fi
+for path in /etc/vws /etc/keepalived /var/lib/vws-install-fail; do
+    if test -e "$path" || test -L "$path"; then refuse "$path exists; start from a clean container"; fi
+done
+trap 'rm -rf "${work:-}"; rm -f /var/lib/vws-install-fail' EXIT
 work=$(mktemp -d "${TMPDIR:?}/install-target.XXXXXX")
-trap 'rm -rf "$work"; rm -f /var/lib/vws-install-fail' EXIT
 python3 "$root/tests/vws/install_fixture.py" "$work"
 export INSTALL_STATE="$work/state"
 export PATH="$work/bin:$PATH"
@@ -39,6 +50,25 @@ case "$verb" in
 esac
 SH
 chmod +x "$work/bin/ssh" "$work/bin/systemctl"
+global_units="vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy vws-console-api vws-console"
+
+# A global host (Debian VM or bare metal, no PVE): etcd and the global services, nothing of the region.
+mkdir "$work/global"
+sed -e 's/^    roles: .*/    roles: [etcd, global]/' -e '/^vip:/,+1d' "$work/hosts.yaml" > "$work/global/hosts.yaml"
+cp "$work/global.yaml" "$work/global/"
+bash "$root/scripts/vws" install --profile lab --inventory "$work/global/hosts.yaml" \
+    --packages "$work/packages" --credentials "$work/credentials" > "$work/global.out" 2> "$work/global.err"
+for unit in $global_units; do
+    test -f "$INSTALL_STATE/is-enabled-$unit"
+    test -f "$INSTALL_STATE/is-active-$unit"
+done
+if grep -q -e keepalived -e vws-region "$INSTALL_STATE/systemctl" "$work/global.out"; then exit 1; fi
+test ! -e /etc/keepalived
+test ! -e /etc/vws/region.key
+test ! -e /etc/vws/region.yaml
+test ! -e /etc/vws/credentials/region-kek
+test ! -e /usr/lib/vws/check-region-ready
+test ! -e /etc/systemd/system/vws-lab-region.slice.d
 args=(install --profile lab --inventory "$work/hosts.yaml" --packages "$work/packages"
       --credentials "$work/credentials")
 snapshot() {
@@ -107,7 +137,8 @@ paths += [p for directory in (Path("/etc/vws"), Path("/etc/keepalived"), Path("/
 content = b"\n".join(p.read_bytes() for p in paths)
 for p in (root / "credentials").rglob("*"):
     if p.is_file() and p.name not in ("etcd-ca.pem", "api-etcd.pem", "internal-ca.pem",
-                                     "api-mtls.pem", "iam-etcd.pem", "iam.pem"):
+                                     "api-mtls.pem", "iam-etcd.pem", "iam.pem",
+                                     "ca.crt", "member.crt", "client.crt"):
         assert p.read_bytes().strip() not in content, p.name
 credentials = Path("/etc/vws/credentials")
 for p in [credentials, *credentials.rglob("*")]:

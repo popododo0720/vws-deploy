@@ -54,13 +54,38 @@ It never reaches a cluster or the external network. Admin commands use a loopbac
 ### vws install
 
 `vws install --profile lab --inventory hosts.yaml --packages DIR --credentials DIR`
-installs one lab host over SSH. Requires python3 with PyYAML, ssh and dpkg-deb
-locally, and root access (or passwordless sudo), apt-get, systemctl and keepalived
-on the Debian target. Supply exactly one `vws-etcd_*.deb`, `vws-global_*.deb` and
-`vws-region_*.deb`; this command does not build packages or download releases.
-`small` and `ha` remain vws-deploy#776.
+installs one lab host over SSH, by the roles of that host. Requires python3 with
+PyYAML, ssh and dpkg-deb locally, and root access (or passwordless sudo), apt-get
+and systemctl on the Debian target. This command does not build packages or
+download releases (`packaging/build.sh VERSION` builds them). `small` and `ha`
+remain vws-deploy#776. The runbook is `docs/operator/vm-install.md`.
+
+| `roles` | Host | Installs | Starts |
+| --- | --- | --- | --- |
+| `[etcd, global]` | a Debian VM or bare-metal machine | `vws-etcd_*.deb`, `vws-global_*.deb` | `vws-etcd`, its snapshot and defrag timers, `vws-iam`, `vws-aws-proxy`, `vws-console-api`, `vws-console` |
+| `[etcd, global, region]` | the lab host, with keepalived installed | all three | both rows, `vws-region` and keepalived |
+
+No other role list is accepted; a `region`-only host is not installed by this
+command (vws-deploy#849, #850). A host without the `region` role gets no
+`vws-region` package, no region file and no keepalived call. Supply exactly one
+`.deb` of each package the roles need.
 
 ```yaml
+# The global layer on a VM or bare metal.
+profile: lab
+hosts:
+  - name: global-1
+    address: 192.0.2.1
+    ssh_user: root
+    roles: [etcd, global]
+memory_mib:
+  global: 1024
+  region: 512
+  etcd: 512
+```
+
+```yaml
+# The lab host.
 profile: lab
 hosts:
   - name: lab-1
@@ -75,6 +100,8 @@ memory_mib:
   etcd: 512
 ```
 
+`vip` is required with the `region` role and refused without it.
+
 The optional `memory_mib` mapping defaults to the values above. All three
 values must be positive whole MiB, totaling at most 2048 MiB; an over-budget
 inventory exits 2 before SSH. Installation requires the target's cgroup v2
@@ -86,8 +113,9 @@ These are aggregate group limits, including service children, so the global
 processes cannot each consume the full global budget. Drop-ins live under
 `/etc/systemd/system/` as `50-vws-memory.conf`; the installer reloads systemd
 before reconciling services, including recovery after an interrupted write.
+Only the slices of the host's roles are written.
 
-On the 8 GiB lab box this caps VWS at 2 GiB, leaves 2 GiB for the two 1 GiB
+With all three roles on the 8 GiB lab box this caps VWS at 2 GiB, leaves 2 GiB for the two 1 GiB
 test VMs, and 4 GiB for PVE, the OS and other overhead. These limits are a
 budget, not measured working sets or a guarantee that an arbitrary workload
 fits. Reaching a limit can cause a cgroup OOM and service restart. Check
@@ -96,35 +124,64 @@ fits. Reaching a limit can cause a cgroup OOM and service restart. Check
 live box after phase 1. Keep VM admission's `host_reserve_mib: 2048` setting
 consistent with the host's measured overhead.
 
-The inventory accepts only the documented keys, one IPv4 host with all three roles, and
-an IPv4 VIP with an optional prefix (default /32). The VIP uses the packaged
-keepalived template's `vmbr0` interface and router id 83. Use a dedicated lab
-host and reserve that router id. Unknown, duplicate and secret-looking keys
-are refused. `--global-config FILE` defaults to `global.yaml` beside the
-inventory and passes the same validation as `vws config validate`.
+The inventory accepts only the documented keys, one IPv4 host, and an IPv4 VIP
+with an optional prefix (default /32). The VIP uses the packaged keepalived
+template's `vmbr0` interface and router id 83. Use a dedicated lab host and
+reserve that router id. Unknown, duplicate and secret-looking keys are refused.
 
-The credential directory contains the file names in
-`packaging/vws-global/README.md`, `packaging/vws-etcd/README.md`, plus
-`region-kek` and `region.key` from `packaging/vws-region/vws-region.service`.
+Inputs by role, all checked before SSH:
+
+- `global`: `--global-config FILE` (default `global.yaml` beside the inventory),
+  which passes the same validation as `vws config validate`, and the credential
+  names in `packaging/vws-global/README.md` and `packaging/vws-etcd/README.md`.
+  `console-token`, `vws-access-key`, `vws-secret-key` and `aws-source` are always
+  yours to supply. The command creates these names when the directory lacks
+  them, 0600, and never rewrites one that exists: `admin-kek`, `iam-kek/`, the
+  etcd set (`ca.crt`, `member.*`, `client.*`, `etcd-ca.pem`, `api-etcd*.pem`,
+  `iam-etcd*.pem`) and the internal set (`internal-ca.pem`, `iam.pem`,
+  `iam-key.pem`, `api-mtls*.pem`). Both sets come from
+  `packaging/vws-etcd/vws-etcd-tls`, which needs openssl and flock locally and
+  keeps each CA key in `etcd-tls/` or `internal-tls/` in that directory. A set
+  with only some files present is not completed with generated files; the
+  missing file exits 2. The command resumes generation from the kept state only
+  when every file already present has a byte-identical counterpart in the state,
+  and it exits 2 before SSH when a present file has none or differs, or when a
+  certificate and its key are not one pair. The etcd member certificate names
+  the host address and 127.0.0.1, because `vws-iam` and `vws-console-api` use
+  `https://127.0.0.1:2379`. When the inventory address changes, the old member
+  certificate no longer covers it and the command exits 2 before SSH. With
+  retained generated state (`etcd-tls/` with its CA key and the same `ca.crt`) and every other
+  credential equal to its `etcd-tls/` counterpart, reissue it from the same CA: delete `member.crt`,
+  `member.key` and `etcd-tls/<name>/` in the credentials directory and run the command again. If a
+  credential you supplied differs from `etcd-tls/` (for example a separate `api-etcd.pem` signed by the
+  retained CA), deleting files does not help and the rerun exits 2: reissue the member pair under the
+  same CA with the new address and 127.0.0.1, then replace `member.crt` and `member.key`, keeping the
+  separate client credentials. With TLS under your own CA, do the same with that CA.
+- `region`: `region-kek` and `region.key`, always yours to supply as before
+  (`packaging/vws-region/vws-region.service`).
+
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
-credential sources are refused. All required inputs are checked before SSH.
-Private files go to root-owned 0600 files in `/etc/vws/credentials` (0700),
-except `/etc/vws/region.key` (0600). Public certificates go to `/etc/vws` (0644).
-Package, credential and config contents travel only on SSH stdin.
+credential sources are refused. Private files go to root-owned 0600 files in
+`/etc/vws/credentials` (0700), except `/etc/vws/region.key` (0600). Public
+certificates and `global.yaml` go to `/etc/vws` (0644). Package,
+credential and config contents travel only on SSH stdin.
 
-Installation starts etcd, then global units, then region, and runs each shipped
-readiness helper. Only after every check passes does it enable keepalived.
-Changing a file or package disables keepalived first; a failed check disables
-it and exits 1 naming the host and check. A rerun compares file bytes, ownership,
-permissions and package versions, restarts changed services, and preserves
-unchanged files. It also reruns readiness, so retrying after an interruption is
-safe. Text prints one `changed` or `unchanged` line per step; `-o json` prints
-the same list. Invalid local inputs exit 2 before SSH. Each external call has
-a 180-second deadline; SSH connection failures retry twice with 1/2-second
-backoff. Remote output is withheld to keep credentials out of diagnostics.
-Live PVE verification and working-set measurement remain deferred until after
-phase 1. For AWS access during a global-layer outage, use
-[the break-glass procedure](operator/break-glass.md).
+Installation starts etcd, then the global units, and runs each shipped readiness
+helper; the etcd probe is repeated for up to 30 seconds after the start. On a
+`region` host it then starts `vws-region`, runs its readiness helper and only
+after every check passes enables keepalived.
+
+Changing a file or package on a `region` host disables keepalived first; a
+failed check disables it and exits 1 naming the host and check. A rerun compares
+file bytes, ownership, permissions and package versions, restarts changed
+services, and preserves unchanged files. It also reruns readiness, so retrying
+after an interruption is safe. Text prints one `changed` or `unchanged`
+line per step; `-o json` prints the same list. Invalid local inputs
+exit 2 before SSH. Each external call has a 180-second deadline; SSH connection
+failures retry twice with 1/2-second backoff. Remote output is withheld to keep
+credentials out of diagnostics. Live PVE verification and working-set
+measurement remain deferred until after phase 1. For AWS access during a
+global-layer outage, use [the break-glass procedure](operator/break-glass.md).
 
 ### vws region
 

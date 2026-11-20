@@ -15,7 +15,7 @@ The first priority is EC2/S3 API compatibility. The roadmap is https://github.co
 
 ## Control plane
 
-VWS runs on Proxmox with systemd packages. Follow [the operator guide](docs/operator/regions.md) to register regions and AWS accounts.
+VWS runs on Proxmox with systemd packages. Install it on a VM or bare metal with [the install runbook](docs/operator/vm-install.md), then follow [the operator guide](docs/operator/regions.md) to register regions and AWS accounts.
 
 ## Checks
 

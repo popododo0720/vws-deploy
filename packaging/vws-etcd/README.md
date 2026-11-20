@@ -3,6 +3,10 @@
 The etcd cluster that holds vws-iam and the admin registry (design.md 10.1.1). The `ha` profile runs three
 members: two global VMs and a witness, which may be a PVE node. The `lab` and `small` profiles run one.
 Every listener is https, and both the client and the peer port require a certificate from the cluster CA.
+The client port listens on the member address and on 127.0.0.1, and the member certificate names both, so
+vws-iam and vws-console-api on the same host reach it at `https://127.0.0.1:2379`. A member certificate
+made before this (no 127.0.0.1 in its SAN) must be reissued: delete the member directory and run
+`vws-etcd-tls` again.
 The peer port also requires CN `vws-etcd-member`, so a client certificate cannot join as a member.
 
 | File | Runs on | Does |
@@ -28,6 +32,7 @@ amd64 etcd build compatible with the installed `etcd-client`. The package instal
 `/usr/bin/vws-etcd`, the helpers together under `/usr/lib/vws/etcd/`, and five units under
 `/usr/lib/systemd/system/`. Installation creates the system user `vws-etcd`, its data directory
 `/var/lib/vws-etcd` (0700), and `/etc/vws/credentials` (root:root 0700). It enables and starts nothing.
+`vws install` (docs/vws-cli.md) enables the member and both timers on the one lab host.
 Reinstall, removal and purge preserve the data and credentials; purge removes the conffile.
 
 Before starting, edit the non-secret conffile `/etc/vws/etcd.conf`:

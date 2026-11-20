@@ -195,6 +195,48 @@ if wait_healthy "$CR"; then ok "the restored member is healthy"; else bad "the r
 expect_text "the restored member has the data" "$(with_client "$CR" etcdctl get --print-value-only /vws/iam/probe)" "restored-value"
 expect_text "the restored member is a cluster of one" "$(with_client "$CR" etcdctl member list | wc -l)" "1"
 
+# The single-host install end to end: the certificates vws install generates, the member config the unit
+# renders with its default ports, and the etcd URLs the packaged vws-iam and vws-console-api are given.
+# 127.0.0.2 stands in for the inventory address, so the URL of the units is not the member's own address.
+GEN="${WORK}/generated"
+iam_url=$(sed -n 's/^ExecStart=.* -etcd-endpoints \([^ ]*\) .*/\1/p' "${VWS_TEST_ROOT}/packaging/vws-global/vws-iam.service")
+api_url=$(sed -n 's/^  etcd_endpoints: \[\(.*\)\]$/\1/p' "${VWS_TEST_ROOT}/packaging/vws-global/global.yaml")
+expect_text "vws-iam.service names an https etcd URL" "${iam_url:-none}" "https://"
+expect_text "the packaged global.yaml names an https etcd URL" "${api_url:-none}" "https://"
+run_cmd python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import install, pathlib
+install.generate(pathlib.Path(sys.argv[2]), {"name": "lab-1", "address": "127.0.0.2"}, {"etcd", "global"})' \
+  "${VWS_TEST_ROOT}/scripts/vws.d/lib" "$GEN"
+expect_rc "vws install generates the etcd set" 0
+expect_text "the generated member certificate is valid for the loopback address" \
+  "$(openssl verify -CAfile "${GEN}/ca.crt" -verify_ip 127.0.0.1 "${GEN}/member.crt" 2>&1)" "OK"
+expect_text "the generated member certificate is valid for the inventory address" \
+  "$(openssl verify -CAfile "${GEN}/ca.crt" -verify_ip 127.0.0.2 "${GEN}/member.crt" 2>&1)" "OK"
+VWS_ETCD_TLS_DIR="$GEN" VWS_ETCD_DATA_DIR="${WORK}/data-lab-1" "${PKG}/vws-etcd-config" lab-1 lab-1=127.0.0.2 >"${WORK}/lab-1.yml"
+etcd --config-file "${WORK}/lab-1.yml" >"${WORK}/lab-1.log" 2>&1 &
+lab_pid=$!
+pids+=("$lab_pid")
+# unit_client URL NAME CMD ARGS...: CMD with the etcd URL and the client certificate NAME.pem of a unit.
+unit_client() {
+  ETCDCTL_ENDPOINTS=$1 ETCDCTL_CACERT="${GEN}/etcd-ca.pem" ETCDCTL_CERT="${GEN}/$2.pem" \
+    ETCDCTL_KEY="${GEN}/$2-key.pem" "${@:3}"
+}
+for _ in $(seq 60); do
+  kill -0 "$lab_pid" 2>/dev/null || break
+  ! unit_client "$iam_url" iam-etcd etcdctl --dial-timeout=1s --command-timeout=2s endpoint health >/dev/null 2>&1 || break
+  sleep 0.5
+done
+run_cmd unit_client "$iam_url" iam-etcd etcdctl --dial-timeout=2s --command-timeout=5s put /vws/iam/install-probe unit-value
+if ((RC == 0)); then ok "vws-iam's etcd URL and client certificate write to the member"
+else bad "vws-iam's etcd URL and client certificate write to the member" "${ERR} $(tail -n 5 "${WORK}/lab-1.log")"; fi
+run_cmd unit_client "$api_url" api-etcd etcdctl --dial-timeout=2s --command-timeout=5s get --print-value-only /vws/iam/install-probe
+expect_text "vws-console-api's etcd URL and client certificate read it back" "$OUT" "unit-value"
+run_cmd curl -fsS -m 10 --cacert "${GEN}/ca.crt" --cert "${GEN}/member.crt" --key "${GEN}/member.key" "https://127.0.0.2:${iam_url##*:}/health"
+expect_rc "the readiness probe reaches the member on the inventory address" 0
+run_cmd curl -fsS -m 10 --cacert "${GEN}/etcd-ca.pem" "${iam_url}/version"
+expect_refused "the loopback listener refuses a client without a certificate"
+
 # Retention: what the backup timer runs keeps the newest KEEP snapshots and touches nothing else.
 mkdir -p "${WORK}/snaps"
 touch "${WORK}/snaps/vws-etcd-20200101T000000Z.db" "${WORK}/snaps/vws-etcd-20200102T000000Z.db" \
