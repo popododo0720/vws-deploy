@@ -1,0 +1,53 @@
+package console
+
+// Copied into internal/surface/console of the pinned vws-console-api by CI (vws-deploy
+// tests/vws/region_contract.py writes the body). The body that `vws region add` sends must
+// decode strictly into the API's region input and pass the API's own validators.
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"testing"
+
+	"github.com/popododo0720/vws-console-api/internal/admin/store"
+)
+
+func TestVWSDeployRegionAddBody(t *testing.T) {
+	raw, err := os.ReadFile(os.Getenv("VWS_REGION_BODY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var in regionInput
+	if err := dec.Decode(&in); err != nil {
+		t.Fatalf("the API does not accept the CLI body: %v", err)
+	}
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	v := store.Region{
+		Name: str(in.Name), ClusterName: str(in.ClusterName), CAPEM: str(in.CAPEM), TokenID: str(in.TokenID),
+		RegionEndpoint: str(in.RegionEndpoint), FirewallTokenID: str(in.FirewallTokenID),
+		BackupTokenID: str(in.BackupTokenID),
+	}
+	if in.PVEAPIURLs != nil {
+		v.PVEAPIURLs = *in.PVEAPIURLs
+	}
+	if in.Zones != nil {
+		v.Zones = *in.Zones
+	}
+	if len(v.PVEAPIURLs) != 2 {
+		t.Fatalf("pveApiUrls: got %v, want both addresses", v.PVEAPIURLs)
+	}
+	if err := validateRegion(v, in.TokenSecret, true); err != nil {
+		t.Fatalf("validateRegion: %v", err)
+	}
+	if err := validateExtraTokens(v, &in); err != nil {
+		t.Fatalf("validateExtraTokens: %v", err)
+	}
+}
