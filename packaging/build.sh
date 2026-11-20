@@ -50,7 +50,7 @@ gobuild() {
 checkout vws-console-api "$GLOBAL_CONSOLE_API_REF"
 checkout vws-iam "$GLOBAL_IAM_REF"
 checkout vws-console "$GLOBAL_CONSOLE_REF"
-for command in vws-console-api vws-aws-proxy vws-region vws-region-helper; do
+for command in vws-console-api vws-aws-proxy vws-region; do
     gobuild vws-console-api "$command"
 done
 gobuild vws-iam vws-iam
@@ -76,4 +76,4 @@ tar -xzf "$work/$etcd.tar.gz" -C "$work" "$etcd/etcd"
 "$src/vws-etcd/build.sh" "$version" "$work/$etcd/etcd" "$out"
 "$src/vws-global/build.sh" "$version" "$work/bin/vws-console-api" "$work/bin/vws-aws-proxy" \
     "$work/bin/vws-iam" "$work/$node/bin/node" "$work/$node/LICENSE" "$work/standalone" "$out"
-"$src/vws-region/build.sh" "$version" "$work/bin/vws-region" "$work/bin/vws-region-helper" "$out"
+"$src/vws-region/build.sh" "$version" "$work/bin/vws-region" "$out"
