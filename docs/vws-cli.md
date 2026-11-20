@@ -63,13 +63,12 @@ remain vws-deploy#776. The runbook is `docs/operator/vm-install.md`.
 | `roles` | Host | Installs | Starts |
 | --- | --- | --- | --- |
 | `[etcd, global]` | a Debian VM or bare-metal machine | `vws-etcd_*.deb`, `vws-global_*.deb` | `vws-etcd`, its snapshot and defrag timers, `vws-iam`, `vws-aws-proxy`, `vws-console-api`, `vws-console` |
-| `[region]` | a PVE node, with keepalived installed | `vws-region_*.deb` | `vws-region`; keepalived once the region is registered |
-| `[etcd, global, region]` | one PVE node that also runs the global layer | all three | both rows |
+| `[etcd, global, region]` | the lab host, with keepalived installed | all three | both rows, `vws-region` and keepalived |
 
-No other role list is accepted. A host without the `region` role gets no
-`vws-region` package, no region file and no keepalived call; the region daemon
-needs local PVE (`/etc/pve`, pveproxy). Supply exactly one `.deb` of each
-package the roles need.
+No other role list is accepted; a `region`-only host is not installed by this
+command (vws-deploy#849, #850). A host without the `region` role gets no
+`vws-region` package, no region file and no keepalived call. Supply exactly one
+`.deb` of each package the roles need.
 
 ```yaml
 # The global layer on a VM or bare metal.
@@ -86,14 +85,19 @@ memory_mib:
 ```
 
 ```yaml
-# A PVE node.
+# The lab host.
 profile: lab
 hosts:
-  - name: pve-1
-    address: 192.0.2.2
-    roles: [region]
+  - name: lab-1
+    address: 192.0.2.1
+    ssh_user: root
+    roles: [etcd, global, region]
 vip:
   address: 192.0.2.10/24
+memory_mib:
+  global: 1024
+  region: 512
+  etcd: 512
 ```
 
 `vip` is required with the `region` role and refused without it.
@@ -141,39 +145,26 @@ Inputs by role, all checked before SSH:
   with only some files present is not completed; the missing file exits 2.
   The etcd member certificate names the host address and 127.0.0.1, because
   `vws-iam` and `vws-console-api` use `https://127.0.0.1:2379`.
-- `region`: `--region-config FILE` (default `region.yaml` beside the inventory,
-  one YAML mapping; start from `packaging/vws-region/region.yaml`), and in the
-  credentials directory `region.crt`, `region.key` and `global-ca.pem`
-  (`packaging/vws-region/README.md`). These three are always yours to supply.
-  `region-kek` is created when absent; every node of one PVE cluster needs the
-  same one, so install them from the same credentials directory.
+- `region`: `region-kek` and `region.key`, always yours to supply as before
+  (`packaging/vws-region/vws-region.service`).
 
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
 credential sources are refused. Private files go to root-owned 0600 files in
 `/etc/vws/credentials` (0700), except `/etc/vws/region.key` (0600). Public
-certificates and the two config files go to `/etc/vws` (0644). Package,
+certificates and `global.yaml` go to `/etc/vws` (0644). Package,
 credential and config contents travel only on SSH stdin.
 
 Installation starts etcd, then the global units, and runs each shipped readiness
 helper; the etcd probe is repeated for up to 30 seconds after the start. On a
-`region` host it then starts `vws-region` and reads
-`/etc/pve/vws/registration.json`:
-
-- No registration yet: the step `region registration` is `pending`, keepalived
-  stays disabled, a line on stderr says so, and the command exits 0. Register
-  the region ([operator/regions.md](operator/regions.md)) and run the command
-  again.
-- Registered: it waits up to 30 seconds for `/usr/lib/vws/check-region-ready`,
-  enables keepalived, and waits up to 30 seconds until the VIP is an address of
-  the host (`ip -o -4 address show`). With one node that node must hold the VIP;
-  several nodes behind one VIP are not supported by this command yet.
+`region` host it then starts `vws-region`, runs its readiness helper and only
+after every check passes enables keepalived.
 
 Changing a file or package on a `region` host disables keepalived first; a
 failed check disables it and exits 1 naming the host and check. A rerun compares
 file bytes, ownership, permissions and package versions, restarts changed
 services, and preserves unchanged files. It also reruns readiness, so retrying
-after an interruption is safe. Text prints one `changed`, `unchanged` or
-`pending` line per step; `-o json` prints the same list. Invalid local inputs
+after an interruption is safe. Text prints one `changed` or `unchanged`
+line per step; `-o json` prints the same list. Invalid local inputs
 exit 2 before SSH. Each external call has a 180-second deadline; SSH connection
 failures retry twice with 1/2-second backoff. Remote output is withheld to keep
 credentials out of diagnostics. Live PVE verification and working-set

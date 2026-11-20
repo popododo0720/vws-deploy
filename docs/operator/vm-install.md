@@ -1,11 +1,8 @@
 # Installing VWS on a VM or bare metal
 
-VWS installs as systemd packages on Debian 12 amd64. There are two kinds of host:
-
-| Host | Packages | Section |
-| --- | --- | --- |
-| The global layer: one VM on Proxmox or one bare-metal machine. It needs no PVE on it. | `vws-etcd`, `vws-global` | 2 and 3 |
-| Each PVE node of a cluster you manage | `vws-region`, with keepalived for the region VIP | 4 |
+VWS installs as systemd packages on Debian 12 amd64. This page covers the global layer: one VM on
+Proxmox or one bare-metal machine, with `vws-etcd` and `vws-global` (sections 2 and 3). It needs no PVE
+on it. The region layer is in section 4.
 
 The default is one global host with one etcd member. The three-member `ha` layout is described in
 `packaging/vws-etcd/README.md`; `vws install` does not automate it yet (vws-deploy#776).
@@ -79,63 +76,19 @@ register or change an AWS account, export the records to that file and restart t
 AWS accounts need nothing more: register them as in [regions.md](regions.md). A Proxmox cluster
 needs the next section first.
 
-## 4. Install a PVE node
+## 4. The region layer
 
-Do this on each PVE node of a cluster before you register it as a region. The node needs keepalived
-(`apt-get install keepalived`) and the `vmbr0` bridge.
-
-Write `pve/hosts.yaml` with `roles: [region]` and the `vip`, and `pve/region.yaml` from
-`packaging/vws-region/region.yaml` (pools, bridges, storage and instance types of this cluster).
-Add to the credentials directory:
-
-| File | From |
-| --- | --- |
-| `region.crt`, `region.key` | the region server certificate and key. The certificate must cover the VIP and be trusted by the global layer (`packaging/vws-region/README.md`) |
-| `global-ca.pem` | the CA of the client certificate console-api presents (`credentials.mtls` in `global.yaml`). With the generated set that is a copy of `internal-ca.pem` |
-
-`vws install` does not create these three; it reports the first one that is missing. It creates
-`region-kek` when absent. Every node of one cluster needs the same `region-kek`, so use one
-credentials directory for all of them.
-
-```sh
-scripts/vws install --profile lab --inventory pve/hosts.yaml --packages build --credentials credentials
-```
-
-The first run copies the inputs, installs `vws-region` and starts it. The region is not registered
-yet, so the daemon is not ready and the run ends with `region registration pending`: keepalived stays
-disabled and no node holds the VIP.
-
-Then register the region as in [regions.md](regions.md), and run the same command again. It now
-waits for `/usr/lib/vws/check-region-ready`, enables keepalived, and waits until the node holds the
-VIP. A failed check disables keepalived and exits 1.
-
-Open point: the registration request goes to the region endpoint you register, and before the first
-registration no node holds the VIP. Whether the first registration should name a node address and be
-edited to the VIP afterwards has not been tried on a real PVE node; this page does not prescribe it.
-
-`vws install` takes one host per inventory and gives every node the same keepalived priority. For
-several nodes behind one VIP, set distinct priorities as in
-`packaging/vws-region/README.md`; the VIP check of this command expects the installed node to hold it.
+This page does not install `vws-region`. Installing one region per Proxmox cluster on the global host
+is tracked in vws-deploy#849 (packaging) and #850 (install and runbook), and the rehearsal on a real
+cluster in #851. Until then the region role keeps the behavior it has on main: `vws install` accepts
+it only on the lab host with all three roles ([`vws install`](../vws-cli.md#vws-install)), and
+`packaging/vws-region/README.md` describes the package.
 
 ## Not for production: the in-memory store
 
 `vws-iam -store memory` and `vws-console-api -admin-store memory` keep users, access keys and
 registrations in process memory and lose them on restart. They exist for tests. The packaged units
 use etcd; do not change them to the memory store on a host you depend on.
-
-## Failover check (keepalived VIP)
-
-Run on the PVE nodes after section 4 or a keepalived change. On one node this checks that an unready daemon gives up
-the VIP; with several nodes it also checks the move.
-
-1. `keepalived --config-test`, then `ip address show dev vmbr0`: exactly one ready node holds the VIP.
-2. `sudo /usr/lib/vws/check-region-ready` succeeds on every node.
-3. Stop `vws-region` on the VIP owner. Within 10 seconds it loses the VIP. With several nodes, one
-   ready peer gains it and a request through the VIP succeeds.
-4. Start `vws-region` again. The VIP returns only after two successful probes.
-
-The full procedure, with the mTLS request and the all-nodes-down case, is in
-[packaging/vws-region/README.md](../../packaging/vws-region/README.md#vip-configuration-and-failover-test).
 
 ## etcd backup and restore drill
 
