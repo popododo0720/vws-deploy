@@ -1,0 +1,26 @@
+[Unit]
+Description=VWS region API for cluster %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vws-region
+Group=vws-region
+StateDirectory=vws-region/%i
+StateDirectoryMode=0700
+Environment=VWS_REGION_INSTANCE=%i
+LoadCredential=region-key:/etc/vws-region/%i/region.key
+ExecStart=/usr/lib/vws/run-region -region %i -state-dir /var/lib/vws-region/%i -config /etc/vws-region/%i/region.yaml
+Restart=on-failure
+RestartSec=5s
+MemoryMax=512M
+CPUQuota=50%
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

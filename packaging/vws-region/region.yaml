@@ -4,7 +4,6 @@ pools:
   default: vws-default
 storages:
   gp3: local-lvm
-snippets_storage: local
 default_bridge: vmbr0
 subnets: {}
 templates:

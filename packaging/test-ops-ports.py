@@ -19,11 +19,14 @@ def run(ok, message=""):
 
 
 run(True)
-unit = fixture / "vws-region/vws-region.service"
-probe = fixture / "vws-region/check-ready"
+unit = fixture / "vws-global/vws-iam.service"
+probe = fixture / "vws-global/check-ready"
 original = unit.read_text()
-unit.write_text(original.replace("127.0.0.1:8085", "127.0.0.1:8083"))
+unit.write_text(original.replace("127.0.0.1:9096", "127.0.0.1:9097"))
 run(False, "!= readiness")
-probe.write_text(probe.read_text().replace("127.0.0.1:8085", "127.0.0.1:8083"))
+probe.write_text(probe.read_text().replace("127.0.0.1:9096", "127.0.0.1:9097"))
+run(True)
+env = fixture / "vws-region/region.env"
+env.write_text(env.read_text().replace("127.0.0.1:8085", "127.0.0.1:8083"))
 run(False, "share 127.0.0.1:8083")
 print("listener mismatch and cross-service collision rejected")

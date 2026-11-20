@@ -1,5 +1,13 @@
 #!/bin/sh
+# Probe the readiness endpoint of one instance: check-region-ready <instance>.
 set -eu
+if [ "$#" -ne 1 ] || ! printf '%s\n' "$1" | grep -Eq '^pve-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+$'; then
+    echo "usage: check-region-ready INSTANCE" >&2
+    exit 2
+fi
+ops=$(sed -n 's/^VWS_REGION_OPS_ADDR=//p' "/etc/vws-region/$1.env")
+case $ops in
+    ''|*[!A-Za-z0-9.:-]*) echo "check-region-ready: no valid VWS_REGION_OPS_ADDR for $1" >&2; exit 2 ;;
+esac
 exec /usr/bin/curl --fail --silent --show-error --output /dev/null \
-    --noproxy '*' --connect-timeout 1 --max-time 2 \
-    http://127.0.0.1:8085/readyz
+    --noproxy '*' --connect-timeout 1 --max-time 2 "http://$ops/readyz"

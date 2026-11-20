@@ -1,0 +1,45 @@
+#!/bin/sh
+# Start one vws-region instance. The instance name comes from the unit (%i); its
+# listen addresses and TLS paths come from /etc/vws-region/<instance>.env, a plain
+# KEY=VALUE file that is parsed here, never sourced, and carries no secret.
+set -eu
+: "${CREDENTIALS_DIRECTORY:?systemd credentials required}"
+: "${VWS_REGION_INSTANCE:?instance name required}"
+instance=$VWS_REGION_INSTANCE
+if ! printf '%s\n' "$instance" | grep -Eq '^pve-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+$' \
+    || [ "${#instance}" -gt 63 ]; then
+    echo "vws-region: invalid instance name" >&2
+    exit 2
+fi
+file=/etc/vws-region/$instance.env
+addr=
+ops=
+cert=/etc/vws-region/$instance/region.crt
+ca=/etc/vws-region/$instance/global-ca.pem
+while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+        ''|'#'*) continue ;;
+    esac
+    key=${line%%=*}
+    value=${line#*=}
+    case $value in
+        ''|*[!A-Za-z0-9_./:@+-]*)
+            echo "vws-region: $file: bad value for $key" >&2
+            exit 2 ;;
+    esac
+    case $key in
+        VWS_REGION_ADDR) addr=$value ;;
+        VWS_REGION_OPS_ADDR) ops=$value ;;
+        VWS_REGION_TLS_CERT) cert=$value ;;
+        VWS_REGION_TLS_CA) ca=$value ;;
+        *)
+            echo "vws-region: $file: unknown key $key" >&2
+            exit 2 ;;
+    esac
+done < "$file"
+if [ -z "$addr" ] || [ -z "$ops" ]; then
+    echo "vws-region: $file must set VWS_REGION_ADDR and VWS_REGION_OPS_ADDR" >&2
+    exit 2
+fi
+exec /usr/bin/vws-region "$@" -region-addr "$addr" -ops-addr "$ops" \
+    -tls-cert-file "$cert" -tls-ca-file "$ca" -tls-key-file "$CREDENTIALS_DIRECTORY/region-key"
