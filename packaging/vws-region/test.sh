@@ -15,7 +15,7 @@ deb=$tmp/vws-region_0.0.0-1_amd64.deb
 dpkg-deb --info "$deb"
 dpkg-deb --contents "$deb"
 lintian --fail-on error "$deb"
-shellcheck "$src/build.sh" "$src/check-ready" "$src/run-region" "$src/postinst" "$src/prerm" \
+shellcheck "$src/build.sh" "$src/check-ready" "$src/run-region" "$src/preinst" "$src/postinst" "$src/prerm" \
     "$src/postrm" "$src/test.sh" "$src/test-install.sh"
 python3 - "$deb" <<'PY'
 import re

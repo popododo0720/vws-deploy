@@ -19,12 +19,12 @@ fi
 getent passwd vws-region
 for path in /usr/bin/vws-region /usr/lib/vws/run-region /usr/lib/vws/check-region-ready \
     /usr/lib/systemd/system/vws-region@.service \
-    /usr/share/doc/vws-region/examples/region.yaml /usr/share/doc/vws-region/examples/region.env; do
+    /usr/share/vws-region/examples/region.yaml /usr/share/vws-region/examples/region.env; do
     test -f "$path"
 done
 test -d /etc/vws-region
 for path in /usr/lib/vws/vws-region-helper /usr/lib/systemd/system/vws-region.service \
-    /etc/sudoers.d/vws-region /etc/vws/credentials /usr/share/doc/vws-region/examples/keepalived.conf; do
+    /etc/sudoers.d/vws-region /etc/vws/credentials /usr/share/vws-region/examples/keepalived.conf; do
     test ! -e "$path"
 done
 if dpkg-query -W -f='${Depends}' vws-region | grep -Eq '(^|[ ,])(sudo|keepalived)([ ,(]|$)'; then
@@ -37,7 +37,12 @@ grep -q '^StateDirectoryMode=0700$' "$unit"
 grep -q -- '-region %i -state-dir /var/lib/vws-region/%i' "$unit"
 # An operator's instance files are not package files and survive every step below.
 install -d -m 0700 /etc/vws-region/pve-seoul-1
-cp /usr/share/doc/vws-region/examples/region.env /etc/vws-region/pve-seoul-1.env
+cp /usr/share/vws-region/examples/region.env /etc/vws-region/pve-seoul-1.env
+# A sudoers rule left by the per-node release is removed on configure.
+install -d /etc/sudoers.d
+printf '# stale\n' > /etc/sudoers.d/vws-region
+/var/lib/dpkg/info/vws-region.postinst configure
+test ! -e /etc/sudoers.d/vws-region
 /var/lib/dpkg/info/vws-region.postinst configure
 apt-get install -y --reinstall --no-install-recommends "$1"
 test ! -e /etc/pve

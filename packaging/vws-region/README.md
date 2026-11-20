@@ -8,7 +8,7 @@ registration; it keeps its state in `registration.json` under its own state dire
 
 The package installs `/usr/bin/vws-region`, `/usr/lib/vws/run-region`, the readiness
 probe `/usr/lib/vws/check-region-ready`, the template unit `vws-region@.service`, the
-examples `region.yaml` and `region.env` under `/usr/share/doc/vws-region/examples/`, and an
+examples `region.yaml` and `region.env` under `/usr/share/vws-region/examples/`, and an
 empty `/etc/vws-region/`. It does not modify VMs, storage or a PVE cluster.
 
 ## Build and install
@@ -45,6 +45,10 @@ default to the directory above. The private key reaches the daemon only through
 host need different `VWS_REGION_ADDR` and `VWS_REGION_OPS_ADDR` ports. The ops address of
 the global API is `127.0.0.1:8083`, so do not use that one.
 
+Modes: `/etc/vws-region/<region>/`, `region.yaml`, `region.crt` and `global-ca.pem` must be
+readable by the `vws-region` account (directory 0755, files 0644, root-owned). Only
+`region.key` is secret: root-owned 0600; systemd reads it as root and hands it to the daemon.
+
 The service is not started or enabled during installation. Then run:
 
 ```sh
@@ -62,6 +66,11 @@ daemon runs with `-region %i -state-dir /var/lib/vws-region/%i`. The directory h
 `registration.json` (mode 0600), which includes the PVE token secret. The daemon refuses a
 directory that is not private. The package never creates, changes or deletes state and
 operator files.
+
+Upgrading from the per-node release: the new package stops and disables the old
+`vws-region.service` (`preinst`), no longer ships that unit, and removes the old
+`/etc/sudoers.d/vws-region` rule. It leaves `/etc/vws/region.yaml` and
+`/etc/vws/credentials/region-kek` for you to move or delete; nothing reads them.
 
 `apt remove vws-region` stops all `vws-region@*` instances and removes the package files.
 It keeps `/etc/vws-region`, `/var/lib/vws-region` and the `vws-region` system account, also

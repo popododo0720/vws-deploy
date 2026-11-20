@@ -20,12 +20,12 @@ trap 'rm -rf "$stage"' EXIT HUP INT TERM
 chmod 0755 "$stage"
 install -d "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/vws" \
     "$stage/usr/lib/systemd/system" "$stage/etc/vws-region" \
-    "$stage/usr/share/doc/vws-region/examples"
+    "$stage/usr/share/doc/vws-region" "$stage/usr/share/vws-region/examples"
 install -m 0755 "$region" "$stage/usr/bin/vws-region"
 install -m 0755 "$src/run-region" "$stage/usr/lib/vws/run-region"
 install -m 0755 "$src/check-ready" "$stage/usr/lib/vws/check-region-ready"
 install -m 0644 "$src/vws-region@.service" "$stage/usr/lib/systemd/system/"
-install -m 0644 "$src/region.yaml" "$src/region.env" "$stage/usr/share/doc/vws-region/examples/"
+install -m 0644 "$src/region.yaml" "$src/region.env" "$stage/usr/share/vws-region/examples/"
 install -m 0644 "$src/README.md" "$stage/usr/share/doc/vws-region/"
 install -m 0644 "$src/copyright" "$stage/usr/share/doc/vws-region/copyright"
 gzip -n -9 -c > "$stage/usr/share/doc/vws-region/changelog.Debian.gz" <<EOF
@@ -35,7 +35,7 @@ vws-region ($version) unstable; urgency=medium
 
  -- VWS maintainers <maintainers@vws.cloud>  Wed, 11 Nov 2026 00:00:00 +0000
 EOF
-for script in postinst prerm postrm; do
+for script in preinst postinst prerm postrm; do
     install -m 0755 "$src/$script" "$stage/DEBIAN/$script"
 done
 cat > "$stage/DEBIAN/control" <<EOF

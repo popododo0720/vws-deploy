@@ -6,6 +6,8 @@ case "$1" in
             adduser --system --group --home /nonexistent --no-create-home \
                 --shell /usr/sbin/nologin vws-region
         fi
+        # The per-node release shipped a sudoers rule for its helper; the helper is gone.
+        rm -f /etc/sudoers.d/vws-region
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload
         fi
