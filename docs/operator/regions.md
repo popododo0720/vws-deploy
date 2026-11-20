@@ -168,9 +168,9 @@ The same region, `pve-seoul-1`, registered both ways. The values are examples.
 | --- | --- | --- |
 | name | Region name | `NAME` argument |
 | clusterName | Cluster name | `--cluster-name` |
-| pveApiUrl | Proxmox API URL | `--pve-api-url` |
+| pveApiUrls | Proxmox API URLs | `--pve-api-url`, repeated once per node |
 | regionEndpoint | Region endpoint | `--region-endpoint` |
-| caPem | CA certificate (optional) | `--ca-pem-file` |
+| caPem | CA certificate | `--ca-pem-file` |
 | tokenId | API token ID | `--token-id` |
 | tokenSecret | API token secret | `--token-secret-file PATH\|-` |
 | zones | Zone letter, Nodes | `--zones` JSON |
@@ -183,7 +183,7 @@ match what Proxmox returns from `/cluster/status`.
 1. Open **Regions** (`/admin/regions`) and choose **Register region**.
 2. Fill in Region settings: Region name `pve-seoul-1`, Cluster name `seoul`,
    Proxmox API URL `https://pve1.example.org:8006`, Region endpoint
-   `https://10.1.0.10:8443`, and the CA certificate if Proxmox uses a private CA.
+   `https://10.1.0.10:8443`, and the CA certificate.
 3. Under API token, set API token ID `vws@pve!inventory` and paste the token
    value into API token secret.
 4. Add an Availability Zone: Zone letter `a`, Nodes `pve1,pve2,pve3`.
@@ -200,6 +200,7 @@ export VWS_API_URL=https://console.example.org
 export VWS_API_TOKEN_FILE="$HOME/.config/vws/console-token"
 scripts/vws region add pve-seoul-1 --cluster-name seoul \
   --pve-api-url https://pve1.example.org:8006 \
+  --pve-api-url https://pve2.example.org:8006 \
   --token-id 'vws@pve!inventory' \
   --region-endpoint https://10.1.0.10:8443 \
   --ca-pem-file ~/vws/pve-ca.pem \

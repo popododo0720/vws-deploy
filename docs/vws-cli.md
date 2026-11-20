@@ -165,9 +165,14 @@ to its HTTPS origin and supply a console bearer token through
 `VWS_API_TOKEN_FILE` (preferred) or `VWS_API_TOKEN` in the environment.
 HTTP is accepted only on loopback for local testing. Needs curl and python3.
 
-Add requires `--cluster-name`, `--pve-api-url`, `--token-id`,
-`--region-endpoint`, and `--token-secret-file PATH|-`. Optional `--ca-pem-file`
-reads PEM certificates, and `--zones` takes a JSON array of
+Add requires `--cluster-name`, `--pve-api-url`, `--ca-pem-file`, `--token-id`,
+`--region-endpoint`, and `--token-secret-file PATH|-`. `--pve-api-url` can repeat,
+one HTTPS origin per node of the cluster (1 to 16); the CLI sends them as `pveApiUrls`.
+`--ca-pem-file` reads the PEM certificates that sign the PVE nodes and is sent as
+`caPem`. Optional `--firewall-token-id` and `--backup-token-id` name separate
+tokens, with `--firewall-token-secret-file` and `--backup-token-secret-file`; send
+the secret whenever you set a new token ID. At most one file option may read `-`.
+`--zones` takes a JSON array of
 `{"letter":"a","nodes":["node1"]}` objects (defaults to `[]` on add).
 Edit accepts the same options, all optional; omitted fields stay unchanged.
 Test takes only an optional `--token-secret-file PATH|-`; without it the API
@@ -177,7 +182,8 @@ skips PVE checks because only the region daemon retains the saved secret.
 export VWS_API_URL=https://console.example.org
 export VWS_API_TOKEN_FILE="$HOME/.config/vws/console-token"
 scripts/vws region add pve-test-1 --cluster-name lab \
-  --pve-api-url https://pve.example.org:8006 --token-id 'root@pam!vws' \
+  --pve-api-url https://pve1.example.org:8006 --pve-api-url https://pve2.example.org:8006 \
+  --ca-pem-file pve-ca.pem --token-id 'root@pam!vws' \
   --region-endpoint https://region.example.org --token-secret-file -
 scripts/vws region test pve-test-1
 scripts/vws region edit pve-test-1 --zones '[{"letter":"a","nodes":["node1"]}]'
@@ -191,7 +197,7 @@ GET retries transient failures at most twice with bounded backoff; each curl
 attempt has a 20-second deadline and the whole call a 65-second deadline.
 `--dry-run` prints the method and path without authentication or a request.
 
-Text lists name, cluster name, PVE API URL, region endpoint, token ID,
+Text lists name, cluster name, PVE API URLs, region endpoint, token ID,
 secret metadata (`set · fingerprint`), and zones. Health prints status, quorum,
 the API node (`apiNode`, or `leader` from an older daemon), online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
 1 on any FAIL, including with `-o json`. JSON output passes the API JSON through
