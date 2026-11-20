@@ -1,0 +1,12 @@
+#!/bin/sh
+# An upgrade from a release that ran one vws-region.service per PVE node: stop and
+# disable that daemon here, because its old prerm does not stop it on upgrade and the
+# new package no longer ships the unit.
+set -eu
+case "$1" in
+    upgrade)
+        if [ -d /run/systemd/system ] && [ -e /usr/lib/systemd/system/vws-region.service ]; then
+            systemctl disable --now vws-region.service || true
+        fi
+        ;;
+esac

@@ -18,7 +18,9 @@ TOKEN = "console-canary-768"
 NAME = "pve-test-1" if KIND == "region" else "123456789012"
 BASE = "/api/v1/admin/" + ("regions" if KIND == "region" else "aws-accounts")
 METADATA = {"set": True, "fingerprint": "abcdef12"}
-REGION = dict(name="pve-test-1", clusterName="lab", pveApiUrl="https://pve.example.org:8006",
+CA_PEM = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"
+REGION = dict(name="pve-test-1", clusterName="lab",
+              pveApiUrls=["https://pve1.example.org:8006", "https://pve2.example.org:8006"], caPem=CA_PEM,
               tokenId="root@pam!vws", regionEndpoint="https://region.example.org",
               tokenSecret=METADATA, zones=[{"letter": "a", "nodes": ["node1"]}])
 ACCOUNT = dict(awsAccountId="123456789012", roleArn="arn:aws:iam::123456789012:role/vws",
@@ -26,7 +28,8 @@ ACCOUNT = dict(awsAccountId="123456789012", roleArn="arn:aws:iam::123456789012:r
 RECORD = REGION if KIND == "region" else ACCOUNT
 SECRET_KEY = "tokenSecret" if KIND == "region" else "externalId"
 SECRET_FLAG = "--token-secret-file" if KIND == "region" else "--external-id-file"
-FIELDS = (["--cluster-name", "lab", "--pve-api-url", REGION["pveApiUrl"],
+FIELDS = (["--cluster-name", "lab", "--pve-api-url", REGION["pveApiUrls"][0],
+           "--pve-api-url", REGION["pveApiUrls"][1],
            "--token-id", REGION["tokenId"], "--region-endpoint", REGION["regionEndpoint"],
            "--zones", json.dumps(REGION["zones"])] if KIND == "region" else
           ["--role-arn", ACCOUNT["roleArn"], "--allowed-regions", "us-east-1"])
@@ -111,6 +114,10 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
     WORK = Path(work)
     secret_file = WORK / "secret"
     secret_file.write_text(SECRET + "\n")
+    ca_file = WORK / "ca.pem"
+    ca_file.write_text(CA_PEM + "\n")
+    if KIND == "region":
+        FIELDS += ["--ca-pem-file", str(ca_file)]
     token_file = WORK / "token"
     token_file.write_text(TOKEN + "\n")
     # Inspect real curl argv without substituting a fake HTTP transport.
@@ -149,7 +156,7 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             expected("GET", result={"items": [RECORD]})
             result = run(["list"])
             check("text prints all console fields", all(str(RECORD[k]) in result.stdout for k in
-                  (["name", "clusterName", "pveApiUrl", "regionEndpoint", "tokenId"]
+                  (["name", "clusterName", "regionEndpoint", "tokenId"]
                    if KIND == "region" else ["awsAccountId", "roleArn"])))
             expected("GET", result={"items": [RECORD]})
             result = run(["list", "-o", "json"], env=dict(ENV, VWS_API_TOKEN_FILE=str(token_file),
@@ -171,6 +178,26 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             run(["remove", NAME, "--yes"])
             check("remove needs no If-Match", REQUESTS[0][3] is None if REQUESTS else False)
             run(["remove", NAME], code=2)
+        if KIND == "region" and not MANUAL:
+            # The create body expected above carries every PVE address as pveApiUrls and the CA as caPem.
+            firewall = WORK / "firewall"
+            firewall.write_text("fw-canary\n")
+            backup = WORK / "backup"
+            backup.write_text("bk-canary\n")
+            expected("GET", BASE + "/" + NAME)
+            expected("PATCH", BASE + "/" + NAME, {
+                "pveApiUrls": ["https://pve3.example.org:8006"], "firewallTokenId": "fw@pve!fw",
+                "firewallTokenSecret": "fw-canary", "backupTokenId": "bk@pve!bk",
+                "backupTokenSecret": "bk-canary"})
+            result = run(["edit", NAME, "--pve-api-url", "https://pve3.example.org:8006",
+                          "--firewall-token-id", "fw@pve!fw", "--firewall-token-secret-file", str(firewall),
+                          "--backup-token-id", "bk@pve!bk", "--backup-token-secret-file", str(backup)])
+            check("extra token secrets are not printed", "fw-canary" not in result.stdout + result.stderr)
+            run(["add", NAME] + FIELDS + [SECRET_FLAG, "-", "--firewall-token-secret-file", "-"],
+                code=2, stdin=SECRET)
+            run(["add", NAME] + FIELDS[:-2] + [SECRET_FLAG, "-"], code=2, stdin=SECRET)
+            run(["add", NAME, "--firewall-token-secret", "x"], code=2)
+            run(["remove", NAME, "--firewall-token-secret-file", str(firewall), "--yes"], code=2)
         for flag in ("--token-secret", "--external-id"):
             run(["add", NAME, flag, SECRET], code=2, trace=True)
             run(["add", NAME, flag + "=" + SECRET], code=2, trace=True)
@@ -178,11 +205,17 @@ with tempfile.TemporaryDirectory(prefix="vws-admin-test-") as work:
             if not MANUAL:
                 expected("GET", BASE + "/" + NAME)
                 run(["show", NAME])
-                health = dict(status="ok", quorate=True, leader="node1",
-                              nodes=[dict(name="node1", online=True)], lastError=None)
-                expected("GET", BASE + "/" + NAME + "/health", result=health)
-                result = run(["health", NAME])
-                check("health fields", all(v in result.stdout for v in ("QUORUM", "LEADER", "ONLINE NODES", "LAST ERROR", "node1")))
+                for key, node in (("apiNode", "node1"), ("leader", "node2"), ("apiNode", None)):
+                    health = dict(status="ok", quorate=True, nodes=[dict(name="node1", online=True)],
+                                  lastError=None)
+                    if node:
+                        health[key] = node
+                    expected("GET", BASE + "/" + NAME + "/health", result=health)
+                    result = run(["health", NAME])
+                    row = result.stdout.splitlines()[-1].split("\t")
+                    check("health fields", all(v in result.stdout for v in ("QUORUM", "API NODE", "ONLINE NODES", "LAST ERROR"))
+                          and "LEADER" not in result.stdout)
+                    check("health shows " + key + " " + str(node), row[2] == (node or "-") and row[3] == "node1")
             failed = dict(REGION, lastError={"time": "2026-11-13T00:00:00Z", "message": "region registration push failed"})
             for mode in ("text", "json"):
                 expected("POST", body=create, status=201, result=failed)

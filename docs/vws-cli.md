@@ -63,12 +63,11 @@ remain vws-deploy#776. The runbook is `docs/operator/vm-install.md`.
 | `roles` | Host | Installs | Starts |
 | --- | --- | --- | --- |
 | `[etcd, global]` | a Debian VM or bare-metal machine | `vws-etcd_*.deb`, `vws-global_*.deb` | `vws-etcd`, its snapshot and defrag timers, `vws-iam`, `vws-aws-proxy`, `vws-console-api`, `vws-console` |
-| `[etcd, global, region]` | the lab host, with keepalived installed | all three | both rows, `vws-region` and keepalived |
 
-No other role list is accepted; a `region`-only host is not installed by this
-command (vws-deploy#849, #850). A host without the `region` role gets no
-`vws-region` package, no region file and no keepalived call. Supply exactly one
-`.deb` of each package the roles need.
+No other role list is accepted. The `region` role and `vip` of the per-node
+layout are refused: `vws install` installs no `vws-region`, region file or
+keepalived (vws-deploy#849); region instances come with vws-deploy#850. Supply
+exactly one `.deb` of each package the roles need.
 
 ```yaml
 # The global layer on a VM or bare metal.
@@ -84,29 +83,11 @@ memory_mib:
   etcd: 512
 ```
 
-```yaml
-# The lab host.
-profile: lab
-hosts:
-  - name: lab-1
-    address: 192.0.2.1
-    ssh_user: root
-    roles: [etcd, global, region]
-vip:
-  address: 192.0.2.10/24
-memory_mib:
-  global: 1024
-  region: 512
-  etcd: 512
-```
-
-`vip` is required with the `region` role and refused without it.
-
-The optional `memory_mib` mapping defaults to the values above. All three
+The optional `memory_mib` mapping defaults to the values above (the `region` budget is accepted but unused until #850). All three
 values must be positive whole MiB, totaling at most 2048 MiB; an over-budget
 inventory exits 2 before SSH. Installation requires the target's cgroup v2
 memory controller. It places the four global services together in
-`vws-lab-global.slice`, the region service in `vws-lab-region.slice`, and etcd
+`vws-lab-global.slice`, and etcd
 with its snapshot/defrag services in `vws-lab-etcd.slice`. Each slice gets
 `MemoryAccounting=yes`, its budget as `MemoryMax`, and `MemorySwapMax=0`.
 These are aggregate group limits, including service children, so the global
@@ -115,19 +96,16 @@ processes cannot each consume the full global budget. Drop-ins live under
 before reconciling services, including recovery after an interrupted write.
 Only the slices of the host's roles are written.
 
-With all three roles on the 8 GiB lab box this caps VWS at 2 GiB, leaves 2 GiB for the two 1 GiB
+With both roles on the 8 GiB lab box this caps VWS at 2 GiB, leaves 2 GiB for the two 1 GiB
 test VMs, and 4 GiB for PVE, the OS and other overhead. These limits are a
 budget, not measured working sets or a guarantee that an arbitrary workload
 fits. Reaching a limit can cause a cgroup OOM and service restart. Check
-`systemctl show vws-lab-global.slice vws-lab-region.slice vws-lab-etcd.slice
+`systemctl show vws-lab-global.slice vws-lab-etcd.slice
 -p MemoryCurrent -p MemoryMax -p MemorySwapMax` and journald for OOMs on the
 live box after phase 1. Keep VM admission's `host_reserve_mib: 2048` setting
 consistent with the host's measured overhead.
 
-The inventory accepts only the documented keys, one IPv4 host, and an IPv4 VIP
-with an optional prefix (default /32). The VIP uses the packaged keepalived
-template's `vmbr0` interface and router id 83. Use a dedicated lab host and
-reserve that router id. Unknown, duplicate and secret-looking keys are refused.
+The inventory accepts only the documented keys and one IPv4 host. Unknown, duplicate and secret-looking keys are refused.
 
 Inputs by role, all checked before SSH:
 
@@ -157,22 +135,18 @@ Inputs by role, all checked before SSH:
   retained CA), deleting files does not help and the rerun exits 2: reissue the member pair under the
   same CA with the new address and 127.0.0.1, then replace `member.crt` and `member.key`, keeping the
   separate client credentials. With TLS under your own CA, do the same with that CA.
-- `region`: `region-kek` and `region.key`, always yours to supply as before
-  (`packaging/vws-region/vws-region.service`).
+- `region`: not read. Region instances take their key and certificates from `/etc/vws-region/<region>/`
+  (`packaging/vws-region/README.md`); installing them with this command is vws-deploy#850.
 
 `iam-kek/` requires `active` and key-id files. Symlinks and parent traversal in
 credential sources are refused. Private files go to root-owned 0600 files in
-`/etc/vws/credentials` (0700), except `/etc/vws/region.key` (0600). Public
+`/etc/vws/credentials` (0700). Public
 certificates and `global.yaml` go to `/etc/vws` (0644). Package,
 credential and config contents travel only on SSH stdin.
 
 Installation starts etcd, then the global units, and runs each shipped readiness
-helper; the etcd probe is repeated for up to 30 seconds after the start. On a
-`region` host it then starts `vws-region`, runs its readiness helper and only
-after every check passes enables keepalived.
-
-Changing a file or package on a `region` host disables keepalived first; a
-failed check disables it and exits 1 naming the host and check. A rerun compares
+helper; the etcd probe is repeated for up to 30 seconds after the start. A
+failed check exits 1 naming the host and check. A rerun compares
 file bytes, ownership, permissions and package versions, restarts changed
 services, and preserves unchanged files. It also reruns readiness, so retrying
 after an interruption is safe. Text prints one `changed` or `unchanged`
@@ -191,9 +165,14 @@ to its HTTPS origin and supply a console bearer token through
 `VWS_API_TOKEN_FILE` (preferred) or `VWS_API_TOKEN` in the environment.
 HTTP is accepted only on loopback for local testing. Needs curl and python3.
 
-Add requires `--cluster-name`, `--pve-api-url`, `--token-id`,
-`--region-endpoint`, and `--token-secret-file PATH|-`. Optional `--ca-pem-file`
-reads PEM certificates, and `--zones` takes a JSON array of
+Add requires `--cluster-name`, `--pve-api-url`, `--ca-pem-file`, `--token-id`,
+`--region-endpoint`, and `--token-secret-file PATH|-`. `--pve-api-url` can repeat,
+one HTTPS origin per node of the cluster (1 to 16); the CLI sends them as `pveApiUrls`.
+`--ca-pem-file` reads the PEM certificates that sign the PVE nodes and is sent as
+`caPem`. Optional `--firewall-token-id` and `--backup-token-id` name separate
+tokens, with `--firewall-token-secret-file` and `--backup-token-secret-file`; send
+the secret whenever you set a new token ID. At most one file option may read `-`.
+`--zones` takes a JSON array of
 `{"letter":"a","nodes":["node1"]}` objects (defaults to `[]` on add).
 Edit accepts the same options, all optional; omitted fields stay unchanged.
 Test takes only an optional `--token-secret-file PATH|-`; without it the API
@@ -203,7 +182,8 @@ skips PVE checks because only the region daemon retains the saved secret.
 export VWS_API_URL=https://console.example.org
 export VWS_API_TOKEN_FILE="$HOME/.config/vws/console-token"
 scripts/vws region add pve-test-1 --cluster-name lab \
-  --pve-api-url https://pve.example.org:8006 --token-id 'root@pam!vws' \
+  --pve-api-url https://pve1.example.org:8006 --pve-api-url https://pve2.example.org:8006 \
+  --ca-pem-file pve-ca.pem --token-id 'root@pam!vws' \
   --region-endpoint https://region.example.org --token-secret-file -
 scripts/vws region test pve-test-1
 scripts/vws region edit pve-test-1 --zones '[{"letter":"a","nodes":["node1"]}]'
@@ -217,9 +197,9 @@ GET retries transient failures at most twice with bounded backoff; each curl
 attempt has a 20-second deadline and the whole call a 65-second deadline.
 `--dry-run` prints the method and path without authentication or a request.
 
-Text lists name, cluster name, PVE API URL, region endpoint, token ID,
+Text lists name, cluster name, PVE API URLs, region endpoint, token ID,
 secret metadata (`set · fingerprint`), and zones. Health prints status, quorum,
-leader, online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
+the API node (`apiNode`, or `leader` from an older daemon), online nodes and last error. Test prints STEP/RESULT/MESSAGE and exits
 1 on any FAIL, including with `-o json`. JSON output passes the API JSON through
 (DELETE 204 has no body). A 403 prints the command's missing `vws:Admin*`
 permission and requestId, and exits 3. Other API errors print code, message and

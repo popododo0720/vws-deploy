@@ -82,7 +82,8 @@ def parse(kind, argv):
     if kind == "project":
         return parse_project(argv)
     for arg in argv:
-        if arg.split("=", 1)[0] in ("--token-secret", "--external-id"):
+        if arg.split("=", 1)[0] in ("--token-secret", "--external-id", "--firewall-token-secret",
+                                    "--backup-token-secret"):
             fail("secrets require --token-secret-file or --external-id-file")
     p = Parser(prog="vws " + kind, allow_abbrev=False)
     commands = ["add", "edit", "remove", "list", "test"]
@@ -90,8 +91,9 @@ def parse(kind, argv):
         commands += ["show", "health"]
     p.add_argument("operation", choices=commands)
     p.add_argument("name", nargs="?")
-    fields = ({"--cluster-name": "clusterName", "--pve-api-url": "pveApiUrl",
-               "--token-id": "tokenId", "--region-endpoint": "regionEndpoint",
+    fields = ({"--cluster-name": "clusterName",
+               "--token-id": "tokenId", "--firewall-token-id": "firewallTokenId",
+               "--backup-token-id": "backupTokenId", "--region-endpoint": "regionEndpoint",
                "--zones": "zones", "--ca-pem-file": "caPem"}
               if kind == "region" else
               {"--role-arn": "roleArn", "--allowed-regions": "allowedRegions"})
@@ -99,6 +101,11 @@ def parse(kind, argv):
     for flag, field in fields.items():
         p.add_argument(flag, dest=field)
     p.add_argument(secret_flag, dest="secret_file")
+    if kind == "region":
+        # One or more PVE API addresses of the same cluster, in the order given.
+        p.add_argument("--pve-api-url", dest="pveApiUrls", action="append")
+        p.add_argument("--firewall-token-secret-file", dest="firewall_secret_file")
+        p.add_argument("--backup-token-secret-file", dest="backup_secret_file")
     a = p.parse_args(argv)
     if (a.operation == "list") != (a.name is None):
         p.error("")
@@ -106,14 +113,21 @@ def parse(kind, argv):
         pattern = r"pve-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+" if kind == "region" else r"[0-9]{12}"
         if not re.fullmatch(pattern, a.name) or len(a.name) > 63:
             fail("invalid region name or AWS account ID")
-    body = {field: getattr(a, field) for field in fields.values()
-            if getattr(a, field) is not None}
+    names = list(fields.values()) + (["pveApiUrls"] if kind == "region" else [])
+    body = {field: getattr(a, field) for field in names if getattr(a, field) is not None}
+    extra_files = {"firewallTokenSecret": getattr(a, "firewall_secret_file", None),
+                   "backupTokenSecret": getattr(a, "backup_secret_file", None)}
     if a.operation not in ("add", "edit") and body:
         fail("registration fields are accepted only by add and edit")
+    if any(extra_files.values()) and a.operation not in ("add", "edit"):
+        fail("secret file is not accepted by this operation")
+    inputs = [path for path in (a.secret_file, getattr(a, "caPem", None), *extra_files.values()) if path == "-"]
+    if len(inputs) > 1:
+        fail("only one input file may use stdin")
     if a.secret_file and a.operation not in (("add", "edit", "test") if kind == "region" else ("add", "edit")):
         fail("secret file is not accepted by this operation")
     if a.operation == "add":
-        required = (["clusterName", "pveApiUrl", "tokenId", "regionEndpoint"]
+        required = (["clusterName", "pveApiUrls", "caPem", "tokenId", "regionEndpoint"]
                     if kind == "region" else ["roleArn", "allowedRegions"])
         if not a.secret_file or any(field not in body for field in required):
             fail("add requires registration fields and a secret file; see docs/vws-cli.md")
@@ -130,9 +144,10 @@ def parse(kind, argv):
     if "allowedRegions" in body:
         body["allowedRegions"] = body["allowedRegions"].split(",")
     if "caPem" in body:
-        if body["caPem"] == "-" and a.secret_file == "-":
-            fail("only one input file may use stdin")
         body["caPem"] = read_file(body["caPem"])
+    for field, path in extra_files.items():
+        if path:
+            body[field] = read_file(path)
     if a.secret_file:
         body["tokenSecret" if kind == "region" else "externalId"] = read_file(a.secret_file)
     if a.operation == "edit" and not body:
@@ -219,13 +234,15 @@ def text_output(kind, operation, data, credentials):
         for step in data["steps"]:
             emit("\t".join(str(step[k]) for k in ("name", "result", "message")))
     elif operation == "health":
-        emit("STATUS\tQUORUM\tLEADER\tONLINE NODES\tLAST ERROR")
+        emit("STATUS\tQUORUM\tAPI NODE\tONLINE NODES\tLAST ERROR")
         nodes = ",".join(n["name"] for n in data["nodes"] if n["online"])
-        emit(f"{data['status']}\t{data['quorate']}\t{data['leader'] or '-'}\t"
+        # A daemon from before the quorum gate reports `leader`; one from after reports `apiNode`.
+        api_node = data.get("apiNode") or data.get("leader")
+        emit(f"{data['status']}\t{data['quorate']}\t{api_node or '-'}\t"
               f"{nodes or '-'}\t{(data.get('lastError') or {}).get('message', '-')}")
     elif data is not None:
         fields = (["project", "pools", "awsAccounts"] if kind == "project" else
-                  ["name", "clusterName", "pveApiUrl", "regionEndpoint", "tokenId", "tokenSecret", "zones"]
+                  ["name", "clusterName", "pveApiUrls", "regionEndpoint", "tokenId", "tokenSecret", "zones"]
                   if kind == "region" else ["awsAccountId", "roleArn", "externalId", "allowedRegions"])
         emit("\t".join(fields))
         for item in data["items"] or [] if operation == "list" else [data]:
@@ -275,7 +292,8 @@ def main():
               "remove": "AdminRemove" + suffix}.get(a.operation, "AdminList" + suffix + "s")
     if kind == "project":
         action = "AdminMapProject"
-    credentials = (token, body.get("tokenSecret"), body.get("externalId"))
+    credentials = (token, body.get("tokenSecret"), body.get("externalId"),
+                   body.get("firewallTokenSecret"), body.get("backupTokenSecret"))
     with tempfile.TemporaryDirectory(prefix="vws-admin-") as directory:
         etag = None
         if a.operation == "edit":

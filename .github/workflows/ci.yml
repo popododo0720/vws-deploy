@@ -75,14 +75,48 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim sh -ec '
             apt-get update
-            apt-get install -y --no-install-recommends git python3 lintian shellcheck sudo curl
+            apt-get install -y --no-install-recommends git python3 lintian shellcheck curl
             packaging/vws-region/test.sh
             mkdir -p build
             printf "#!/bin/sh\nexit 0\n" > build/region-stub
             chmod +x build/region-stub
-            packaging/vws-region/build.sh 0.0.0-1 build/region-stub build/region-stub build
+            packaging/vws-region/build.sh 0.0.0-1 build/region-stub build
             packaging/vws-region/test-install.sh /src/build/vws-region_0.0.0-1_amd64.deb
           '
+
+  # The real daemon, built from the console-api commit the release pins, must accept the flags the unit passes,
+  # and that API must accept the region registration the CLI sends.
+  region-flags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check out the pinned console-api
+        run: |
+          source scripts/versions.env
+          git init -q /tmp/console-api
+          git -C /tmp/console-api fetch -q --depth 1 https://github.com/popododo0720/vws-console-api.git "$GLOBAL_CONSOLE_API_REF"
+          git -C /tmp/console-api checkout -q --detach FETCH_HEAD
+          test "$(git -C /tmp/console-api rev-parse HEAD)" = "$GLOBAL_CONSOLE_API_REF"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: /tmp/console-api/go.mod
+          cache: false
+
+      - name: Run the unit flags against the pinned daemon
+        run: |
+          (cd /tmp/console-api && CGO_ENABLED=0 go build -trimpath -o /tmp/vws-region ./cmd/vws-region)
+          mkdir -p build/flags-test
+          python3 packaging/vws-region/test-flags.py packaging/vws-region build/flags-test /tmp/vws-region
+
+      # The pinned API's own validator must accept the body `vws region add` sends (two --pve-api-url).
+      - name: Check the region registration body against the pinned API validator
+        run: |
+          python3 tests/vws/region_contract.py build/region-contract build/region-contract/body.json
+          cp tests/vws/region_contract_test.go.txt /tmp/console-api/internal/surface/console/vws_deploy_region_contract_test.go
+          (cd /tmp/console-api && VWS_REGION_BODY="$GITHUB_WORKSPACE/build/region-contract/body.json" \
+            go test -count=1 -run TestVWSDeployRegionAddBody ./internal/surface/console/)
 
   check:
     runs-on: ubuntu-latest

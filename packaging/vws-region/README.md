@@ -1,137 +1,78 @@
 # vws-region
 
-Install the same release on every PVE node. This package does not install a PVE
-cluster or modify VM definitions, snippets or volumes. It installs
-`/usr/bin/vws-region`, `/usr/lib/vws/vws-region-helper`, the readiness probe,
-systemd unit, sudoers policy and `/etc/vws/region.yaml`.
+One `vws-region@<region>` instance serves one Proxmox cluster. Install the package on
+the global host (the default), on a VM inside the cluster or on a separate machine. It
+does not go on a Proxmox node, and it needs no PVE, `/etc/pve`, sudo or keepalived. The
+daemon reaches the cluster API at the addresses and CA it receives in the region
+registration; it keeps its state in `registration.json` under its own state directory.
+
+The package installs `/usr/bin/vws-region`, `/usr/lib/vws/run-region`, the readiness
+probe `/usr/lib/vws/check-region-ready`, the template unit `vws-region@.service`, the
+examples `region.yaml` and `region.env` under `/usr/share/vws-region/examples/`, and an
+empty `/etc/vws-region/`. It does not modify VMs, storage or a PVE cluster.
 
 ## Build and install
 
-Build both Linux amd64 binaries from the matching vws-console-api release, then:
+Build the Linux amd64 binary from the matching vws-console-api release, then:
 
 ```sh
-packaging/vws-region/build.sh 1.0.0-1 ./vws-region ./vws-region-helper ./build
+packaging/vws-region/build.sh 1.0.0-1 ./vws-region ./build
 sudo apt-get install ./build/vws-region_1.0.0-1_amd64.deb
 ```
 
-The script packages supplied executables; it does not compile or download them.
-CI uses executable shell stubs to test packaging, not daemon behavior. Production
-inputs must be Linux amd64 binaries with their runtime dependencies available.
-Run `packaging/vws-region/test.sh` for package lint, policy and readiness tests.
-`test-install.sh` is destructive to its fake data and runs only in a disposable
-Debian container.
+The script packages the supplied executable; it does not compile or download it. CI uses
+an executable shell stub to test packaging, not daemon behavior. Run
+`packaging/vws-region/test.sh` for package lint, the two-instance test with a stub daemon
+and the unit checks. `test-install.sh` runs only in a disposable Debian container.
 
-The service is deliberately not started or enabled during installation: provision
-the node settings and certificates first. Edit `/etc/vws/region.yaml` to name
-existing pools, bridges, template selectors and storage. The example is read-only.
-Registration is read from `/etc/pve/vws/registration.json`, overriding the old
-binary default under `priv/`. Operator registration must match the binary release.
+## One instance per cluster
 
-During configure, postinst creates the lease directory `/etc/pve/vws/` and the helper's private and lock
-directories `/etc/pve/priv/vws/` and `/etc/pve/priv/lock/vws-region/` only when
-`/proc/self/mounts` lists `/dev/fuse` mounted at `/etc/pve` with filesystem type
-`fuse` (pmxcfs). A plain directory or any other mount is left unchanged. Repeated
-configure runs preserve existing data, and a symlink at any of those three paths is refused.
-The package never changes ownership or permissions on pmxcfs and retains the
-directory on removal and purge.
+The instance name is the region name, for example `pve-seoul-1`. For each instance
+provide, as root:
 
-Provision a root-owned, mode 0600, 32-byte raw KEK at
-`/etc/vws/credentials/region-kek` identically on each node. Provision the region
-certificate at `/etc/vws/region.crt`, its root-only key at `/etc/vws/region.key`,
-and global client CA at `/etc/vws/global-ca.pem`. Certificates must cover the VIP
-and use the appropriate region/global trust. The unit loads both private inputs
-through systemd credentials; no secret is supplied in flags or Environment.
-Restrict the source credential directory to root.
+| Path | Content |
+| --- | --- |
+| `/etc/vws-region/<region>.env` | `VWS_REGION_ADDR` (mTLS API listen address) and `VWS_REGION_OPS_ADDR` (health and metrics, keep it on loopback). Optional `VWS_REGION_TLS_CERT` and `VWS_REGION_TLS_CA`. |
+| `/etc/vws-region/<region>/region.yaml` | The node-local configuration; see the example. |
+| `/etc/vws-region/<region>/region.crt` | Server certificate for the address the global host uses. |
+| `/etc/vws-region/<region>/region.key` | Its private key, root-only. |
+| `/etc/vws-region/<region>/global-ca.pem` | CA of the global client certificate. |
 
-The KEK lives in two places. The source at `/etc/vws/credentials/region-kek`
-is root-owned 0600, and only root reads it. `LoadCredential=region-kek` in
-`vws-region.service` copies it to `$CREDENTIALS_DIRECTORY/region-kek`, which
-systemd makes root-owned mode 0440 with an ACL. That ACL lets the `vws-region`
-service user read the copy, and no one else gets it. vws-region accepts group
-read only inside a root-owned credentials directory that no group or world can
-write. Anywhere else it refuses a KEK that is group- or world-readable. Don't
-point `CREDENTIALS_DIRECTORY` elsewhere with a drop-in or `Environment=`.
-Then run:
+`run-region` reads the `.env` file as plain `KEY=VALUE` lines; it never sources it, rejects
+unknown keys and unsafe values, and the file holds no secret. The certificate and CA paths
+default to the directory above. The private key reaches the daemon only through
+`LoadCredential=region-key:`, never through a flag or `Environment=`. Two instances on one
+host need different `VWS_REGION_ADDR` and `VWS_REGION_OPS_ADDR` ports. The ops address of
+the global API is `127.0.0.1:8083`, so do not use that one.
+
+Modes: `/etc/vws-region/<region>/`, `region.yaml`, `region.crt` and `global-ca.pem` must be
+readable by the `vws-region` account (directory 0755, files 0644, root-owned). Only
+`region.key` is secret: root-owned 0600; systemd reads it as root and hands it to the daemon.
+
+The service is not started or enabled during installation. Then run:
 
 ```sh
-sudo systemctl enable --now vws-region.service
-sudo /usr/lib/vws/check-region-ready
+sudo systemctl enable --now vws-region@pve-seoul-1.service
+sudo /usr/lib/vws/check-region-ready pve-seoul-1
 ```
 
-The mTLS API listens on port 8443. Ops listens only on `127.0.0.1:8085`.
-The probe uses curl because console-api main has no `vws-region check` subcommand.
-One failed request removes readiness; keepalived supplies bounded repeat probes.
+The probe reads `VWS_REGION_OPS_ADDR` from the instance's `.env` and asks `/readyz`
+through curl. An instance that is not registered yet is not ready.
 
-## Helper permission boundary
+## State and removal
 
-Only root owns the installed helper and sudoers policy. `registration-write` and
-`lease-write` have exact argument matches without arguments. `token-write <fp>`,
-`token-read <fp>` and `token-delete <fp>` each require exactly one fingerprint:
-the token's lowercase hex SHA-256, matching `^[0-9a-f]{64}$`. Argument-free token
-verbs, uppercase fingerprints, wrong lengths and extra arguments are denied.
-Named operations use anchored POSIX extended regexes over the complete
-verb-and-name argument string, with no globs.
-`lock` and `unlock` require a 1-64 character name starting with an ASCII letter
-or digit and containing only ASCII letters, digits, underscores and hyphens.
-Snippet operations require `vws-<lowercase-hex UUID>-user.yaml`, matching the
-helper's exact grammar. Empty names, extra words and traversal are denied by
-sudo before the helper runs. The helper independently validates names and bounds
-stdin to 1 MiB; contents are passed there, never in arguments.
+The unit declares `StateDirectory=vws-region/%i` with `StateDirectoryMode=0700`, and the
+daemon runs with `-region %i -state-dir /var/lib/vws-region/%i`. The directory holds
+`registration.json` (mode 0600), which includes the PVE token secret. The daemon refuses a
+directory that is not private. The package never creates, changes or deletes state and
+operator files.
 
-Argument regexes require sudo 1.9.10 or newer, declared in the package dependency.
-Debian 12 bookworm (PVE 8) supplies sudo 1.9.13p3 and satisfies this minimum.
-`test-install.sh` tests the installed policy with real Debian sudo, allowing
-valid names and denying empty, extra, traversal, overlength and malformed input.
+Upgrading from the per-node release: the new package stops and disables the old
+`vws-region.service` (`preinst`), no longer ships that unit, and removes the old
+`/etc/sudoers.d/vws-region` rule. It leaves `/etc/vws/region.yaml` and
+`/etc/vws/credentials/region-kek` for you to move or delete; nothing reads them.
 
-Sudo strips `CREDENTIALS_DIRECTORY`, so the helper runs as root and reads the
-root-owned 0600 source `/etc/vws/credentials/region-kek` directly, refusing it
-unless it is root-owned with no group or world bits.
-Postinst ensures the credentials directory is root:root 0700 and refuses an
-existing key unless it is a regular, non-symlink, root:root 0600, 32-byte file.
-It never generates a key. Provision the same raw key securely on all nodes,
-for example with `sudo install -o root -g root -m 0600 ./region-kek
-/etc/vws/credentials/region-kek`, then remove the transport copy. Invoke with
-`sudo -n /usr/lib/vws/vws-region-helper <operation> [argument]` from the credential-bearing
-service context. The package grants no shell, arbitrary path or unrestricted
-helper invocation. `visudo` checks syntax; `check-policy.py` separately rejects
-valid but broadened grants. The daemon release must implement the corresponding
-sudo invocation and credential contract; this package does not change API code.
-The fingerprint token verbs require the helper release containing
-vws-console-api#904.
-
-## VIP configuration and failover test
-
-Install keepalived on every node. Adapt
-`/usr/share/doc/vws-region/examples/keepalived.conf` into the operator's
-`/etc/keepalived/keepalived.conf`; preserve any existing VRRP instances. Set the
-interface, VIP/prefix and an unused shared virtual router ID. Set distinct node
-priorities. Allow VRRP protocol 112 between the nodes, and mTLS port 8443 from
-the global layer. Do not expose ops outside loopback.
-
-The example starts in BACKUP and `init_fail` prevents VIP ownership before a
-successful probe. A zero script weight puts the instance in FAULT on failure,
-instead of merely lowering priority and leaving an unready sole node eligible.
-It uses a 2-second interval, one failure and two recovery successes.
-
-On an isolated test PVE cluster, after registration and certificate provisioning:
-
-1. Validate each adapted configuration with `keepalived --config-test` and start
-   keepalived. Check readiness on every node and `ip address show dev vmbr0`;
-   exactly one ready node must own the VIP.
-2. Send an authenticated `/internal/v1/version` request through the VIP using
-   curl with the global client certificate, key and region CA. Confirm success.
-3. Stop `vws-region` on the VIP owner. Within 10 seconds confirm that it loses the
-   VIP, one ready peer gains it, and the same mTLS request succeeds.
-4. Restart that daemon; confirm readiness and repeat the stop on the new owner.
-   Restart keepalived and confirm an unready node never gains the VIP at startup.
-5. Make every node unready (stop each daemon). Confirm no node holds the VIP.
-   Restore one daemon and confirm the VIP returns only after successful probes.
-
-Record timestamps, node addresses and journal output for both services.
-This procedure is deferred until a phase 1 test cluster exists.
-
-`apt remove vws-region` stops the service and lets dpkg remove package files,
-retaining conffiles, the system account and all operator data. `apt purge` also
-removes the package's conffiles; maintainer scripts never delete PVE data or
-operator credentials. Remove the operator's keepalived instance separately.
-Leader-aware upgrades remain phase 2.
+`apt remove vws-region` stops all `vws-region@*` instances and removes the package files.
+It keeps `/etc/vws-region`, `/var/lib/vws-region` and the `vws-region` system account, also
+on purge. Before you move or delete an instance, delete its token in PVE (Datacenter,
+Permissions, API Tokens), because the old host still holds the secret.

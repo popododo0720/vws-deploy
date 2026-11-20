@@ -31,7 +31,7 @@ if c == "test ! -f /var/lib/vws-install/pending || echo pending":
 elif c == "rm -f /var/lib/vws-install/pending":
     (s / "pending").unlink(missing_ok=True)
 elif "dpkg-query" in c:
-    name = next(n for n in ("vws-etcd", "vws-global", "vws-region") if n in c)
+    name = next(n for n in ("vws-etcd", "vws-global") if n in c)
     (s / "current-package").write_text(name)
     if (s / name).exists():
         status = os.environ.get("INSTALL_PACKAGE_STATE", "ii ") if name == "vws-global" else "ii "
@@ -103,19 +103,19 @@ class Install(unittest.TestCase):
                     good.replace("name: lab-1", "name: " + "a" * 64),
                     good.replace("name: lab-1", "name: '-oProxyCommand=bad'"),
                     good.replace("address: 192.0.2.1", "address: 192.0.2.1;bad"),
-                    good.replace("roles: [etcd, global, region]", "roles: [etcd]"),
-                    good.replace("roles: [etcd, global, region]", "roles: [region]"),
-                    good.replace("roles: [etcd, global, region]", "roles: [global]"),
-                    good.replace("roles: [etcd, global, region]", "roles: [etcd, region]"),
-                    good.replace("roles: [etcd, global, region]", "roles: [etcd, global]"),
-                    good.replace("roles: [etcd, global, region]", "roles: [region, region]"),
-                    good.replace("vip:\n  address: 192.0.2.10/24\n", ""),
-                    good.replace("192.0.2.10/24", "192.0.2.10/33"),
+                    good.replace("roles: [etcd, global]", "roles: [etcd]"),
+                    good.replace("roles: [etcd, global]", "roles: [region]"),
+                    good.replace("roles: [etcd, global]", "roles: [global]"),
+                    good.replace("roles: [etcd, global]", "roles: [etcd, region]"),
+                    good.replace("roles: [etcd, global]", "roles: [etcd, global, region]"),
+                    good + "vip:\n  address: 192.0.2.10/24\n",
+                    good.replace("roles: [etcd, global]", "roles: [etcd, global, region]")
+                    + "vip:\n  address: 192.0.2.10/24\n",
+                    good.replace("roles: [etcd, global]", "roles: [etcd, global, global]"),
                     good + "password: hidden\n", good + "---\nprofile: lab\n",
-                    good.replace("roles: [etcd, global, region]", "roles: [{secret: hidden}]"),
+                    good.replace("roles: [etcd, global]", "roles: [{secret: hidden}]"),
                     "profile: lab\nhosts: &loop [*loop]\n",
-                    good.replace("name: lab-1", "? [bad, key]\n    : value"),
-                    good.replace("roles: [etcd, global, region]", "roles: [etcd, global, region, region]")):
+                    good.replace("name: lab-1", "? [bad, key]\n    : value")):
             with self.subTest(bad=bad):
                 path.write_text(bad)
                 self.refused()
@@ -130,18 +130,19 @@ class Install(unittest.TestCase):
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         units = [json.loads(line) for line in (self.work / "state/units").read_text().splitlines()]
-        for group, mib in (("global", 1024), ("region", 512), ("etcd", 512)):
+        for group, mib in (("global", 1024), ("etcd", 512)):
             slice_name = f"vws-lab-{group}.slice"
             self.assertTrue(any(f"/{slice_name}.d/50-vws-memory.conf" in row["command"]
                                 and f"MemoryMax={mib}M\nMemorySwapMax=0\n" in row["data"]
                                 for row in units), group)
+        # A global host has no region slice and no unit of the removed per-node vws-region.service.
+        self.assertFalse(any("region" in row["command"] for row in units))
         for service, group in (("vws-iam", "global"), ("vws-aws-proxy", "global"),
                                ("vws-console-api", "global"), ("vws-console", "global"),
-                               ("vws-region", "region"), ("vws-etcd", "etcd"),
+                               ("vws-etcd", "etcd"),
                                ("vws-etcd-snapshot", "etcd"), ("vws-etcd-defrag", "etcd")):
-            limit = "MemoryMax=512M\n" if group == "region" else ""
             self.assertTrue(any(f"/{service}.service.d/50-vws-memory.conf" in row["command"]
-                                and row["data"] == f"[Service]\nSlice=vws-lab-{group}.slice\n{limit}"
+                                and row["data"] == f"[Service]\nSlice=vws-lab-{group}.slice\n"
                                 for row in units), service)
         log = (self.work / "state/argv").read_text()
         self.assertLess(log.index("systemctl daemon-reload"), log.index("systemctl is-enabled"))
@@ -167,14 +168,13 @@ class Install(unittest.TestCase):
         result = self.run_install()
         self.assertEqual(result.returncode, 1, result.stderr)
         log = (self.work / "state/argv").read_text()
-        self.assertNotIn("enable --now keepalived", log)
         self.env.pop("INSTALL_FAIL")
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("MemoryMax=768M", (self.work / "state/units").read_text())
         units = [json.loads(line) for line in (self.work / "state/units").read_text().splitlines()]
-        self.assertTrue(any("/vws-region.service.d/50-vws-memory.conf" in row["command"]
-                            and row["data"] == "[Service]\nSlice=vws-lab-region.slice\nMemoryMax=768M\n"
+        self.assertTrue(any("/vws-iam.service.d/50-vws-memory.conf" in row["command"]
+                            and row["data"] == "[Service]\nSlice=vws-lab-global.slice\n"
                             for row in units))
         self.assertFalse((self.work / "state/pending").exists())
         again = self.run_install(["-o", "json", *self.args])
@@ -188,7 +188,6 @@ class Install(unittest.TestCase):
         self.assertIn("memory controller failed", result.stderr)
         log = (self.work / "state/argv").read_text()
         self.assertNotIn("apt-get install", log)
-        self.assertNotIn("enable --now keepalived", log)
 
     def test_member_name_boundaries(self):
         path = self.work / "hosts.yaml"
@@ -223,8 +222,7 @@ class Install(unittest.TestCase):
         for name in ("admin-kek", "iam-kek/k1"):
             self.assertEqual(len(base64.b64decode(first[name][0], validate=False)), 32, name)
         self.assertEqual(first["iam-kek/active"][0], b"k1\n")
-        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source", "region-kek",
-                    "region.key"}
+        supplied = {"console-token", "vws-access-key", "vws-secret-key", "aws-source"}
         self.assertEqual({name for name, (_, mode) in first.items() if mode != 0o600}, supplied)
         for ca, leaf, san in (("ca.crt", "member.crt", "IP Address:192.0.2.1, IP Address:127.0.0.1, DNS:lab-1"),
                               ("etcd-ca.pem", "api-etcd.pem", ""), ("etcd-ca.pem", "iam-etcd.pem", ""),
@@ -405,21 +403,11 @@ class Install(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         log = (self.work / "state/argv").read_text()
         for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
-                     "vws-aws-proxy", "vws-console-api", "vws-console", "vws-region", "keepalived"):
+                     "vws-aws-proxy", "vws-console-api", "vws-console"):
             self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
             self.assertIn(f"systemctl enable --now {unit} ", log)
 
-    def global_host(self):
-        """A Debian VM or bare-metal host: no PVE, so no region inputs and no vws-region package."""
-        path = self.work / "hosts.yaml"
-        path.write_text(path.read_text().replace("roles: [etcd, global, region]", "roles: [etcd, global]")
-                        .replace("vip:\n  address: 192.0.2.10/24\n", ""))
-        for name in ("region-kek", "region.key"):
-            (self.work / "credentials" / name).unlink()
-        next((self.work / "packages").glob("vws-region_*.deb")).unlink()
-
     def test_global_host_gets_no_region_and_no_keepalived(self):
-        self.global_host()
         source = self.remove_generated()
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -435,21 +423,21 @@ class Install(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
 
-    def test_global_host_readiness_failure_does_not_touch_keepalived(self):
-        self.global_host()
+    def test_region_role_and_vip_are_refused(self):
+        """The per-node region layout is gone: the lab path installs no vws-region and no keepalived."""
+        path = self.work / "hosts.yaml"
+        good = path.read_text()
+        for bad in (good.replace("roles: [etcd, global]", "roles: [etcd, global, region]")
+                    + "vip:\n  address: 192.0.2.10/24\n", good + "vip:\n  address: 192.0.2.10/24\n"):
+            with self.subTest(bad=bad):
+                path.write_text(bad)
+                self.assertEqual(self.refused().stderr, "vws: invalid inventory\n")
+
+    def test_global_host_readiness_failure(self):
         self.env["INSTALL_FAIL"] = "check-global-ready api"
         result = self.run_install()
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("lab-1: api readiness failed", result.stderr)
-        self.assertNotIn("keepalived", (self.work / "state/argv").read_text())
-
-    def test_role_inputs(self):
-        self.global_host()
-        path = self.work / "hosts.yaml"
-        good = path.read_text()
-        path.write_text(good + "vip:\n  address: 192.0.2.10/24\n")
-        self.assertEqual(self.refused().stderr,
-                         "vws: vip is required with the region role and refused without it\n")
 
     def test_symlink_and_traversal(self):
         path = self.work / "credentials/admin-kek"
@@ -478,7 +466,6 @@ class Install(unittest.TestCase):
         before = [(p, p.read_bytes()) for p in (self.work / "hosts.yaml", self.work / "global.yaml")]
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("keepalived changed", result.stdout)
         again = self.run_install(["-o", "json", *self.args])
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
@@ -491,11 +478,9 @@ class Install(unittest.TestCase):
             self.assertNotIn((self.work / "credentials" / name).read_text().strip(), output)
         log = (self.work / "state/argv").read_text()
         self.assertLess(log.index("etcd/check-ready"), log.index("check-global-ready"))
-        self.assertLess(log.index("check-global-ready"), log.index("check-region-ready"))
-        self.assertLess(log.index("check-region-ready"), log.index("enable --now keepalived"))
 
     def test_readiness_failure(self):
-        for probe in ("etcd/check-ready", "check-global-ready api", "check-region-ready"):
+        for probe in ("etcd/check-ready", "check-global-ready api"):
             with self.subTest(probe=probe):
                 (self.work / "state/argv").unlink(missing_ok=True)
                 self.env["INSTALL_FAIL"] = probe
@@ -504,8 +489,6 @@ class Install(unittest.TestCase):
                 self.assertIn("lab-1:", result.stderr)
                 self.assertIn("readiness failed", result.stderr)
                 log = (self.work / "state/argv").read_text()
-                self.assertNotIn("enable --now keepalived", log)
-                self.assertIn("disable --now keepalived", log)
                 self.assertNotIn("fixture-private", result.stdout + result.stderr + log)
 
     def test_interrupted_install_restarts_services(self):

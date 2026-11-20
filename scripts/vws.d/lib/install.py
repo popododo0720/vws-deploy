@@ -16,9 +16,9 @@ import time
 import globalconfig
 import yaml
 
-# A host is the global layer on a VM or bare metal (etcd and global), or the lab host that also has the
-# region role, as before. A region-only host is not installed here (vws-deploy#850).
-ROLES = ({"etcd", "global"}, {"etcd", "global", "region"})
+# A host is the global layer on a VM or bare metal: etcd and global. The region role and its VIP belonged
+# to the per-node vws-region layout, which no longer exists; region instances come with vws-deploy#850.
+ROLES = ({"etcd", "global"},)
 PRIVATE = (
     "ca.crt member.crt member.key client.crt client.key admin-kek console-token "
     "vws-access-key vws-secret-key api-etcd-key.pem api-mtls-key.pem aws-source "
@@ -26,12 +26,11 @@ PRIVATE = (
 ).split()
 PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam.pem".split()
 SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str,
-                                   "roles": [str]}], "vip": {"address": str},
+                                   "roles": [str]}],
           "memory_mib": {"global": str, "region": str, "etcd": str}}
 LAB_MEMORY_MIB = {"global": 1024, "region": 512, "etcd": 512}
 LAB_SERVICES = {
     "global": ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"),
-    "region": ("vws-region",),
     "etcd": ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"),
 }
 PACKAGES = {
@@ -39,7 +38,6 @@ PACKAGES = {
                  [("etcd", "CREDENTIALS_DIRECTORY=/run/credentials/vws-etcd.service /usr/lib/vws/etcd/check-ready")]),
     "vws-global": ("global", ["vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"],
                    [(p, "/usr/lib/vws/check-global-ready " + p) for p in ("iam", "proxy", "api", "console")]),
-    "vws-region": ("region", ["vws-region"], [("region", "/usr/lib/vws/check-region-ready")]),
 }
 # The etcd probe asks once; a unit that was just started gets 30 seconds to answer.
 RETRY = "n=0; until {}; do n=$((n + 1)); test $n -lt 15 || exit 1; sleep 2; done"
@@ -126,10 +124,6 @@ def inventory(path):
                 or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", host.get("ssh_user", "root"))):
             raise Invalid("invalid lab host")
         ipaddress.IPv4Address(host["address"])
-        if ("vip" in cfg) != ("region" in roles):
-            raise Invalid("vip is required with the region role and refused without it")
-        if "vip" in cfg:
-            ipaddress.IPv4Interface(cfg["vip"]["address"])
         return cfg
     except (yaml.YAMLError, UnicodeError, globalconfig.Refused, KeyError, ValueError, TypeError, RecursionError):
         raise Invalid("invalid inventory") from None
@@ -257,9 +251,6 @@ def inputs(args):
         files.append(("/etc/vws/global.yaml", "644", config))
         files.append(("/etc/vws/etcd.conf", "644",
                       f'NAME={host["name"]}\nLIST={host["name"]}={host["address"]}\n'.encode()))
-    if "region" in roles:
-        files.append(("/etc/vws/credentials/region-kek", "600", read_file(source / "region-kek")))
-        files.append(("/etc/vws/region.key", "600", read_file(source / "region.key")))
     packages = []
     for name in (name for name, package in PACKAGES.items() if package[0] in roles):
         matches = list(args.packages.glob(name + "_*.deb"))
@@ -282,9 +273,6 @@ class Target:
         self.host = host
         self.output = output
         self.steps = []
-        self.region = "region" in host["roles"]
-        # Only a host with the region role has keepalived; anything that changes it gives up the VIP first.
-        self.vip_off = "systemctl disable --now keepalived >/dev/null 2>&1" if self.region else ":"
 
     def run(self, step, command, data=None):
         user = self.host.get("ssh_user", "root")
@@ -327,7 +315,6 @@ cat > "$t"
 if test -f {path} && cmp -s "$t" {path} && test "$(stat -c %u:%g:%a {path})" = 0:0:{mode}; then
     echo unchanged
 else
-    {self.vip_off}
     {DIRTY}
     install -m {mode} -o root -g root "$t" {path}
     echo changed
@@ -349,57 +336,44 @@ fi
         self.emit(name, result == b"changed")
 
     def install(self, cfg, files, packages):
-        try:
-            self.run("memory controller", "test -f /sys/fs/cgroup/cgroup.controllers && "
-                     "grep -qw memory /sys/fs/cgroup/cgroup.controllers")
-            changed = False
-            for group, mib in cfg["memory_mib"].items():
-                if group not in self.host["roles"]:
-                    continue
-                slice_name = "vws-lab-" + group + ".slice"
+        self.run("memory controller", "test -f /sys/fs/cgroup/cgroup.controllers && "
+                 "grep -qw memory /sys/fs/cgroup/cgroup.controllers")
+        changed = False
+        for group, mib in cfg["memory_mib"].items():
+            if group not in self.host["roles"]:
+                continue
+            slice_name = "vws-lab-" + group + ".slice"
+            changed = self.write(
+                "/etc/systemd/system/" + slice_name + ".d/50-vws-memory.conf", "644",
+                f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n".encode()) or changed
+            for service in LAB_SERVICES[group]:
                 changed = self.write(
-                    "/etc/systemd/system/" + slice_name + ".d/50-vws-memory.conf", "644",
-                    f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n".encode()) or changed
-                for service in LAB_SERVICES[group]:
-                    # The region package also sets a per-service 512 MiB limit.
-                    limit = f"MemoryMax={mib}M\n" if group == "region" else ""
-                    changed = self.write(
-                        "/etc/systemd/system/" + service + ".service.d/50-vws-memory.conf", "644",
-                        f"[Service]\nSlice={slice_name}\n{limit}".encode()) or changed
-            # Reload even after an interrupted write whose reply never reached us.
-            self.run("load memory budget", "systemctl daemon-reload")
-            self.emit("memory budget")
-            for path, mode, data in files:
-                changed = self.write(path, mode, data) or changed
-            if self.region:
-                template = PACKAGING / "vws-region/keepalived.conf"
-                vip = template.read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
-                changed = self.write("/etc/keepalived/keepalived.conf", "644", vip.encode()) or changed
-            changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
-            for name, version, payload in packages:
-                current = self.run(name, f"dpkg-query -W -f='${{db:Status-Abbrev}}\\t${{Version}}' {name} 2>/dev/null || true")
-                upgrade = current != b"ii \t" + version.encode()
-                if upgrade:
-                    self.run(name, self.vip_off + "\n" + DIRTY + """
+                    "/etc/systemd/system/" + service + ".service.d/50-vws-memory.conf", "644",
+                    f"[Service]\nSlice={slice_name}\n".encode()) or changed
+        # Reload even after an interrupted write whose reply never reached us.
+        self.run("load memory budget", "systemctl daemon-reload")
+        self.emit("memory budget")
+        for path, mode, data in files:
+            changed = self.write(path, mode, data) or changed
+        changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
+        for name, version, payload in packages:
+            current = self.run(name, f"dpkg-query -W -f='${{db:Status-Abbrev}}\\t${{Version}}' {name} 2>/dev/null || true")
+            upgrade = current != b"ii \t" + version.encode()
+            if upgrade:
+                self.run(name, DIRTY + """
 t=$(mktemp -d /var/tmp/vws-install.XXXXXX)
 trap 'rm -rf "$t"' EXIT HUP INT TERM
 cat > "$t/package.deb"
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Dpkg::Options::=--force-confold "$t/package.deb" >/dev/null 2>&1
 """, payload)
-                self.emit(name + " package", upgrade)
-                _, services, probes = PACKAGES[name]
-                for service in services:
-                    self.service(service, changed or upgrade)
-                for probe, command in probes:
-                    self.run(probe + " readiness", RETRY.format(command) if probe == "etcd" else command)
-                    self.emit(probe + " readiness")
-            if self.region:
-                self.service("keepalived")
-            self.run("finish", "rm -f " + PENDING)
-        except Failed:
-            if self.region:
-                self.run("disable keepalived", self.vip_off)
-            raise
+            self.emit(name + " package", upgrade)
+            _, services, probes = PACKAGES[name]
+            for service in services:
+                self.service(service, changed or upgrade)
+            for probe, command in probes:
+                self.run(probe + " readiness", RETRY.format(command) if probe == "etcd" else command)
+                self.emit(probe + " readiness")
+        self.run("finish", "rm -f " + PENDING)
 
 
 def main(argv):
