@@ -172,11 +172,10 @@ def generate(source, host, roles):
         present = [name for name in names if not absent(name)]
         if not present or (kept.is_file() and len(present) < len(names)):
             # Resume from the state directory only when every file already there is that state's own.
-            for name in present:
-                theirs = source / state / names[name].format(member)
-                if not theirs.is_file() or read_file(source / name) != theirs.read_bytes():
-                    raise Invalid(name + " differs from " + state + "/; replace the whole " + state
-                                  + " set or delete its files and " + state + "/")
+            stray = foreign(source, state, names, member, present)
+            if stray:
+                raise Invalid(stray + " differs from " + state + "/; replace the whole " + state
+                              + " set or delete its files and " + state + "/")
             if local(["bash", str(PACKAGING / "vws-etcd/vws-etcd-tls"), str(source / state), members]).returncode:
                 raise Invalid("cannot generate " + state + "; openssl and flock are required")
             for name, path in names.items():
@@ -191,14 +190,33 @@ def generate(source, host, roles):
             shown = local(["openssl", "x509", "-noout", "-checkip", address, "-in", str(certificate)])
             if shown.returncode or b"does match" not in shown.stdout or b"NOT" in shown.stdout:
                 kept = source / "etcd-tls"
-                if ((kept / "ca.key").is_file() and (kept / "ca.crt").is_file() and (source / "ca.crt").is_file()
-                        and (source / "ca.crt").read_bytes() == (kept / "ca.crt").read_bytes()):
+                etcd = TLS[0][2]
+                left = [name for name in etcd if name not in ("member.crt", "member.key")
+                        and (source / name).exists()]
+                same_ca = ((kept / "ca.key").is_file() and (source / "ca.crt").is_file()
+                           and (kept / "ca.crt").is_file()
+                           and (source / "ca.crt").read_bytes() == (kept / "ca.crt").read_bytes())
+                if same_ca and not foreign(source, "etcd-tls", etcd, host["name"], left):
                     fix = ("To reissue it from the same CA, delete member.crt, member.key and etcd-tls/"
                            + host["name"] + "/, then run again")
+                elif same_ca:
+                    fix = ("Deleting files will not work because the credentials you supplied differ from etcd-tls/. "
+                           "Reissue the member pair under the same CA with " + host["address"] + " and 127.0.0.1 "
+                           "in its subject alternative names, then replace member.crt and member.key, "
+                           "keeping your separate client credentials")
                 else:
                     fix = ("Reissue it under your own CA with " + host["address"] + " and 127.0.0.1 "
                            "in its subject alternative names, then replace member.crt and member.key together")
                 raise Invalid("member.crt does not name " + address + ". " + fix)
+
+
+def foreign(source, state, names, member, present):
+    """The first present credential that is not byte for byte the retained state's own file, if any."""
+    for name in present:
+        theirs = source / state / names[name].format(member)
+        if not theirs.is_file() or read_file(source / name) != theirs.read_bytes():
+            return name
+    return None
 
 
 def public(command, path):

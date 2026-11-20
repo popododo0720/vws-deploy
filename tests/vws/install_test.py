@@ -349,6 +349,49 @@ class Install(unittest.TestCase):
             subprocess.run(["openssl", "verify", "-CAfile", source / "ca.crt", "-verify_ip", address,
                             source / "member.crt"], check=True, capture_output=True)
 
+    def test_separate_client_certificate_is_kept_when_the_member_pair_is_reissued(self):
+        source = self.remove_generated()
+        self.assertEqual(self.run_install().returncode, 0)
+        state = source / "etcd-tls"
+        tmp = self.work / "reissue"
+        tmp.mkdir()
+
+        def issue(base, subject, extension, days="825"):
+            subprocess.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                            "-nodes", "-subj", "/CN=" + subject, "-keyout", tmp / (base + ".key"),
+                            "-out", tmp / (base + ".csr")], check=True, capture_output=True)
+            (tmp / (base + ".ext")).write_text(extension)
+            subprocess.run(["openssl", "x509", "-req", "-in", tmp / (base + ".csr"), "-CA", state / "ca.crt",
+                            "-CAkey", state / "ca.key", "-days", days, "-set_serial", "0x" + base.encode().hex(),
+                            "-extfile", tmp / (base + ".ext"), "-out", tmp / (base + ".crt")],
+                           check=True, capture_output=True)
+
+        issue("api", "console-api", "extendedKeyUsage=clientAuth\n")
+        (source / "api-etcd.pem").write_bytes((tmp / "api.crt").read_bytes())
+        (source / "api-etcd-key.pem").write_bytes((tmp / "api.key").read_bytes())
+        self.assertEqual(self.run_install().returncode, 0)
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.1", "192.0.2.9"))
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stderr, "vws: member.crt does not name 192.0.2.9. Deleting files will not work "
+                         "because the credentials you supplied differ from etcd-tls/. Reissue the member pair "
+                         "under the same CA with 192.0.2.9 and 127.0.0.1 in its subject alternative names, "
+                         "then replace member.crt and member.key, keeping your separate client credentials\n")
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+        # Following the message works: same CA, new pair, separate client credentials untouched.
+        issue("member", "lab-1", "extendedKeyUsage=serverAuth,clientAuth\n"
+              "subjectAltName=IP:192.0.2.9,IP:127.0.0.1,DNS:lab-1\n")
+        ca = (source / "ca.crt").read_bytes()
+        (source / "member.crt").write_bytes((tmp / "member.crt").read_bytes())
+        (source / "member.key").write_bytes((tmp / "member.key").read_bytes())
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((source / "ca.crt").read_bytes(), ca)
+        self.assertEqual((source / "api-etcd.pem").read_bytes(), (tmp / "api.crt").read_bytes())
+        subprocess.run(["openssl", "verify", "-CAfile", source / "ca.crt", "-verify_ip", "192.0.2.9",
+                        source / "member.crt"], check=True, capture_output=True)
+
     def test_generation_without_openssl_is_refused(self):
         self.remove_generated()
         (self.work / "bin/openssl").write_text("#!/bin/sh\nexit 1\n")
