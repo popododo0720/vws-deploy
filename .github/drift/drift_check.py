@@ -436,8 +436,7 @@ def guard_status(got, want, variant=None):
 
 VENDORED_CHECK_ENGLISH = "scripts/check-english.sh"
 # Vendored files every repo must carry: {path: repos exempt}. vws-deploy runs guard.sh english instead (#423).
-# vws-hypervisor is archived and not needed, so it carries no copy (#423 lead decision B).
-VENDORED_REQUIRED = {VENDORED_CHECK_ENGLISH: {"vws-deploy", "vws-hypervisor"}}
+VENDORED_REQUIRED = {VENDORED_CHECK_ENGLISH: {"vws-deploy"}}
 
 
 def load_vendored(path):

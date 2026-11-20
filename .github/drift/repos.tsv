@@ -3,10 +3,6 @@ vws-deploy	go	installer/.golangci.yml	build check installer lint
 vws-lib	go	.golangci.yml	lint test
 vws-proto	proto	-	buf go guard-agents
 vws-iam	go	.golangci.yml	lint test
-vws-network	go	.golangci.yml	lint test
-vws-storage	go	.golangci.yml	lint test
-vws-compute	go	.golangci.yml	lint test
 vws-console-api	go	.golangci.yml	lint test
 vws-console	node	-	quality
-vws-hypervisor	go	.golangci.yml	lint test
 vws-conformance	go	.golangci.yml	lint test

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Fake aws-cli for tests/vws. It never talks to a network. It keeps a small S3 in ${VWS_FAKE_LOG}.s3/:
-# a bucket is a directory and an object a file, with the S3 error codes for a missing bucket or key.
+# Fake aws-cli for tests/vws. It never talks to a network.
 # It keeps a small EC2 in ${VWS_FAKE_LOG}.ec2/, one JSON file per instance or volume. A describe moves a
 # transient state (pending, creating, attaching, detaching, shutting-down) to its end state after it reports it,
 # unless $VWS_FAKE_DIR/aws/ec2.stuck exists.
@@ -31,8 +30,6 @@ if [[ -f ${VWS_FAKE_DIR}/aws/${op}.fail ]]; then
   exit 254
 fi
 opt() { local i; for ((i = 2; i < ${#args[@]} - 1; i++)); do [[ ${args[i]} != "$1" ]] || { echo "${args[i + 1]}"; return; }; done; }
-s3="${VWS_FAKE_LOG}.s3"
-bucket=$(opt --bucket) key=$(opt --key)
 err() { echo "An error occurred ($1) when calling the $2 operation: fake" >&2; exit 254; }
 if [[ -f ${VWS_FAKE_DIR}/aws/${op}.lost ]]; then
   trap 'cat "${VWS_FAKE_DIR}/aws/${op}.lost" >&2; exit 254' EXIT
@@ -74,30 +71,7 @@ ec2_list() {
       else . end' "$f" >"${f%.json}.tmp" && mv "${f%.json}.tmp" "$f"
   done
 }
-need_bucket() { [[ -d ${s3}/${bucket} ]] || err NoSuchBucket "$1"; }
 case $op in
-  s3api_create-bucket)
-    [[ ! -d ${s3}/${bucket} ]] || err BucketAlreadyOwnedByYou CreateBucket
-    mkdir -p "${s3}/${bucket}"
-    printf '{"Location": "/%s"}\n' "$bucket" ;;
-  s3api_put-object)
-    need_bucket PutObject
-    cp "$(opt --body)" "${s3}/${bucket}/${key}"
-    echo '{"ETag": "\"fake\""}' ;;
-  s3api_get-object)
-    need_bucket GetObject
-    [[ -f ${s3}/${bucket}/${key} ]] || err NoSuchKey GetObject
-    cp "${s3}/${bucket}/${key}" "${args[-1]}"
-    echo '{"ETag": "\"fake\""}' ;;
-  s3api_list-objects-v2)
-    need_bucket ListObjectsV2
-    (cd "${s3}/${bucket}" && ls -1) | paste -sd '\t' ;;
-  s3api_delete-object)
-    need_bucket DeleteObject
-    rm -f "${s3}/${bucket}/${key}" ;;
-  s3api_delete-bucket)
-    need_bucket DeleteBucket
-    rmdir "${s3}/${bucket}" 2>/dev/null || err BucketNotEmpty DeleteBucket ;;
   ec2_run-instances)
     id=$(ec2_new i)
     jq -cn --arg id "$id" --arg tag "$(ec2_tag "$(opt --tag-specifications)")" \

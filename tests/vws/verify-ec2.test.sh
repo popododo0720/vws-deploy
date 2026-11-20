@@ -19,7 +19,7 @@ JSON
 unset VWS_VERIFY_ENDPOINT
 export VWS_VERIFY_EC2_ENDPOINT=http://ec2.vws.example.invalid:8080 VWS_VERIFY_ACCESS_KEY_ID=AKIDVERIFY
 export VWS_VERIFY_SECRET_ACCESS_KEY=sekret-value-must-not-leak VWS_LEAK_CANARY=1
-export VWS_VERIFY_IMAGE_ID=ami-00000001 VWS_VERIFY_INSTANCE_TYPE=t3.micro VWS_VERIFY_POLL=0 VWS_VERIFY_REBOOT_SETTLE=0
+export VWS_VERIFY_IMAGE_ID=ami-00000001 VWS_VERIFY_INSTANCE_TYPE=vws.small VWS_VERIFY_POLL=0 VWS_VERIFY_REBOOT_SETTLE=0
 ec2="${VWS_FAKE_LOG}.ec2"
 steps() { jq -r '"\(.step)=\(.result)"' <<<"$OUT" | paste -sd ' '; }
 # left: instances not terminated or shutting down, and volumes, by the fake's files

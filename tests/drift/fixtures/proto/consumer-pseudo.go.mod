@@ -1,4 +1,4 @@
-module github.com/popododo0720/vws-storage
+module github.com/popododo0720/vws-iam
 
 go 1.26.0
 
