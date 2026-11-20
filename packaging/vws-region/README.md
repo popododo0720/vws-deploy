@@ -28,7 +28,8 @@ and the unit checks. `test-install.sh` runs only in a disposable Debian containe
 ## One instance per cluster
 
 The instance name is the region name, for example `pve-seoul-1`. For each instance
-provide, as root:
+provide, as root (`vws install` writes all of these from the `regions:` list of its inventory and
+issues the certificate from the internal CA; see `docs/operator/vm-install.md`):
 
 | Path | Content |
 | --- | --- |
@@ -49,7 +50,8 @@ Modes: `/etc/vws-region/<region>/`, `region.yaml`, `region.crt` and `global-ca.p
 readable by the `vws-region` account (directory 0755, files 0644, root-owned). Only
 `region.key` is secret: root-owned 0600; systemd reads it as root and hands it to the daemon.
 
-The service is not started or enabled during installation. Then run:
+The package does not start or enable any instance. `vws install` does, and reports `unregistered`
+for an instance that has no registration yet. By hand, run:
 
 ```sh
 sudo systemctl enable --now vws-region@pve-seoul-1.service
