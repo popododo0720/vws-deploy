@@ -16,17 +16,15 @@ import time
 import globalconfig
 import yaml
 
-# A host is the global layer (etcd and global, a VM or bare metal), a PVE node (region), or both on one
-# PVE node. The region role needs local PVE (/etc/pve, pveproxy), so it is never implied.
-ROLES = ({"etcd", "global"}, {"region"}, {"etcd", "global", "region"})
+# A host is the global layer on a VM or bare metal (etcd and global), or the lab host that also has the
+# region role, as before. A region-only host is not installed here (vws-deploy#850).
+ROLES = ({"etcd", "global"}, {"etcd", "global", "region"})
 PRIVATE = (
     "ca.crt member.crt member.key client.crt client.key admin-kek console-token "
     "vws-access-key vws-secret-key api-etcd-key.pem api-mtls-key.pem aws-source "
     "iam-etcd-key.pem iam-key.pem"
 ).split()
 PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam.pem".split()
-REGION = (("/etc/vws/credentials/region-kek", "600"), ("/etc/vws/region.key", "600"),
-          ("/etc/vws/region.crt", "644"), ("/etc/vws/global-ca.pem", "644"))
 SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str,
                                    "roles": [str]}], "vip": {"address": str},
           "memory_mib": {"global": str, "region": str, "etcd": str}}
@@ -41,10 +39,9 @@ PACKAGES = {
                  [("etcd", "CREDENTIALS_DIRECTORY=/run/credentials/vws-etcd.service /usr/lib/vws/etcd/check-ready")]),
     "vws-global": ("global", ["vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"],
                    [(p, "/usr/lib/vws/check-global-ready " + p) for p in ("iam", "proxy", "api", "console")]),
-    # Its readiness needs a registration, so install checks it after the packages (Target.region).
-    "vws-region": ("region", ["vws-region"], []),
+    "vws-region": ("region", ["vws-region"], [("region", "/usr/lib/vws/check-region-ready")]),
 }
-# The etcd and region probes ask once; a unit that was just started gets 30 seconds to answer.
+# The etcd probe asks once; a unit that was just started gets 30 seconds to answer.
 RETRY = "n=0; until {}; do n=$((n + 1)); test $n -lt 15 || exit 1; sleep 2; done"
 PACKAGING = Path(__file__).resolve().parents[3] / "packaging"
 # Generated TLS sets: state directory, vws-etcd-tls member, and credential name -> file below the state
@@ -158,10 +155,6 @@ def generate(source, host, roles):
 
     os.umask(0o077)
     source.mkdir(exist_ok=True)
-    if "region" in roles:
-        put("region-kek", os.urandom(32))
-    if "global" not in roles:
-        return
     put("admin-kek", key())
     if absent("iam-kek"):
         staged = Path(tempfile.mkdtemp(dir=source, prefix=".vws-install."))
@@ -182,9 +175,6 @@ def inputs(args):
     cfg = inventory(args.inventory)
     host = cfg["hosts"][0]
     roles = set(host["roles"])
-    for role, given in (("global", args.global_config), ("region", args.region_config)):
-        if given and role not in roles:
-            raise Invalid(f"--{role}-config requires the {role} role")
     source = args.credentials
     if source.is_symlink() or ".." in source.parts or any(p.is_symlink() for p in source.parents):
         raise Invalid("unsafe credentials directory")
@@ -213,17 +203,8 @@ def inputs(args):
         files.append(("/etc/vws/etcd.conf", "644",
                       f'NAME={host["name"]}\nLIST={host["name"]}={host["address"]}\n'.encode()))
     if "region" in roles:
-        for path, mode in REGION:
-            files.append((path, mode, read_file(source / Path(path).name)))
-        config = read_file(args.region_config or args.inventory.parent / "region.yaml")
-        try:
-            if len(config) > globalconfig.MAX_BYTES or not isinstance(yaml.safe_load(config.decode()), dict):
-                raise ValueError
-        except (yaml.YAMLError, UnicodeError, ValueError, RecursionError):
-            raise Invalid("invalid region.yaml; see packaging/vws-region/region.yaml") from None
-        files.append(("/etc/vws/region.yaml", "644", config))
-        vip = (PACKAGING / "vws-region/keepalived.conf").read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
-        files.append(("/etc/keepalived/keepalived.conf", "644", vip.encode()))
+        files.append(("/etc/vws/credentials/region-kek", "600", read_file(source / "region-kek")))
+        files.append(("/etc/vws/region.key", "600", read_file(source / "region.key")))
     packages = []
     for name in (name for name, package in PACKAGES.items() if package[0] in roles):
         matches = list(args.packages.glob(name + "_*.deb"))
@@ -247,7 +228,7 @@ class Target:
         self.output = output
         self.steps = []
         self.region = "region" in host["roles"]
-        # Only a PVE node has keepalived; anything that changes the node gives up the VIP first.
+        # Only a host with the region role has keepalived; anything that changes it gives up the VIP first.
         self.vip_off = "systemctl disable --now keepalived >/dev/null 2>&1" if self.region else ":"
 
     def run(self, step, command, data=None):
@@ -335,6 +316,10 @@ fi
             self.emit("memory budget")
             for path, mode, data in files:
                 changed = self.write(path, mode, data) or changed
+            if self.region:
+                template = PACKAGING / "vws-region/keepalived.conf"
+                vip = template.read_text().replace("192.0.2.10/24", cfg["vip"]["address"])
+                changed = self.write("/etc/keepalived/keepalived.conf", "644", vip.encode()) or changed
             changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
             for name, version, payload in packages:
                 current = self.run(name, f"dpkg-query -W -f='${{db:Status-Abbrev}}\\t${{Version}}' {name} 2>/dev/null || true")
@@ -354,28 +339,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Dpk
                     self.run(probe + " readiness", RETRY.format(command) if probe == "etcd" else command)
                     self.emit(probe + " readiness")
             if self.region:
-                self.vip(cfg["vip"]["address"].split("/")[0])
+                self.service("keepalived")
             self.run("finish", "rm -f " + PENDING)
         except Failed:
             if self.region:
                 self.run("disable keepalived", self.vip_off)
             raise
-
-    def vip(self, address):
-        """Readiness, keepalived and the VIP, once the region is registered (docs/operator/regions.md)."""
-        # vws-region is ready only with a registration, and keepalived holds the VIP only when it is ready.
-        if self.run("region registration",
-                    "test -s /etc/pve/vws/registration.json && echo registered || true") != b"registered":
-            self.emit("region registration", status="pending")
-            print("vws: " + self.host["name"] + ": the region is not registered; register it, then run "
-                  "vws install again to check readiness and the VIP", file=sys.stderr)
-            return
-        self.emit("region registration")
-        self.run("region readiness", RETRY.format("/usr/lib/vws/check-region-ready"))
-        self.emit("region readiness")
-        self.service("keepalived")
-        self.run("region VIP", RETRY.format(f"ip -o -4 address show | grep -qF 'inet {address}/'"))
-        self.emit("region VIP")
 
 
 def main(argv):
@@ -386,7 +355,6 @@ def main(argv):
         for name in ("inventory", "packages", "credentials"):
             parser.add_argument("--" + name, required=True, type=Path)
         parser.add_argument("--global-config", type=Path)
-        parser.add_argument("--region-config", type=Path)
         parser.add_argument("-o", choices=("text", "json"), default=os.environ.get("VWS_OUTPUT", "text"))
         args = parser.parse_args(argv)
         if args.profile != "lab":
