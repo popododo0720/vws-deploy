@@ -35,8 +35,8 @@ seconds. An unchecked item is an open finding, not a pass.
 6. Node reach: the PVE node certificates contain the addresses you gave in `--pve-api-url`; a task lookup and
    a console relay work when the daemon is attached to a node other than the one that runs the VM.
 7. Restart: `systemctl restart vws-region@<region>` leaves the region ready with no new registration.
-8. Move or recreate (optional): follow [regions.md](regions.md#move-or-recreate-the-daemon) and confirm that the
-   old token no longer works against PVE.
+8. Move or recreate (optional): follow [regions.md](regions.md#move-or-recreate-the-daemon), which registers the replacement only after the
+   old instance is stopped or its token is revoked, and confirm that the old token no longer works against PVE.
 9. Clean up: remove the test instances, the test token and the instance on the lab host.
 
 The assumptions of item 6 are unverified; a failure is a finding for vws-console-api, not a reason to change

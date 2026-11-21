@@ -18,7 +18,7 @@ etcd URL and client certificates of the packaged units.
 On a build host with git, Go, curl, xz and dpkg-deb:
 
 ```sh
-packaging/build.sh 1.0.0-1
+packaging/build.sh 1.0.0-2
 ```
 
 It checks out vws-console-api, vws-iam and vws-console at the commits in `scripts/versions.env`,
@@ -123,7 +123,12 @@ directory gets `regions/<region>/region.crt` and `region.key`, issued from the i
 keeps. The certificate covers the host address, 127.0.0.1 and the region name, so the region endpoint of the
 registration can use the host address, or 127.0.0.1 when the global layer runs on the same host. `global-ca.pem` of each instance is `internal-ca.pem`.
 If you supplied your own internal TLS set, there is no CA key to issue from: supply
-`regions/<region>/region.crt` and `region.key` yourself, issued under `internal-ca.pem`.
+`regions/<region>/region.crt` and `region.key` yourself, issued under `internal-ca.pem`. Regionapi trusts
+that CA for the global client too, so the certificate, generated or supplied, must be a server-only leaf:
+`extendedKeyUsage` exactly `serverAuth` (no `clientAuth`, no `anyExtendedKeyUsage`, not missing),
+`basicConstraints` `CA:FALSE`, and the host address, 127.0.0.1 and the region name as subject alternative
+names. An etcd member certificate has `clientAuth` and is refused; so is any other certificate that fails
+this, before any SSH call.
 The host of an instance needs the build from section 1 (`vws-region_*.deb` in `--packages`).
 
 ```sh

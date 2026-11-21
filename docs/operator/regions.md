@@ -284,37 +284,47 @@ the vws-console-api release; do not rely on it. Do every step below.
 ### Move the daemon
 
 Move an instance to another host, for example from the global host to a separate host, keeping its region
-name.
+name. One write-enabled daemon at a time may serve a cluster: a daemon with a working token and a registration
+runs the launch finalizer on its own, and changing the global endpoint does not stop it. So the replacement
+stays unregistered until the old instance can no longer write.
 
-1. In the inventory, take the entry out of the old host's `regions` and add it, with a port, to the new host
-   (a `[region]` host). Delete `regions/<region>/` in the credentials directory so the certificate is
-   reissued for the new address; `vws install` refuses the old one and tells you to.
+1. Install the replacement and leave it unregistered. In the inventory, take the entry out of the old host's
+   `regions` and add it, with a port, to the new host (a `[region]` host). Delete `regions/<region>/` in the
+   credentials directory so the certificate is reissued for the new address; `vws install` refuses the old
+   one and tells you to. Run `vws install`: the new instance reports `registration unregistered`, holds no
+   token and does nothing. Do not run `vws region edit` yet.
 2. Create a new token for the cluster in PVE (step 2, with the permissions your region needs) and save it to
    a file. Do not reuse the old token ID.
-3. Run `vws install` again. The new instance reports `registration unregistered`.
-4. Register the new endpoint and the new token:
+3. Quiesce, stop and disable the old instance: stop new launches and wait for the launches in flight to
+   finish, then run `systemctl disable --now vws-region@<region>` on the old host and check that
+   `systemctl is-active vws-region@<region>` prints `inactive`.
+4. If you cannot stop it (the host is down, unreachable or not yours any more), revoke its token first:
+   delete the old token in PVE (Datacenter, Permissions, API Tokens, or `pveum user token remove
+   vws@pve <old token name>`). Do this before step 5, even if the old host is gone, because the old host
+   still holds the secret and would keep writing until the token is gone.
+5. Only now register the replacement and verify it:
    `scripts/vws region edit <region> --region-endpoint https://<new-address>:8443 --token-id '<new id>'
    --token-secret-file <file>`, then `scripts/vws region test <region> --token-secret-file <file>` and
    `scripts/vws region health <region>`.
-5. Stop the old instance and delete what it holds: `systemctl disable --now vws-region@<region>`, then
-   remove `/etc/vws-region/<region>.env`, `/etc/vws-region/<region>/` and `/var/lib/vws-region/<region>`
-   on the old host. `vws install` never removes an instance for you.
-6. Delete the old token in PVE (Datacenter, Permissions, API Tokens, or `pveum user token remove
-   vws@pve <old token name>`). Do this last, and do it even if the old host is gone or you cannot reach it:
-   the old host still holds the secret and would otherwise keep working.
+6. Remove what the old instance held: `/etc/vws-region/<region>.env`, `/etc/vws-region/<region>/` and
+   `/var/lib/vws-region/<region>` on the old host. `vws install` never removes an instance for you.
+7. Delete the old token in PVE if you have not (step 4 did it), so the old secret is dead in every case.
 
 Keep the region name: the registry and the project mappings refer to it.
 
 ### Recreate the daemon
 
 Recreate an instance when its host or its state directory is lost, or you rebuild it from scratch. Its state
-file is gone, so it is a new, unregistered instance and the global layer has no secret to send it.
+file is gone, so it is a new, unregistered instance and the global layer has no secret to send it. As in a
+move, never register it while an older instance of the same cluster can still write.
 
-1. Create a new token in PVE (step 2) and delete the old one at once if the old host may still run.
+1. If the old host may still run, stop and disable its instance (`systemctl disable --now
+   vws-region@<region>`); if you cannot, delete its token in PVE before going on.
 2. If the host is new, change the address in the inventory and delete `regions/<region>/` as in the move.
 3. Run `vws install`. The instance reports `registration unregistered`.
-4. Register again with the new token: `scripts/vws region edit <region> --token-id '<id>'
-   --token-secret-file <file>`, and run `vws region test` and `vws region health`.
+4. Create a new token in PVE (step 2), register it, and verify:
+   `scripts/vws region edit <region> --token-id '<id>' --token-secret-file <file>`, then
+   `vws region test` and `vws region health`. Delete the old token in PVE.
 
 The VMs of the region are not touched: they live in the cluster, not in the daemon.
 
