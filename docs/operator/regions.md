@@ -323,8 +323,11 @@ move, never register it while an older instance of the same cluster can still wr
 2. If the host is new, change the address in the inventory and delete `regions/<region>/` as in the move.
 3. Run `vws install`. The instance reports `registration unregistered`.
 4. Create a new token in PVE (step 2), register it, and verify:
-   `scripts/vws region edit <region> --token-id '<id>' --token-secret-file <file>`, then
-   `vws region test` and `vws region health`. Delete the old token in PVE.
+   `scripts/vws region edit <region> --region-endpoint https://<address>:<port> --token-id '<id>'
+   --token-secret-file <file>`, then `vws region test` and `vws region health`. Always pass the
+   instance's current endpoint: when `--region-endpoint` is omitted the global layer keeps the old one and
+   sends the new token there, which leaves the replacement unregistered and can hand a fresh token to an
+   old daemon you fenced by revoking its token. Delete the old token in PVE.
 
 The VMs of the region are not touched: they live in the cluster, not in the daemon.
 
