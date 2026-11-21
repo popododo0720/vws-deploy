@@ -16,6 +16,8 @@ import hashlib, json, os, pathlib, shlex, sys
 s = pathlib.Path(os.environ["INSTALL_STATE"])
 c = shlex.split(sys.argv[-1])[-1]
 d = sys.stdin.buffer.read()
+# One state directory serves every host of an inventory: package, service and write markers are per host.
+h = next(a for a in sys.argv if "@" in a).split("@")[1] + "-"
 with (s / "argv").open("a") as f:
     f.write(json.dumps(sys.argv) + "\n")
 with (s / "payload").open("ab") as f:
@@ -31,20 +33,23 @@ if c == "test ! -f /var/lib/vws-install/pending || echo pending":
 elif c == "rm -f /var/lib/vws-install/pending":
     (s / "pending").unlink(missing_ok=True)
 elif "dpkg-query" in c:
-    name = next(n for n in ("vws-etcd", "vws-global") if n in c)
+    name = next(n for n in ("vws-etcd", "vws-global", "vws-region") if n in c)
     (s / "current-package").write_text(name)
-    if (s / name).exists():
+    if (s / (h + name)).exists():
         status = os.environ.get("INSTALL_PACKAGE_STATE", "ii ") if name == "vws-global" else "ii "
         print(status + "\t0.0.0-1", end="")
 elif "apt-get install" in c:
-    (s / (s / "current-package").read_text()).touch()
+    (s / (h + (s / "current-package").read_text())).touch()
     (s / "pending").touch()
 elif "systemctl is-enabled" in c:
-    key = s / ("service-" + c.split("is-enabled --quiet ")[1].split()[0])
+    key = s / (h + "service-" + c.split("is-enabled --quiet ")[1].split()[0])
     print("changed" if not key.exists() or "systemctl restart" in c else "unchanged")
     key.touch()
+elif "/readyz" in c:
+    name = c.split("/var/lib/vws-region/")[1].split("/")[0]
+    print("registered" if (s / (h + "registered-" + name)).exists() else "unregistered")
 elif "echo changed" in c:
-    key = s / hashlib.sha256(c.encode() + d).hexdigest()
+    key = s / hashlib.sha256(h.encode() + c.encode() + d).hexdigest()
     changed = not key.exists()
     if changed: (s / "pending").touch()
     key.touch()
@@ -58,6 +63,17 @@ elif "echo changed" in c:
 GENERATED = ("admin-kek ca.crt member.crt member.key client.crt client.key etcd-ca.pem "
              "api-etcd.pem api-etcd-key.pem iam-etcd.pem iam-etcd-key.pem internal-ca.pem iam.pem "
              "iam-key.pem api-mtls.pem api-mtls-key.pem").split()
+
+
+# A region instance on the global host: appended to the hosts.yaml of prepare().
+REGION_ON_GLOBAL = "    regions:\n      - name: pve-seoul-1\n        port: 8443\n"
+SEPARATE_HOST = """  - name: region-1
+    address: 192.0.2.20
+    roles: [region]
+    regions:
+      - name: pve-busan-1
+        port: 8443
+"""
 
 
 class Install(unittest.TestCase):
@@ -423,15 +439,17 @@ class Install(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)), again.stdout)
 
-    def test_region_role_and_vip_are_refused(self):
-        """The per-node region layout is gone: the lab path installs no vws-region and no keepalived."""
+    def test_vip_and_keepalived_are_refused(self):
+        """The per-node region layout is gone: no inventory key asks for a VIP or keepalived."""
         path = self.work / "hosts.yaml"
-        good = path.read_text()
-        for bad in (good.replace("roles: [etcd, global]", "roles: [etcd, global, region]")
-                    + "vip:\n  address: 192.0.2.10/24\n", good + "vip:\n  address: 192.0.2.10/24\n"):
-            with self.subTest(bad=bad):
-                path.write_text(bad)
-                self.assertEqual(self.refused().stderr, "vws: invalid inventory\n")
+        good = path.read_text() + REGION_ON_GLOBAL
+        good = good.replace("roles: [etcd, global]", "roles: [etcd, global, region]")
+        for extra in ("vip:\n  address: 192.0.2.10/24\n", "keepalived:\n  priority: 100\n"):
+            for bad in (good + extra, good.replace("    roles:", "    " + extra.replace("\n  ", "\n      ").rstrip() + "\n    roles:", 1),
+                        good.replace("        port: 8443\n", "        port: 8443\n        " + extra.split(":")[0] + ": true\n")):
+                with self.subTest(bad=bad):
+                    path.write_text(bad)
+                    self.assertEqual(self.refused().stderr, "vws: invalid inventory\n")
 
     def test_global_host_readiness_failure(self):
         self.env["INSTALL_FAIL"] = "check-global-ready api"
@@ -520,6 +538,318 @@ class Install(unittest.TestCase):
         again = self.run_install(["-o", "json", *self.args])
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertTrue(all(s["status"] == "unchanged" for s in json.loads(again.stdout)))
+
+    def use(self, text):
+        (self.work / "hosts.yaml").write_text("profile: lab\nhosts:\n" + text)
+
+    GLOBAL = "  - name: lab-1\n    address: 192.0.2.1\n    roles: [etcd, global%s]\n"
+
+    def on_global(self, regions="pve-seoul-1:8443"):
+        entries = "".join(f"      - name: {r.split(':')[0]}\n        port: {r.split(':')[1]}\n"
+                          for r in regions.split())
+        self.use(self.GLOBAL % ", region" + "    regions:\n" + entries)
+
+    def rows(self, result):
+        return [line.split(" ", 2) for line in result.stdout.splitlines()]
+
+    def test_region_instance_on_the_global_host(self):
+        source = self.remove_generated()
+        self.on_global()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # One run is enough: the instance runs and says it is not registered yet.
+        self.assertIn("lab-1 vws-region@pve-seoul-1 registration unregistered\n", result.stdout)
+        self.assertIn("lab-1 vws-region package changed\n", result.stdout)
+        self.assertIn("lab-1 vws-region@pve-seoul-1 changed\n", result.stdout)
+        log = (self.work / "state/argv").read_text()
+        commands = "\n".join(json.loads(line)[-1] for line in log.splitlines())
+        payload = (self.work / "state/payload").read_bytes()
+        for path, mode in (("/etc/vws-region/pve-seoul-1.env", "644"), ("/etc/vws-region/pve-seoul-1/region.yaml", "644"),
+                           ("/etc/vws-region/pve-seoul-1/region.crt", "644"),
+                           ("/etc/vws-region/pve-seoul-1/global-ca.pem", "644"),
+                           ("/etc/vws-region/pve-seoul-1/region.key", "600")):
+            self.assertIn(f'stat -c %u:%g:%a {path})" = 0:0:{mode}', commands, path)
+        self.assertIn(b"VWS_REGION_ADDR=:8443\nVWS_REGION_OPS_ADDR=127.0.0.1:9443\n", payload)
+        self.assertIn((ROOT / "packaging/vws-region/region.yaml").read_bytes(), payload)
+        folder = source / "regions/pve-seoul-1"
+        certificate, key = folder / "region.crt", folder / "region.key"
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+        # The certificate covers the host address, loopback and the name, serves only, and chains to the CA
+        # the global layer trusts and the instance uses for its clients.
+        shown = subprocess.run(["openssl", "x509", "-in", certificate, "-noout", "-ext",
+                                "subjectAltName,extendedKeyUsage"], capture_output=True, text=True).stdout
+        self.assertIn("IP Address:192.0.2.1, IP Address:127.0.0.1, DNS:pve-seoul-1", shown)
+        self.assertIn("TLS Web Server Authentication", shown)
+        self.assertNotIn("Client", shown)
+        for check in (["-verify_ip", "192.0.2.1"], ["-verify_ip", "127.0.0.1"], ["-verify_hostname", "pve-seoul-1"]):
+            subprocess.run(["openssl", "verify", "-CAfile", source / "internal-ca.pem", *check, certificate],
+                           check=True, capture_output=True)
+        self.assertIn((source / "internal-ca.pem").read_bytes(), payload)
+        # The memory budget of the region group applies to the instance.
+        units = (self.work / "state/units").read_text()
+        self.assertIn("vws-lab-region.slice.d/50-vws-memory.conf", units)
+        self.assertIn("vws-region@pve-seoul-1.service.d/50-vws-memory.conf", units)
+        # Secrets stay out of every output; the CA key never leaves the operator host.
+        seen = result.stdout + result.stderr + log
+        self.assertNotIn(key.read_text().strip(), seen)
+        self.assertNotIn((source / "internal-tls/ca.key").read_bytes(), payload)
+        # A rerun changes nothing and restarts nothing.
+        before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+        (self.work / "state/argv").unlink()
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        steps = json.loads(again.stdout)
+        self.assertEqual([s for s in steps if s["status"] != "unchanged"],
+                         [{"host": "lab-1", "step": "vws-region@pve-seoul-1 registration", "status": "unregistered"}])
+        self.assertNotIn("restart", (self.work / "state/argv").read_text())
+        self.assertEqual({str(p.relative_to(source)): p.read_bytes() for p in source.rglob("*") if p.is_file()}, before)
+
+    def test_region_instance_on_a_separate_host(self):
+        self.remove_generated()
+        self.use(self.GLOBAL % "" + SEPARATE_HOST)
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("region-1 vws-region@pve-busan-1 registration unregistered\n", result.stdout)
+        # The global host gets no instance; the region host gets no global or etcd file, package or unit.
+        self.assertNotIn("lab-1 vws-region", result.stdout)
+        self.assertFalse([r for r in self.rows(result) if r[0] == "region-1"
+                          and any(w in r[1] for w in ("vws-etcd", "vws-global", "vws-iam", "/etc/vws/"))])
+        calls = [json.loads(line) for line in (self.work / "state/argv").read_text().splitlines()]
+        region = [c for c in calls if "root@192.0.2.20" in c]
+        self.assertTrue(region)
+        text = "\n".join(c[-1] for c in region)
+        for absent in ("/etc/vws/", "vws-etcd", "vws-global", "vws-iam"):
+            self.assertNotIn(absent, text.replace("/etc/vws-region", ""), absent)
+        self.assertIn("vws-lab-region.slice.d", text)
+        self.assertNotIn("vws-lab-global.slice", text)
+        source = self.work / "credentials"
+        certificate = source / "regions/pve-busan-1/region.crt"
+        shown = subprocess.run(["openssl", "x509", "-in", certificate, "-noout", "-ext", "subjectAltName"],
+                               capture_output=True, text=True).stdout
+        self.assertIn("IP Address:192.0.2.20, IP Address:127.0.0.1, DNS:pve-busan-1", shown)
+        again = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual([s["status"] for s in json.loads(again.stdout) if s["status"] != "unchanged"],
+                         ["unregistered"])
+
+    def test_instances_on_both_hosts_and_two_on_one_host(self):
+        self.remove_generated()
+        self.use(self.GLOBAL % ", region" + "    regions:\n      - {name: pve-seoul-1, port: 8443}\n"
+                 "      - {name: pve-seoul-2, port: 8444, ops_port: 9500}\n" + SEPARATE_HOST)
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for line in ("lab-1 vws-region@pve-seoul-1 registration unregistered", "lab-1 vws-region@pve-seoul-2 registration unregistered",
+                     "region-1 vws-region@pve-busan-1 registration unregistered", "region-1 vws-region package changed"):
+            self.assertIn(line + "\n", result.stdout)
+        payload = (self.work / "state/payload").read_bytes()
+        self.assertIn(b"VWS_REGION_ADDR=:8444\nVWS_REGION_OPS_ADDR=127.0.0.1:9500\n", payload)
+        # An edit of one instance's config restarts that instance only.
+        (self.work / "regions").mkdir()
+        (self.work / "regions/pve-seoul-2.yaml").write_text("read_only: true\ndefault_project: other\n")
+        (self.work / "state/argv").unlink()
+        again = self.run_install()
+        self.assertEqual(again.returncode, 0, again.stderr)
+        log = (self.work / "state/argv").read_text()
+        self.assertIn("systemctl restart vws-region@pve-seoul-2", log)
+        self.assertNotIn("restart vws-region@pve-seoul-1", log)
+        self.assertNotIn("restart vws-region@pve-busan-1", log)
+
+    def test_lost_write_reply_restarts_the_instance(self):
+        self.remove_generated()
+        self.on_global()
+        self.assertEqual(self.run_install().returncode, 0)
+        (self.work / "regions").mkdir()
+        (self.work / "regions/pve-seoul-1.yaml").write_text("read_only: true\ndefault_project: lost\n")
+        self.env["INSTALL_LOST"] = "/etc/vws-region/pve-seoul-1/region.yaml"
+        (self.work / "state/argv").unlink()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("systemctl restart vws-region@pve-seoul-1", (self.work / "state/argv").read_text())
+
+    def test_registered_instance_must_be_ready(self):
+        self.remove_generated()
+        self.on_global()
+        self.assertEqual(self.run_install().returncode, 0)
+        (self.work / "state/192.0.2.1-registered-pve-seoul-1").touch()
+        result = self.run_install(["-o", "json", *self.args])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("registered", [s["status"] for s in json.loads(result.stdout)])
+        self.env["INSTALL_FAIL"] = "/readyz"
+        failed = self.run_install()
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertIn("lab-1: vws-region@pve-seoul-1 readiness failed", failed.stderr)
+        self.assertNotIn("fixture-private", failed.stdout + failed.stderr)
+
+    def test_region_inventory_boundaries(self):
+        two = "      - {name: %s, port: %s%s}\n"
+        on = self.GLOBAL % ", region" + "    regions:\n"
+        used = "port is used by another instance or service on host lab-1"
+        cases = (
+            # a duplicate name, on one host and across hosts
+            (on + two % ("pve-a-1", 8443, "") + two % ("pve-a-1", 8444, ""), "region name pve-a-1 appears twice"),
+            (on + two % ("pve-a-1", 8443, "") + SEPARATE_HOST.replace("pve-busan-1", "pve-a-1"),
+             "region name pve-a-1 appears twice"),
+            # a duplicate port; an ops port that is another instance's port, or its own; the default ops port
+            # (port + 1000) of one instance that is the port of another
+            (on + two % ("pve-a-1", 8443, "") + two % ("pve-a-2", 8443, ""), used),
+            (on + two % ("pve-a-1", 8443, "") + two % ("pve-a-2", 8444, ", ops_port: 8443"), used),
+            (on + two % ("pve-a-1", 8443, ", ops_port: 8443"), used),
+            (on + two % ("pve-a-1", 8443, "") + two % ("pve-a-2", 9443, ""), used),
+            # a port of the global host's own services, below 1024, above 65535, or not a number
+            (on + two % ("pve-a-1", 8083, ""), used),
+            (on + two % ("pve-a-1", 2379, ""), used),
+            (on + two % ("pve-a-1", 443, ""), "ports must be 1024 to 65535"),
+            (on + two % ("pve-a-1", 65536, ""), "ports must be 1024 to 65535"),
+            (on + two % ("pve-a-1", 64900, ""), "ports must be 1024 to 65535"),
+            (on + two % ("pve-a-1", "'8443;x'", ""), "ports must be 1024 to 65535"),
+            (on + "      - {name: pve-a-1}\n", "ports must be 1024 to 65535"),
+            # a name the unit refuses
+            *((on + two % (n, 8443, ""), "invalid region name")
+              for n in ("seoul-1", "pve-Seoul-1", "pve-seoul", "pve-seoul-1-", "'pve-a-1;x'", "pve-" + "a" * 60 + "-1")),
+            # the role and the list go together
+            (self.GLOBAL % ", region", "the region role and regions go together"),
+            (self.GLOBAL % "" + "    regions:\n" + two % ("pve-a-1", 8443, ""), "the region role and regions go together"),
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("    regions:\n      - name: pve-busan-1\n        port: 8443\n", ""),
+             "the region role and regions go together"),
+            # one global host, unique hosts and addresses, known roles, no extra keys
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("roles: [region]", "roles: [etcd, global, region]"),
+             "lab inventory requires one global host"),
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("192.0.2.20", "192.0.2.1"), "host name and address must be unique"),
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("region-1", "lab-1"), "host name and address must be unique"),
+            (SEPARATE_HOST, "lab inventory requires one global host"),
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("roles: [region]", "roles: [etcd, region]"), "invalid lab host"),
+            (self.GLOBAL % "" + SEPARATE_HOST.replace("      - name: pve-busan-1", "      - name: pve-busan-1\n        token: x"),
+             "forbidden key"))
+        for bad, message in cases:
+            with self.subTest(bad=bad):
+                self.use(bad)
+                self.assertIn(message, self.refused().stderr)
+                self.assertFalse((self.work / "credentials/regions").exists())
+
+    def test_same_port_on_two_hosts_is_allowed(self):
+        self.remove_generated()
+        self.use(self.GLOBAL % ", region" + "    regions:\n      - {name: pve-seoul-1, port: 8443}\n" + SEPARATE_HOST)
+        self.assertEqual(self.run_install().returncode, 0)
+
+    def region_leaf(self, other, folder, extensions):
+        """Write a leaf signed by the CA in `other` with these extensions as the region pair in `folder`."""
+        (other / "leaf.ext").write_text(extensions)
+        for command in (["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                         "-subj", "/CN=pve-seoul-1", "-keyout", str(other / "leaf.key"), "-out", str(other / "leaf.csr")],
+                        ["x509", "-req", "-in", str(other / "leaf.csr"), "-CA", str(other / "ca.crt"),
+                         "-CAkey", str(other / "ca.key"), "-days", "30", "-set_serial", "0x" + os.urandom(8).hex(),
+                         "-extfile", str(other / "leaf.ext"), "-out", str(other / "leaf.crt")]):
+            subprocess.run(["openssl", *command], check=True, capture_output=True)
+        (folder / "region.crt").write_bytes((other / "leaf.crt").read_bytes())
+        (folder / "region.key").write_bytes((other / "leaf.key").read_bytes())
+
+    def test_supplied_region_certificate_is_used_and_checked(self):
+        source = self.work / "credentials"
+        self.on_global()
+        # No retained CA key and no certificate: nothing can be issued.
+        result = self.refused()
+        self.assertIn("regions/pve-seoul-1/ is missing and internal-tls/ holds no key", result.stderr)
+        # An operator pair under internal-ca.pem is installed as it is.
+        other = self.work / "other"
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "pve-seoul-1=192.0.2.1"],
+                       check=True, capture_output=True)
+        folder = source / "regions/pve-seoul-1"
+        folder.mkdir(parents=True)
+        for name, src in (("region.crt", "pve-seoul-1/member.crt"), ("region.key", "pve-seoul-1/member.key")):
+            (folder / name).write_bytes((other / src).read_bytes())
+        # A certificate of another CA is refused: the global layer would not trust it.
+        result = self.refused()
+        self.assertIn("region.crt is not issued under internal-ca.pem", result.stderr)
+        (source / "internal-ca.pem").write_bytes((other / "ca.crt").read_bytes())
+        # Regionapi authenticates clients against this CA, so only a server-only leaf is accepted. The etcd
+        # member certificate (serverAuth and clientAuth), no EKU, anyExtendedKeyUsage, a CA and a missing
+        # basicConstraints are refused before SSH with one fixed diagnostic.
+        san = "subjectAltName=IP:192.0.2.1,IP:127.0.0.1,DNS:pve-seoul-1\n"
+        fixed = ("vws: regions/pve-seoul-1/region.crt must be a server-only leaf: extendedKeyUsage exactly serverAuth "
+                 "(no clientAuth or anyExtendedKeyUsage) and basicConstraints CA:FALSE. Reissue it under "
+                 "internal-ca.pem as a server certificate, or delete regions/pve-seoul-1/ to issue it from the CA "
+                 "kept in internal-tls/\n")
+        self.assertEqual(self.refused().stderr, fixed)
+        bc = "basicConstraints=critical,CA:FALSE\n"
+        for label, ext in (("no EKU", bc + san),
+                           ("clientAuth only", bc + "extendedKeyUsage=clientAuth\n" + san),
+                           ("dual use", bc + "extendedKeyUsage=serverAuth,clientAuth\n" + san),
+                           ("anyExtendedKeyUsage", bc + "extendedKeyUsage=serverAuth,anyExtendedKeyUsage\n" + san),
+                           ("CA:TRUE", "basicConstraints=critical,CA:TRUE\nextendedKeyUsage=serverAuth\n" + san),
+                           ("no basicConstraints", "extendedKeyUsage=serverAuth\n" + san)):
+            with self.subTest(label):
+                self.region_leaf(other, folder, ext)
+                self.assertEqual(self.refused().stderr, fixed)
+        self.region_leaf(other, folder, bc + "extendedKeyUsage=serverAuth\n" + san)
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((folder / "region.crt").read_bytes(), (other / "leaf.crt").read_bytes())
+        # A key that is not the certificate's is refused.
+        subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "pve-seoul-2=192.0.2.1"],
+                       check=True, capture_output=True)
+        (folder / "region.key").write_bytes((other / "pve-seoul-2/member.key").read_bytes())
+        self.assertIn("are not one key pair", self.refused_after_install().stderr)
+
+    def test_region_certificate_is_reissued_for_a_new_address(self):
+        source = self.remove_generated()
+        self.use(self.GLOBAL % "" + SEPARATE_HOST)
+        self.assertEqual(self.run_install().returncode, 0)
+        ca = (source / "internal-ca.pem").read_bytes()
+        old = (source / "regions/pve-busan-1/region.crt").read_bytes()
+        hosts = self.work / "hosts.yaml"
+        hosts.write_text(hosts.read_text().replace("192.0.2.20", "192.0.2.21"))
+        result = self.refused_after_install()
+        self.assertEqual(result.stderr, "vws: regions/pve-busan-1/region.crt does not name 192.0.2.21, 127.0.0.1 and "
+                         "pve-busan-1. To reissue it from the CA kept in internal-tls/, delete regions/pve-busan-1/ "
+                         "and run again\n")
+        # Deleting the folder, as the message says, keeps the CA and names the new address.
+        shutil.rmtree(source / "regions/pve-busan-1")
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertEqual((source / "internal-ca.pem").read_bytes(), ca)
+        self.assertNotEqual((source / "regions/pve-busan-1/region.crt").read_bytes(), old)
+        subprocess.run(["openssl", "verify", "-CAfile", source / "internal-ca.pem", "-verify_ip", "192.0.2.21",
+                        source / "regions/pve-busan-1/region.crt"], check=True, capture_output=True)
+
+    def test_interrupted_certificate_issue_leaves_no_half_pair(self):
+        source = self.remove_generated()
+        self.on_global()
+        (self.work / "bin/openssl").write_text("#!/bin/sh\ncase \"$*\" in *region.ext*) exit 1;; esac\nexec "
+                                               + shutil.which("openssl") + ' "$@"\n')
+        (self.work / "bin/openssl").chmod(0o755)
+        self.assertEqual(self.refused().stderr, "vws: cannot issue the certificate of pve-seoul-1; openssl is required\n")
+        self.assertFalse((source / "regions/pve-seoul-1").exists())
+        # A staged directory left by a crash does not block the next run.
+        (source / "regions/.vws-install.crash").mkdir()
+        (self.work / "bin/openssl").unlink()
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertTrue((source / "regions/pve-seoul-1/region.key").is_file())
+
+    def test_region_config_comes_from_beside_the_inventory(self):
+        self.remove_generated()
+        self.on_global()
+        (self.work / "regions").mkdir()
+        (self.work / "regions/pve-seoul-1.yaml").write_text("read_only: true\ndefault_project: seoul\n")
+        self.assertEqual(self.run_install().returncode, 0)
+        self.assertIn(b"default_project: seoul\n", (self.work / "state/payload").read_bytes())
+        for bad in ("[unbalanced", "- a\n- b\n", "x: " + "y" * 70000):
+            with self.subTest(bad=bad[:20]):
+                (self.work / "regions/pve-seoul-1.yaml").write_text(bad)
+                self.refused_after_install()
+        (self.work / "regions/pve-seoul-1.yaml").unlink()
+        (self.work / "regions/pve-seoul-1.yaml").symlink_to(self.work / "global.yaml")
+        self.refused_after_install()
+
+    def refused_after_install(self):
+        calls = (self.work / "state/argv").read_text()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual((self.work / "state/argv").read_text(), calls)
+        return result
+
+    def test_operator_docs_describe_no_per_node_layout(self):
+        import re
+        for path in sorted((ROOT / "docs/operator").glob("*.md")):
+            text = path.read_text()
+            self.assertIsNone(re.search(r"keepalived|\bVIP\b|every PVE node|each PVE node", text, re.I), path.name)
 
 
 if __name__ == "__main__":

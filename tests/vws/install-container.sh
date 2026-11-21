@@ -49,13 +49,26 @@ case "$verb" in
     *) exit 1 ;;
 esac
 SH
-chmod +x "$work/bin/ssh" "$work/bin/systemctl"
+# The probe of an instance that is not registered yet: its daemon answers /readyz with 503 and "unregistered".
+cat > "$work/bin/curl" <<'SH'
+#!/bin/sh
+echo unregistered
+SH
+chmod +x "$work/bin/ssh" "$work/bin/systemctl" "$work/bin/curl"
 global_units="vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy vws-console-api vws-console"
 
 # A global host (Debian VM or bare metal, no PVE): etcd and the global services, nothing of the region.
-# The region role and VIP of the per-node layout are refused until #850.
-sed -e 's/^    roles: .*/    roles: [etcd, global, region]/' "$work/hosts.yaml" > "$work/region-hosts.yaml"
-if bash "$root/scripts/vws" install --profile lab --inventory "$work/region-hosts.yaml" \
+# The VIP and keepalived keys of the per-node layout are refused.
+cat > "$work/vip-hosts.yaml" <<'YAML'
+profile: lab
+hosts:
+  - name: lab-1
+    address: 192.0.2.1
+    roles: [etcd, global]
+vip:
+  address: 192.0.2.10/24
+YAML
+if bash "$root/scripts/vws" install --profile lab --inventory "$work/vip-hosts.yaml" \
     --packages "$work/packages" --credentials "$work/credentials" >/dev/null 2>&1; then exit 1; fi
 test ! -e /etc/vws
 bash "$root/scripts/vws" install --profile lab --inventory "$work/hosts.yaml" \
@@ -120,6 +133,45 @@ test "$rc" -eq 1
 grep -q 'lab-1: etcd readiness failed' "$work/fail.err"
 rm /var/lib/vws-install-fail
 bash "$root/scripts/vws" "${args[@]}" > "$work/recovery.out" 2> "$work/recovery.err"
+# One region instance on this host: one run installs it and reports it unregistered. The certificate comes
+# from the internal CA that vws install keeps, so this run generates that set instead of using the supplied one.
+cp -a "$work/credentials" "$work/region-credentials"
+rm -f "$work"/region-credentials/{internal-ca.pem,iam.pem,iam-key.pem,api-mtls.pem,api-mtls-key.pem}
+cat > "$work/region-hosts.yaml" <<'YAML'
+profile: lab
+hosts:
+  - name: lab-1
+    address: 192.0.2.1
+    roles: [etcd, global, region]
+    regions:
+      - name: pve-seoul-1
+        port: 8443
+YAML
+region_args=(install --profile lab --inventory "$work/region-hosts.yaml" --packages "$work/packages"
+             --credentials "$work/region-credentials")
+bash "$root/scripts/vws" "${region_args[@]}" > "$work/region.out" 2> "$work/region.err"
+grep -q '^lab-1 vws-region@pve-seoul-1 registration unregistered$' "$work/region.out"
+test -f "$INSTALL_STATE/is-enabled-vws-region@pve-seoul-1"
+test -f "$INSTALL_STATE/is-active-vws-region@pve-seoul-1"
+test -f /etc/systemd/system/vws-lab-region.slice.d/50-vws-memory.conf
+test "$(cat /etc/vws-region/pve-seoul-1.env)" = "$(printf '%s\n' '# Written by vws install; one instance per Proxmox cluster, no secret here.' \
+    VWS_REGION_ADDR=:8443 VWS_REGION_OPS_ADDR=127.0.0.1:9443)"
+test "$(stat -c %u:%g:%a /etc/vws-region/pve-seoul-1 /etc/vws-region/pve-seoul-1/region.key /etc/vws-region/pve-seoul-1/region.crt \
+    /etc/vws-region/pve-seoul-1/region.yaml /etc/vws-region/pve-seoul-1/global-ca.pem | tr '\n' ' ')" = \
+    '0:0:755 0:0:600 0:0:644 0:0:644 0:0:644 '
+cmp /etc/vws-region/pve-seoul-1/global-ca.pem /etc/vws/internal-ca.pem
+openssl verify -CAfile /etc/vws/internal-ca.pem -verify_ip 192.0.2.1 -verify_ip 127.0.0.1 \
+    -verify_hostname pve-seoul-1 /etc/vws-region/pve-seoul-1/region.crt >/dev/null
+find /etc/vws-region -printf '%p %m %u %g %y\n' | sort > "$work/region-before"
+bash "$root/scripts/vws" -o json "${region_args[@]}" > "$work/region-again.out" 2> "$work/region-again.err"
+python3 - "$work/region-again.out" <<'PY'
+import json, sys
+steps = json.load(open(sys.argv[1]))
+rest = [s for s in steps if s["status"] != "unchanged"]
+assert rest == [{"host": "lab-1", "step": "vws-region@pve-seoul-1 registration", "status": "unregistered"}], rest
+PY
+find /etc/vws-region -printf '%p %m %u %g %y\n' | sort > "$work/region-after"
+cmp "$work/region-before" "$work/region-after"
 python3 - "$work" <<'PY'
 from pathlib import Path
 import sys
@@ -129,9 +181,11 @@ paths = list(root.glob("*.out")) + list(root.glob("*.err")) + [root / "state/arg
 paths += [p for directory in (Path("/etc/vws"), Path("/usr/lib/vws"))
           for p in directory.rglob("*") if p.is_file()
           and "/credentials/" not in str(p)]
+# Instance files: the key is meant to be there; the configuration and environment must hold no secret.
+paths += [p for p in Path("/etc/vws-region").rglob("*") if p.is_file() and p.suffix in (".env", ".yaml")]
 content = b"\n".join(p.read_bytes() for p in paths)
-for p in (root / "credentials").rglob("*"):
-    if p.is_file() and p.name not in ("etcd-ca.pem", "api-etcd.pem", "internal-ca.pem",
+for p in [*(root / "credentials").rglob("*"), *(root / "region-credentials").rglob("*")]:
+    if p.is_file() and p.name != ".lock" and p.name not in ("etcd-ca.pem", "api-etcd.pem", "internal-ca.pem",
                                      "api-mtls.pem", "iam-etcd.pem", "iam.pem",
                                      "ca.crt", "member.crt", "client.crt"):
         assert p.read_bytes().strip() not in content, p.name
@@ -144,4 +198,4 @@ for p in Path("/etc/vws").iterdir():
         assert p.stat().st_uid == 0 and p.stat().st_gid == 0
         assert p.stat().st_mode & 0o777 == 0o644, p
 PY
-echo "install, unchanged rerun, readiness failure, recovery and secret isolation passed"
+echo "install, unchanged rerun, readiness failure, recovery, region instance and secret isolation passed"

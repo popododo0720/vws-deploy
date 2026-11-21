@@ -118,6 +118,16 @@ jobs:
           (cd /tmp/console-api && VWS_REGION_BODY="$GITHUB_WORKSPACE/build/region-contract/body.json" \
             go test -count=1 -run TestVWSDeployRegionAddBody ./internal/surface/console/)
 
+      # The separate-host placement promises that only the daemon reaches PVE. The pinned console-api's own test
+      # runs the connection test through the global handler and the daemon over mTLS against a PVE fake, with a
+      # trap on the PVE address that counts any dial from the global process: it must see none, and the daemon
+      # must reach PVE. The trap test proves the trap would see a direct dial.
+      - name: Check the connection test reaches PVE only from the daemon
+        run: |
+          (cd /tmp/console-api && go test -count=1 -v \
+            -run '^(TestConnectionTestReachesPVEOnlyFromTheDaemon|TestConnectionTestTrapSeesADirectDial)$' \
+            ./internal/backend/proxmox/)
+
   check:
     runs-on: ubuntu-latest
     steps:

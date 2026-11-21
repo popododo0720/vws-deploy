@@ -50,7 +50,7 @@ credentials:
   kek_file: /run/credentials/vws-console-api.service/admin-kek
 default_project: lab
 """)
-    for name in ("vws-etcd", "vws-global"):
+    for name in ("vws-etcd", "vws-global", "vws-region"):
         package = root / name
         (package / "DEBIAN").mkdir(parents=True)
         (package / "DEBIAN/control").write_text(
@@ -62,6 +62,8 @@ default_project: lab
             helper /= "etcd"
             helper.mkdir()
             script = helper / "check-ready"
+        elif name == "vws-region":
+            script = helper / "check-region-ready"
         else:
             script = helper / "check-global-ready"
         script.write_text('#!/bin/sh\ntest ! -f /var/lib/vws-install-fail\n')

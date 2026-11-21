@@ -2,7 +2,7 @@
 
 VWS installs as systemd packages on Debian 12 amd64. This page covers the global layer: one VM on
 Proxmox or one bare-metal machine, with `vws-etcd` and `vws-global` (sections 2 and 3). It needs no PVE
-on it. The region layer is in section 4.
+on it. The region layer, one `vws-region` instance per Proxmox cluster, is in section 4.
 
 The default is one global host with one etcd member. The three-member `ha` layout is described in
 `packaging/vws-etcd/README.md`; `vws install` does not automate it yet (vws-deploy#776).
@@ -18,7 +18,7 @@ etcd URL and client certificates of the packaged units.
 On a build host with git, Go, curl, xz and dpkg-deb:
 
 ```sh
-packaging/build.sh 1.0.0-1
+packaging/build.sh 1.0.0-2
 ```
 
 It checks out vws-console-api, vws-iam and vws-console at the commits in `scripts/versions.env`,
@@ -29,8 +29,8 @@ from the pinned release archive, and writes `build/vws-etcd_*.deb`, `build/vws-g
 
 ## 2. Prepare the global host inputs
 
-Write `global/hosts.yaml` with `roles: [etcd, global]` and no `vip`, and `global/global.yaml`, as in
-[`vws install`](../vws-cli.md#vws-install). Create an empty credentials directory on the operator
+Write `global/hosts.yaml` with `roles: [etcd, global]` (add `region` and a `regions` list in section 4), and
+`global/global.yaml`, as in [`vws install`](../vws-cli.md#vws-install). Create an empty credentials directory on the operator
 host and add what only you can supply:
 
 | File | From |
@@ -81,7 +81,7 @@ scripts/vws install --profile lab --inventory global/hosts.yaml --packages build
 The command copies the inputs (secrets 0600 under `/etc/vws/credentials`, directory 0700), installs
 `vws-etcd` and `vws-global`, then enables and starts `vws-etcd`, its snapshot and defrag timers,
 `vws-iam`, `vws-aws-proxy`, `vws-console-api` and `vws-console`, waiting for each readiness probe.
-It does not install or start `vws-region` or keepalived on this host. A rerun reports every step
+With `roles: [etcd, global]` it installs no `vws-region`. A rerun reports every step
 `unchanged`. After a failure, fix the cause and run it again.
 
 `vws-aws-proxy` reads accounts from the static `/etc/vws/aws-accounts.json`, not from etcd. After you
@@ -93,11 +93,66 @@ needs the next section first.
 
 ## 4. The region layer
 
-This page does not install `vws-region`. The package is one `vws-region@<region>` instance per Proxmox
-cluster, with no sudo, keepalived or VIP (`packaging/vws-region/README.md`). Installing instances with
-`vws install` and the full runbook are vws-deploy#850, and the rehearsal on a real cluster is #851.
-Until #850, `vws install` refuses the `region` role and `vip` of the old per-node layout
-([`vws install`](../vws-cli.md#vws-install)); install and enable instances by hand as the package README says.
+A `vws-region@<region>` instance is the only process that talks to a Proxmox cluster, and one instance
+serves one cluster. It needs no PVE, `/etc/pve` or sudo. It runs on the global host, on another Debian
+host, or in a VM of the cluster, never on a Proxmox node ([regions.md](regions.md#where-the-instance-runs)
+compares the placements). `vws install` installs the instances in the same run as the global host.
+
+Add the instances to the inventory of section 2, one entry per cluster:
+
+```yaml
+profile: lab
+hosts:
+  - name: global-1
+    address: 192.0.2.1
+    roles: [etcd, global, region]       # the instance runs on the global host
+    regions:
+      - name: pve-seoul-1
+        port: 8443
+  - name: region-1                      # optional: a separate host for another cluster
+    address: 192.0.2.20
+    roles: [region]
+    regions:
+      - name: pve-busan-1
+        port: 8443
+```
+
+For each instance, put your own configuration in `global/regions/<region>.yaml` (pools, storages, bridges;
+the example `packaging/vws-region/region.yaml` is the default and has `read_only: true`). The credentials
+directory gets `regions/<region>/region.crt` and `region.key`, issued from the internal CA that section 2
+keeps. The certificate covers the host address, 127.0.0.1 and the region name, so the region endpoint of the
+registration can use the host address, or 127.0.0.1 when the global layer runs on the same host. `global-ca.pem` of each instance is `internal-ca.pem`.
+If you supplied your own internal TLS set, there is no CA key to issue from: supply
+`regions/<region>/region.crt` and `region.key` yourself, issued under `internal-ca.pem`. Regionapi trusts
+that CA for the global client too, so the certificate, generated or supplied, must be a server-only leaf:
+`extendedKeyUsage` exactly `serverAuth` (no `clientAuth`, no `anyExtendedKeyUsage`, not missing),
+`basicConstraints` `CA:FALSE`, and the host address, 127.0.0.1 and the region name as subject alternative
+names. An etcd member certificate has `clientAuth` and is refused; so is any other certificate that fails
+this, before any SSH call.
+The host of an instance needs the build from section 1 (`vws-region_*.deb` in `--packages`).
+
+```sh
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build --credentials credentials
+```
+
+One run is enough. It installs the package, writes the files (`.env` and `region.yaml` 0644, key 0600 root),
+starts every instance and prints, for a new one:
+
+```text
+global-1 vws-region@pve-seoul-1 registration unregistered
+```
+
+`unregistered` is the end state of the install: the instance runs and waits for its registration. Register
+it with `vws region add` ([regions.md](regions.md#step-4-register-the-region)); you do not run `vws install`
+again for that. The PVE token secret goes to the instance only through that registration, into
+`/var/lib/vws-region/<region>/registration.json` (0600, in a directory only the daemon can use). The
+inventory and the credentials directory hold no PVE token.
+
+Reruns keep every key and report `unchanged`; an instance whose own files changed is restarted. A
+changed host address fails with the reissue steps (delete `regions/<region>/`); two instances with one
+name, or sharing a port on one host, are refused before SSH. `vws install` never removes an instance that
+you delete from the inventory: see [moving](regions.md#move-the-daemon). Nothing in this section has been
+run against a real Proxmox cluster; the rehearsal checklist is [region-rehearsal.md](region-rehearsal.md).
 
 ## Not for production: the in-memory store
 

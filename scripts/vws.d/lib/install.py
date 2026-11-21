@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,28 +17,35 @@ import time
 import globalconfig
 import yaml
 
-# A host is the global layer on a VM or bare metal: etcd and global. The region role and its VIP belonged
-# to the per-node vws-region layout, which no longer exists; region instances come with vws-deploy#850.
-ROLES = ({"etcd", "global"},)
+# The global host runs etcd and global, and may also run region instances. Any other host runs only region
+# instances. A region instance serves one Proxmox cluster; there is no VIP and no keepalived.
+GLOBAL_ROLES = ({"etcd", "global"}, {"etcd", "global", "region"})
+REGION_ROLES = ({"region"},)
 PRIVATE = (
     "ca.crt member.crt member.key client.crt client.key admin-kek console-token "
     "vws-access-key vws-secret-key api-etcd-key.pem api-mtls-key.pem aws-source "
     "iam-etcd-key.pem iam-key.pem"
 ).split()
 PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam.pem".split()
-SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str,
-                                   "roles": [str]}],
+SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str, "roles": [str],
+                                   "regions": [{"name": str, "port": str, "ops_port": str}]}],
           "memory_mib": {"global": str, "region": str, "etcd": str}}
 LAB_MEMORY_MIB = {"global": 1024, "region": 512, "etcd": 512}
 LAB_SERVICES = {
     "global": ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"),
     "etcd": ("vws-etcd", "vws-etcd-snapshot", "vws-etcd-defrag"),
 }
+# The unit validates the instance name the same way (packaging/vws-region/run-region).
+REGION_NAME = r"pve-[a-z0-9]+(-[a-z0-9]+)*-[0-9]+"
+# Ports of the global host's own listeners (etcd, console, console-api, vws-iam and its health port).
+RESERVED_PORTS = {2379, 2380, 3000, 8080, 8081, 8082, 8083, 8084, 9095, 9096}
 PACKAGES = {
     "vws-etcd": ("etcd", ["vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer"],
                  [("etcd", "CREDENTIALS_DIRECTORY=/run/credentials/vws-etcd.service /usr/lib/vws/etcd/check-ready")]),
     "vws-global": ("global", ["vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"],
                    [(p, "/usr/lib/vws/check-global-ready " + p) for p in ("iam", "proxy", "api", "console")]),
+    # The instances are template units, so the installer starts and probes them itself.
+    "vws-region": ("region", [], []),
 }
 # The etcd probe asks once; a unit that was just started gets 30 seconds to answer.
 RETRY = "n=0; until {}; do n=$((n + 1)); test $n -lt 15 || exit 1; sleep 2; done"
@@ -108,25 +116,64 @@ def inventory(path):
                     secrets(item)
         secrets(nodes[0])
         cfg = globalconfig.decode(nodes[0], SCHEMA)
-        if cfg.get("profile") != "lab" or len(cfg.get("hosts", [])) != 1:
-            raise Invalid("lab inventory requires one host")
+        if cfg.get("profile") != "lab" or not cfg.get("hosts"):
+            raise Invalid("lab inventory requires one global host")
         memory = cfg.get("memory_mib", LAB_MEMORY_MIB)
         if (set(memory) != set(LAB_MEMORY_MIB)
                 or any(not re.fullmatch(r"[1-9][0-9]{0,3}", str(v)) for v in memory.values())
                 or sum(int(v) for v in memory.values()) > 2048):
             raise Invalid("lab memory_mib requires positive global, region and etcd budgets totaling <= 2048 MiB")
         cfg["memory_mib"] = {k: int(v) for k, v in memory.items()}
-        host = cfg["hosts"][0]
+        hosts(cfg)
+        return cfg
+    except (yaml.YAMLError, UnicodeError, globalconfig.Refused, KeyError, ValueError, TypeError, RecursionError):
+        raise Invalid("invalid inventory") from None
+
+
+def hosts(cfg):
+    """Check the hosts and their region instances; every violation exits before any SSH call."""
+    seen = {"names": set(), "addresses": set(), "regions": set()}
+    owners = 0
+    for host in cfg["hosts"]:
         roles = host.get("roles", [])
-        if (set(roles) not in ROLES or len(roles) != len(set(roles))
+        if (len(roles) != len(set(roles)) or (set(roles) not in GLOBAL_ROLES + REGION_ROLES)
                 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", host.get("name", ""))
                 or host.get("name") == "client"
                 or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", host.get("ssh_user", "root"))):
             raise Invalid("invalid lab host")
-        ipaddress.IPv4Address(host["address"])
-        return cfg
-    except (yaml.YAMLError, UnicodeError, globalconfig.Refused, KeyError, ValueError, TypeError, RecursionError):
-        raise Invalid("invalid inventory") from None
+        address = str(ipaddress.IPv4Address(host["address"]))
+        if host["name"] in seen["names"] or address in seen["addresses"]:
+            raise Invalid("host name and address must be unique")
+        seen["names"].add(host["name"])
+        seen["addresses"].add(address)
+        owners += "global" in roles
+        regions = host.get("regions", [])
+        if bool(regions) != ("region" in roles):
+            raise Invalid("host " + host["name"] + ": the region role and regions go together")
+        ports = set(RESERVED_PORTS) if "global" in roles else set()
+        for region in regions:
+            name = region.get("name", "")
+            if not re.fullmatch(REGION_NAME, name) or len(name) > 63:
+                raise Invalid("invalid region name; use pve-<name>-<number>")
+            if name in seen["regions"]:
+                raise Invalid("region name " + name + " appears twice")
+            seen["regions"].add(name)
+            if not re.fullmatch(r"[1-9][0-9]{3,4}", region.get("port", "")):
+                raise Invalid("region " + name + ": ports must be 1024 to 65535")
+            port = int(region["port"])
+            ops = region.get("ops_port") or str(port + 1000)
+            if not re.fullmatch(r"[1-9][0-9]{3,4}", ops):
+                raise Invalid("region " + name + ": ports must be 1024 to 65535")
+            for value in (port, int(ops)):
+                if not 1024 <= value <= 65535:
+                    raise Invalid("region " + name + ": ports must be 1024 to 65535")
+            if port == int(ops) or {port, int(ops)} & ports:
+                raise Invalid("region " + name + ": port is used by another instance or service on host "
+                              + host["name"])
+            ports |= {port, int(ops)}
+            region["port"], region["ops_port"] = port, int(ops)
+    if owners != 1:
+        raise Invalid("lab inventory requires one global host")
 
 
 def generate(source, host, roles):
@@ -220,59 +267,160 @@ def public(command, path):
     return result.stdout
 
 
+def names_address(certificate, address, name):
+    """Whether the certificate names the host address, 127.0.0.1 and the instance name."""
+    for check, value in (("-checkip", address), ("-checkip", "127.0.0.1"), ("-checkhost", name)):
+        shown = local(["openssl", "x509", "-noout", check, value, "-in", str(certificate)])
+        if shown.returncode or b"does match" not in shown.stdout or b"NOT" in shown.stdout:
+            return False
+    return True
+
+
+def server_only(certificate):
+    """Whether the leaf is a non-CA certificate whose only extended key usage is serverAuth."""
+    for extension, title, only in (("extendedKeyUsage", "X509v3 Extended Key Usage", "TLS Web Server Authentication"),
+                                   ("basicConstraints", "X509v3 Basic Constraints", "CA:FALSE")):
+        shown = local(["openssl", "x509", "-noout", "-ext", extension, "-in", str(certificate)])
+        lines = [line.strip() for line in shown.stdout.decode(errors="replace").splitlines()]
+        if shown.returncode or len(lines) != 2 or not lines[0].startswith(title) or lines[1] != only:
+            return False
+    return True
+
+
+def issue_region_certificate(source, host, name, folder):
+    """Issue a server certificate for one instance from the retained internal CA, all or nothing."""
+    state = source / "internal-tls"
+    if not (state / "ca.key").is_file() or read_file(state / "ca.crt") != read_file(source / "internal-ca.pem"):
+        raise Invalid("regions/" + name + "/ is missing and internal-tls/ holds no key of internal-ca.pem to issue "
+                      "it; supply region.crt and region.key there, issued under internal-ca.pem")
+    os.umask(0o077)
+    (source / "regions").mkdir(exist_ok=True)
+    staged = Path(tempfile.mkdtemp(dir=source / "regions", prefix=".vws-install."))
+    try:
+        (staged / "region.ext").write_text(
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n"
+            f"subjectAltName=IP:{host['address']},IP:127.0.0.1,DNS:{name}\n")
+        for command in (["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                         "-subj", "/CN=" + name, "-keyout", str(staged / "region.key"),
+                         "-out", str(staged / "region.csr")],
+                        ["x509", "-req", "-in", str(staged / "region.csr"), "-CA", str(state / "ca.crt"),
+                         "-CAkey", str(state / "ca.key"), "-days", "825", "-set_serial", "0x" + os.urandom(16).hex(),
+                         "-extfile", str(staged / "region.ext"), "-out", str(staged / "region.crt")]):
+            if local(["openssl", *command]).returncode:
+                raise Invalid("cannot issue the certificate of " + name + "; openssl is required")
+        (staged / "region.csr").unlink()
+        (staged / "region.ext").unlink()
+        staged.rename(folder)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+def region_files(args, source, host, region):
+    """The files of one region instance: its config, certificate, key and the CA of the global client."""
+    name = region["name"]
+    if (source / "regions").is_symlink():
+        raise Invalid("unsafe regions directory")
+    folder = source / "regions" / name
+    if not folder.exists() and not folder.is_symlink():
+        issue_region_certificate(source, host, name, folder)
+    if folder.is_symlink() or not folder.is_dir():
+        raise Invalid("required regular directory: regions/" + name)
+    certificate, key = folder / "region.crt", folder / "region.key"
+    pair = (read_file(certificate), read_file(key))
+    if public(["x509", "-noout", "-pubkey", "-in"], certificate) != public(["pkey", "-pubout", "-in"], key):
+        raise Invalid("regions/" + name + "/region.crt and region.key are not one key pair")
+    if local(["openssl", "verify", "-CAfile", str(source / "internal-ca.pem"), str(certificate)]).returncode:
+        raise Invalid("regions/" + name + "/region.crt is not issued under internal-ca.pem, the CA the global "
+                      "layer trusts for regions")
+    if not server_only(certificate):
+        raise Invalid("regions/" + name + "/region.crt must be a server-only leaf: extendedKeyUsage exactly serverAuth "
+                      "(no clientAuth or anyExtendedKeyUsage) and basicConstraints CA:FALSE. Reissue it under "
+                      "internal-ca.pem as a server certificate, or delete regions/" + name + "/ to issue it from "
+                      "the CA kept in internal-tls/")
+    if not names_address(certificate, host["address"], name):
+        retained = (source / "internal-tls/ca.key").is_file()
+        fix = ("To reissue it from the CA kept in internal-tls/, delete regions/" + name + "/ and run again"
+               if retained else "Reissue it under internal-ca.pem with " + host["address"] + ", 127.0.0.1 and "
+               + name + " in its subject alternative names, then replace region.crt and region.key together")
+        raise Invalid("regions/" + name + "/region.crt does not name " + host["address"] + ", 127.0.0.1 and "
+                      + name + ". " + fix)
+    # The operator may supply the configuration; else the packaged example is the default. Never a symlink.
+    config = args.inventory.parent / "regions" / (name + ".yaml")
+    config = read_file(config) if config.exists() or config.is_symlink() else read_file(PACKAGING / "vws-region/region.yaml")
+    if len(config) > globalconfig.MAX_BYTES:
+        raise Invalid("region config exceeds 64 KiB")
+    try:
+        if not isinstance(yaml.safe_load(config.decode()), dict):
+            raise ValueError
+    except (yaml.YAMLError, UnicodeError, ValueError):
+        raise Invalid("invalid region config for " + name) from None
+    base = "/etc/vws-region/" + name
+    env = (f"# Written by vws install; one instance per Proxmox cluster, no secret here.\n"
+           f"VWS_REGION_ADDR=:{region['port']}\nVWS_REGION_OPS_ADDR=127.0.0.1:{region['ops_port']}\n")
+    return [(base + ".env", "644", env.encode()), (base + "/region.yaml", "644", config),
+            (base + "/region.crt", "644", pair[0]), (base + "/region.key", "600", pair[1]),
+            (base + "/global-ca.pem", "644", read_file(source / "internal-ca.pem"))]
+
+
 def inputs(args):
+    """The inventory and, for each host, what to install: its files, packages and region instances."""
     cfg = inventory(args.inventory)
-    host = cfg["hosts"][0]
-    roles = set(host["roles"])
+    owner = next(h for h in cfg["hosts"] if "global" in h["roles"])
     source = args.credentials
     if source.is_symlink() or ".." in source.parts or any(p.is_symlink() for p in source.parents):
         raise Invalid("unsafe credentials directory")
-    generate(source, host, roles)
-    files = []
-    if "global" in roles:
-        config = read_file(args.global_config or args.inventory.parent / "global.yaml")
-        try:
-            globalconfig.parse(config)
-        except (globalconfig.Refused, RecursionError, AttributeError, TypeError):
-            raise Invalid("invalid global.yaml; run vws config validate") from None
-        for names, dest, mode in ((PRIVATE, "/etc/vws/credentials/", "600"), (PUBLIC, "/etc/vws/", "644")):
-            for name in names:
-                files.append((dest + name, mode, read_file(source / name)))
-        kek = source / "iam-kek"
-        if kek.is_symlink() or not kek.is_dir():
-            raise Invalid("required regular directory: iam-kek")
-        keys = sorted(kek.iterdir())
-        if not any(p.name == "active" for p in keys) or len(keys) < 2:
-            raise Invalid("iam-kek requires active and a key file")
-        for key in keys:
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", key.name):
-                raise Invalid("invalid iam-kek filename")
-            files.append(("/etc/vws/credentials/iam-kek/" + key.name, "600", read_file(key)))
-        files.append(("/etc/vws/global.yaml", "644", config))
-        files.append(("/etc/vws/etcd.conf", "644",
-                      f'NAME={host["name"]}\nLIST={host["name"]}={host["address"]}\n'.encode()))
-    packages = []
-    for name in (name for name, package in PACKAGES.items() if package[0] in roles):
-        matches = list(args.packages.glob(name + "_*.deb"))
-        if len(matches) != 1:
-            raise Invalid("require exactly one package: " + name)
-        payload = read_file(matches[0])
-        metadata = local(["dpkg-deb", "-f", str(matches[0]), "Package", "Version"])
-        fields = metadata.stdout.decode().splitlines()
-        if metadata.returncode or len(fields) != 2 or fields[0] != "Package: " + name:
-            raise Invalid("invalid package: " + name)
-        version = fields[1].removeprefix("Version: ")
-        if not re.fullmatch(r"[A-Za-z0-9.+:~_-]+", version):
-            raise Invalid("invalid package version: " + name)
-        packages.append((name, version, payload))
-    return cfg, files, packages
+    generate(source, owner, set(owner["roles"]))
+    plans = []
+    for host in cfg["hosts"]:
+        roles = set(host["roles"])
+        files = []
+        if "global" in roles:
+            config = read_file(args.global_config or args.inventory.parent / "global.yaml")
+            try:
+                globalconfig.parse(config)
+            except (globalconfig.Refused, RecursionError, AttributeError, TypeError):
+                raise Invalid("invalid global.yaml; run vws config validate") from None
+            for names, dest, mode in ((PRIVATE, "/etc/vws/credentials/", "600"), (PUBLIC, "/etc/vws/", "644")):
+                for name in names:
+                    files.append((dest + name, mode, read_file(source / name)))
+            kek = source / "iam-kek"
+            if kek.is_symlink() or not kek.is_dir():
+                raise Invalid("required regular directory: iam-kek")
+            keys = sorted(kek.iterdir())
+            if not any(p.name == "active" for p in keys) or len(keys) < 2:
+                raise Invalid("iam-kek requires active and a key file")
+            for key in keys:
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", key.name):
+                    raise Invalid("invalid iam-kek filename")
+                files.append(("/etc/vws/credentials/iam-kek/" + key.name, "600", read_file(key)))
+            files.append(("/etc/vws/global.yaml", "644", config))
+            files.append(("/etc/vws/etcd.conf", "644",
+                          f'NAME={host["name"]}\nLIST={host["name"]}={host["address"]}\n'.encode()))
+        regions = [dict(region, files=region_files(args, source, host, region)) for region in host.get("regions", [])]
+        packages = []
+        for name in (name for name, package in PACKAGES.items() if package[0] in roles):
+            matches = list(args.packages.glob(name + "_*.deb"))
+            if len(matches) != 1:
+                raise Invalid("require exactly one package: " + name)
+            payload = read_file(matches[0])
+            metadata = local(["dpkg-deb", "-f", str(matches[0]), "Package", "Version"])
+            fields = metadata.stdout.decode().splitlines()
+            if metadata.returncode or len(fields) != 2 or fields[0] != "Package: " + name:
+                raise Invalid("invalid package: " + name)
+            version = fields[1].removeprefix("Version: ")
+            if not re.fullmatch(r"[A-Za-z0-9.+:~_-]+", version):
+                raise Invalid("invalid package version: " + name)
+            packages.append((name, version, payload))
+        plans.append((host, files, packages, regions))
+    return cfg, plans
 
 
 class Target:
-    def __init__(self, host, output):
+    def __init__(self, host, output, steps):
         self.host = host
         self.output = output
-        self.steps = []
+        self.steps = steps
+        self.retried = False
 
     def run(self, step, command, data=None):
         user = self.host.get("ssh_user", "root")
@@ -283,6 +431,7 @@ class Target:
                 "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
                 "--", user + "@" + self.host["address"], remote]
         for attempt in range(3):
+            self.retried = attempt > 0
             try:
                 result = local(argv, data)
             except subprocess.TimeoutExpired:
@@ -320,7 +469,8 @@ else
     echo changed
 fi
 """, data)
-        changed = result == b"changed"
+        # A reply lost to a dropped connection may hide a write that happened: a retried write counts as one.
+        changed = result == b"changed" or self.retried
         self.emit(path, changed)
         return changed
 
@@ -335,9 +485,25 @@ fi
 """)
         self.emit(name, result == b"changed")
 
-    def install(self, cfg, files, packages):
+    def register_state(self, region):
+        """Report `unregistered` for a started instance without state, or require readiness for one with."""
+        name, unit = region["name"], "vws-region@" + region["name"]
+        state = "/var/lib/vws-region/" + name + "/registration.json"
+        ops = "127.0.0.1:" + str(region["ops_port"])
+        # An instance with no registration answers /readyz with 503 and the word unregistered; a broken
+        # one answers nothing, so a crash loop is never reported as unregistered.
+        probe = (f"if test -f {state}; then /usr/lib/vws/check-region-ready {name} && s=registered; "
+                 f"else curl --silent --noproxy '*' --max-time 2 http://{ops}/readyz | grep -q unregistered "
+                 "&& s=unregistered; fi")
+        result = self.run(unit + " readiness", RETRY.format(probe) + '; echo "$s"')
+        self.emit(unit + " registration", status=result.decode())
+
+    def install(self, cfg, files, packages, regions=()):
         self.run("memory controller", "test -f /sys/fs/cgroup/cgroup.controllers && "
                  "grep -qw memory /sys/fs/cgroup/cgroup.controllers")
+        # A marker left by an interrupted run, read before this run writes: it restarts every instance, while
+        # a change of this run restarts only the instance it belongs to.
+        leftover = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending"
         changed = False
         for group, mib in cfg["memory_mib"].items():
             if group not in self.host["roles"]:
@@ -346,6 +512,12 @@ fi
             changed = self.write(
                 "/etc/systemd/system/" + slice_name + ".d/50-vws-memory.conf", "644",
                 f"[Slice]\nMemoryAccounting=yes\nMemoryMax={mib}M\nMemorySwapMax=0\n".encode()) or changed
+            if group == "region":
+                for region in regions:
+                    region["changed"] = self.write(
+                        "/etc/systemd/system/vws-region@" + region["name"] + ".service.d/50-vws-memory.conf", "644",
+                        f"[Service]\nSlice={slice_name}\n".encode())
+                continue
             for service in LAB_SERVICES[group]:
                 changed = self.write(
                     "/etc/systemd/system/" + service + ".service.d/50-vws-memory.conf", "644",
@@ -355,6 +527,9 @@ fi
         self.emit("memory budget")
         for path, mode, data in files:
             changed = self.write(path, mode, data) or changed
+        for region in regions:
+            for path, mode, data in region["files"]:
+                region["changed"] = self.write(path, mode, data) or region.get("changed", False)
         changed = self.run("interrupted install", "test ! -f " + PENDING + " || echo pending") == b"pending" or changed
         for name, version, payload in packages:
             current = self.run(name, f"dpkg-query -W -f='${{db:Status-Abbrev}}\\t${{Version}}' {name} 2>/dev/null || true")
@@ -373,11 +548,17 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Dpk
             for probe, command in probes:
                 self.run(probe + " readiness", RETRY.format(command) if probe == "etcd" else command)
                 self.emit(probe + " readiness")
+            if name == "vws-region":
+                # Each instance restarts only for its own change; a file the host shares does not touch it.
+                for region in regions:
+                    self.service("vws-region@" + region["name"], region.get("changed", False) or upgrade or leftover)
+                    self.register_state(region)
         self.run("finish", "rm -f " + PENDING)
 
 
 def main(argv):
     target = None
+    steps = []
     try:
         parser = Parser(add_help=False)
         parser.add_argument("--profile", required=True)
@@ -388,9 +569,10 @@ def main(argv):
         args = parser.parse_args(argv)
         if args.profile != "lab":
             raise Invalid("only lab is supported; small/ha: vws-deploy#776")
-        cfg, files, packages = inputs(args)
-        target = Target(cfg["hosts"][0], args.o)
-        target.install(cfg, files, packages)
+        cfg, plans = inputs(args)
+        for host, files, packages, regions in plans:
+            target = Target(host, args.o, steps)
+            target.install(cfg, files, packages, regions)
         return 0
     except Invalid as error:
         print("vws: " + str(error), file=sys.stderr)
@@ -403,7 +585,7 @@ def main(argv):
         return 1
     finally:
         if target and target.output == "json":
-            print(json.dumps(target.steps))
+            print(json.dumps(steps))
 
 
 if __name__ == "__main__":
