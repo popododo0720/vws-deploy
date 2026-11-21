@@ -276,6 +276,17 @@ def names_address(certificate, address, name):
     return True
 
 
+def server_only(certificate):
+    """Whether the leaf is a non-CA certificate whose only extended key usage is serverAuth."""
+    for extension, title, only in (("extendedKeyUsage", "X509v3 Extended Key Usage", "TLS Web Server Authentication"),
+                                   ("basicConstraints", "X509v3 Basic Constraints", "CA:FALSE")):
+        shown = local(["openssl", "x509", "-noout", "-ext", extension, "-in", str(certificate)])
+        lines = [line.strip() for line in shown.stdout.decode(errors="replace").splitlines()]
+        if shown.returncode or len(lines) != 2 or not lines[0].startswith(title) or lines[1] != only:
+            return False
+    return True
+
+
 def issue_region_certificate(source, host, name, folder):
     """Issue a server certificate for one instance from the retained internal CA, all or nothing."""
     state = source / "internal-tls"
@@ -321,6 +332,11 @@ def region_files(args, source, host, region):
     if local(["openssl", "verify", "-CAfile", str(source / "internal-ca.pem"), str(certificate)]).returncode:
         raise Invalid("regions/" + name + "/region.crt is not issued under internal-ca.pem, the CA the global "
                       "layer trusts for regions")
+    if not server_only(certificate):
+        raise Invalid("regions/" + name + "/region.crt must be a server-only leaf: extendedKeyUsage exactly serverAuth "
+                      "(no clientAuth or anyExtendedKeyUsage) and basicConstraints CA:FALSE. Reissue it under "
+                      "internal-ca.pem as a server certificate, or delete regions/" + name + "/ to issue it from "
+                      "the CA kept in internal-tls/")
     if not names_address(certificate, host["address"], name):
         retained = (source / "internal-tls/ca.key").is_file()
         fix = ("To reissue it from the CA kept in internal-tls/, delete regions/" + name + "/ and run again"

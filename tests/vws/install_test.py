@@ -731,6 +731,18 @@ class Install(unittest.TestCase):
         self.use(self.GLOBAL % ", region" + "    regions:\n      - {name: pve-seoul-1, port: 8443}\n" + SEPARATE_HOST)
         self.assertEqual(self.run_install().returncode, 0)
 
+    def region_leaf(self, other, folder, extensions):
+        """Write a leaf signed by the CA in `other` with these extensions as the region pair in `folder`."""
+        (other / "leaf.ext").write_text(extensions)
+        for command in (["req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                         "-subj", "/CN=pve-seoul-1", "-keyout", str(other / "leaf.key"), "-out", str(other / "leaf.csr")],
+                        ["x509", "-req", "-in", str(other / "leaf.csr"), "-CA", str(other / "ca.crt"),
+                         "-CAkey", str(other / "ca.key"), "-days", "30", "-set_serial", "0x" + os.urandom(8).hex(),
+                         "-extfile", str(other / "leaf.ext"), "-out", str(other / "leaf.crt")]):
+            subprocess.run(["openssl", *command], check=True, capture_output=True)
+        (folder / "region.crt").write_bytes((other / "leaf.crt").read_bytes())
+        (folder / "region.key").write_bytes((other / "leaf.key").read_bytes())
+
     def test_supplied_region_certificate_is_used_and_checked(self):
         source = self.work / "credentials"
         self.on_global()
@@ -749,8 +761,28 @@ class Install(unittest.TestCase):
         result = self.refused()
         self.assertIn("region.crt is not issued under internal-ca.pem", result.stderr)
         (source / "internal-ca.pem").write_bytes((other / "ca.crt").read_bytes())
+        # Regionapi authenticates clients against this CA, so only a server-only leaf is accepted. The etcd
+        # member certificate (serverAuth and clientAuth), no EKU, anyExtendedKeyUsage, a CA and a missing
+        # basicConstraints are refused before SSH with one fixed diagnostic.
+        san = "subjectAltName=IP:192.0.2.1,IP:127.0.0.1,DNS:pve-seoul-1\n"
+        fixed = ("vws: regions/pve-seoul-1/region.crt must be a server-only leaf: extendedKeyUsage exactly serverAuth "
+                 "(no clientAuth or anyExtendedKeyUsage) and basicConstraints CA:FALSE. Reissue it under "
+                 "internal-ca.pem as a server certificate, or delete regions/pve-seoul-1/ to issue it from the CA "
+                 "kept in internal-tls/\n")
+        self.assertEqual(self.refused().stderr, fixed)
+        bc = "basicConstraints=critical,CA:FALSE\n"
+        for label, ext in (("no EKU", bc + san),
+                           ("clientAuth only", bc + "extendedKeyUsage=clientAuth\n" + san),
+                           ("dual use", bc + "extendedKeyUsage=serverAuth,clientAuth\n" + san),
+                           ("anyExtendedKeyUsage", bc + "extendedKeyUsage=serverAuth,anyExtendedKeyUsage\n" + san),
+                           ("CA:TRUE", "basicConstraints=critical,CA:TRUE\nextendedKeyUsage=serverAuth\n" + san),
+                           ("no basicConstraints", "extendedKeyUsage=serverAuth\n" + san)):
+            with self.subTest(label):
+                self.region_leaf(other, folder, ext)
+                self.assertEqual(self.refused().stderr, fixed)
+        self.region_leaf(other, folder, bc + "extendedKeyUsage=serverAuth\n" + san)
         self.assertEqual(self.run_install().returncode, 0)
-        self.assertEqual((folder / "region.crt").read_bytes(), (other / "pve-seoul-1/member.crt").read_bytes())
+        self.assertEqual((folder / "region.crt").read_bytes(), (other / "leaf.crt").read_bytes())
         # A key that is not the certificate's is refused.
         subprocess.run(["bash", str(ROOT / "packaging/vws-etcd/vws-etcd-tls"), str(other), "pve-seoul-2=192.0.2.1"],
                        check=True, capture_output=True)
