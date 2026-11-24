@@ -7,6 +7,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 
 import yaml
 
@@ -63,6 +64,7 @@ assert set(config) == {"iam", "listeners", "credentials", "default_project"}
 assert not ({"regions", "accounts", "aws_accounts"} & config.keys())
 assert config["credentials"]["kek_file"].endswith("/vws-console-api.service/admin-kek")
 assert yaml.safe_load((dest / "etc/vws/aws-accounts.json").read_text()) == []
+assert yaml.safe_load((dest / "etc/vws/projects.json").read_text()) == []
 for path in ("usr/bin/vws-console-api", "usr/bin/vws-aws-proxy", "usr/bin/vws-iam",
              "usr/lib/vws/node", "usr/lib/vws/console/server.js"):
     assert (dest / path).is_file(), path
@@ -129,6 +131,15 @@ finally:
     thread.join()
     server.server_close()
 run(src / "check-ready", "unknown", ok=False)
+
+# A daemon that already exited fails at once with its unit name, not after 23 s of probing.
+gone = subprocess.Popen(["true"])
+gone.wait()
+started = time.monotonic()
+result = subprocess.run([str(src / "check-ready"), "proxy"], capture_output=True, text=True, timeout=30,
+                        env={**os.environ, "MAINPID": str(gone.pid)})
+assert result.returncode != 0 and "proxy exited before it was ready; see journalctl -u vws-aws-proxy" in result.stderr, result
+assert time.monotonic() - started < 5, "an exited daemon was probed to the end"
 
 # Run configuration twice against real filesystem permissions and fake OS commands.
 bin_dir = tmp / "bin"

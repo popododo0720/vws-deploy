@@ -18,15 +18,15 @@ etcd URL and client certificates of the packaged units.
 On a build host with git, Go, curl, xz and dpkg-deb:
 
 ```sh
-packaging/build.sh 1.0.0-3 build-1.0.0-3
+packaging/build.sh 1.0.0-4 build-1.0.0-4
 ```
 
 It checks out vws-console-api, vws-iam and vws-console at the commits in `scripts/versions.env`,
 builds the Go binaries with `-trimpath`, builds the console with the pinned Node archive, takes etcd
-from the pinned release archive, and writes `build-1.0.0-3/vws-etcd_*.deb`, `build-1.0.0-3/vws-global_*.deb` and
-`build-1.0.0-3/vws-region_*.deb`. Use a new output directory for each version: `vws install` takes exactly one
+from the pinned release archive, and writes `build-1.0.0-4/vws-etcd_*.deb`, `build-1.0.0-4/vws-global_*.deb` and
+`build-1.0.0-4/vws-region_*.deb`. Use a new output directory for each version: `vws install` takes exactly one
 package per role from `--packages`. Downloads are checked against the checksums in `scripts/versions.env`.
-`build-1.0.0-3/src` keeps the checkouts and downloads, so a rerun fetches nothing that is still valid.
+`build-1.0.0-4/src` keeps the checkouts and downloads, so a rerun fetches nothing that is still valid.
 
 ## 2. Prepare the global host inputs
 
@@ -76,7 +76,7 @@ Limits of the generated set:
 ## 3. Install the global host
 
 ```sh
-scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-3 --credentials credentials
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-4 --credentials credentials
 ```
 
 The command copies the inputs (secrets 0600 under `/etc/vws/credentials`, directory 0700), installs
@@ -85,8 +85,9 @@ The command copies the inputs (secrets 0600 under `/etc/vws/credentials`, direct
 With `roles: [etcd, global]` it installs no `vws-region`. A rerun reports every step
 `unchanged`. After a failure, fix the cause and run it again.
 
-`vws-aws-proxy` reads accounts from the static `/etc/vws/aws-accounts.json`, not from etcd. After you
-register or change an AWS account, export the records to that file and restart the proxy
+`vws-aws-proxy` reads accounts and project mappings from the static `/etc/vws/aws-accounts.json` and
+`/etc/vws/projects.json` (both initially `[]`), not from etcd. After you register or change an AWS
+account or a project mapping, export the records to those files and restart the proxy
 (`packaging/vws-global/README.md`).
 
 AWS accounts need nothing more: register them as in [regions.md](regions.md). A Proxmox cluster
@@ -133,7 +134,7 @@ this, before any SSH call.
 The host of an instance needs the build from section 1 (`vws-region_*.deb` in `--packages`).
 
 ```sh
-scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-3 --credentials credentials
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-4 --credentials credentials
 ```
 
 One run is enough. It installs the package, writes the files (`.env` and `region.yaml` 0644, key 0600 root),

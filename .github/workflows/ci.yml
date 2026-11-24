@@ -110,6 +110,12 @@ jobs:
           mkdir -p build/flags-test
           python3 packaging/vws-region/test-flags.py packaging/vws-region build/flags-test /tmp/vws-region
 
+      # The packaged vws-aws-proxy unit must start the pinned proxy with the snapshots the package ships.
+      - name: Run the proxy unit flags against the pinned proxy
+        run: |
+          (cd /tmp/console-api && CGO_ENABLED=0 go build -trimpath -o /tmp/vws-aws-proxy ./cmd/vws-aws-proxy)
+          python3 packaging/vws-global/test-proxy-flags.py packaging/vws-global build/proxy-flags-test /tmp/vws-aws-proxy
+
       # The pinned API's own validator must accept the body `vws region add` sends (two --pve-api-url).
       - name: Check the region registration body against the pinned API validator
         run: |

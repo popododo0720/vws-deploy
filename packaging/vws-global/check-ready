@@ -2,12 +2,23 @@
 set -eu
 socket=
 expected=200
-case "${1:-}" in
-    api) url=http://127.0.0.1:8083/readyz ;;
-    iam) url=http://127.0.0.1:9096/readyz ;;
-    console) url=http://127.0.0.1:3000/readyz ;;
+name=${1:-}
+case "$name" in
+    api)
+        url=http://127.0.0.1:8083/readyz
+        unit=vws-console-api
+        ;;
+    iam)
+        url=http://127.0.0.1:9096/readyz
+        unit=vws-iam
+        ;;
+    console)
+        url=http://127.0.0.1:3000/readyz
+        unit=vws-console
+        ;;
     proxy)
         url=http://localhost/
+        unit=vws-aws-proxy
         socket=/run/vws-aws-proxy/aws-proxy.sock
         expected=403
         ;;
@@ -23,6 +34,11 @@ while [ "$attempt" -lt 12 ]; do
         exit 0
     fi
     attempt=$((attempt + 1))
+    # systemd sets MAINPID for ExecStartPost: a daemon that already exited will never answer.
+    if [ -n "${MAINPID:-}" ] && ! kill -0 "$MAINPID" 2>/dev/null; then
+        echo "vws-global: $name exited before it was ready; see journalctl -u ${unit}" >&2
+        exit 1
+    fi
     if [ "$attempt" -lt 12 ]; then sleep 1; fi
 done
 echo "vws-global: readiness failed for $url" >&2
