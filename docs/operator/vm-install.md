@@ -18,7 +18,7 @@ etcd URL and client certificates of the packaged units.
 On a build host with git, Go, curl, xz and dpkg-deb:
 
 ```sh
-packaging/build.sh 1.0.0-2
+packaging/build.sh 1.0.0-3
 ```
 
 It checks out vws-console-api, vws-iam and vws-console at the commits in `scripts/versions.env`,
