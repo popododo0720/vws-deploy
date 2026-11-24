@@ -285,14 +285,18 @@ A registered region serves reads; to create an instance it needs more:
 1. A write token (`vws@pve!region` with the roles and ACLs in [permissions.md](permissions.md)) and
    `read_only: false` in `global/regions/<region>.yaml`, then `vws install` and
    `scripts/vws region edit <region> --token-id 'vws@pve!region' --token-secret-file <file>`.
-2. A storage entry for every EBS type a caller uses. A RunInstances without a root volume type asks for
-   `gp2`; the packaged `region.yaml` maps `gp2` and `gp3` to `local-lvm`. A type with no entry fails with
-   `UnsupportedOperation: no configured storage for root volume type`.
+2. A root volume type that `storages` maps. A RunInstances without one asks for `gp2`, and the packaged
+   `region.yaml` maps only `gp3`, so pass it, for example
+   `--block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeType=gp3}'`. Otherwise the launch fails with
+   `UnsupportedOperation: no configured storage for root volume type`. Do not map `gp2` to the same storage
+   as `gp3`: a volume's type is read from its storage, so existing `gp3` volumes would then read back as
+   `gp2` (vws-console-api#1081).
 3. A project mapping to a pool that `region.yaml` `pools` lists:
    `scripts/vws project map <account> --region <region> --pool vws-default`. An unmapped account is bound
    to a pool named after it, and every EC2 call then fails with `scope requires a managed pool`.
-4. A template in that project pool. DescribeImages lists only the templates in the caller's pool;
-   RunInstances also clones a template in `templates.pool` or one tagged `templates.tag`, by its image ID.
+4. A template in that project pool, with its root disk on `scsi0` (a launch refuses a template without
+   one). DescribeImages lists only the templates in the caller's pool; RunInstances also clones a template
+   in `templates.pool` or one tagged `templates.tag`, by its image ID.
 5. A `SubnetId` in RunInstances: there is no default subnet.
 
 A full clone (`linked_clones: false`) copies the whole template disk before the instance runs. In the
