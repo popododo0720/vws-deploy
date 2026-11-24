@@ -43,6 +43,7 @@ install -m 0755 "$src/run-console-api" "$stage/usr/lib/vws/"
 install -m 0644 "$src/"*.service "$stage/usr/lib/systemd/system/"
 install -m 0644 "$src/global.yaml" "$stage/etc/vws/"
 printf '[]\n' > "$stage/etc/vws/aws-accounts.json"
+printf '[]\n' > "$stage/etc/vws/projects.json"
 install -m 0644 "$src/README.md" "$src/copyright" "$stage/usr/share/doc/vws-global/"
 install -m 0644 "$license" "$stage/usr/share/doc/vws-global/node-LICENSE"
 install -m 0644 "$src/Caddyfile" "$stage/usr/share/doc/vws-global/examples/"
@@ -69,5 +70,5 @@ Homepage: https://github.com/popododo0720/vws-deploy
 Description: Global API, identity and console services for VWS
  Runs four isolated systemd services with a bundled pinned Node runtime.
 EOF
-printf '/etc/vws/global.yaml\n/etc/vws/aws-accounts.json\n' > "$stage/DEBIAN/conffiles"
+printf '/etc/vws/global.yaml\n/etc/vws/aws-accounts.json\n/etc/vws/projects.json\n' > "$stage/DEBIAN/conffiles"
 dpkg-deb --root-owner-group --build "$stage" "$out/vws-global_${version}_amd64.deb"

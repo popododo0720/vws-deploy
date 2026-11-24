@@ -11,9 +11,9 @@ Prepare the console's standalone output with its `public/` and `.next/static/`
 directories copied into it, matching the console Dockerfile. Then run:
 
 ```sh
-packaging/vws-global/build.sh 1.0.0-3 ./vws-console-api ./vws-aws-proxy \
+packaging/vws-global/build.sh 1.0.0-4 ./vws-console-api ./vws-aws-proxy \
   ./vws-iam ./node ./LICENSE ./standalone ./build
-sudo apt-get install ./build/vws-global_1.0.0-3_amd64.deb
+sudo apt-get install ./build/vws-global_1.0.0-4_amd64.deb
 ```
 
 `packaging/build.sh VERSION [OUTPUT_DIR]` does all of the above from source for
@@ -48,8 +48,9 @@ The shipped absolute `/run/credentials/vws-console-api.service/` paths correspon
 to systemd's default credentials directory. API listener settings currently use
 the binary's matching loopback defaults; change its flags in a systemd override
 if changing listeners. Region and account registration belongs to the admin API.
-The pinned proxy still requires a metadata snapshot in `/etc/vws/aws-accounts.json`
-(initially `[]`); export registered records there and restart it after changes.
+The pinned proxy still requires metadata snapshots in `/etc/vws/aws-accounts.json`
+and `/etc/vws/projects.json` (both initially `[]`, kept on upgrade); export the
+registered accounts and project mappings there and restart it after changes.
 For each account, add a proxy-only `LoadCredential=aws-external-id-<account-id>:...`
 override. The current proxy does not consume encrypted external IDs from etcd.
 
