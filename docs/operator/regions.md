@@ -277,9 +277,12 @@ only test Proxmox with a secret you supply for that one call.
 ## Move or recreate the daemon
 
 The PVE token secret lives only in the state file of the instance, and the global layer keeps only its
-fingerprint. So the old host keeps a working secret until you delete the token in PVE. Whether `vws region
-remove` or a changed `--region-endpoint` also asks the old instance to forget its registration depends on
-the vws-console-api release; do not rely on it. Do every step below.
+fingerprint. So the old host keeps a working secret until you delete the token in PVE. A changed
+`--region-endpoint` never asks the old instance to forget its registration. `vws region remove` does, from
+vws-console-api #1074 on (the pinned `GLOBAL_CONSOLE_API_REF` predates it): the region is deleted only after
+the instance confirms, and an unreachable instance leaves the region marked for deletion until you repeat
+the remove. An API delete with `?force=true` still asks the instance but deletes the region even if that
+fails; then delete its token in PVE by hand. A move keeps the region, so do every step below.
 
 ### Move the daemon
 
