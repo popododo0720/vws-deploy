@@ -187,6 +187,10 @@ The unit restarts on failure and reads its state file, so it needs no registrati
 
 ## Step 4: register the region
 
+Before `region add`, the PVE pools and the bridge that `region.yaml` names must exist: with the packaged
+default, the pools `vws-default` and `vws-templates` and the bridge `vmbr0`. The registration self-check
+refuses a missing pool (`pool "vws-default": does not exist`) and leaves the daemon `unregistered`.
+
 The same region, `pve-seoul-1`, registered both ways. The values are examples.
 
 | Field | Console label | CLI option |
@@ -273,6 +277,27 @@ Without `--token-secret-file`, the four Proxmox steps are `SKIPPED` with
 "tokenSecret is needed; only the region daemon stores it", and only
 `regionapi` runs. The global layer doesn't keep the token secret, so it can
 only test Proxmox with a secret you supply for that one call.
+
+### Before the first instance
+
+A registered region serves reads; to create an instance it needs more:
+
+1. A write token (`vws@pve!region` with the roles and ACLs in [permissions.md](permissions.md)) and
+   `read_only: false` in `global/regions/<region>.yaml`, then `vws install` and
+   `scripts/vws region edit <region> --token-id 'vws@pve!region' --token-secret-file <file>`.
+2. A storage entry for every EBS type a caller uses. A RunInstances without a root volume type asks for
+   `gp2`; the packaged `region.yaml` maps `gp2` and `gp3` to `local-lvm`. A type with no entry fails with
+   `UnsupportedOperation: no configured storage for root volume type`.
+3. A project mapping to a pool that `region.yaml` `pools` lists:
+   `scripts/vws project map <account> --region <region> --pool vws-default`. An unmapped account is bound
+   to a pool named after it, and every EC2 call then fails with `scope requires a managed pool`.
+4. A template in that project pool. DescribeImages lists only the templates in the caller's pool;
+   RunInstances also clones a template in `templates.pool` or one tagged `templates.tag`, by its image ID.
+5. A `SubnetId` in RunInstances: there is no default subnet.
+
+A full clone (`linked_clones: false`) copies the whole template disk before the instance runs. In the
+first rehearsal a 3 GiB template on a slow local-lvm disk took about 6 minutes (358 s) to reach
+`running`; terminate took 2 seconds.
 
 ## Move or recreate the daemon
 

@@ -18,15 +18,15 @@ etcd URL and client certificates of the packaged units.
 On a build host with git, Go, curl, xz and dpkg-deb:
 
 ```sh
-packaging/build.sh 1.0.0-5 build-1.0.0-5
+packaging/build.sh 1.0.0-6 build-1.0.0-6
 ```
 
 It checks out vws-console-api, vws-iam and vws-console at the commits in `scripts/versions.env`,
 builds the Go binaries with `-trimpath`, builds the console with the pinned Node archive, takes etcd
-from the pinned release archive, and writes `build-1.0.0-5/vws-etcd_*.deb`, `build-1.0.0-5/vws-global_*.deb` and
-`build-1.0.0-5/vws-region_*.deb`. Use a new output directory for each version: `vws install` takes exactly one
+from the pinned release archive, and writes `build-1.0.0-6/vws-etcd_*.deb`, `build-1.0.0-6/vws-global_*.deb` and
+`build-1.0.0-6/vws-region_*.deb`. Use a new output directory for each version: `vws install` takes exactly one
 package per role from `--packages`. Downloads are checked against the checksums in `scripts/versions.env`.
-`build-1.0.0-5/src` keeps the checkouts and downloads, so a rerun fetches nothing that is still valid.
+`build-1.0.0-6/src` keeps the checkouts and downloads, so a rerun fetches nothing that is still valid.
 
 ## 2. Prepare the global host inputs
 
@@ -76,7 +76,7 @@ Limits of the generated set:
 ## 3. Install the global host
 
 ```sh
-scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-5 --credentials credentials
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-6 --credentials credentials
 ```
 
 The command copies the inputs (secrets 0600 under `/etc/vws/credentials`, directory 0700), installs
@@ -120,7 +120,10 @@ hosts:
 ```
 
 For each instance, put your own configuration in `global/regions/<region>.yaml` (pools, storages, bridges;
-the example `packaging/vws-region/region.yaml` is the default and has `read_only: true`). The credentials
+the example `packaging/vws-region/region.yaml` is the default and has `read_only: true`). Every run writes
+that file, or the default, to `/etc/vws-region/<region>/region.yaml`, so an edit made on the host is
+replaced by the next run: a region set to `read_only: false` there goes back to `true` and then fails its
+registration self-check (`privileges`) with a write token. Change `global/regions/<region>.yaml` instead. The credentials
 directory gets `regions/<region>/region.crt` and `region.key`, issued from the internal CA that section 2
 keeps. The certificate covers the host address, 127.0.0.1 and the region name, so the region endpoint of the
 registration can use the host address, or 127.0.0.1 when the global layer runs on the same host. `global-ca.pem` of each instance is `internal-ca.pem`.
@@ -134,7 +137,7 @@ this, before any SSH call.
 The host of an instance needs the build from section 1 (`vws-region_*.deb` in `--packages`).
 
 ```sh
-scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-5 --credentials credentials
+scripts/vws install --profile lab --inventory global/hosts.yaml --packages build-1.0.0-6 --credentials credentials
 ```
 
 One run is enough. It installs the package, writes the files (`.env` and `region.yaml` 0644, key 0600 root),

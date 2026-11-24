@@ -43,7 +43,7 @@ doesn't fix one.
 
 ```bash
 pveum role add VWSRegionOperator --privs "VM.Audit VM.Allocate VM.Clone VM.PowerMgmt VM.Config.CPU VM.Config.Memory VM.Config.Disk VM.Config.Network VM.Config.Cloudinit VM.Config.Options VM.Config.HWType VM.Snapshot VM.Console VM.GuestAgent.Audit Pool.Audit"
-pveum role add VWSTemplateReader --privs "VM.Audit VM.Clone"
+pveum role add VWSTemplateReader --privs "VM.Audit VM.Clone Pool.Audit"
 pveum role add VWSStorageUser    --privs "Datastore.Audit Datastore.AllocateSpace"
 pveum role add VWSNetUser        --privs "SDN.Use SDN.Audit"
 pveum role add VWSBackupOperator --privs "VM.Backup Datastore.AllocateSpace"
@@ -70,6 +70,11 @@ pveum acl modify /storage/local-lvm --tokens 'vws@pve!region' --roles VWSStorage
 pveum acl modify /sdn/zones/vwszone/vnet10 --tokens 'vws@pve!region' --roles VWSNetUser --propagate 1
 pveum acl modify / --tokens 'vws@pve!region' --roles PVEAuditor --propagate 1
 ```
+
+An ACL on `/pool/<pool>` replaces the roles that pool would inherit from `/`, so `PVEAuditor` on `/` does
+not give `Pool.Audit` there. The region daemon refuses to register without `Pool.Audit` and `VM.Audit` on
+each managed pool and on the template pool (`pool "vws-images": missing Pool.Audit`); both roles above
+carry them.
 
 Add the `/storage/...` line for every storage in `region.yaml` `storages` and
 for the snippets storage. A local bridge uses
