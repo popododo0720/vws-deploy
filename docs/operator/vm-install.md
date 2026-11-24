@@ -120,7 +120,10 @@ hosts:
 ```
 
 For each instance, put your own configuration in `global/regions/<region>.yaml` (pools, storages, bridges;
-the example `packaging/vws-region/region.yaml` is the default and has `read_only: true`). The credentials
+the example `packaging/vws-region/region.yaml` is the default and has `read_only: true`). Every run writes
+that file, or the default, to `/etc/vws-region/<region>/region.yaml`, so an edit made on the host is
+replaced by the next run: a region set to `read_only: false` there goes back to `true` and then fails its
+registration self-check (`privileges`) with a write token. Change `global/regions/<region>.yaml` instead. The credentials
 directory gets `regions/<region>/region.crt` and `region.key`, issued from the internal CA that section 2
 keeps. The certificate covers the host address, 127.0.0.1 and the region name, so the region endpoint of the
 registration can use the host address, or 127.0.0.1 when the global layer runs on the same host. `global-ca.pem` of each instance is `internal-ca.pem`.
