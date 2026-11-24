@@ -281,8 +281,8 @@ fingerprint. So the old host keeps a working secret until you delete the token i
 `--region-endpoint` never asks the old instance to forget its registration. `vws region remove` does, from
 vws-console-api #1074 on (the pinned `GLOBAL_CONSOLE_API_REF` predates it): the region is deleted only after
 the instance confirms, and an unreachable instance leaves the region marked for deletion until you repeat
-the remove. An API delete with `?force=true` skips the instance, so delete its token in PVE by hand. A move
-keeps the region, so do every step below.
+the remove. An API delete with `?force=true` still asks the instance but deletes the region even if that
+fails; then delete its token in PVE by hand. A move keeps the region, so do every step below.
 
 ### Move the daemon
 
