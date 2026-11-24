@@ -16,8 +16,8 @@ empty `/etc/vws-region/`. It does not modify VMs, storage or a PVE cluster.
 Build the Linux amd64 binary from the matching vws-console-api release, then:
 
 ```sh
-packaging/vws-region/build.sh 1.0.0-3 ./vws-region ./build
-sudo apt-get install ./build/vws-region_1.0.0-3_amd64.deb
+packaging/vws-region/build.sh 1.0.0-4 ./vws-region ./build
+sudo apt-get install ./build/vws-region_1.0.0-4_amd64.deb
 ```
 
 The script packages the supplied executable; it does not compile or download it. CI uses
