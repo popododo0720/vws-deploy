@@ -11,9 +11,9 @@ Prepare the console's standalone output with its `public/` and `.next/static/`
 directories copied into it, matching the console Dockerfile. Then run:
 
 ```sh
-packaging/vws-global/build.sh 1.0.0-6 ./vws-console-api ./vws-aws-proxy \
+packaging/vws-global/build.sh 1.0.0-5 ./vws-console-api ./vws-aws-proxy \
   ./vws-iam ./node ./LICENSE ./standalone ./build
-sudo apt-get install ./build/vws-global_1.0.0-6_amd64.deb
+sudo apt-get install ./build/vws-global_1.0.0-5_amd64.deb
 ```
 
 `packaging/build.sh VERSION [OUTPUT_DIR]` does all of the above from source for

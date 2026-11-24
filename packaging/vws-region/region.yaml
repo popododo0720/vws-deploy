@@ -3,7 +3,6 @@ default_project: default
 pools:
   default: vws-default
 storages:
-  gp2: local-lvm
   gp3: local-lvm
 default_bridge: vmbr0
 subnets: {}
