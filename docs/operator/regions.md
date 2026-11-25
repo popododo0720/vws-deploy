@@ -285,12 +285,12 @@ A registered region serves reads; to create an instance it needs more:
 1. A write token (`vws@pve!region` with the roles and ACLs in [permissions.md](permissions.md)) and
    `read_only: false` in `global/regions/<region>.yaml`, then `vws install` and
    `scripts/vws region edit <region> --token-id 'vws@pve!region' --token-secret-file <file>`.
-2. A root volume type that `storages` maps. A RunInstances without one asks for `gp2`, and the packaged
-   `region.yaml` maps only `gp3`, so pass it, for example
-   `--block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeType=gp3}'`. Otherwise the launch fails with
+2. Storage for the root volume type in `storages`. A RunInstances without a type launches on the `gp2`
+   storage, or on the `gp3` storage when `storages` maps no `gp2` (vws-console-api#1081), so the packaged
+   `region.yaml`, which maps only `gp3`, needs nothing more. A stated type without storage fails with
    `UnsupportedOperation: no configured storage for root volume type`. Do not map `gp2` to the same storage
    as `gp3`: a volume's type is read from its storage, so existing `gp3` volumes would then read back as
-   `gp2` (vws-console-api#1081).
+   `gp2` (vws-console-api#1082).
 3. A project mapping to a pool that `region.yaml` `pools` lists:
    `scripts/vws project map <account> --region <region> --pool vws-default`. An unmapped account is bound
    to a pool named after it, and every EC2 call then fails with `scope requires a managed pool`.
