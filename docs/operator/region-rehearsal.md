@@ -17,9 +17,9 @@ seconds. An unchecked item is an open finding, not a pass.
   read-only region refuses launches. Before item 4, put the lab config in `global/regions/<region>.yaml`
   with `read_only: false`, run `vws install`, and register the write token as in
   [regions.md](regions.md#before-the-first-instance). In item 9, restore read-only access: set
-  `read_only: true` in that file, run `vws install`, register the read-only token with `vws region edit`,
-  and delete the write token in PVE. Between that `vws install` and the edit, the region fails its
-  self-check (`privileges`) because it still holds the write token.
+  `read_only: true` in that file and run `vws install`. That run exits nonzero: the region still holds the
+  write token, so it fails its self-check (`privileges`) and readiness. Register the read-only token with
+  `vws region edit`, run `vws install` again until it passes, and only then delete the write token in PVE.
 - The inventory of [vm-install.md](vm-install.md#4-the-region-layer) with the instance on the global host
   (and, if you test the other placement, a second one on a separate host).
 - A clock or a script that records seconds.
