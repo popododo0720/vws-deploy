@@ -301,7 +301,9 @@ def names_address(certificate, address, name):
     # OpenSSL -checkhost falls back to the Common Name when no DNS name is listed; Go TLS never does.
     shown = local(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(certificate)])
     names = shown.stdout.decode(errors="replace").splitlines()[1:]
-    return not shown.returncode and "DNS:" + name in (n.strip() for line in names for n in line.split(","))
+    # DNS names compare without case, as Go's hostname check does.
+    listed = (n.strip().lower() for line in names for n in line.split(","))
+    return not shown.returncode and "dns:" + name.lower() in listed
 
 
 def server_only(certificate):
