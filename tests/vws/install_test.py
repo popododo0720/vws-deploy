@@ -782,6 +782,10 @@ class Install(unittest.TestCase):
             with self.subTest(label):
                 self.region_leaf(other, folder, ext)
                 self.assertEqual(self.refused().stderr, fixed)
+        # Only IP SANs and a matching Common Name: OpenSSL -checkhost accepts the CN, Go TLS does not.
+        self.region_leaf(other, folder, bc + "extendedKeyUsage=serverAuth\n"
+                         "subjectAltName=IP:192.0.2.1,IP:127.0.0.1\n")
+        self.assertIn("region.crt does not name 192.0.2.1, 127.0.0.1 and pve-seoul-1", self.refused().stderr)
         self.region_leaf(other, folder, bc + "extendedKeyUsage=serverAuth\n" + san)
         self.assertEqual(self.run_install().returncode, 0)
         self.assertEqual((folder / "region.crt").read_bytes(), (other / "leaf.crt").read_bytes())

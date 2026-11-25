@@ -273,7 +273,10 @@ def names_address(certificate, address, name):
         shown = local(["openssl", "x509", "-noout", check, value, "-in", str(certificate)])
         if shown.returncode or b"does match" not in shown.stdout or b"NOT" in shown.stdout:
             return False
-    return True
+    # OpenSSL -checkhost falls back to the Common Name when no DNS name is listed; Go TLS never does.
+    shown = local(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", str(certificate)])
+    names = shown.stdout.decode(errors="replace").splitlines()[1:]
+    return not shown.returncode and "DNS:" + name in (n.strip() for line in names for n in line.split(","))
 
 
 def server_only(certificate):
