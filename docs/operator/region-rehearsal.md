@@ -13,6 +13,13 @@ seconds. An unchecked item is an open finding, not a pass.
   (`docs/operator/vm-install.md`), built from the packages of one `packaging/build.sh` run.
 - A PVE user and token as in [regions.md](regions.md#step-2-the-read-only-proxmox-token). Add the write
   permissions of [permissions.md](permissions.md) only for the instance-creation step.
+- A write-enabled region config for items 4 to 8. The packaged `region.yaml` has `read_only: true`, and a
+  read-only region refuses launches. Before item 4, put the lab config in `global/regions/<region>.yaml`
+  with `read_only: false`, run `vws install`, and register the write token as in
+  [regions.md](regions.md#before-the-first-instance). In item 9, restore read-only access: set
+  `read_only: true` in that file, run `vws install`, register the read-only token with `vws region edit`,
+  and delete the write token in PVE. Between that `vws install` and the edit, the region fails its
+  self-check (`privileges`) because it still holds the write token.
 - The inventory of [vm-install.md](vm-install.md#4-the-region-layer) with the instance on the global host
   (and, if you test the other placement, a second one on a separate host).
 - A clock or a script that records seconds.
@@ -37,7 +44,8 @@ seconds. An unchecked item is an open finding, not a pass.
 7. Restart: `systemctl restart vws-region@<region>` leaves the region ready with no new registration.
 8. Move or recreate (optional): follow [regions.md](regions.md#move-or-recreate-the-daemon), which registers the replacement only after the
    old instance is stopped or its token is revoked, and confirm that the old token no longer works against PVE.
-9. Clean up: remove the test instances, the test token and the instance on the lab host.
+9. Clean up: remove the test instances, restore read-only access (see [Before you start](#before-you-start)),
+   remove the test token and the instance on the lab host.
 
 The assumptions of item 6 are unverified; a failure is a finding for vws-console-api, not a reason to change
 the runbook silently.
