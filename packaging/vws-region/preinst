@@ -7,11 +7,16 @@ case "$1" in
     upgrade)
         if [ -d /run/systemd/system ] && [ -e /usr/lib/systemd/system/vws-region.service ]; then
             systemctl disable --now vws-region.service || true
-            if systemctl is-active --quiet vws-region.service; then
-                echo "vws-region: the per-node vws-region.service is still active after the stop." >&2
-                echo "Stop it with 'systemctl disable --now vws-region.service' and retry the upgrade." >&2
-                exit 1
-            fi
+            # Only a state systemd reports as stopped lets the upgrade go on; a failed query does not.
+            state=$(systemctl show --property=ActiveState --value vws-region.service) || state=unknown
+            case "$state" in
+                inactive|failed) ;;
+                *)
+                    echo "vws-region: the per-node vws-region.service is still active after the stop (state: ${state:-unknown})." >&2
+                    echo "Stop it with 'systemctl disable --now vws-region.service' and retry the upgrade." >&2
+                    exit 1
+                    ;;
+            esac
         fi
         ;;
 esac

@@ -69,7 +69,10 @@ cat > /usr/local/bin/systemctl <<EOF
 echo "\$*" >> $state/calls
 case "\$1" in
     disable) [ -e $state/stuck ] || rm -f $state/active ;;
-    is-active) [ -e $state/active ] ;;
+    show)
+        [ ! -e $state/query-fails ] || exit 1
+        if [ -e $state/active ]; then echo active; else echo inactive; fi
+        ;;
 esac
 EOF
 chmod 0755 /usr/local/bin/systemctl
@@ -84,8 +87,19 @@ fi
 grep -q 'vws-region.service is still active' "$state/err"
 test "$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}' vws-region)" = '0.0.0-0 ii '
 test -f /usr/lib/systemd/system/vws-region.service
-# A stop that takes effect lets the upgrade finish and removes the old unit.
+# A stop whose result systemd cannot report aborts the upgrade too.
 rm "$state/stuck"
+touch "$state/query-fails"
+if dpkg -i "$1" 2> "$state/err"; then
+    echo "upgrade continued without a confirmed stop of the per-node vws-region.service" >&2
+    exit 1
+fi
+grep -q 'vws-region.service is still active' "$state/err"
+test "$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}' vws-region)" = '0.0.0-0 ii '
+test -f /usr/lib/systemd/system/vws-region.service
+# A stop that takes effect lets the upgrade finish and removes the old unit.
+rm "$state/query-fails"
+touch "$state/active"
 dpkg -i "$1"
 grep -qx 'disable --now vws-region.service' "$state/calls"
 test ! -e "$state/active"
