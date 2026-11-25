@@ -261,6 +261,34 @@ def generate(source, host, roles):
                 raise Invalid("member.crt does not name " + address + ". " + fix)
 
 
+def resolve_merges(node):
+    """A copy of node with YAML merge keys (<<) resolved as the daemon's YAML parser does: a key the mapping
+    names itself wins over a merged one, and an earlier merged mapping over a later one. A key repeated in one
+    mapping stays repeated, so the schema check refuses it; an unknown merged key reaches the schema check."""
+    if isinstance(node, yaml.SequenceNode):
+        return yaml.SequenceNode(node.tag, [resolve_merges(item) for item in node.value],
+                                 node.start_mark, node.end_mark)
+    if not isinstance(node, yaml.MappingNode):
+        return node
+    pairs, merged = [], []
+    for key, value in node.value:
+        if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
+            for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
+                source = resolve_merges(source)
+                keys = [k.value for k, _ in source.value] if isinstance(source, yaml.MappingNode) else None
+                if keys is None or len(keys) != len(set(keys)):
+                    raise ValueError
+                merged.extend(source.value)
+        else:
+            pairs.append((key, resolve_merges(value)))
+    names = {key.value for key, _ in pairs if isinstance(key, yaml.ScalarNode)}
+    for key, value in merged:
+        if key.value not in names:
+            names.add(key.value)
+            pairs.append((key, value))
+    return yaml.MappingNode(node.tag, pairs, node.start_mark, node.end_mark)
+
+
 def credential_field(node, schema):
     """Whether a field name of the schema's mappings, not a free name such as a pool, looks like a secret."""
     if not isinstance(node, yaml.MappingNode) or not isinstance(schema, dict):
@@ -383,10 +411,11 @@ def region_files(args, source, host, region):
         nodes = list(yaml.compose_all(config.decode(), Loader=yaml.SafeLoader))
         if len(nodes) != 1 or not isinstance(nodes[0], yaml.MappingNode):
             raise ValueError
-        if credential_field(nodes[0], REGION_SCHEMA):
+        config_node = resolve_merges(nodes[0])
+        if credential_field(config_node, REGION_SCHEMA):
             raise Invalid("region config for " + name + " holds a credential field; region.yaml takes no secret. "
                           "Give the PVE token to scripts/vws region add or region edit")
-        globalconfig.decode(nodes[0], REGION_SCHEMA)
+        globalconfig.decode(config_node, REGION_SCHEMA)
     except (yaml.YAMLError, UnicodeError, ValueError, globalconfig.Refused, RecursionError):
         raise Invalid("invalid region config for " + name + ": only the fields of the packaged region.yaml, "
                       "each once, in one document") from None

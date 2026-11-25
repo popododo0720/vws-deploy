@@ -847,11 +847,17 @@ class Install(unittest.TestCase):
             "storages: {gp3: local-lvm, keystore: tank}\npools: {default: vws-default}\n"
             "instance_types: {vws.small: {cores: 1, memory_mib: 1024}}\nscheduler: {policy: spread}\n")
         self.assertEqual(self.run_install().returncode, 0)
+        # YAML merge keys resolve as in the daemon's parser: a mapping's own key wins over a merged one.
+        (self.work / "regions/pve-seoul-1.yaml").write_text(
+            "scheduler: {<<: {policy: spread}}\ntemplates: {<<: [{pool: a}, {pool: b, tag: c}], tag: d}\n")
+        self.assertEqual(self.run_install().returncode, 0)
         (self.work / "regions/pve-seoul-1.yaml").write_text("x: " + "y" * 70000)
         self.assertIn("region config exceeds 64 KiB", self.refused_after_install().stderr)
         for bad in ("[unbalanced", "- a\n- b\n", "read_onyl: true\n",
                     "read_only: true\nread_only: false\n", "read_only: true\n---\nread_only: false\n",
-                    "templates: {pool: a, owner: b}\n", "scheduler: [spread]\n", "pools: {default: [a]}\n"):
+                    "templates: {pool: a, owner: b}\n", "scheduler: [spread]\n", "pools: {default: [a]}\n",
+                    "scheduler: {<<: {policy: spread, owner: b}}\n", "scheduler: {<<: [spread]}\n",
+                    "scheduler: {<<: {policy: a, policy: b}}\n"):
             with self.subTest(bad=bad[:20]):
                 (self.work / "regions/pve-seoul-1.yaml").write_text(bad)
                 self.assertIn("invalid region config for pve-seoul-1: only the fields of the packaged region.yaml",
