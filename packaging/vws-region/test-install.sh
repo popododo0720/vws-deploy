@@ -84,7 +84,7 @@ if dpkg -i "$1" 2> "$state/err"; then
     echo "upgrade continued while the per-node vws-region.service was active" >&2
     exit 1
 fi
-grep -q 'vws-region.service is still active' "$state/err"
+grep -q 'vws-region.service is still active after the stop (state: active)' "$state/err"
 test "$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}' vws-region)" = '0.0.0-0 ii '
 test -f /usr/lib/systemd/system/vws-region.service
 # A stop whose result systemd cannot report aborts the upgrade too.
@@ -94,7 +94,7 @@ if dpkg -i "$1" 2> "$state/err"; then
     echo "upgrade continued without a confirmed stop of the per-node vws-region.service" >&2
     exit 1
 fi
-grep -q 'vws-region.service is still active' "$state/err"
+grep -q 'could not confirm that the per-node vws-region.service stopped (state: unknown)' "$state/err"
 test "$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}' vws-region)" = '0.0.0-0 ii '
 test -f /usr/lib/systemd/system/vws-region.service
 # A stop that takes effect lets the upgrade finish and removes the old unit.

@@ -11,8 +11,13 @@ case "$1" in
             state=$(systemctl show --property=ActiveState --value vws-region.service) || state=unknown
             case "$state" in
                 inactive|failed) ;;
+                active|activating|deactivating|reloading|refreshing)
+                    echo "vws-region: the per-node vws-region.service is still active after the stop (state: $state)." >&2
+                    echo "Stop it with 'systemctl disable --now vws-region.service' and retry the upgrade." >&2
+                    exit 1
+                    ;;
                 *)
-                    echo "vws-region: the per-node vws-region.service is still active after the stop (state: ${state:-unknown})." >&2
+                    echo "vws-region: could not confirm that the per-node vws-region.service stopped (state: ${state:-unknown})." >&2
                     echo "Stop it with 'systemctl disable --now vws-region.service' and retry the upgrade." >&2
                     exit 1
                     ;;
