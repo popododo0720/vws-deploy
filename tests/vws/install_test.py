@@ -836,10 +836,30 @@ class Install(unittest.TestCase):
         (self.work / "regions/pve-seoul-1.yaml").write_text("read_only: true\ndefault_project: seoul\n")
         self.assertEqual(self.run_install().returncode, 0)
         self.assertIn(b"default_project: seoul\n", (self.work / "state/payload").read_bytes())
-        for bad in ("[unbalanced", "- a\n- b\n", "x: " + "y" * 70000):
+        # The daemon's own schema, checked before SSH: an unknown or repeated field or a second document would
+        # stop the daemon after the file was written.
+        (self.work / "regions/pve-seoul-1.yaml").write_text(
+            "storages: {gp3: local-lvm, keystore: tank}\npools: {default: vws-default}\n"
+            "instance_types: {vws.small: {cores: 1, memory_mib: 1024}}\nscheduler: {policy: spread}\n")
+        self.assertEqual(self.run_install().returncode, 0)
+        (self.work / "regions/pve-seoul-1.yaml").write_text("x: " + "y" * 70000)
+        self.assertIn("region config exceeds 64 KiB", self.refused_after_install().stderr)
+        for bad in ("[unbalanced", "- a\n- b\n", "read_onyl: true\n",
+                    "read_only: true\nread_only: false\n", "read_only: true\n---\nread_only: false\n",
+                    "templates: {pool: a, owner: b}\n", "scheduler: [spread]\n", "pools: {default: [a]}\n"):
             with self.subTest(bad=bad[:20]):
                 (self.work / "regions/pve-seoul-1.yaml").write_text(bad)
-                self.refused_after_install()
+                self.assertIn("invalid region config for pve-seoul-1: only the fields of the packaged region.yaml",
+                              self.refused_after_install().stderr)
+        # A credential field gets one fixed diagnostic that names where the token goes, and never echoes it.
+        for bad in ("token: hunter2\n", "read_only: true\ntoken_secret: hunter2\n",
+                    "templates: {pool: a, password: hunter2}\n"):
+            with self.subTest(bad=bad[:20]):
+                (self.work / "regions/pve-seoul-1.yaml").write_text(bad)
+                result = self.refused_after_install()
+                self.assertEqual(result.stderr, "vws: region config for pve-seoul-1 holds a credential field; "
+                                 "region.yaml takes no secret. Give the PVE token to scripts/vws region add or "
+                                 "region edit\n")
         (self.work / "regions/pve-seoul-1.yaml").unlink()
         (self.work / "regions/pve-seoul-1.yaml").symlink_to(self.work / "global.yaml")
         self.refused_after_install()

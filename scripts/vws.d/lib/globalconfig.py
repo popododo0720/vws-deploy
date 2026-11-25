@@ -69,12 +69,13 @@ def decode(node, schema):
         if not isinstance(node, yaml.MappingNode):
             raise Refused(INVALID, f"malformed YAML at {line(node)}")
         out = {}
+        # A schema keyed by str maps any name, such as a storage or pool name, to its value schema.
         for key, value in node.value:
-            if not isinstance(key, yaml.ScalarNode) or key.value not in schema:
+            if not isinstance(key, yaml.ScalarNode) or (key.value not in schema and str not in schema):
                 raise Refused(INVALID, f"malformed YAML at {line(key)}")
             if key.value in out:
                 raise Refused(INVALID, f"malformed YAML at {line(key)}")
-            out[key.value] = decode(value, schema[key.value])
+            out[key.value] = decode(value, schema.get(key.value, schema.get(str)))
         return out
     if isinstance(schema, list):
         if isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:null":

@@ -30,6 +30,16 @@ PUBLIC = "etcd-ca.pem api-etcd.pem internal-ca.pem api-mtls.pem iam-etcd.pem iam
 SCHEMA = {"profile": str, "hosts": [{"name": str, "address": str, "ssh_user": str, "roles": [str],
                                    "regions": [{"name": str, "port": str, "ops_port": str}]}],
           "memory_mib": {"global": str, "region": str, "etcd": str}}
+# The fields of the region daemon's region.yaml (vws-console-api internal/backend/proxmox/region.go
+# RegionConfig), which refuses any other key, a repeated key and a second document.
+REGION_SCHEMA = {
+    "read_only": str, "sdn_zone": str, "storages": {str: str}, "templates": {"pool": str, "tag": str},
+    "instance_types": {str: {"cores": str, "memory_mib": str}},
+    "subnets": {str: {"cidr": str, "gateway": str, "ip_range": str, "mode": str}},
+    "default_bridge": str, "default_project": str, "pools": {str: str},
+    "scheduler": {"policy": str, "host_reserve_mib": str, "mem_overcommit": str, "cpu_overcommit": str},
+    "linked_clones": str, "live_tests": str, "shutdown_timeout": str,
+}
 LAB_MEMORY_MIB = {"global": 1024, "region": 512, "etcd": 512}
 LAB_SERVICES = {
     "global": ("vws-iam", "vws-aws-proxy", "vws-console-api", "vws-console"),
@@ -251,6 +261,21 @@ def generate(source, host, roles):
                 raise Invalid("member.crt does not name " + address + ". " + fix)
 
 
+def credential_field(node, schema):
+    """Whether a field name of the schema's mappings, not a free name such as a pool, looks like a secret."""
+    if not isinstance(node, yaml.MappingNode) or not isinstance(schema, dict):
+        return False
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode):
+            continue
+        if key.value not in schema and str not in schema:
+            if globalconfig.secret_key(key.value):
+                return True
+        elif credential_field(value, schema.get(key.value, schema.get(str))):
+            return True
+    return False
+
+
 def foreign(source, state, names, member, present):
     """The first present credential that is not byte for byte the retained state's own file, if any."""
     for name in present:
@@ -353,10 +378,16 @@ def region_files(args, source, host, region):
     if len(config) > globalconfig.MAX_BYTES:
         raise Invalid("region config exceeds 64 KiB")
     try:
-        if not isinstance(yaml.safe_load(config.decode()), dict):
+        nodes = list(yaml.compose_all(config.decode(), Loader=yaml.SafeLoader))
+        if len(nodes) != 1 or not isinstance(nodes[0], yaml.MappingNode):
             raise ValueError
-    except (yaml.YAMLError, UnicodeError, ValueError):
-        raise Invalid("invalid region config for " + name) from None
+        if credential_field(nodes[0], REGION_SCHEMA):
+            raise Invalid("region config for " + name + " holds a credential field; region.yaml takes no secret. "
+                          "Give the PVE token to scripts/vws region add or region edit")
+        globalconfig.decode(nodes[0], REGION_SCHEMA)
+    except (yaml.YAMLError, UnicodeError, ValueError, globalconfig.Refused, RecursionError):
+        raise Invalid("invalid region config for " + name + ": only the fields of the packaged region.yaml, "
+                      "each once, in one document") from None
     base = "/etc/vws-region/" + name
     env = (f"# Written by vws install; one instance per Proxmox cluster, no secret here.\n"
            f"VWS_REGION_ADDR=:{region['port']}\nVWS_REGION_OPS_ADDR=127.0.0.1:{region['ops_port']}\n")
