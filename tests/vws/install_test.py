@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -421,7 +422,8 @@ class Install(unittest.TestCase):
         for unit in ("vws-etcd", "vws-etcd-snapshot.timer", "vws-etcd-defrag.timer", "vws-iam",
                      "vws-aws-proxy", "vws-console-api", "vws-console"):
             self.assertIn(f"lab-1 {unit} changed\n", result.stdout)
-            self.assertIn(f"systemctl enable --now {unit} ", log)
+            self.assertIn(f"systemctl enable {unit} ", log)
+            self.assertIn(f"systemctl start {unit} ", log)
 
     def test_global_host_gets_no_region_and_no_keepalived(self):
         source = self.remove_generated()
@@ -852,7 +854,71 @@ class Install(unittest.TestCase):
             self.assertIsNone(re.search(r"keepalived|\bVIP\b|every PVE node|each PVE node", text, re.I), path.name)
 
 
+# The remote shell of one step, run for real with sh against a fake systemctl that keeps unit state in files.
+SYSTEMCTL = r"""#!/bin/sh
+printf '%s\n' "$*" >> "$UNITS/calls"
+verb=$1
+shift
+test "$1" = --quiet && shift
+case "$verb" in
+    is-enabled|is-active) test -f "$UNITS/$verb-$1" ;;
+    enable) touch "$UNITS/is-enabled-$1" ;;
+    start|restart) touch "$UNITS/is-active-$1" ;;
+    *) exit 1 ;;
+esac
+"""
+
+
+class RemoteShell(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR", ROOT))
+        self.addCleanup(self.tmp.cleanup)
+        self.units = Path(self.tmp.name)
+        (self.units / "systemctl").write_text(SYSTEMCTL)
+        (self.units / "systemctl").chmod(0o755)
+        sys.path.insert(0, str(ROOT / "scripts/vws.d/lib"))
+        self.addCleanup(sys.path.remove, str(ROOT / "scripts/vws.d/lib"))
+        import install
+        env = dict(os.environ, PATH=str(self.units) + ":" + os.environ["PATH"], UNITS=str(self.units))
+        original = install.local
+        install.local = lambda args, data=None: subprocess.run(["sh", "-c", args[-1]], input=data or b"",
+                                                               capture_output=True, env=env, timeout=30)
+        self.addCleanup(setattr, install, "local", original)
+        self.steps = []
+        self.target = install.Target({"name": "lab-1", "address": "192.0.2.1"}, "json", self.steps)
+
+    def calls(self):
+        return (self.units / "calls").read_text().splitlines()
+
+    def test_active_disabled_unit_restarts_for_a_change(self):
+        # A running instance that was disabled by hand keeps running; a changed config must restart it.
+        unit = "vws-region@pve-seoul-1"
+        (self.units / ("is-active-" + unit)).touch()
+        self.target.service(unit, changed=True)
+        self.assertIn("enable " + unit, self.calls())
+        self.assertIn("restart " + unit, self.calls())
+        self.assertTrue((self.units / ("is-enabled-" + unit)).exists())
+        self.assertEqual(self.steps[-1]["status"], "changed")
+
+    def test_unit_state_converges(self):
+        unit = "vws-iam"
+        self.target.service(unit)
+        self.assertEqual([c for c in self.calls() if "--quiet" not in c], ["enable " + unit, "start " + unit])
+        # Enabled and running with nothing changed: nothing restarts.
+        (self.units / "calls").unlink()
+        self.target.service(unit)
+        self.assertNotIn("restart " + unit, self.calls())
+        self.assertEqual(self.steps[-1]["status"], "unchanged")
+        # Enabled but stopped: it starts, without a restart.
+        (self.units / ("is-active-" + unit)).unlink()
+        self.target.service(unit, changed=True)
+        self.assertIn("start " + unit, self.calls())
+        self.assertNotIn("restart " + unit, self.calls())
+
+
 if __name__ == "__main__":
-    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(Install))
+    loader = unittest.defaultTestLoader
+    suite = unittest.TestSuite(loader.loadTestsFromTestCase(case) for case in (Install, RemoteShell))
+    result = unittest.TextTestRunner().run(suite)
     print(f"{result.testsRun} cases, {len(result.failures) + len(result.errors)} failed")
     raise SystemExit(not result.wasSuccessful())

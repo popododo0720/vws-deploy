@@ -475,13 +475,20 @@ fi
         return changed
 
     def service(self, name, changed=False):
+        # Enabling and starting are separate: a running unit that is only disabled still restarts for a change.
+        restart = f"else\n    systemctl restart {name} >/dev/null\n    s=changed" if changed else ""
         result = self.run(name, f"""
-if systemctl is-enabled --quiet {name} && systemctl is-active --quiet {name}; then
-    {'systemctl restart ' + name + ' >/dev/null; echo changed' if changed else 'echo unchanged'}
-else
-    systemctl enable --now {name} >/dev/null
-    echo changed
+s=unchanged
+if ! systemctl is-enabled --quiet {name}; then
+    systemctl enable {name} >/dev/null
+    s=changed
 fi
+if ! systemctl is-active --quiet {name}; then
+    systemctl start {name} >/dev/null
+    s=changed
+{restart}
+fi
+echo "$s"
 """)
         self.emit(name, result == b"changed")
 
