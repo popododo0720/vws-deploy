@@ -326,21 +326,26 @@ stays unregistered until the old instance can no longer write.
    one and tells you to. Run `vws install`: the new instance reports `registration unregistered`, holds no
    token and does nothing. Do not run `vws region edit` yet.
 2. Create a new token for the cluster in PVE (step 2, with the permissions your region needs) and save it to
-   a file. Do not reuse the old token ID.
+   a file. Do not reuse the old token ID. If the region has a firewall or backup token, the new instance needs
+   its secret too: the global layer keeps no secrets, and a move without them is refused. Create a new
+   firewall or backup token as well, save each secret to its own file, and pass it in step 5.
 3. Quiesce, stop and disable the old instance: stop new launches and wait for the launches in flight to
    finish, then run `systemctl disable --now vws-region@<region>` on the old host and check that
    `systemctl is-active vws-region@<region>` prints `inactive`.
-4. If you cannot stop it (the host is down, unreachable or not yours any more), revoke its token first:
-   delete the old token in PVE (Datacenter, Permissions, API Tokens, or `pveum user token remove
-   vws@pve <old token name>`). Do this before step 5, even if the old host is gone, because the old host
-   still holds the secret and would keep writing until the token is gone.
+4. If you cannot stop it (the host is down, unreachable or not yours any more), revoke its tokens first:
+   delete the old token, and the old firewall and backup tokens if the region has them, in PVE (Datacenter,
+   Permissions, API Tokens, or `pveum user token remove vws@pve <old token name>`). Do this before step 5,
+   even if the old host is gone, because the old host still holds the secrets and would keep writing until
+   the tokens are gone.
 5. Only now register the replacement and verify it:
    `scripts/vws region edit <region> --region-endpoint https://<new-address>:8443 --token-id '<new id>'
    --token-secret-file <file>`, then `scripts/vws region test <region> --token-secret-file <file>` and
-   `scripts/vws region health <region>`.
+   `scripts/vws region health <region>`. For a region with a firewall or backup token, add
+   `--firewall-token-id '<new id>' --firewall-token-secret-file <file>` and
+   `--backup-token-id '<new id>' --backup-token-secret-file <file>` to the edit.
 6. Remove what the old instance held: `/etc/vws-region/<region>.env`, `/etc/vws-region/<region>/` and
    `/var/lib/vws-region/<region>` on the old host. `vws install` never removes an instance for you.
-7. Delete the old token in PVE if you have not (step 4 did it), so the old secret is dead in every case.
+7. Delete the old tokens in PVE if you have not (step 4 did it), so the old secrets are dead in every case.
 
 Keep the region name: the registry and the project mappings refer to it.
 
@@ -351,15 +356,18 @@ file is gone, so it is a new, unregistered instance and the global layer has no 
 move, never register it while an older instance of the same cluster can still write.
 
 1. If the old host may still run, stop and disable its instance (`systemctl disable --now
-   vws-region@<region>`); if you cannot, delete its token in PVE before going on.
+   vws-region@<region>`); if you cannot, delete its token, and its firewall and backup tokens if the
+   region has them, in PVE before going on.
 2. If the host is new, change the address in the inventory and delete `regions/<region>/` as in the move.
 3. Run `vws install`. The instance reports `registration unregistered`.
 4. Create a new token in PVE (step 2), register it, and verify:
    `scripts/vws region edit <region> --region-endpoint https://<address>:<port> --token-id '<id>'
-   --token-secret-file <file>`, then `vws region test` and `vws region health`. Always pass the
+   --token-secret-file <file>`, with the firewall and backup token flags of the move if the region has
+   those tokens, then `vws region test` and `vws region health`. Always pass the
    instance's current endpoint: when `--region-endpoint` is omitted the global layer keeps the old one and
    sends the new token there, which leaves the replacement unregistered and can hand a fresh token to an
-   old daemon you fenced by revoking its token. Delete the old token in PVE.
+   old daemon you fenced by revoking its token. Delete the old token, and the old firewall and backup
+   tokens, in PVE.
 
 The VMs of the region are not touched: they live in the cluster, not in the daemon.
 

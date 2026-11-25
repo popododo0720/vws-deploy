@@ -1,12 +1,22 @@
 #!/bin/sh
 # An upgrade from a release that ran one vws-region.service per PVE node: stop and
 # disable that daemon here, because its old prerm does not stop it on upgrade and the
-# new package no longer ships the unit.
+# new package no longer ships the unit. The upgrade stops if the daemon still runs.
 set -eu
 case "$1" in
     upgrade)
         if [ -d /run/systemd/system ] && [ -e /usr/lib/systemd/system/vws-region.service ]; then
             systemctl disable --now vws-region.service || true
+            # Only a state systemd reports as stopped lets the upgrade go on; a failed query does not.
+            state=$(systemctl show --property=ActiveState --value vws-region.service) || state=unknown
+            case "$state" in
+                inactive|failed) ;;
+                *)
+                    echo "vws-region: the per-node vws-region.service is still active after the stop (state: ${state:-unknown})." >&2
+                    echo "Stop it with 'systemctl disable --now vws-region.service' and retry the upgrade." >&2
+                    exit 1
+                    ;;
+            esac
         fi
         ;;
 esac
