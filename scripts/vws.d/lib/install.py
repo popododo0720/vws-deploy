@@ -271,12 +271,18 @@ def resolve_merges(node):
     if not isinstance(node, yaml.MappingNode):
         return node
     pairs, merged = [], []
+    # The daemon refuses a second << in one mapping as a repeated key; one << may list several mappings.
+    if sum(isinstance(k, yaml.ScalarNode) and k.tag == "tag:yaml.org,2002:merge" for k, _ in node.value) > 1:
+        raise ValueError
     for key, value in node.value:
         if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
             for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
                 source = resolve_merges(source)
-                keys = [k.value for k, _ in source.value] if isinstance(source, yaml.MappingNode) else None
-                if keys is None or len(keys) != len(set(keys)):
+                if not isinstance(source, yaml.MappingNode) or not all(
+                        isinstance(k, yaml.ScalarNode) for k, _ in source.value):
+                    raise ValueError
+                keys = [k.value for k, _ in source.value]
+                if len(keys) != len(set(keys)):
                     raise ValueError
                 merged.extend(source.value)
         else:
