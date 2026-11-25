@@ -55,4 +55,41 @@ apt-get purge -y vws-region
 test -f /etc/vws-region/pve-seoul-1.env
 test -d /etc/vws-region/pve-seoul-1
 test ! -e /etc/pve
-echo "install, configure rerun, reinstall, remove and purge work without PVE, sudo or keepalived"
+# An upgrade from the per-node release, whose old prerm leaves vws-region.service running.
+# A stand-in systemctl plays a booted systemd: the unit is active until a stop takes effect.
+legacy=$(mktemp -d)
+install -d "$legacy/DEBIAN" "$legacy/usr/lib/systemd/system"
+printf '[Service]\nExecStart=/bin/true\n' > "$legacy/usr/lib/systemd/system/vws-region.service"
+printf 'Package: vws-region\nVersion: 0.0.0-0\nArchitecture: amd64\nMaintainer: VWS maintainers <maintainers@vws.cloud>\nDescription: per-node release\n' \
+    > "$legacy/DEBIAN/control"
+dpkg-deb --root-owner-group --build "$legacy" "$legacy.deb"
+state=$(mktemp -d)
+cat > /usr/local/bin/systemctl <<EOF
+#!/bin/sh
+echo "\$*" >> $state/calls
+case "\$1" in
+    disable) [ -e $state/stuck ] || rm -f $state/active ;;
+    is-active) [ -e $state/active ] ;;
+esac
+EOF
+chmod 0755 /usr/local/bin/systemctl
+install -d /run/systemd/system
+dpkg -i "$legacy.deb"
+# A stop that does not take effect aborts the upgrade and keeps the legacy package.
+touch "$state/active" "$state/stuck"
+if dpkg -i "$1" 2> "$state/err"; then
+    echo "upgrade continued while the per-node vws-region.service was active" >&2
+    exit 1
+fi
+grep -q 'vws-region.service is still active' "$state/err"
+test "$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}' vws-region)" = '0.0.0-0 ii '
+test -f /usr/lib/systemd/system/vws-region.service
+# A stop that takes effect lets the upgrade finish and removes the old unit.
+rm "$state/stuck"
+dpkg -i "$1"
+grep -qx 'disable --now vws-region.service' "$state/calls"
+test ! -e "$state/active"
+test ! -e /usr/lib/systemd/system/vws-region.service
+test -f /usr/lib/systemd/system/vws-region@.service
+rm -rf /usr/local/bin/systemctl /run/systemd/system "$state" "$legacy" "$legacy.deb"
+echo "install, configure rerun, reinstall, remove, purge and the per-node upgrade work without PVE, sudo or keepalived"
