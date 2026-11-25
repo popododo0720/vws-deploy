@@ -36,10 +36,8 @@ case "$verb" in
         shift
         test -f "$INSTALL_STATE/$verb-$1"
         ;;
-    enable)
-        shift
-        touch "$INSTALL_STATE/is-enabled-$1" "$INSTALL_STATE/is-active-$1"
-        ;;
+    enable) touch "$INSTALL_STATE/is-enabled-$1" ;;
+    start) touch "$INSTALL_STATE/is-active-$1" ;;
     disable)
         shift
         rm -f "$INSTALL_STATE/is-enabled-$1" "$INSTALL_STATE/is-active-$1"
