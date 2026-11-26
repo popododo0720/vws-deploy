@@ -53,7 +53,7 @@ SH
 # curl is not in the image: this one fetches the URL for real and prints the body, also of a 503.
 cat > "$work/bin/curl" <<'PY'
 #!/usr/bin/env python3
-import sys, urllib.error, urllib.request
+import os, subprocess, sys, urllib.error, urllib.request
 try:
     body = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[-1], timeout=2).read()
 except urllib.error.HTTPError as e:
@@ -61,27 +61,40 @@ except urllib.error.HTTPError as e:
 except OSError:
     sys.exit(7)
 sys.stdout.buffer.write(body)
+# A test's hook for the moment between the answer and the next look at the listener.
+hook = os.path.join(os.environ["INSTALL_STATE"], "after-answer")
+if os.path.exists(hook):
+    os.rename(hook, hook + ".ran")
+    subprocess.run(["sh", hook + ".ran"], check=True)
 PY
-# A region daemon that is not registered yet: it answers /readyz on its ops port with 503 and "unregistered".
+# A region daemon on 127.0.0.1:PORT that answers /readyz with 503 and BODY (default: not registered yet).
+# With "v6only" it is a listener on [::]:PORT that takes no IPv4 connection.
 cat > "$work/daemon.py" <<'PY'
-import http.server, sys
+import http.server, socket, sys
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(503)
         self.end_headers()
-        self.wfile.write(b"unregistered\n")
+        self.wfile.write((sys.argv[2] if len(sys.argv) > 2 else "unregistered").encode() + b"\n")
     def log_message(self, *args):
         pass
+if sys.argv[2:] == ["v6only"]:
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    s.bind(("::", int(sys.argv[1])))
+    s.listen()
+    while True:
+        s.accept()[0].close()
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
 PY
 chmod +x "$work/bin/ssh" "$work/bin/systemctl" "$work/bin/curl"
-# daemon PORT starts a daemon on 127.0.0.1:PORT and sets $pid once it answers.
+# daemon PORT [BODY] starts a daemon on 127.0.0.1:PORT and sets $pid once it answers.
 daemon() {
-    python3 "$work/daemon.py" "$1" &
+    python3 "$work/daemon.py" "$@" &
     pid=$!
     daemons="$daemons $pid"
     for _ in $(seq 50); do
-        if curl "http://127.0.0.1:$1/readyz" 2>/dev/null | grep -q unregistered; then return; fi
+        if curl "http://127.0.0.1:$1/readyz" 2>/dev/null | grep -qx "${2:-unregistered}"; then return; fi
         sleep 0.1
     done
     exit 1
@@ -207,10 +220,42 @@ assert rest == [{"host": "lab-1", "step": "vws-region@pve-seoul-1 registration",
 PY
 find /etc/vws-region -printf '%p %m %u %g %y\n' | sort > "$work/region-after"
 cmp "$work/region-before" "$work/region-after"
-# A stale daemon, not the unit's main process, holds the reused ops port and answers unregistered as well:
-# the run fails and names the port instead of reporting the instance unregistered.
+# Another process's IPv6-only listener on the same port takes no IPv4 connection: the answer is still the unit's.
+python3 "$work/daemon.py" 9443 v6only &
+v6=$!
+daemons="$daemons $v6"
+for _ in $(seq 50); do grep -q ':24E3 00000000000000000000000000000000:0000 0A' /proc/net/tcp6 && break; sleep 0.1; done
+grep -q ':24E3 00000000000000000000000000000000:0000 0A' /proc/net/tcp6
+bash "$root/scripts/vws" "${region_args[@]}" > "$work/v6only.out" 2> "$work/v6only.err"
+grep -q '^lab-1 vws-region@pve-seoul-1 registration unregistered$' "$work/v6only.out"
+kill "$v6"
+# A stale daemon answers, and the unit's own daemon, which is not registered but not answering that either,
+# takes the port before the probe looks at the listener again: that answer is not the unit's, and the unit's
+# own never says unregistered, so the run fails.
 kill "$own"
 wait "$own" 2>/dev/null || true
+daemon 9443
+stale=$pid
+cat > "$INSTALL_STATE/after-answer" <<SH
+kill $stale
+while kill -0 $stale 2>/dev/null; do sleep 0.05; done
+python3 "$work/daemon.py" 9443 starting >/dev/null 2>&1 &
+echo \$! > "$INSTALL_STATE/mainpid-vws-region@pve-seoul-1.service"
+echo \$! > "$INSTALL_STATE/turnover-pid"
+until curl http://127.0.0.1:9443/readyz 2>/dev/null | grep -qx starting; do sleep 0.05; done
+SH
+echo "$stale" > "$INSTALL_STATE/mainpid-vws-region@pve-seoul-1.service"
+rc=0
+bash "$root/scripts/vws" "${region_args[@]}" > "$work/turnover.out" 2> "$work/turnover.err" || rc=$?
+daemons="$daemons $(cat "$INSTALL_STATE/turnover-pid")"
+test -f "$INSTALL_STATE/after-answer.ran"
+test "$rc" -eq 1
+grep -qx 'vws: lab-1: vws-region@pve-seoul-1 readiness failed' "$work/turnover.err"
+if grep -q 'registration' "$work/turnover.out"; then exit 1; fi
+kill "$(cat "$INSTALL_STATE/turnover-pid")"
+wait "$(cat "$INSTALL_STATE/turnover-pid")" 2>/dev/null || true
+# A stale daemon, not the unit's main process, holds the reused ops port and answers unregistered as well:
+# the run fails and names the port instead of reporting the instance unregistered.
 daemon 9443
 sleep 600 &
 daemons="$daemons $!"
@@ -246,4 +291,4 @@ for p in Path("/etc/vws").iterdir():
         assert p.stat().st_uid == 0 and p.stat().st_gid == 0
         assert p.stat().st_mode & 0o777 == 0o644, p
 PY
-echo "install, unchanged rerun, readiness failure, recovery, region instance, stale ops port and secret isolation passed"
+echo "install, unchanged rerun, readiness failure, recovery, region instance, IPv6-only neighbour, listener turnover, stale ops port and secret isolation passed"

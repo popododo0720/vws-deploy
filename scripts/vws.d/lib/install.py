@@ -63,19 +63,24 @@ PACKAGING = Path(__file__).resolve().parents[3] / "packaging"
 
 
 def owner(unit, port):
-    """A shell test that the main process of unit holds every listener that 127.0.0.1:port reaches.
+    """A shell command that prints the main process of unit and the listeners that take an IPv4 connection to
+    127.0.0.1:port, and fails unless that process holds every one of them.
 
-    It reads /proc/net/tcp{,6} and the process's /proc/<pid>/fd links, with no package beyond the base
-    system: the IPv4 loopback and wildcard listeners and the IPv6 wildcard and mapped-loopback ones.
+    The listeners are the most specific of those the kernel would choose: 127.0.0.1:port, else 0.0.0.0:port,
+    else an IPv6 wildcard or mapped-loopback one. An IPv6-only listener beside an IPv4 one takes no IPv4
+    connection and is not counted. It reads /proc/net/tcp{,6} and the process's /proc/<pid>/fd links, with no
+    package beyond the base system.
     """
     x = "%04X" % port
-    addresses = "|".join("0A:" + a + ":" + x for a in (
-        "0100007F", "00000000", "0" * 32, "0000000000000000FFFF00000100007F"))
     return (f'p=$(systemctl show -p MainPID --value {unit}) && test "${{p:-0}}" -gt 0 && '
             "l=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | while read -r _ a _ st _ _ _ _ _ i _; do "
-            f'case $st:$a in {addresses}) echo "socket:[$i]" ;; esac; done) && test -n "$l" && '
+            f'case $st:$a in 0A:0100007F:{x}) echo "1 socket:[$i]" ;; 0A:00000000:{x}) echo "2 socket:[$i]" ;; '
+            f'0A:{"0" * 32}:{x}|0A:0000000000000000FFFF00000100007F:{x}) echo "3 socket:[$i]" ;; esac; done | sort) && '
+            'test -n "$l" && l=$(printf \'%s\\n\' "$l" | grep "^${l%% *} " | cut -d" " -f2 | sort) && '
             'test "$(for f in /proc/$p/fd/*; do readlink "$f"; done 2>/dev/null | grep -xF "$l" | sort -u | wc -l)" '
-            '-eq "$(printf \'%s\\n\' "$l" | wc -l)"')
+            '-eq "$(printf \'%s\\n\' "$l" | wc -l)" && echo "$p" $l')
+
+
 # Generated TLS sets: state directory, vws-etcd-tls member, and credential name -> file below the state
 # directory ({} is the member). The internal set names its one member iam, on the loopback IAM listener.
 TLS = (
@@ -583,8 +588,9 @@ echo "$s"
         """Report `unregistered` for a started instance without state, or require readiness for one with.
 
         Either answer counts only from the instance's own daemon: the unit's main process must hold every
-        listener that can take a connection to 127.0.0.1 on the ops port. A stale instance left on a
-        reused port answers /readyz the same way, and its answer fails the run with a fixed diagnostic.
+        listener that takes the connection to 127.0.0.1 on the ops port, the same ones before and after the
+        answer. A stale instance left on a reused port answers /readyz the same way, and its answer fails
+        the run with a fixed diagnostic.
         """
         name, unit = region["name"], "vws-region@" + region["name"]
         state = "/var/lib/vws-region/" + name + "/registration.json"
@@ -594,7 +600,11 @@ echo "$s"
         answer = (f"if test -f {state}; then /usr/lib/vws/check-region-ready {name} && s=registered; "
                   f"else curl --silent --noproxy '*' --max-time 2 http://{ops}/readyz | grep -q unregistered "
                   "&& s=unregistered; fi")
-        probe = f"s=; {{ {answer}; }} && {{ {owner(unit + '.service', region['ops_port'])} || {{ s=foreign; false; }}; }}"
+        # The same process holds the same listeners before and after the answer, so the answer came from them:
+        # a listener cannot close and come back with the same socket inode.
+        held = owner(unit + ".service", region["ops_port"])
+        probe = (f"s=; a=$({held}) || a=; if {answer}; then b=$({held}) || b=; "
+                 'test -n "$a" && test "$a" = "$b" || { s=foreign; false; }; else s=; false; fi')
         result = self.run(unit + " readiness", "n=0; until " + probe + "; do n=$((n + 1)); "
                           'test $n -lt 15 || break; sleep 2; done; echo "$s"').decode()
         if result == "foreign":
