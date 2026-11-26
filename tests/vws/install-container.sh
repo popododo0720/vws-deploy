@@ -13,7 +13,8 @@ if grep -qs ' /etc/pve ' /proc/mounts; then refuse "/etc/pve is a mount: this is
 for path in /etc/vws /etc/keepalived /var/lib/vws-install-fail; do
     if test -e "$path" || test -L "$path"; then refuse "$path exists; start from a clean container"; fi
 done
-trap 'rm -rf "${work:-}"; rm -f /var/lib/vws-install-fail' EXIT
+daemons=
+trap 'kill $daemons 2>/dev/null || true; rm -rf "${work:-}"; rm -f /var/lib/vws-install-fail' EXIT
 work=$(mktemp -d "${TMPDIR:?}/install-target.XXXXXX")
 python3 "$root/tests/vws/install_fixture.py" "$work"
 export INSTALL_STATE="$work/state"
@@ -44,15 +45,47 @@ case "$verb" in
         ;;
     restart) test -f "$INSTALL_STATE/is-active-$1" ;;
     daemon-reload) ;;
+    # show -p MainPID --value UNIT: the process a test started for the unit, else 0 as systemd says.
+    show) cat "$INSTALL_STATE/mainpid-$4" 2>/dev/null || echo 0 ;;
     *) exit 1 ;;
 esac
 SH
-# The probe of an instance that is not registered yet: its daemon answers /readyz with 503 and "unregistered".
-cat > "$work/bin/curl" <<'SH'
-#!/bin/sh
-echo unregistered
-SH
+# curl is not in the image: this one fetches the URL for real and prints the body, also of a 503.
+cat > "$work/bin/curl" <<'PY'
+#!/usr/bin/env python3
+import sys, urllib.error, urllib.request
+try:
+    body = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(sys.argv[-1], timeout=2).read()
+except urllib.error.HTTPError as e:
+    body = e.read()
+except OSError:
+    sys.exit(7)
+sys.stdout.buffer.write(body)
+PY
+# A region daemon that is not registered yet: it answers /readyz on its ops port with 503 and "unregistered".
+cat > "$work/daemon.py" <<'PY'
+import http.server, sys
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(503)
+        self.end_headers()
+        self.wfile.write(b"unregistered\n")
+    def log_message(self, *args):
+        pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+PY
 chmod +x "$work/bin/ssh" "$work/bin/systemctl" "$work/bin/curl"
+# daemon PORT starts a daemon on 127.0.0.1:PORT and sets $pid once it answers.
+daemon() {
+    python3 "$work/daemon.py" "$1" &
+    pid=$!
+    daemons="$daemons $pid"
+    for _ in $(seq 50); do
+        if curl "http://127.0.0.1:$1/readyz" 2>/dev/null | grep -q unregistered; then return; fi
+        sleep 0.1
+    done
+    exit 1
+}
 global_units="vws-etcd vws-etcd-snapshot.timer vws-etcd-defrag.timer vws-iam vws-aws-proxy vws-console-api vws-console"
 
 # A global host (Debian VM or bare metal, no PVE): etcd and the global services, nothing of the region.
@@ -147,6 +180,10 @@ hosts:
 YAML
 region_args=(install --profile lab --inventory "$work/region-hosts.yaml" --packages "$work/packages"
              --credentials "$work/region-credentials")
+# The instance's own daemon, the unit's main process, holds its ops port.
+daemon 9443
+own=$pid
+echo "$own" > "$INSTALL_STATE/mainpid-vws-region@pve-seoul-1.service"
 bash "$root/scripts/vws" "${region_args[@]}" > "$work/region.out" 2> "$work/region.err"
 grep -q '^lab-1 vws-region@pve-seoul-1 registration unregistered$' "$work/region.out"
 test -f "$INSTALL_STATE/is-enabled-vws-region@pve-seoul-1"
@@ -170,6 +207,19 @@ assert rest == [{"host": "lab-1", "step": "vws-region@pve-seoul-1 registration",
 PY
 find /etc/vws-region -printf '%p %m %u %g %y\n' | sort > "$work/region-after"
 cmp "$work/region-before" "$work/region-after"
+# A stale daemon, not the unit's main process, holds the reused ops port and answers unregistered as well:
+# the run fails and names the port instead of reporting the instance unregistered.
+kill "$own"
+wait "$own" 2>/dev/null || true
+daemon 9443
+sleep 600 &
+daemons="$daemons $!"
+echo "$!" > "$INSTALL_STATE/mainpid-vws-region@pve-seoul-1.service"
+rc=0
+bash "$root/scripts/vws" "${region_args[@]}" > "$work/stale.out" 2> "$work/stale.err" || rc=$?
+test "$rc" -eq 1
+grep -qx 'vws: lab-1: vws-region@pve-seoul-1 readiness failed: 127.0.0.1:9443 is answered by a process other than the main process of vws-region@pve-seoul-1.service' "$work/stale.err"
+if grep -q 'registration' "$work/stale.out"; then exit 1; fi
 python3 - "$work" <<'PY'
 from pathlib import Path
 import sys
@@ -196,4 +246,4 @@ for p in Path("/etc/vws").iterdir():
         assert p.stat().st_uid == 0 and p.stat().st_gid == 0
         assert p.stat().st_mode & 0o777 == 0o644, p
 PY
-echo "install, unchanged rerun, readiness failure, recovery, region instance and secret isolation passed"
+echo "install, unchanged rerun, readiness failure, recovery, region instance, stale ops port and secret isolation passed"

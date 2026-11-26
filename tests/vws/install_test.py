@@ -48,7 +48,10 @@ elif "systemctl is-enabled" in c:
     key.touch()
 elif "/readyz" in c:
     name = c.split("/var/lib/vws-region/")[1].split("/")[0]
-    print("registered" if (s / (h + "registered-" + name)).exists() else "unregistered")
+    if os.environ.get("INSTALL_FOREIGN"):
+        print("foreign")
+    else:
+        print("registered" if (s / (h + "registered-" + name)).exists() else "unregistered")
 elif "echo changed" in c:
     key = s / hashlib.sha256(h.encode() + c.encode() + d).hexdigest()
     changed = not key.exists()
@@ -681,6 +684,24 @@ class Install(unittest.TestCase):
         self.assertEqual(failed.returncode, 1, failed.stderr)
         self.assertIn("lab-1: vws-region@pve-seoul-1 readiness failed", failed.stderr)
         self.assertNotIn("fixture-private", failed.stdout + failed.stderr)
+
+    def test_an_answer_from_another_process_fails_the_run(self):
+        self.remove_generated()
+        self.on_global()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        probe = [c for c in (json.loads(line)[-1] for line in (self.work / "state/argv").read_text().splitlines())
+                 if "/readyz" in c]
+        self.assertEqual(len(probe), 1)
+        self.assertIn("systemctl show -p MainPID --value vws-region@pve-seoul-1.service", probe[0])
+        self.assertIn("0A:0100007F:24E3", probe[0])
+        # A stale instance on the reused ops port answers as well; the run names the port and reports nothing.
+        self.env["INSTALL_FOREIGN"] = "1"
+        failed = self.run_install()
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assertIn("vws: lab-1: vws-region@pve-seoul-1 readiness failed: 127.0.0.1:9443 is answered by a process "
+                      "other than the main process of vws-region@pve-seoul-1.service\n", failed.stderr)
+        self.assertNotIn("registration", failed.stdout)
 
     def test_region_inventory_boundaries(self):
         two = "      - {name: %s, port: %s%s}\n"
