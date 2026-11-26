@@ -184,7 +184,14 @@ instance and waits up to 30 seconds for its answer. An instance with no state fi
 `/var/lib/vws-region/<region>/` whose `/readyz` says `unregistered` is reported as
 `vws-region@<region> registration unregistered`: that is the expected end of one install run, and the next
 step is `vws region add` (docs/operator/regions.md). An instance that has a state file must pass
-`check-region-ready`. An instance that does not answer fails the run with exit 1. Only an instance whose own
+`check-region-ready`. Either answer counts only when the unit's main process (`systemctl show -p MainPID`)
+holds every listener that takes the IPv4 connection to `127.0.0.1:<ops_port>`, the same process and listeners
+before and after the answer. The listeners are the most specific ones the kernel picks (`127.0.0.1`, else
+`0.0.0.0`, else an IPv6 wildcard), read from `/proc/net/tcp`, `/proc/net/tcp6` and `/proc/<pid>/fd` with no
+extra package; an IPv6-only listener of another process does not count. A stale daemon left on a reused ops port answers
+the same way, so its answer fails the run with exit 1 and `<host>: vws-region@<region> readiness failed:
+127.0.0.1:<ops_port> is answered by a process other than the main process of vws-region@<region>.service`.
+An instance that does not answer fails the run with exit 1. Only an instance whose own
 files or memory drop-in changed is restarted, and every instance after an interrupted run or a package change.
 The command never removes an instance that you take out of the inventory. A
 failed check exits 1 naming the host and check. A rerun compares

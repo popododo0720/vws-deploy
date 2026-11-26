@@ -147,7 +147,10 @@ starts every instance and prints, for a new one:
 global-1 vws-region@pve-seoul-1 registration unregistered
 ```
 
-`unregistered` is the end state of the install: the instance runs and waits for its registration. Register
+`unregistered` is the end state of the install: the instance runs and waits for its registration. The
+install counts the answer only from the instance's own unit. When another process holds the ops port, such as
+a stale instance, the run fails with `readiness failed: 127.0.0.1:<ops_port> is answered by a process other
+than the main process of vws-region@<region>.service`: stop that process and run `vws install` again. Register
 it with `vws region add` ([regions.md](regions.md#step-4-register-the-region)); you do not run `vws install`
 again for that. The PVE token secret goes to the instance only through that registration, into
 `/var/lib/vws-region/<region>/registration.json` (0600, in a directory only the daemon can use). The

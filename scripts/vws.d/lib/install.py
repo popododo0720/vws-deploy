@@ -60,6 +60,27 @@ PACKAGES = {
 # The etcd probe asks once; a unit that was just started gets 30 seconds to answer.
 RETRY = "n=0; until {}; do n=$((n + 1)); test $n -lt 15 || exit 1; sleep 2; done"
 PACKAGING = Path(__file__).resolve().parents[3] / "packaging"
+
+
+def owner(unit, port):
+    """A shell command that prints the main process of unit and the listeners that take an IPv4 connection to
+    127.0.0.1:port, and fails unless that process holds every one of them.
+
+    The listeners are the most specific of those the kernel would choose: 127.0.0.1:port, else 0.0.0.0:port,
+    else an IPv6 wildcard or mapped-loopback one. An IPv6-only listener beside an IPv4 one takes no IPv4
+    connection and is not counted. It reads /proc/net/tcp{,6} and the process's /proc/<pid>/fd links, with no
+    package beyond the base system.
+    """
+    x = "%04X" % port
+    return (f'p=$(systemctl show -p MainPID --value {unit}) && test "${{p:-0}}" -gt 0 && '
+            "l=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | while read -r _ a _ st _ _ _ _ _ i _; do "
+            f'case $st:$a in 0A:0100007F:{x}) echo "1 socket:[$i]" ;; 0A:00000000:{x}) echo "2 socket:[$i]" ;; '
+            f'0A:{"0" * 32}:{x}|0A:0000000000000000FFFF00000100007F:{x}) echo "3 socket:[$i]" ;; esac; done | sort) && '
+            'test -n "$l" && l=$(printf \'%s\\n\' "$l" | grep "^${l%% *} " | cut -d" " -f2 | sort) && '
+            'test "$(for f in /proc/$p/fd/*; do readlink "$f"; done 2>/dev/null | grep -xF "$l" | sort -u | wc -l)" '
+            '-eq "$(printf \'%s\\n\' "$l" | wc -l)" && echo "$p" $l')
+
+
 # Generated TLS sets: state directory, vws-etcd-tls member, and credential name -> file below the state
 # directory ({} is the member). The internal set names its one member iam, on the loopback IAM listener.
 TLS = (
@@ -564,17 +585,34 @@ echo "$s"
         self.emit(name, result == b"changed")
 
     def register_state(self, region):
-        """Report `unregistered` for a started instance without state, or require readiness for one with."""
+        """Report `unregistered` for a started instance without state, or require readiness for one with.
+
+        Either answer counts only from the instance's own daemon: the unit's main process must hold every
+        listener that takes the connection to 127.0.0.1 on the ops port, the same ones before and after the
+        answer. A stale instance left on a reused port answers /readyz the same way, and its answer fails
+        the run with a fixed diagnostic.
+        """
         name, unit = region["name"], "vws-region@" + region["name"]
         state = "/var/lib/vws-region/" + name + "/registration.json"
         ops = "127.0.0.1:" + str(region["ops_port"])
         # An instance with no registration answers /readyz with 503 and the word unregistered; a broken
         # one answers nothing, so a crash loop is never reported as unregistered.
-        probe = (f"if test -f {state}; then /usr/lib/vws/check-region-ready {name} && s=registered; "
-                 f"else curl --silent --noproxy '*' --max-time 2 http://{ops}/readyz | grep -q unregistered "
-                 "&& s=unregistered; fi")
-        result = self.run(unit + " readiness", RETRY.format(probe) + '; echo "$s"')
-        self.emit(unit + " registration", status=result.decode())
+        answer = (f"if test -f {state}; then /usr/lib/vws/check-region-ready {name} && s=registered; "
+                  f"else curl --silent --noproxy '*' --max-time 2 http://{ops}/readyz | grep -q unregistered "
+                  "&& s=unregistered; fi")
+        # The same process holds the same listeners before and after the answer, so the answer came from them:
+        # a listener cannot close and come back with the same socket inode.
+        held = owner(unit + ".service", region["ops_port"])
+        probe = (f"s=; a=$({held}) || a=; if {answer}; then b=$({held}) || b=; "
+                 'test -n "$a" && test "$a" = "$b" || { s=foreign; false; }; else s=; false; fi')
+        result = self.run(unit + " readiness", "n=0; until " + probe + "; do n=$((n + 1)); "
+                          'test $n -lt 15 || break; sleep 2; done; echo "$s"').decode()
+        if result == "foreign":
+            raise Failed(f"{self.host['name']}: {unit} readiness failed: {ops} is answered by a process "
+                         f"other than the main process of {unit}.service")
+        if not result:
+            raise Failed(self.host["name"] + ": " + unit + " readiness failed")
+        self.emit(unit + " registration", status=result)
 
     def install(self, cfg, files, packages, regions=()):
         self.run("memory controller", "test -f /sys/fs/cgroup/cgroup.controllers && "
